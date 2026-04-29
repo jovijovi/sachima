@@ -422,6 +422,11 @@ PLATFORM_HINTS = {
         "your response. Images are sent as native photos, and other files arrive as downloadable "
         "documents."
     ),
+    "sachima": (
+        "You are on Sachima, a custom text IM channel connected to Hermes Agent. "
+        "Keep replies chat-friendly and clear. Markdown support depends on the downstream "
+        "Sachima client, so prefer simple formatting unless the user explicitly asks for rich text."
+    ),
 }
 
 # ---------------------------------------------------------------------------
