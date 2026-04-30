@@ -371,7 +371,13 @@ def cache_image_from_bytes(data: bytes, ext: str = ".jpg") -> str:
     return str(filepath)
 
 
-async def cache_image_from_url(url: str, ext: str = ".jpg", retries: int = 2) -> str:
+async def cache_image_from_url(
+    url: str,
+    ext: str = ".jpg",
+    retries: int = 2,
+    *,
+    max_bytes: int | None = None,
+) -> str:
     """
     Download an image from a URL and save it to the local cache.
 
@@ -382,19 +388,28 @@ async def cache_image_from_url(url: str, ext: str = ".jpg", retries: int = 2) ->
         url: The HTTP/HTTPS URL to download from.
         ext: File extension including the dot (e.g. ".jpg", ".png").
         retries: Number of retry attempts on transient failures.
+        max_bytes: Optional maximum response body size. When set, Content-Length
+            and streamed bytes are capped before caching.
 
     Returns:
         Absolute path to the cached image file as a string.
 
     Raises:
-        ValueError: If the URL targets a private/internal network (SSRF protection).
+        ValueError: If the URL targets a private/internal network (SSRF protection)
+            or the downloaded image exceeds max_bytes.
     """
     from tools.url_safety import is_safe_url
     if not is_safe_url(url):
         raise ValueError(f"Blocked unsafe URL (SSRF protection): {safe_url_for_log(url)}")
+    if max_bytes is not None and max_bytes <= 0:
+        raise ValueError("max_bytes must be a positive integer")
 
     import httpx
     _log = logging.getLogger(__name__)
+    headers = {
+        "User-Agent": "Mozilla/5.0 (compatible; HermesAgent/1.0)",
+        "Accept": "image/*,*/*;q=0.8",
+    }
 
     async with httpx.AsyncClient(
         timeout=30.0,
@@ -403,15 +418,34 @@ async def cache_image_from_url(url: str, ext: str = ".jpg", retries: int = 2) ->
     ) as client:
         for attempt in range(retries + 1):
             try:
-                response = await client.get(
-                    url,
-                    headers={
-                        "User-Agent": "Mozilla/5.0 (compatible; HermesAgent/1.0)",
-                        "Accept": "image/*,*/*;q=0.8",
-                    },
-                )
-                response.raise_for_status()
-                return cache_image_from_bytes(response.content, ext)
+                if max_bytes is None:
+                    response = await client.get(url, headers=headers)
+                    response.raise_for_status()
+                    return cache_image_from_bytes(response.content, ext)
+
+                async with client.stream("GET", url, headers=headers) as response:
+                    response.raise_for_status()
+                    content_length = response.headers.get("content-length")
+                    if content_length:
+                        try:
+                            declared_size = int(content_length)
+                        except ValueError:
+                            declared_size = None
+                        if declared_size is not None and declared_size > max_bytes:
+                            raise ValueError(
+                                f"Image download exceeds maximum size of {max_bytes} bytes"
+                            )
+
+                    chunks: list[bytes] = []
+                    total = 0
+                    async for chunk in response.aiter_bytes():
+                        total += len(chunk)
+                        if total > max_bytes:
+                            raise ValueError(
+                                f"Image download exceeds maximum size of {max_bytes} bytes"
+                            )
+                        chunks.append(chunk)
+                    return cache_image_from_bytes(b"".join(chunks), ext)
             except (httpx.TimeoutException, httpx.HTTPStatusError) as exc:
                 if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code < 429:
                     raise
