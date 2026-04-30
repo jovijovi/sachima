@@ -339,6 +339,24 @@ Plain text messages (no markdown detected) are sent as the simple `text` message
 
 While the agent is working, the bot shows a `Typing` reaction on your message. It's cleared when the reply arrives, or replaced with `CrossMark` if processing failed.
 
+## Task Progress Panels
+
+Feishu supports message editing, so Hermes can keep one in-place progress message updated while a long task runs. Enable the task tracker panel in `config.yaml`:
+
+```yaml
+display:
+  tool_progress: all
+  task_tracker:
+    enabled: true
+    mode: text
+    max_operations: 8
+    persist_events: true      # optional, enables dashboard history
+    event_store: jsonl
+    dashboard_url: http://127.0.0.1:9119
+```
+
+With `dashboard_url` set, the Feishu progress panel includes a sanitized link to `/progress` in the web dashboard. Hermes strips query strings, fragments, and URL userinfo from that link before sending it to Feishu; keep tokens and reverse-proxy secrets out of this field.
+
 Set `FEISHU_REACTIONS=false` to turn it off.
 
 ## Burst Protection and Batching

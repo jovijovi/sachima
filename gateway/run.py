@@ -9400,6 +9400,7 @@ class GatewayRunner:
             task_tracker_max_length = int(task_tracker_config.get("max_length", 3500))
         except Exception:
             task_tracker_max_length = 3500
+        task_tracker_dashboard_url = task_tracker_config.get("dashboard_url")
 
         # Disable progress for webhooks - they don't support message editing,
         # so each progress line would be sent as a separate message.  A task
@@ -9577,6 +9578,7 @@ class GatewayRunner:
                         progress_tracker.snapshot(),
                         tool_progress_mode=progress_mode,
                         max_length=task_tracker_max_length,
+                        dashboard_url=task_tracker_dashboard_url,
                     )
                 return "\n".join(progress_lines)
 
@@ -9598,6 +9600,7 @@ class GatewayRunner:
                             progress_tracker.snapshot(),
                             tool_progress_mode=progress_mode,
                             max_length=task_tracker_max_length,
+                            dashboard_url=task_tracker_dashboard_url,
                         )
                     # Handle dedup messages: update last line with repeat counter
                     elif isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":

@@ -964,6 +964,14 @@ display:
   streaming: false        # Stream tokens to terminal as they arrive (real-time output)
   show_cost: false        # Show estimated $ cost in the CLI status bar
   tool_preview_length: 0  # Max chars for tool call previews (0 = no limit, show full paths/commands)
+  task_tracker:
+    enabled: false         # Gateway: replace raw tool progress with a transaction panel
+    mode: text             # text panel renderer
+    max_operations: 8      # Recent operations shown in the panel
+    persist_events: false  # Append sanitized progress events to JSONL for dashboard history
+    event_store: jsonl     # JSONL is the supported store type
+    event_store_path: ~/.hermes/progress/events.jsonl  # Optional path override
+    dashboard_url: ""      # Optional dashboard base URL; IM panels link to /progress
 ```
 
 | Mode | What you see |
@@ -974,6 +982,22 @@ display:
 | `verbose` | Full args, results, and debug logs |
 
 In the CLI, cycle through these modes with `/verbose`. To use `/verbose` in messaging platforms (Telegram, Discord, Slack, etc.), set `tool_progress_command: true` in the `display` section above. The command will then cycle the mode and save to config.
+
+### Task tracker panel and progress history
+
+`display.task_tracker.enabled` turns gateway tool progress into a compact transaction panel. The panel uses `display.tool_progress` for detail level:
+
+- `off` — show transaction status only, without operation details
+- `new` / `all` — show recent operations with short previews
+- `verbose` — show more detailed sanitized previews
+
+Set `persist_events: true` with `event_store: jsonl` to append sanitized progress records for the dashboard Progress page. The writer sanitizes records before disk, and the dashboard reader sanitizes again before returning API responses.
+
+`dashboard_url` is optional. When set, IM progress panels include a link to the dashboard Progress page. Hermes strips query strings, fragments, and userinfo before rendering the link, so do not put session tokens in the URL expecting them to be preserved.
+
+:::warning
+Progress records are meant for status visibility, not full-fidelity debugging. Tool names, previews, metadata, URLs, headers, and JSON-like values are redacted before display/persistence when they look sensitive.
+:::
 
 ### Per-platform progress overrides
 

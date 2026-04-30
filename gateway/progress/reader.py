@@ -1,0 +1,321 @@
+"""Read-only helpers for dashboard progress event history."""
+
+from __future__ import annotations
+
+import json
+import math
+from pathlib import Path
+from typing import Any
+
+from gateway.progress.redaction import sanitize_value_for_progress
+
+DEFAULT_MAX_BYTES = 5 * 1024 * 1024
+DEFAULT_MAX_LINES = 10_000
+DEFAULT_TRANSACTION_LIMIT = 50
+DEFAULT_EVENT_LIMIT = 200
+
+
+ProgressListResponse = dict[str, Any]
+ProgressDetailResponse = dict[str, Any]
+
+
+def list_progress_transactions(
+    path: str | Path | None,
+    *,
+    limit: int = DEFAULT_TRANSACTION_LIMIT,
+    status: str | None = "all",
+    max_bytes: int = DEFAULT_MAX_BYTES,
+    max_lines: int = DEFAULT_MAX_LINES,
+) -> ProgressListResponse:
+    """Return recent transaction summaries from a JSONL progress event store.
+
+    The reader is intentionally defensive: the JSONL file is local state, but it
+    is still treated as untrusted user-facing data. Malformed lines are skipped,
+    large files are bounded, and all response strings are sanitized again.
+    """
+
+    records, skipped_lines = _read_progress_records(path, max_bytes=max_bytes, max_lines=max_lines)
+    summaries = _summarize_transactions(records)
+    normalized_status = _safe_status_filter(status)
+    if normalized_status != "all":
+        summaries = [tx for tx in summaries if tx.get("status") == normalized_status]
+    summaries.sort(key=lambda tx: _sort_value(tx.get("_sort_at")), reverse=True)
+    limited = [_strip_private_fields(tx) for tx in summaries[: _safe_limit(limit, DEFAULT_TRANSACTION_LIMIT)]]
+    return {"transactions": limited, "skipped_lines": skipped_lines}
+
+
+def get_progress_transaction_events(
+    path: str | Path | None,
+    transaction_id: str,
+    *,
+    limit: int = DEFAULT_EVENT_LIMIT,
+    max_bytes: int = DEFAULT_MAX_BYTES,
+    max_lines: int = DEFAULT_MAX_LINES,
+) -> ProgressDetailResponse:
+    """Return a bounded chronological event timeline for one transaction."""
+
+    records, skipped_lines = _read_progress_records(path, max_bytes=max_bytes, max_lines=max_lines)
+    safe_id = _safe_text(transaction_id, key="transaction_id", max_len=240)
+    matching = [record for record in records if (record.get("transaction") or {}).get("id") == safe_id]
+    matching.sort(key=lambda record: _sort_value(record.get("written_at")))
+    event_limit = _safe_limit(limit, DEFAULT_EVENT_LIMIT)
+    recent = matching[-event_limit:]
+    transaction = None
+    summaries = _summarize_transactions(matching)
+    if summaries:
+        summaries.sort(key=lambda tx: _sort_value(tx.get("_sort_at")), reverse=True)
+        transaction = _strip_private_fields(summaries[0])
+    return {
+        "transaction": transaction,
+        "events": [_strip_private_fields(record) for record in recent],
+        "skipped_lines": skipped_lines,
+    }
+
+
+def _read_progress_records(
+    path: str | Path | None,
+    *,
+    max_bytes: int,
+    max_lines: int,
+) -> tuple[list[dict[str, Any]], int]:
+    if path is None:
+        return [], 0
+    event_path = Path(path)
+    if not event_path.exists() or not event_path.is_file():
+        return [], 0
+
+    records: list[dict[str, Any]] = []
+    skipped = 0
+    for line in _bounded_lines(event_path, max_bytes=max_bytes, max_lines=max_lines):
+        if not line.strip():
+            continue
+        try:
+            raw = json.loads(line)
+        except Exception:
+            skipped += 1
+            continue
+        normalized = _normalize_record(raw)
+        if normalized is None:
+            skipped += 1
+            continue
+        records.append(normalized)
+    return records, skipped
+
+
+def _bounded_lines(path: Path, *, max_bytes: int, max_lines: int) -> list[str]:
+    max_bytes = max(1, int(max_bytes or DEFAULT_MAX_BYTES))
+    max_lines = max(1, int(max_lines or DEFAULT_MAX_LINES))
+    size = path.stat().st_size
+    with path.open("rb") as handle:
+        truncated = size > max_bytes
+        if truncated:
+            handle.seek(size - max_bytes)
+        data = handle.read(max_bytes + 1)
+    lines = data.decode("utf-8", errors="replace").splitlines()
+    if size > max_bytes and lines:
+        # Drop the first partial line when reading from the tail of a large file.
+        lines = lines[1:]
+    if len(lines) > max_lines:
+        lines = lines[-max_lines:]
+    return lines
+
+
+def _normalize_record(raw: Any) -> dict[str, Any] | None:
+    if not isinstance(raw, dict):
+        return None
+    record_type = _safe_text(raw.get("record_type"), key="record_type", max_len=80)
+    if record_type not in {"progress.operation", "progress.snapshot"}:
+        return None
+    transaction = _normalize_transaction(raw.get("transaction"))
+    if transaction is None:
+        return None
+    record: dict[str, Any] = {
+        "schema_version": _safe_int(raw.get("schema_version"), default=1),
+        "record_type": record_type,
+        "written_at": _safe_number(raw.get("written_at")),
+        "transaction": transaction,
+    }
+    if record_type == "progress.operation":
+        operation = _normalize_operation(raw.get("operation"))
+        if operation is None:
+            return None
+        record["operation"] = operation
+    return record
+
+
+def _normalize_transaction(raw: Any) -> dict[str, Any] | None:
+    if not isinstance(raw, dict):
+        return None
+    tx_id = _safe_text(raw.get("id"), key="transaction_id", max_len=240)
+    if not tx_id:
+        return None
+    return {
+        "id": tx_id,
+        "title": _safe_text(raw.get("title"), key="title", max_len=500),
+        "status": _safe_text(raw.get("status"), key="status", max_len=80),
+        "started_at": _safe_number(raw.get("started_at")),
+        "updated_at": _safe_number(raw.get("updated_at")),
+        "completed_at": _safe_optional_number(raw.get("completed_at")),
+    }
+
+
+def _normalize_operation(raw: Any) -> dict[str, Any] | None:
+    if not isinstance(raw, dict):
+        return None
+    return {
+        "id": _safe_text(raw.get("id"), key="operation_id", max_len=120),
+        "event_type": _safe_text(raw.get("event_type"), key="event_type", max_len=120),
+        "tool_name": _safe_optional_text(raw.get("tool_name"), key="tool_name", max_len=200),
+        "status": _safe_text(raw.get("status"), key="status", max_len=80),
+        "preview": _safe_optional_text(raw.get("preview"), key="preview", max_len=1000),
+        "args_preview": _safe_optional_text(raw.get("args_preview"), key="args_preview", max_len=1000),
+        "started_at": _safe_number(raw.get("started_at")),
+        "updated_at": _safe_number(raw.get("updated_at")),
+        "completed_at": _safe_optional_number(raw.get("completed_at")),
+        "duration": _safe_optional_number(raw.get("duration")),
+        "is_error": bool(raw.get("is_error")),
+        "metadata": _safe_metadata(raw.get("metadata")),
+    }
+
+
+def _summarize_transactions(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    summaries: dict[str, dict[str, Any]] = {}
+    for record in records:
+        transaction = record.get("transaction") or {}
+        tx_id = transaction.get("id")
+        if not tx_id:
+            continue
+        summary = summaries.setdefault(
+            tx_id,
+            {
+                "id": tx_id,
+                "title": transaction.get("title") or tx_id,
+                "status": transaction.get("status") or "running",
+                "started_at": transaction.get("started_at"),
+                "updated_at": transaction.get("updated_at"),
+                "completed_at": transaction.get("completed_at"),
+                "operation_count": 0,
+                "last_operation": None,
+                "_sort_at": record.get("written_at"),
+                "_last_operation_at": None,
+            },
+        )
+        _merge_transaction(summary, transaction, record.get("written_at"))
+        if record.get("record_type") == "progress.operation" and isinstance(record.get("operation"), dict):
+            operation = record["operation"]
+            summary["operation_count"] += 1
+            op_sort = _first_number(operation.get("updated_at"), operation.get("completed_at"), record.get("written_at"))
+            if summary.get("_last_operation_at") is None or _sort_value(op_sort) >= _sort_value(summary.get("_last_operation_at")):
+                summary["_last_operation_at"] = op_sort
+                summary["last_operation"] = _operation_summary(operation)
+    return list(summaries.values())
+
+
+def _merge_transaction(summary: dict[str, Any], transaction: dict[str, Any], written_at: Any) -> None:
+    if transaction.get("title"):
+        summary["title"] = transaction["title"]
+    if transaction.get("status"):
+        summary["status"] = transaction["status"]
+    if summary.get("started_at") is None or _sort_value(transaction.get("started_at")) < _sort_value(summary.get("started_at")):
+        summary["started_at"] = transaction.get("started_at")
+    if transaction.get("updated_at") is not None:
+        summary["updated_at"] = transaction.get("updated_at")
+    if transaction.get("completed_at") is not None:
+        summary["completed_at"] = transaction.get("completed_at")
+    summary["_sort_at"] = max(
+        _sort_value(summary.get("_sort_at")),
+        _sort_value(written_at),
+        _sort_value(transaction.get("updated_at")),
+    )
+
+
+def _operation_summary(operation: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "event_type": operation.get("event_type"),
+        "tool_name": operation.get("tool_name"),
+        "status": operation.get("status"),
+        "preview": operation.get("preview"),
+        "duration": operation.get("duration"),
+        "is_error": bool(operation.get("is_error")),
+    }
+
+
+def _strip_private_fields(value: Any) -> Any:
+    if isinstance(value, list):
+        return [_strip_private_fields(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _strip_private_fields(item) for key, item in value.items() if not key.startswith("_")}
+    return value
+
+
+def _safe_metadata(raw: Any) -> dict[str, str]:
+    if not isinstance(raw, dict):
+        return {}
+    safe: dict[str, str] = {}
+    for key, value in raw.items():
+        safe_key = _safe_text(key, key="metadata_key", max_len=160)
+        if safe_key:
+            safe[safe_key] = sanitize_value_for_progress(value, key=str(key), max_len=500)
+    return safe
+
+
+def _safe_status_filter(status: str | None) -> str:
+    normalized = _safe_text(status or "all", key="status", max_len=80).lower()
+    return normalized if normalized in {"running", "completed", "failed", "all"} else "all"
+
+
+def _safe_limit(value: Any, default: int) -> int:
+    try:
+        limit = int(value)
+    except Exception:
+        return default
+    return max(1, min(limit, 1000))
+
+
+def _safe_int(value: Any, *, default: int) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return default
+
+
+def _safe_optional_text(value: Any, *, key: str, max_len: int) -> str | None:
+    if value is None:
+        return None
+    return _safe_text(value, key=key, max_len=max_len)
+
+
+def _safe_text(value: Any, *, key: str, max_len: int) -> str:
+    if value is None:
+        return ""
+    return sanitize_value_for_progress(value, key=key, max_len=max_len)
+
+
+def _safe_optional_number(value: Any) -> int | float | None:
+    if value is None:
+        return None
+    return _safe_number(value)
+
+
+def _safe_number(value: Any) -> int | float | None:
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, (int, float)) and math.isfinite(float(value)):
+        return value
+    try:
+        parsed = float(value)
+    except Exception:
+        return None
+    return parsed if math.isfinite(parsed) else None
+
+
+def _first_number(*values: Any) -> int | float | None:
+    for value in values:
+        if value is not None:
+            return value
+    return None
+
+
+def _sort_value(value: Any) -> float:
+    number = _safe_number(value)
+    return float(number) if number is not None else 0.0
