@@ -1075,6 +1075,61 @@ async def test_task_tracker_panel_replaces_raw_tool_progress_when_enabled(monkey
 
 
 @pytest.mark.asyncio
+async def test_task_tracker_panel_includes_configured_dashboard_link_without_secrets(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        TransactionPanelAgent,
+        session_id="sess-task-tracker-dashboard-link",
+        config_data={
+            "display": {
+                "tool_progress": "all",
+                "task_tracker": {
+                    "enabled": True,
+                    "mode": "text",
+                    "max_operations": 8,
+                    "dashboard_url": "https://dashboard.example.local:9119/app?session_token=abc123#secret",
+                },
+            },
+        },
+    )
+
+    assert result["final_response"] == "done"
+    all_panels = "\n".join([call["content"] for call in adapter.sent] + [call["content"] for call in adapter.edits])
+    assert "Dashboard" in all_panels
+    assert "https://dashboard.example.local:9119/app/progress" in all_panels
+    assert "session_token" not in all_panels
+    assert "abc123" not in all_panels
+    assert "#secret" not in all_panels
+
+
+@pytest.mark.asyncio
+async def test_task_tracker_panel_omits_unsafe_dashboard_link(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        TransactionPanelAgent,
+        session_id="sess-task-tracker-unsafe-dashboard-link",
+        config_data={
+            "display": {
+                "tool_progress": "all",
+                "task_tracker": {
+                    "enabled": True,
+                    "mode": "text",
+                    "max_operations": 8,
+                    "dashboard_url": "javascript:alert('x')",
+                },
+            },
+        },
+    )
+
+    assert result["final_response"] == "done"
+    all_panels = "\n".join([call["content"] for call in adapter.sent] + [call["content"] for call in adapter.edits])
+    assert "Dashboard" not in all_panels
+    assert "javascript:" not in all_panels
+
+
+@pytest.mark.asyncio
 async def test_task_tracker_panel_respects_tool_progress_off(monkeypatch, tmp_path):
     adapter, result = await _run_with_agent(
         monkeypatch,

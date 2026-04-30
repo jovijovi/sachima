@@ -87,3 +87,53 @@ def test_text_renderer_handles_empty_operations():
 
     assert "No tools yet" in text
     assert "No operations yet" in text
+
+
+def test_text_renderer_includes_safe_dashboard_progress_link_when_configured():
+    from gateway.progress.renderers import render_text_panel
+
+    tracker = ProgressTracker(transaction_id="tx-1", title="Dashboard task")
+
+    text = render_text_panel(
+        tracker.snapshot(),
+        dashboard_url="https://dashboard.example.local:9119/base?session_token=***#secret",
+    )
+
+    assert "Dashboard" in text
+    assert "https://dashboard.example.local:9119/base/progress" in text
+    assert "session_token" not in text
+    assert "abc123" not in text
+
+
+def test_text_renderer_omits_unsafe_dashboard_link():
+    from gateway.progress.renderers import render_text_panel
+
+    tracker = ProgressTracker(transaction_id="tx-1", title="No unsafe link")
+
+    text = render_text_panel(tracker.snapshot(), dashboard_url="javascript:alert('x')")
+
+    assert "Dashboard" not in text
+    assert "javascript:" not in text
+
+
+def test_text_renderer_omits_dashboard_link_when_port_is_invalid():
+    from gateway.progress.renderers import render_text_panel
+
+    tracker = ProgressTracker(transaction_id="tx-1", title="Bad port")
+
+    for dashboard_url in ("http://example.local:bad", "http://example.local:99999"):
+        text = render_text_panel(tracker.snapshot(), dashboard_url=dashboard_url)
+
+        assert "Dashboard" not in text
+        assert dashboard_url not in text
+
+
+def test_text_renderer_preserves_ipv6_dashboard_host_brackets():
+    from gateway.progress.renderers import render_text_panel
+
+    tracker = ProgressTracker(transaction_id="tx-1", title="IPv6 link")
+
+    text = render_text_panel(tracker.snapshot(), dashboard_url="http://[::1]:9119/base")
+
+    assert "Dashboard" in text
+    assert "http://[::1]:9119/base/progress" in text

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Iterable
+from urllib.parse import urlsplit, urlunsplit
 
 from gateway.progress.events import ProgressOperation, TransactionSnapshot
 from gateway.progress.redaction import sanitize_for_progress
@@ -41,6 +42,7 @@ def render_text_panel(
     *,
     tool_progress_mode: str = "all",
     max_length: int = _DEFAULT_MAX_LENGTH,
+    dashboard_url: str | None = None,
 ) -> str:
     """Render a compact Markdown-compatible transaction progress panel."""
 
@@ -67,6 +69,11 @@ def render_text_panel(
             lines.extend(rendered_ops)
         else:
             lines.append("- No operations yet")
+
+    progress_link = _safe_progress_dashboard_url(dashboard_url)
+    if progress_link:
+        lines.append("")
+        lines.append(f"🔎 **Dashboard:** {progress_link}")
 
     text = "\n".join(lines)
     return _cap_panel(text, max_length)
@@ -128,6 +135,40 @@ def _format_duration(duration: float | None) -> str:
         return f"{float(duration):.2f}s"
     except Exception:
         return ""
+
+
+def _safe_progress_dashboard_url(url: str | None) -> str | None:
+    """Return a sanitized absolute dashboard /progress URL or None.
+
+    Dashboard URLs can point at a protected local server. Never echo query
+    strings, fragments, or userinfo back into chat because those are common
+    places for session tokens and reverse-proxy secrets.
+    """
+
+    if not isinstance(url, str) or not url.strip():
+        return None
+    try:
+        parsed = urlsplit(url.strip())
+    except Exception:
+        return None
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        return None
+    try:
+        port = parsed.port
+    except ValueError:
+        return None
+
+    host = parsed.hostname
+    if ":" in host:
+        host = f"[{host}]"
+    netloc = host
+    if port is not None:
+        netloc = f"{netloc}:{port}"
+    path = parsed.path.rstrip("/")
+    if not path.endswith("/progress"):
+        path = f"{path}/progress" if path else "/progress"
+    safe = urlunsplit((parsed.scheme, netloc, path, "", ""))
+    return sanitize_for_progress(safe, max_len=500)
 
 
 def _cap_panel(text: str, max_length: int) -> str:

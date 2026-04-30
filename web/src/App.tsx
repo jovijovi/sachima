@@ -29,6 +29,7 @@ import StatusPage from "@/pages/StatusPage";
 import ConfigPage from "@/pages/ConfigPage";
 import EnvPage from "@/pages/EnvPage";
 import SessionsPage from "@/pages/SessionsPage";
+import ProgressPage from "@/pages/ProgressPage";
 import LogsPage from "@/pages/LogsPage";
 import AnalyticsPage from "@/pages/AnalyticsPage";
 import CronPage from "@/pages/CronPage";
@@ -46,6 +47,7 @@ import { useTheme } from "@/themes";
 const BUILTIN_ROUTES: Record<string, React.ComponentType> = {
   "/": StatusPage,
   "/sessions": SessionsPage,
+  "/progress": ProgressPage,
   "/analytics": AnalyticsPage,
   "/logs": LogsPage,
   "/cron": CronPage,
@@ -61,6 +63,11 @@ const BUILTIN_NAV: NavItem[] = [
     labelKey: "sessions",
     label: "Sessions",
     icon: MessageSquare,
+  },
+  {
+    path: "/progress",
+    label: "Progress",
+    icon: Activity,
   },
   {
     path: "/analytics",
