@@ -9381,10 +9381,36 @@ class GatewayRunner:
             or os.getenv("HERMES_TOOL_PROGRESS_MODE")
             or "all"
         )
-        # Disable tool progress for webhooks - they don't support message editing,
-        # so each progress line would be sent as a separate message.
+        # Optional transaction-style progress panel.  When enabled, the existing
+        # tool progress callback is still the signal source, but rendering is
+        # handled as one editable transaction panel instead of raw tool lines.
+        task_tracker_config = display_config.get("task_tracker")
+        if not isinstance(task_tracker_config, dict):
+            task_tracker_config = {}
+        task_tracker_enabled = is_truthy_value(
+            task_tracker_config.get("enabled"), default=False
+        )
+        task_tracker_mode = str(task_tracker_config.get("mode", "text") or "text").strip().lower()
+        task_tracker_enabled = task_tracker_enabled and task_tracker_mode == "text"
+        try:
+            task_tracker_max_operations = int(task_tracker_config.get("max_operations", 12))
+        except Exception:
+            task_tracker_max_operations = 12
+        try:
+            task_tracker_max_length = int(task_tracker_config.get("max_length", 3500))
+        except Exception:
+            task_tracker_max_length = 3500
+
+        # Disable progress for webhooks - they don't support message editing,
+        # so each progress line would be sent as a separate message.  A task
+        # tracker with tool_progress=off still needs the callback so it can show
+        # transaction status while hiding operation details.
         from gateway.config import Platform
-        tool_progress_enabled = progress_mode != "off" and source.platform != Platform.WEBHOOK
+        progress_display_enabled = (
+            source.platform != Platform.WEBHOOK
+            and (progress_mode != "off" or task_tracker_enabled)
+        )
+        tool_progress_enabled = progress_display_enabled
         # Natural assistant status messages are intentionally independent from
         # tool progress and token streaming. Users can keep tool_progress quiet
         # in chat platforms while opting into concise mid-turn updates.
@@ -9401,10 +9427,40 @@ class GatewayRunner:
         last_tool = [None]  # Mutable container for tracking in closure
         last_progress_msg = [None]  # Track last message for dedup
         repeat_count = [0]  # How many times the same message repeated
+
+        progress_tracker = None
+        if progress_queue and task_tracker_enabled:
+            try:
+                from gateway.progress.tracker import ProgressTracker
+                _tracker_title = (message or "Task").strip().splitlines()[0][:120] or "Task"
+                progress_tracker = ProgressTracker(
+                    transaction_id=session_id or session_key or "gateway-task",
+                    title=_tracker_title,
+                    max_operations=task_tracker_max_operations,
+                )
+            except Exception as _tracker_err:
+                logger.debug("Task tracker disabled after setup error: %s", _tracker_err)
+                progress_tracker = None
+                task_tracker_enabled = False
         
         def progress_callback(event_type: str, tool_name: str = None, preview: str = None, args: dict = None, **kwargs):
             """Callback invoked by agent on tool lifecycle events."""
             if not progress_queue or not _run_still_current():
+                return
+
+            if progress_tracker is not None:
+                try:
+                    recorded = progress_tracker.record_callback_event(
+                        event_type,
+                        tool_name=tool_name,
+                        preview=preview,
+                        args=args,
+                        **kwargs,
+                    )
+                    if recorded is not None:
+                        progress_queue.put(("__render_task_tracker__",))
+                except Exception as cb_err:
+                    logging.debug(f"Task tracker progress callback error: {cb_err}")
                 return
 
             # Only act on tool.started events (ignore tool.completed, reasoning.available, etc.)
@@ -9505,6 +9561,16 @@ class GatewayRunner:
             _last_edit_ts = 0.0      # Throttle edits to avoid Telegram flood control
             _PROGRESS_EDIT_INTERVAL = 1.5  # Minimum seconds between edits
 
+            def _current_progress_text() -> str:
+                if progress_tracker is not None:
+                    from gateway.progress.renderers import render_text_panel
+                    return render_text_panel(
+                        progress_tracker.snapshot(),
+                        tool_progress_mode=progress_mode,
+                        max_length=task_tracker_max_length,
+                    )
+                return "\n".join(progress_lines)
+
             while True:
                 try:
                     if not _run_still_current():
@@ -9517,8 +9583,15 @@ class GatewayRunner:
 
                     raw = progress_queue.get_nowait()
 
+                    if progress_tracker is not None:
+                        from gateway.progress.renderers import render_text_panel
+                        msg = render_text_panel(
+                            progress_tracker.snapshot(),
+                            tool_progress_mode=progress_mode,
+                            max_length=task_tracker_max_length,
+                        )
                     # Handle dedup messages: update last line with repeat counter
-                    if isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":
+                    elif isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":
                         _, base_msg, count = raw
                         if progress_lines:
                             progress_lines[-1] = f"{base_msg} (×{count + 1})"
@@ -9545,7 +9618,7 @@ class GatewayRunner:
 
                     if can_edit and progress_msg_id is not None:
                         # Try to edit the existing progress message
-                        full_text = "\n".join(progress_lines)
+                        full_text = _current_progress_text()
                         result = await adapter.edit_message(
                             chat_id=source.chat_id,
                             message_id=progress_msg_id,
@@ -9566,7 +9639,7 @@ class GatewayRunner:
                     else:
                         if can_edit:
                             # First tool: send all accumulated text as new message
-                            full_text = "\n".join(progress_lines)
+                            full_text = _current_progress_text()
                             result = await adapter.send(chat_id=source.chat_id, content=full_text, metadata=_progress_metadata)
                         else:
                             # Editing unsupported: send just this line
@@ -9597,8 +9670,8 @@ class GatewayRunner:
                         except Exception:
                             break
                     # Final edit with all remaining tools (only if editing works)
-                    if can_edit and progress_lines and progress_msg_id:
-                        full_text = "\n".join(progress_lines)
+                    if can_edit and progress_msg_id and (progress_lines or progress_tracker is not None):
+                        full_text = _current_progress_text()
                         try:
                             await adapter.edit_message(
                                 chat_id=source.chat_id,
@@ -10819,6 +10892,18 @@ class GatewayRunner:
                 )
         finally:
             # Stop progress sender, interrupt monitor, and notification task
+            if progress_tracker is not None:
+                try:
+                    _progress_failed = sys.exc_info()[0] is not None
+                    _response_for_progress = locals().get("response")
+                    if isinstance(_response_for_progress, dict):
+                        _progress_failed = _progress_failed or bool(_response_for_progress.get("failed"))
+                    _result_for_progress = result_holder[0]
+                    if isinstance(_result_for_progress, dict):
+                        _progress_failed = _progress_failed or bool(_result_for_progress.get("failed"))
+                    progress_tracker.mark_completed(is_error=_progress_failed)
+                except Exception as _tracker_final_err:
+                    logger.debug("Task tracker final status update failed: %s", _tracker_final_err)
             if progress_task:
                 progress_task.cancel()
             interrupt_monitor.cancel()

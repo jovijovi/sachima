@@ -1,0 +1,89 @@
+"""Tests for gateway transaction progress text rendering."""
+
+from gateway.progress.tracker import ProgressTracker
+
+
+def test_text_renderer_includes_transaction_status_and_tools():
+    from gateway.progress.renderers import render_text_panel
+
+    tracker = ProgressTracker(transaction_id="tx-1", title="Fix bug")
+    tracker.record_tool_started("read_file", "gateway/run.py", {"path": "gateway/run.py"})
+
+    text = render_text_panel(tracker.snapshot(), tool_progress_mode="all")
+
+    assert "📌" in text
+    assert "Fix bug" in text
+    assert "Running" in text
+    assert "Recent operations" in text
+    assert "read_file" in text
+    assert "gateway/run.py" in text
+
+
+def test_text_renderer_hides_tools_when_progress_off():
+    from gateway.progress.renderers import render_text_panel
+
+    tracker = ProgressTracker(transaction_id="tx-1", title="Quiet task")
+    tracker.record_tool_started("terminal", "pytest", {"command": "pytest"})
+
+    text = render_text_panel(tracker.snapshot(), tool_progress_mode="off")
+
+    assert "Quiet task" in text
+    assert "terminal" not in text
+    assert "pytest" not in text
+
+
+def test_text_renderer_marks_failed_and_completed_operations():
+    from gateway.progress.renderers import render_text_panel
+
+    tracker = ProgressTracker(transaction_id="tx-1", title="Run checks")
+    tracker.record_tool_started("terminal", "pytest")
+    tracker.record_tool_completed("terminal", duration=1.2, is_error=True)
+
+    text = render_text_panel(tracker.snapshot(), tool_progress_mode="all")
+
+    assert "❌" in text
+    assert "terminal" in text
+    assert "1.20s" in text
+
+
+def test_text_renderer_respects_new_mode_by_collapsing_repeated_tools():
+    from gateway.progress.renderers import render_text_panel
+
+    tracker = ProgressTracker(transaction_id="tx-1", title="Repeated reads")
+    tracker.record_tool_started("read_file", "a.py")
+    tracker.record_tool_started("read_file", "b.py")
+    tracker.record_tool_started("search_files", "pattern")
+
+    text = render_text_panel(tracker.snapshot(), tool_progress_mode="new")
+
+    assert text.count("read_file") == 1
+    assert "search_files" in text
+
+
+def test_text_renderer_sanitizes_and_caps_output():
+    from gateway.progress.renderers import render_text_panel
+
+    tracker = ProgressTracker(transaction_id="tx-1", title="Secret task")
+    tracker.record_tool_started(
+        "terminal",
+        "curl https://example.invalid/?token=abc123&debug=true",
+        {"api_key": "secret-value", "command": "x" * 400},
+    )
+
+    text = render_text_panel(tracker.snapshot(), tool_progress_mode="verbose", max_length=220)
+
+    assert len(text) <= 220
+    assert "abc123" not in text
+    assert "secret-value" not in text
+    assert "[REDACTED]" in text
+
+
+def test_text_renderer_handles_empty_operations():
+    from gateway.progress.renderers import render_text_panel
+
+    tracker = ProgressTracker(transaction_id="tx-1", title="No tools yet")
+
+    text = render_text_panel(tracker.snapshot(), tool_progress_mode="all")
+
+    assert "No tools yet" in text
+    assert "No operations yet" in text

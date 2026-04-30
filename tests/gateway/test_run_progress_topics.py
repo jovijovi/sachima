@@ -490,6 +490,49 @@ class VerboseAgent:
         }
 
 
+class TransactionPanelAgent:
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        self.tool_progress_callback("tool.started", "read_file", "gateway/run.py", {"path": "gateway/run.py"})
+        time.sleep(0.35)
+        self.tool_progress_callback("tool.started", "search_files", "tool_progress", {"pattern": "tool_progress"})
+        time.sleep(0.35)
+        return {
+            "final_response": "done",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+class SubagentProgressAgent:
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        self.tool_progress_callback("subagent.start", preview="Inspect progress tests", subagent_id="sub-1")
+        time.sleep(0.2)
+        self.tool_progress_callback(
+            "subagent.tool",
+            "search_files",
+            "test_progress",
+            {"pattern": "test_progress"},
+            subagent_id="sub-1",
+            goal="Inspect progress tests",
+        )
+        time.sleep(0.2)
+        self.tool_progress_callback("subagent.complete", preview="Done", subagent_id="sub-1")
+        time.sleep(0.2)
+        return {
+            "final_response": "done",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
 async def _run_with_agent(
     monkeypatch,
     tmp_path,
@@ -970,3 +1013,75 @@ async def test_verbose_mode_respects_explicit_tool_preview_length(monkeypatch, t
     assert VerboseAgent.LONG_CODE not in all_content
     # But should still contain the truncated portion with "..."
     assert "..." in all_content
+
+
+@pytest.mark.asyncio
+async def test_task_tracker_panel_replaces_raw_tool_progress_when_enabled(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        TransactionPanelAgent,
+        session_id="sess-task-tracker-panel",
+        config_data={
+            "display": {
+                "tool_progress": "all",
+                "task_tracker": {"enabled": True, "mode": "text", "max_operations": 8},
+            },
+        },
+    )
+
+    assert result["final_response"] == "done"
+    assert adapter.sent
+    first_panel = adapter.sent[0]["content"]
+    all_panels = "\n".join([call["content"] for call in adapter.sent] + [call["content"] for call in adapter.edits])
+    assert "📌" in first_panel
+    assert "Transaction" in first_panel
+    assert "hello" in first_panel
+    assert "read_file" in all_panels
+    assert "search_files" in all_panels
+    assert "Completed" in all_panels
+    assert '📖 read_file: "gateway/run.py"' not in all_panels
+
+
+@pytest.mark.asyncio
+async def test_task_tracker_panel_respects_tool_progress_off(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        TransactionPanelAgent,
+        session_id="sess-task-tracker-off",
+        config_data={
+            "display": {
+                "tool_progress": "off",
+                "task_tracker": {"enabled": True, "mode": "text", "max_operations": 8},
+            },
+        },
+    )
+
+    assert result["final_response"] == "done"
+    all_panels = "\n".join([call["content"] for call in adapter.sent] + [call["content"] for call in adapter.edits])
+    assert "Transaction" in all_panels
+    assert "read_file" not in all_panels
+    assert "search_files" not in all_panels
+
+
+@pytest.mark.asyncio
+async def test_task_tracker_panel_renders_subagent_progress_events(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        SubagentProgressAgent,
+        session_id="sess-task-tracker-subagent",
+        config_data={
+            "display": {
+                "tool_progress": "all",
+                "task_tracker": {"enabled": True, "mode": "text", "max_operations": 8},
+            },
+        },
+    )
+
+    assert result["final_response"] == "done"
+    all_panels = "\n".join([call["content"] for call in adapter.sent] + [call["content"] for call in adapter.edits])
+    assert "subagent start" in all_panels
+    assert "subagent tool: search_files" in all_panels
+    assert "subagent complete" in all_panels
