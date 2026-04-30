@@ -9429,8 +9429,10 @@ class GatewayRunner:
         repeat_count = [0]  # How many times the same message repeated
 
         progress_tracker = None
+        progress_event_store = None
         if progress_queue and task_tracker_enabled:
             try:
+                from gateway.progress.store import build_progress_event_store
                 from gateway.progress.tracker import ProgressTracker
                 _tracker_title = (message or "Task").strip().splitlines()[0][:120] or "Task"
                 progress_tracker = ProgressTracker(
@@ -9438,9 +9440,11 @@ class GatewayRunner:
                     title=_tracker_title,
                     max_operations=task_tracker_max_operations,
                 )
+                progress_event_store = build_progress_event_store(task_tracker_config)
             except Exception as _tracker_err:
                 logger.debug("Task tracker disabled after setup error: %s", _tracker_err)
                 progress_tracker = None
+                progress_event_store = None
                 task_tracker_enabled = False
         
         def progress_callback(event_type: str, tool_name: str = None, preview: str = None, args: dict = None, **kwargs):
@@ -9458,6 +9462,11 @@ class GatewayRunner:
                         **kwargs,
                     )
                     if recorded is not None:
+                        if progress_event_store is not None:
+                            try:
+                                progress_event_store.append_operation(progress_tracker.snapshot(), recorded)
+                            except Exception as store_err:
+                                logger.debug("Task tracker event persistence error: %s", store_err)
                         progress_queue.put(("__render_task_tracker__",))
                 except Exception as cb_err:
                     logging.debug(f"Task tracker progress callback error: {cb_err}")
@@ -10902,6 +10911,11 @@ class GatewayRunner:
                     if isinstance(_result_for_progress, dict):
                         _progress_failed = _progress_failed or bool(_result_for_progress.get("failed"))
                     progress_tracker.mark_completed(is_error=_progress_failed)
+                    if progress_event_store is not None:
+                        try:
+                            progress_event_store.append_snapshot(progress_tracker.snapshot())
+                        except Exception as _store_final_err:
+                            logger.debug("Task tracker final persistence failed: %s", _store_final_err)
                 except Exception as _tracker_final_err:
                     logger.debug("Task tracker final status update failed: %s", _tracker_final_err)
             if progress_task:

@@ -2,6 +2,7 @@
 
 import asyncio
 import importlib
+import json
 import sys
 import time
 import types
@@ -500,6 +501,36 @@ class TransactionPanelAgent:
         time.sleep(0.35)
         self.tool_progress_callback("tool.started", "search_files", "tool_progress", {"pattern": "tool_progress"})
         time.sleep(0.35)
+        return {
+            "final_response": "done",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+class PersistentProgressAgent:
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        sensitive_value = "persist-" + "secret"
+        self.tool_progress_callback(
+            "tool.started",
+            "terminal",
+            "curl https://example.invalid/?access_token=" + sensitive_value + "&ok=yes",
+            {"api_key": sensitive_value, "command": "pytest"},
+        )
+        time.sleep(0.2)
+        self.tool_progress_callback(
+            "tool.completed",
+            "terminal",
+            "done",
+            {},
+            duration=0.25,
+            is_error=False,
+        )
+        time.sleep(0.2)
         return {
             "final_response": "done",
             "messages": [],
@@ -1085,3 +1116,70 @@ async def test_task_tracker_panel_renders_subagent_progress_events(monkeypatch, 
     assert "subagent start" in all_panels
     assert "subagent tool: search_files" in all_panels
     assert "subagent complete" in all_panels
+
+
+@pytest.mark.asyncio
+async def test_task_tracker_persists_progress_events_when_enabled(monkeypatch, tmp_path):
+    store_path = tmp_path / "progress" / "events.jsonl"
+
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        PersistentProgressAgent,
+        session_id="sess-task-tracker-persist",
+        config_data={
+            "display": {
+                "tool_progress": "all",
+                "task_tracker": {
+                    "enabled": True,
+                    "mode": "text",
+                    "persist_events": True,
+                    "event_store": "jsonl",
+                    "event_store_path": str(store_path),
+                },
+            },
+        },
+    )
+
+    assert result["final_response"] == "done"
+    assert store_path.exists()
+    records = [json.loads(line) for line in store_path.read_text(encoding="utf-8").splitlines()]
+    rendered = json.dumps(records, ensure_ascii=False)
+    assert len(records) >= 2
+    assert records[-1]["record_type"] == "progress.snapshot"
+    assert records[-1]["transaction"]["status"] == "completed"
+    assert records[0]["transaction"]["id"] == "sess-task-tracker-persist"
+    assert records[0]["operation"]["event_type"] == "tool.started"
+    assert any(record.get("operation", {}).get("event_type") == "tool.completed" for record in records)
+    assert "terminal" in rendered
+    assert "ok=yes" in rendered
+    assert "persist-secret" not in rendered
+    assert "[REDACTED]" in rendered
+
+
+@pytest.mark.asyncio
+async def test_task_tracker_does_not_persist_progress_events_when_disabled(monkeypatch, tmp_path):
+    store_path = tmp_path / "progress" / "events.jsonl"
+
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        PersistentProgressAgent,
+        session_id="sess-task-tracker-no-persist",
+        config_data={
+            "display": {
+                "tool_progress": "all",
+                "task_tracker": {
+                    "enabled": True,
+                    "mode": "text",
+                    "persist_events": False,
+                    "event_store": "jsonl",
+                    "event_store_path": str(store_path),
+                },
+            },
+        },
+    )
+
+    assert result["final_response"] == "done"
+    assert adapter.sent
+    assert not store_path.exists()
