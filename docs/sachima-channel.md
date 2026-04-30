@@ -73,9 +73,9 @@ Nested payloads are also supported:
 
 Required fields:
 
-- `text`
 - `chat_id`
 - `user_id`
+- `text` unless the payload contains at least one supported image attachment
 
 Optional fields:
 
@@ -87,6 +87,95 @@ Optional fields:
 - `chat_topic`
 - `reply_to_message_id`
 - `reply_to_text`
+- `attachments` — supported media attachments, currently images only
+- `image_base64`, `image_url`, `image_mime_type`, `image_filename` — top-level image shortcut fields
+
+## Inbound image payloads
+
+Sachima image support normalizes incoming images into Hermes `MessageEvent.media_urls` local cache paths and `MessageEvent.media_types` MIME types. The resulting event uses `MessageType.PHOTO`. If an image payload has no text, the adapter uses `[Image]` as placeholder text so the message still enters Hermes safely.
+
+Canonical base64 image attachment:
+
+```json
+{
+  "message_id": "msg-img-1",
+  "text": "帮我看看这张图",
+  "chat_id": "chat-1",
+  "user_id": "user-1",
+  "attachments": [
+    {
+      "id": "att-1",
+      "type": "image",
+      "mime_type": "image/png",
+      "filename": "photo.png",
+      "base64": "iVBORw0KGgo..."
+    }
+  ]
+}
+```
+
+Canonical URL image attachment:
+
+```json
+{
+  "message_id": "msg-img-2",
+  "text": "这张呢？",
+  "chat_id": "chat-1",
+  "user_id": "user-1",
+  "attachments": [
+    {
+      "type": "image",
+      "mime_type": "image/png",
+      "url": "https://example.com/photo.png"
+    }
+  ]
+}
+```
+
+Top-level shortcut shape:
+
+```json
+{
+  "message_id": "msg-img-3",
+  "chat_id": "chat-1",
+  "user_id": "user-1",
+  "image_base64": "iVBORw0KGgo...",
+  "image_mime_type": "image/png",
+  "image_filename": "photo.png"
+}
+```
+
+Supported image MIME types:
+
+- `image/png`
+- `image/jpeg` / `image/jpg`
+- `image/gif`
+- `image/webp`
+- `image/bmp`
+
+Safety rules:
+
+- Base64 attachments are checked against `extra.max_inbound_media_bytes` before decoding; default is 10 MiB decoded.
+- URL attachments also use `extra.max_inbound_media_bytes`; the downloader rejects oversized `Content-Length` values and stops streaming once the byte cap is exceeded.
+- If a single attachment contains both `base64`/`data` and `url`/`image_url`, Sachima treats the inline bytes as authoritative and skips the URL fetch to avoid duplicate media entries.
+- Declared images still pass through image magic-byte validation before cache writes.
+- Unsupported MIME types and non-image attachments are rejected for this phase.
+- URL attachments use the shared Hermes SSRF-safe image downloader, blocking localhost/private/metadata-network targets.
+- Attachment filenames never control cache paths; MIME determines a safe extension and the cache helper generates the filename.
+
+## Configurable outbound text length
+
+Long Sachima replies are split with `BasePlatformAdapter.truncate_message()` before sending. Default chunk size is 4000 characters; deployments can tune it in `config.yaml`:
+
+```yaml
+platforms:
+  sachima:
+    extra:
+      max_message_length: 8000
+      max_inbound_media_bytes: 10485760
+```
+
+Invalid `max_message_length` values (`0`, negative, non-integer, or too small) fall back to 4000.
 
 ## Webhook signing and idempotency
 
