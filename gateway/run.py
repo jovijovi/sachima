@@ -9384,6 +9384,7 @@ class GatewayRunner:
         # Optional transaction-style progress panel.  When enabled, the existing
         # tool progress callback is still the signal source, but rendering is
         # handled as one editable transaction panel instead of raw tool lines.
+        from gateway.config import Platform
         task_tracker_config = display_config.get("task_tracker")
         if not isinstance(task_tracker_config, dict):
             task_tracker_config = {}
@@ -9391,7 +9392,10 @@ class GatewayRunner:
             task_tracker_config.get("enabled"), default=False
         )
         task_tracker_mode = str(task_tracker_config.get("mode", "text") or "text").strip().lower()
-        task_tracker_enabled = task_tracker_enabled and task_tracker_mode == "text"
+        if task_tracker_mode == "feishu_card" and source.platform != Platform.FEISHU:
+            task_tracker_mode = "text"
+        task_tracker_enabled = task_tracker_enabled and task_tracker_mode in {"text", "feishu_card"}
+        task_tracker_card_enabled = task_tracker_enabled and task_tracker_mode == "feishu_card" and source.platform == Platform.FEISHU
         try:
             task_tracker_max_operations = int(task_tracker_config.get("max_operations", 12))
         except Exception:
@@ -9406,7 +9410,6 @@ class GatewayRunner:
         # so each progress line would be sent as a separate message.  A task
         # tracker with tool_progress=off still needs the callback so it can show
         # transaction status while hiding operation details.
-        from gateway.config import Platform
         progress_display_enabled = (
             source.platform != Platform.WEBHOOK
             and (progress_mode != "off" or task_tracker_enabled)
@@ -9558,8 +9561,14 @@ class GatewayRunner:
 
             # Skip tool progress for platforms that don't support message
             # editing (e.g. iMessage/BlueBubbles) — each progress update
-            # would become a separate message bubble, which is noisy.
-            if type(adapter).edit_message is BasePlatformAdapter.edit_message:
+            # would become a separate message bubble, which is noisy. Feishu
+            # card mode uses explicit card send/patch helpers instead.
+            using_feishu_card = (
+                task_tracker_card_enabled
+                and hasattr(adapter, "send_interactive_card")
+                and hasattr(adapter, "patch_interactive_card")
+            )
+            if not using_feishu_card and type(adapter).edit_message is BasePlatformAdapter.edit_message:
                 while not progress_queue.empty():
                     try:
                         progress_queue.get_nowait()
@@ -9568,7 +9577,7 @@ class GatewayRunner:
                 return
 
             progress_lines = []      # Accumulated tool lines
-            progress_msg_id = None   # ID of the progress message to edit
+            progress_msg_id = None   # ID of the progress message/card to edit
             can_edit = True          # False once an edit fails (platform doesn't support it)
             _last_edit_ts = 0.0      # Throttle edits to avoid Telegram flood control
             _PROGRESS_EDIT_INTERVAL = 1.5  # Minimum seconds between edits
@@ -9583,6 +9592,17 @@ class GatewayRunner:
                         dashboard_url=task_tracker_dashboard_url,
                     )
                 return "\n".join(progress_lines)
+
+            def _current_progress_card() -> dict:
+                from gateway.progress.renderers import render_feishu_progress_card
+                return render_feishu_progress_card(
+                    progress_tracker.snapshot(),
+                    tool_progress_mode=progress_mode,
+                    max_operations=task_tracker_max_operations,
+                    dashboard_url=task_tracker_dashboard_url,
+                    style=str(task_tracker_config.get("style", "lively")),
+                    emoji=is_truthy_value(task_tracker_config.get("emoji"), default=True),
+                )
 
             while True:
                 try:
@@ -9635,13 +9655,21 @@ class GatewayRunner:
                         return
 
                     if can_edit and progress_msg_id is not None:
-                        # Try to edit the existing progress message
+                        # Try to edit/patch the existing progress surface.
                         full_text = _current_progress_text()
-                        result = await adapter.edit_message(
-                            chat_id=source.chat_id,
-                            message_id=progress_msg_id,
-                            content=full_text,
-                        )
+                        if using_feishu_card:
+                            result = await adapter.patch_interactive_card(
+                                source.chat_id,
+                                progress_msg_id,
+                                _current_progress_card(),
+                                finalize=is_final_tracker_flush,
+                            )
+                        else:
+                            result = await adapter.edit_message(
+                                chat_id=source.chat_id,
+                                message_id=progress_msg_id,
+                                content=full_text,
+                            )
                         if result.success:
                             if is_final_tracker_flush:
                                 progress_final_flushed.set()
@@ -9656,14 +9684,28 @@ class GatewayRunner:
                                     adapter.name,
                                 )
                             can_edit = False
-                            fallback = await adapter.send(chat_id=source.chat_id, content=msg, metadata=_progress_metadata)
+                            fallback = await adapter.send(chat_id=source.chat_id, content=full_text if is_final_tracker_flush else msg, metadata=_progress_metadata)
                             if fallback.success and is_final_tracker_flush:
                                 progress_final_flushed.set()
                     else:
                         if can_edit:
-                            # First tool: send all accumulated text as new message
+                            # First tool: send all accumulated progress as a new message/card.
                             full_text = _current_progress_text()
-                            result = await adapter.send(chat_id=source.chat_id, content=full_text, metadata=_progress_metadata)
+                            if using_feishu_card:
+                                result = await adapter.send_interactive_card(
+                                    source.chat_id,
+                                    _current_progress_card(),
+                                    metadata=_progress_metadata,
+                                )
+                                if not result.success:
+                                    can_edit = False
+                                    result = await adapter.send(
+                                        chat_id=source.chat_id,
+                                        content=full_text,
+                                        metadata=_progress_metadata,
+                                    )
+                            else:
+                                result = await adapter.send(chat_id=source.chat_id, content=full_text, metadata=_progress_metadata)
                         else:
                             # Editing unsupported: send just this line
                             result = await adapter.send(chat_id=source.chat_id, content=msg, metadata=_progress_metadata)
@@ -9695,15 +9737,23 @@ class GatewayRunner:
                                 progress_lines.append(raw)
                         except Exception:
                             break
-                    # Final edit with all remaining tools (only if editing works)
+                    # Final edit/patch with all remaining progress (only if editing works)
                     if can_edit and progress_msg_id and (progress_lines or progress_tracker is not None):
                         full_text = _current_progress_text()
                         try:
-                            result = await adapter.edit_message(
-                                chat_id=source.chat_id,
-                                message_id=progress_msg_id,
-                                content=full_text,
-                            )
+                            if using_feishu_card:
+                                result = await adapter.patch_interactive_card(
+                                    source.chat_id,
+                                    progress_msg_id,
+                                    _current_progress_card(),
+                                    finalize=True,
+                                )
+                            else:
+                                result = await adapter.edit_message(
+                                    chat_id=source.chat_id,
+                                    message_id=progress_msg_id,
+                                    content=full_text,
+                                )
                             if not result.success:
                                 logger.warning(
                                     "[%s] Final progress edit failed; sending fallback progress panel: %s",

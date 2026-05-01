@@ -121,6 +121,33 @@ class SlowInFlightRunningUpdateAdapter(CancellingTaskDropsFinalAdapter):
         return await super().edit_message(chat_id, message_id, content)
 
 
+class FeishuProgressCardCaptureAdapter(ProgressCaptureAdapter):
+    def __init__(self, platform=Platform.FEISHU):
+        super().__init__(platform=platform)
+        self.cards_sent = []
+        self.cards_patched = []
+
+    async def send_interactive_card(self, chat_id, card, reply_to=None, metadata=None) -> SendResult:
+        self.cards_sent.append({"chat_id": chat_id, "card": card, "reply_to": reply_to, "metadata": metadata})
+        return SendResult(success=True, message_id="om_card_1")
+
+    async def patch_interactive_card(self, chat_id, message_id, card, finalize=False) -> SendResult:
+        self.cards_patched.append(
+            {"chat_id": chat_id, "message_id": message_id, "card": card, "finalize": finalize}
+        )
+        return SendResult(success=True, message_id=message_id)
+
+
+class FeishuFinalPatchFailureAdapter(FeishuProgressCardCaptureAdapter):
+    async def patch_interactive_card(self, chat_id, message_id, card, finalize=False) -> SendResult:
+        self.cards_patched.append(
+            {"chat_id": chat_id, "message_id": message_id, "card": card, "finalize": finalize}
+        )
+        if finalize:
+            return SendResult(success=False, error="patch failed")
+        return SendResult(success=True, message_id=message_id)
+
+
 class FakeAgent:
     def __init__(self, **kwargs):
         self.tool_progress_callback = kwargs.get("tool_progress_callback")
@@ -1122,6 +1149,93 @@ async def test_verbose_mode_respects_explicit_tool_preview_length(monkeypatch, t
     assert VerboseAgent.LONG_CODE not in all_content
     # But should still contain the truncated portion with "..."
     assert "..." in all_content
+
+
+@pytest.mark.asyncio
+async def test_feishu_task_tracker_card_mode_sends_and_patches_one_card(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        TransactionPanelAgent,
+        session_id="sess-feishu-progress-card",
+        platform=Platform.FEISHU,
+        chat_id="oc_1",
+        chat_type="dm",
+        thread_id=None,
+        adapter_cls=FeishuProgressCardCaptureAdapter,
+        config_data={
+            "display": {
+                "tool_progress": "all",
+                "task_tracker": {"enabled": True, "mode": "feishu_card", "max_operations": 8},
+            },
+        },
+    )
+
+    assert result["final_response"] == "done"
+    assert len(adapter.cards_sent) == 1
+    assert adapter.cards_patched
+    final_card = adapter.cards_patched[-1]["card"]
+    rendered = json.dumps(final_card, ensure_ascii=False)
+    assert adapter.cards_patched[-1]["finalize"] is True
+    assert "小沙" in rendered or "收工" in rendered
+    assert "完成" in rendered
+    assert "read_file" in rendered
+    assert "search_files" in rendered
+    assert adapter.edits == []
+
+
+@pytest.mark.asyncio
+async def test_feishu_task_tracker_card_mode_final_patch_failure_sends_fallback(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        TransactionPanelAgent,
+        session_id="sess-feishu-progress-card-fallback",
+        platform=Platform.FEISHU,
+        chat_id="oc_1",
+        chat_type="dm",
+        thread_id=None,
+        adapter_cls=FeishuFinalPatchFailureAdapter,
+        config_data={
+            "display": {
+                "tool_progress": "all",
+                "task_tracker": {"enabled": True, "mode": "feishu_card", "max_operations": 8},
+            },
+        },
+    )
+
+    assert result["final_response"] == "done"
+    assert adapter.cards_sent
+    assert any(call["finalize"] for call in adapter.cards_patched)
+    assert adapter.sent
+    fallback_text = "\n".join(call["content"] for call in adapter.sent)
+    assert "Completed" in fallback_text or "完成" in fallback_text
+
+
+@pytest.mark.asyncio
+async def test_non_feishu_feishu_card_mode_falls_back_to_text_progress(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        TransactionPanelAgent,
+        session_id="sess-non-feishu-card-mode-text-fallback",
+        platform=Platform.TELEGRAM,
+        chat_id="12345",
+        chat_type="dm",
+        thread_id=None,
+        config_data={
+            "display": {
+                "tool_progress": "all",
+                "task_tracker": {"enabled": True, "mode": "feishu_card", "max_operations": 8},
+            },
+        },
+    )
+
+    assert result["final_response"] == "done"
+    all_panels = "\n".join([call["content"] for call in adapter.sent] + [call["content"] for call in adapter.edits])
+    assert "Transaction" in all_panels
+    assert "Completed" in all_panels
+    assert "read_file" in all_panels
 
 
 @pytest.mark.asyncio
