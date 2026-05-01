@@ -9545,6 +9545,8 @@ class GatewayRunner:
         else:
             _progress_thread_id = source.thread_id
         _progress_metadata = {"thread_id": _progress_thread_id} if _progress_thread_id else None
+        progress_final_flush_sentinel = object()
+        progress_final_flushed = asyncio.Event()
 
         async def send_progress_messages():
             if not progress_queue:
@@ -9593,6 +9595,7 @@ class GatewayRunner:
                         return
 
                     raw = progress_queue.get_nowait()
+                    is_final_tracker_flush = raw is progress_final_flush_sentinel
 
                     if progress_tracker is not None:
                         from gateway.progress.renderers import render_text_panel
@@ -9618,10 +9621,13 @@ class GatewayRunner:
                     # instead of reacting to 429s.)
                     _now = time.monotonic()
                     _remaining = _PROGRESS_EDIT_INTERVAL - (_now - _last_edit_ts)
-                    if _remaining > 0:
+                    if _remaining > 0 and not is_final_tracker_flush:
                         # Wait out the throttle interval, then loop back to
                         # drain any additional queued messages before sending
-                        # a single batched edit.
+                        # a single batched edit.  The explicit final task-
+                        # tracker flush bypasses throttling: otherwise the
+                        # sentinel can be consumed and discarded during cleanup,
+                        # leaving the visible panel stuck in Running.
                         await asyncio.sleep(_remaining)
                         continue
 
@@ -9636,7 +9642,10 @@ class GatewayRunner:
                             message_id=progress_msg_id,
                             content=full_text,
                         )
-                        if not result.success:
+                        if result.success:
+                            if is_final_tracker_flush:
+                                progress_final_flushed.set()
+                        else:
                             _err = (getattr(result, "error", "") or "").lower()
                             if "flood" in _err or "retry after" in _err:
                                 # Flood control hit — disable further edits,
@@ -9647,7 +9656,9 @@ class GatewayRunner:
                                     adapter.name,
                                 )
                             can_edit = False
-                            await adapter.send(chat_id=source.chat_id, content=msg, metadata=_progress_metadata)
+                            fallback = await adapter.send(chat_id=source.chat_id, content=msg, metadata=_progress_metadata)
+                            if fallback.success and is_final_tracker_flush:
+                                progress_final_flushed.set()
                     else:
                         if can_edit:
                             # First tool: send all accumulated text as new message
@@ -9656,8 +9667,11 @@ class GatewayRunner:
                         else:
                             # Editing unsupported: send just this line
                             result = await adapter.send(chat_id=source.chat_id, content=msg, metadata=_progress_metadata)
-                        if result.success and result.message_id:
-                            progress_msg_id = result.message_id
+                        if result.success:
+                            if result.message_id:
+                                progress_msg_id = result.message_id
+                            if is_final_tracker_flush:
+                                progress_final_flushed.set()
 
                     _last_edit_ts = time.monotonic()
 
@@ -10945,6 +10959,17 @@ class GatewayRunner:
                 except Exception as _tracker_final_err:
                     logger.debug("Task tracker final status update failed: %s", _tracker_final_err)
             if progress_task:
+                if progress_tracker is not None and not progress_task.done():
+                    try:
+                        progress_queue.put(progress_final_flush_sentinel)
+                        await asyncio.wait_for(progress_final_flushed.wait(), timeout=3.0)
+                    except asyncio.TimeoutError:
+                        logger.warning(
+                            "[%s] Timed out waiting for final task-tracker progress flush",
+                            source.platform.value if source.platform else "gateway",
+                        )
+                    except Exception as _progress_flush_err:
+                        logger.debug("Task tracker final visible flush failed: %s", _progress_flush_err)
                 progress_task.cancel()
             interrupt_monitor.cancel()
             _notify_task.cancel()
