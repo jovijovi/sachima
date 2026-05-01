@@ -9685,13 +9685,36 @@ class GatewayRunner:
                     if can_edit and progress_msg_id and (progress_lines or progress_tracker is not None):
                         full_text = _current_progress_text()
                         try:
-                            await adapter.edit_message(
+                            result = await adapter.edit_message(
                                 chat_id=source.chat_id,
                                 message_id=progress_msg_id,
                                 content=full_text,
                             )
-                        except Exception:
-                            pass
+                            if not result.success:
+                                logger.warning(
+                                    "[%s] Final progress edit failed; sending fallback progress panel: %s",
+                                    adapter.name,
+                                    result.error or "unknown error",
+                                )
+                                await adapter.send(
+                                    chat_id=source.chat_id,
+                                    content=full_text,
+                                    metadata=_progress_metadata,
+                                )
+                        except Exception as _final_edit_err:
+                            logger.warning(
+                                "[%s] Final progress edit raised; sending fallback progress panel: %s",
+                                adapter.name,
+                                _final_edit_err,
+                            )
+                            try:
+                                await adapter.send(
+                                    chat_id=source.chat_id,
+                                    content=full_text,
+                                    metadata=_progress_metadata,
+                                )
+                            except Exception:
+                                pass
                     return
                 except Exception as e:
                     logger.error("Progress message error: %s", e)
