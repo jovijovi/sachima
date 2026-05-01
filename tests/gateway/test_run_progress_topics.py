@@ -75,6 +75,52 @@ class FinalProgressEditFailureAdapter(ProgressCaptureAdapter):
         return SendResult(success=True, message_id=message_id)
 
 
+class CancellingTaskDropsFinalAdapter(ProgressCaptureAdapter):
+    """Adapter where edits from a cancelling progress task are not visibly applied."""
+
+    def __init__(self, platform=Platform.TELEGRAM):
+        super().__init__(platform=platform)
+        self.visible_completed_updates = []
+        self.dropped_completed_updates = []
+
+    async def edit_message(self, chat_id, message_id, content) -> SendResult:
+        self.edits.append(
+            {
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "content": content,
+            }
+        )
+        if "**Status:** Completed" in content:
+            task = asyncio.current_task()
+            if task is not None and task.cancelling():
+                self.dropped_completed_updates.append(content)
+                return SendResult(success=True, message_id=message_id)
+            self.visible_completed_updates.append(content)
+        return SendResult(success=True, message_id=message_id)
+
+
+class SlowInFlightRunningUpdateAdapter(CancellingTaskDropsFinalAdapter):
+    """Adapter with a slow pre-completion Running update in flight during cleanup."""
+
+    def __init__(self, platform=Platform.TELEGRAM):
+        super().__init__(platform=platform)
+        self.delayed_running_send = False
+        self.delayed_running_edit = False
+
+    async def send(self, chat_id, content, reply_to=None, metadata=None) -> SendResult:
+        if "**Status:** Running" in content and not self.delayed_running_send:
+            self.delayed_running_send = True
+            await asyncio.sleep(1.0)
+        return await super().send(chat_id, content, reply_to=reply_to, metadata=metadata)
+
+    async def edit_message(self, chat_id, message_id, content) -> SendResult:
+        if "**Status:** Running" in content and not self.delayed_running_edit:
+            self.delayed_running_edit = True
+            await asyncio.sleep(0.5)
+        return await super().edit_message(chat_id, message_id, content)
+
+
 class FakeAgent:
     def __init__(self, **kwargs):
         self.tool_progress_callback = kwargs.get("tool_progress_callback")
@@ -517,6 +563,21 @@ class TransactionPanelAgent:
         time.sleep(0.35)
         self.tool_progress_callback("tool.started", "search_files", "tool_progress", {"pattern": "tool_progress"})
         time.sleep(0.35)
+        return {
+            "final_response": "done",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+class SingleProgressFastReturnAgent:
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        self.tool_progress_callback("tool.started", "read_file", "gateway/run.py", {"path": "gateway/run.py"})
+        time.sleep(0.4)
         return {
             "final_response": "done",
             "messages": [],
@@ -1111,6 +1172,71 @@ async def test_task_tracker_falls_back_when_final_completed_edit_fails(monkeypat
     assert any("**Status:** Running" in call["content"] for call in adapter.sent)
     assert any("**Status:** Completed" in call["content"] for call in adapter.edits)
     assert any("**Status:** Completed" in call["content"] for call in adapter.sent[1:])
+
+
+@pytest.mark.asyncio
+async def test_task_tracker_final_completed_panel_is_flushed_before_progress_task_cancel(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        TransactionPanelAgent,
+        session_id="sess-task-tracker-explicit-final-flush",
+        adapter_cls=CancellingTaskDropsFinalAdapter,
+        config_data={
+            "display": {
+                "tool_progress": "all",
+                "task_tracker": {"enabled": True, "mode": "text", "max_operations": 8},
+            },
+        },
+    )
+
+    assert result["final_response"] == "done"
+    assert adapter.dropped_completed_updates
+    assert adapter.visible_completed_updates
+    assert "**Status:** Completed" in adapter.visible_completed_updates[-1]
+
+
+@pytest.mark.asyncio
+async def test_task_tracker_final_flush_ignores_stale_running_update_ack(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        TransactionPanelAgent,
+        session_id="sess-task-tracker-ignore-stale-running-ack",
+        adapter_cls=SlowInFlightRunningUpdateAdapter,
+        config_data={
+            "display": {
+                "tool_progress": "all",
+                "task_tracker": {"enabled": True, "mode": "text", "max_operations": 8},
+            },
+        },
+    )
+
+    assert result["final_response"] == "done"
+    assert adapter.delayed_running_send
+    assert adapter.visible_completed_updates
+    assert "**Status:** Completed" in adapter.visible_completed_updates[-1]
+
+
+@pytest.mark.asyncio
+async def test_task_tracker_final_flush_bypasses_progress_edit_throttle(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        SingleProgressFastReturnAgent,
+        session_id="sess-task-tracker-final-flush-throttle",
+        adapter_cls=CancellingTaskDropsFinalAdapter,
+        config_data={
+            "display": {
+                "tool_progress": "all",
+                "task_tracker": {"enabled": True, "mode": "text", "max_operations": 8},
+            },
+        },
+    )
+
+    assert result["final_response"] == "done"
+    assert adapter.visible_completed_updates
+    assert "**Status:** Completed" in adapter.visible_completed_updates[-1]
 
 
 @pytest.mark.asyncio
