@@ -59,6 +59,22 @@ class ProgressCaptureAdapter(BasePlatformAdapter):
         return {"id": chat_id}
 
 
+class FinalProgressEditFailureAdapter(ProgressCaptureAdapter):
+    """Adapter that rejects the final Completed task-tracker edit."""
+
+    async def edit_message(self, chat_id, message_id, content) -> SendResult:
+        self.edits.append(
+            {
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "content": content,
+            }
+        )
+        if "**Status:** Completed" in content:
+            return SendResult(success=False, error="update failed")
+        return SendResult(success=True, message_id=message_id)
+
+
 class FakeAgent:
     def __init__(self, **kwargs):
         self.tool_progress_callback = kwargs.get("tool_progress_callback")
@@ -576,6 +592,7 @@ async def _run_with_agent(
     chat_id="-1001",
     chat_type="group",
     thread_id="17585",
+    adapter_cls=ProgressCaptureAdapter,
 ):
     if config_data:
         import yaml
@@ -590,7 +607,7 @@ async def _run_with_agent(
     fake_run_agent.AIAgent = agent_cls
     monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
 
-    adapter = ProgressCaptureAdapter(platform=platform)
+    adapter = adapter_cls(platform=platform)
     runner = _make_runner(adapter)
     gateway_run = importlib.import_module("gateway.run")
     if config_data and "streaming" in config_data:
@@ -1072,6 +1089,28 @@ async def test_task_tracker_panel_replaces_raw_tool_progress_when_enabled(monkey
     assert "search_files" in all_panels
     assert "Completed" in all_panels
     assert '📖 read_file: "gateway/run.py"' not in all_panels
+
+
+@pytest.mark.asyncio
+async def test_task_tracker_falls_back_when_final_completed_edit_fails(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        TransactionPanelAgent,
+        session_id="sess-task-tracker-final-edit-fallback",
+        adapter_cls=FinalProgressEditFailureAdapter,
+        config_data={
+            "display": {
+                "tool_progress": "all",
+                "task_tracker": {"enabled": True, "mode": "text", "max_operations": 8},
+            },
+        },
+    )
+
+    assert result["final_response"] == "done"
+    assert any("**Status:** Running" in call["content"] for call in adapter.sent)
+    assert any("**Status:** Completed" in call["content"] for call in adapter.edits)
+    assert any("**Status:** Completed" in call["content"] for call in adapter.sent[1:])
 
 
 @pytest.mark.asyncio
