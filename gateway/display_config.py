@@ -35,6 +35,7 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     "show_reasoning": False,
     "tool_preview_length": 0,
     "streaming": None,  # None = follow top-level streaming config
+    "rich_result_weather": "auto",  # off | auto | text | card
 }
 
 # ---------------------------------------------------------------------------
@@ -50,6 +51,7 @@ _TIER_HIGH = {
     "show_reasoning": False,
     "tool_preview_length": 40,
     "streaming": None,  # follow global
+    "rich_result_weather": "auto",
 }
 
 _TIER_MEDIUM = {
@@ -57,6 +59,7 @@ _TIER_MEDIUM = {
     "show_reasoning": False,
     "tool_preview_length": 40,
     "streaming": None,
+    "rich_result_weather": "auto",
 }
 
 _TIER_LOW = {
@@ -82,7 +85,7 @@ _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
     "slack":           _TIER_MEDIUM,
     "mattermost":      _TIER_MEDIUM,
     "matrix":          _TIER_MEDIUM,
-    "feishu":          _TIER_MEDIUM,
+    "feishu":          {**_TIER_MEDIUM, "rich_result_weather": "card"},
 
     # Tier 3 — no edit support, progress messages are permanent
     "signal":          _TIER_LOW,
@@ -191,4 +194,13 @@ def _normalise(setting: str, value: Any) -> Any:
             return int(value)
         except (TypeError, ValueError):
             return 0
+    if setting == "rich_result_weather":
+        if value is False:
+            return "off"
+        if value is True:
+            return "auto"
+        normalized = str(value).strip().lower()
+        if normalized in {"off", "auto", "text", "card"}:
+            return normalized
+        return "auto"
     return value

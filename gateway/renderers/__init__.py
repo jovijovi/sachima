@@ -1,0 +1,1 @@
+"""Gateway rich-result renderers."""
