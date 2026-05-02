@@ -35,7 +35,10 @@ def _marked(payload):
     return f"fallback text\n{RICH_RESULT_BEGIN}\n{json.dumps(payload, ensure_ascii=False)}\n{RICH_RESULT_END}\nvisible tail"
 
 
-def _trusted_tool_messages(*contents):
+def _trusted_tool_messages(
+    *contents,
+    command="python3 /home/ubuntu/workspace/hermes/skills/productivity/weather-query/scripts/weather_query.py --location 'Chengdu, Sichuan, China' --period today --format hermes-json",
+):
     messages = []
     for idx, content in enumerate(contents, 1):
         call_id = f"call-weather-{idx}"
@@ -47,11 +50,7 @@ def _trusted_tool_messages(*contents):
                         "id": call_id,
                         "function": {
                             "name": "terminal",
-                            "arguments": json.dumps(
-                                {
-                                    "command": "python3 /home/ubuntu/workspace/hermes/skills/productivity/weather-query/scripts/weather_query.py --location 'Chengdu, Sichuan, China' --period today --format hermes-json"
-                                }
-                            ),
+                            "arguments": json.dumps({"command": command}),
                         },
                     }
                 ],
@@ -85,6 +84,19 @@ def test_extracts_weather_result_from_terminal_json_wrapped_output():
 
     assert [r.type for r in results] == ["weather.v1"]
     assert results[0].payload["summary"] == "包装里的天气"
+
+
+def test_extracts_weather_result_from_direct_helper_without_format_when_tool_output_has_marker():
+    payload = _weather_payload(summary="自动补齐后的天气")
+    messages = _trusted_tool_messages(
+        _marked(payload),
+        command="python3 /home/ubuntu/workspace/hermes/skills/productivity/weather-query/scripts/weather_query.py --location Chengdu --period today",
+    )
+
+    results = extract_rich_results_from_messages(messages)
+
+    assert [r.type for r in results] == ["weather.v1"]
+    assert results[0].payload["summary"] == "自动补齐后的天气"
 
 
 def test_extract_rich_results_from_messages_ignores_untrusted_markers():
