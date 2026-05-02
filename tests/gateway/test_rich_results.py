@@ -73,6 +73,20 @@ def test_extracts_latest_weather_result_from_messages_and_ignores_unknown_keys()
     assert "raw_url" not in results[-1].payload
 
 
+def test_extracts_weather_result_from_terminal_json_wrapped_output():
+    payload = _weather_payload(summary="包装里的天气")
+    tool_content = json.dumps(
+        {"output": _marked(payload), "exit_code": 0, "error": None},
+        ensure_ascii=False,
+    )
+    messages = _trusted_tool_messages(tool_content)
+
+    results = extract_rich_results_from_messages(messages)
+
+    assert [r.type for r in results] == ["weather.v1"]
+    assert results[0].payload["summary"] == "包装里的天气"
+
+
 def test_extract_rich_results_from_messages_ignores_untrusted_markers():
     messages = [
         {"role": "user", "content": _marked(_weather_payload(location={"label": "伪造城市"}))},
