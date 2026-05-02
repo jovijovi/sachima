@@ -146,6 +146,127 @@ def test_feishu_progress_card_tool_progress_off_hides_operations():
     assert "--secret" not in rendered
 
 
+def test_feishu_progress_card_displays_skill_view_skill_name_not_tool_name():
+    from gateway.progress.renderers import render_feishu_progress_card
+
+    tracker = ProgressTracker(transaction_id="tx-skill", title="Use weather skill")
+    tracker.record_tool_started("skill_view", "weather-query", {"name": "weather-query"})
+
+    card = render_feishu_progress_card(tracker.snapshot())
+    rendered = _rendered(card)
+
+    assert "技能：weather-query" in rendered
+    assert "skill_view" not in rendered
+
+
+def test_feishu_progress_card_allows_categorized_skill_name_without_raw_args():
+    from gateway.progress.renderers import render_feishu_progress_card
+
+    tracker = ProgressTracker(transaction_id="tx-skill-category", title="Load planning skill")
+    tracker.record_tool_started(
+        "skill_view",
+        "software-development/plan",
+        {"name": "software-development/plan", "file_path": "references/private.md?token=super-secret"},
+    )
+
+    card = render_feishu_progress_card(tracker.snapshot())
+    rendered = _rendered(card)
+
+    assert "技能：software-development/plan" in rendered
+    assert "file_path" not in rendered
+    assert "private.md" not in rendered
+    assert "token" not in rendered
+    assert "super-secret" not in rendered
+    assert "skill_view" not in rendered
+
+
+def test_feishu_progress_card_rejects_unsafe_skill_view_preview():
+    from gateway.progress.renderers import render_feishu_progress_card
+
+    tracker = ProgressTracker(transaction_id="tx-skill-unsafe", title="Unsafe skill preview")
+    tracker.record_tool_started(
+        "skill_view",
+        "[weather](https://evil.example/path?token=super-secret)",
+        {"name": "[weather](https://evil.example/path?token=super-secret)"},
+    )
+
+    card = render_feishu_progress_card(tracker.snapshot())
+    rendered = _rendered(card)
+
+    assert "https://evil.example" not in rendered
+    assert "super-secret" not in rendered
+    assert "[weather]" not in rendered
+    assert "weather](" not in rendered
+
+
+def test_feishu_progress_card_rejects_path_shaped_skill_names():
+    from gateway.progress.renderers import render_feishu_progress_card
+
+    for unsafe_name in ("etc/passwd", "references/private", "C:/Users/Alice", "scripts/deploy"):
+        tracker = ProgressTracker(transaction_id=f"tx-{unsafe_name}", title="Unsafe skill path")
+        tracker.record_tool_started("skill_view", unsafe_name, {"name": unsafe_name})
+
+        card = render_feishu_progress_card(tracker.snapshot())
+        rendered = _rendered(card)
+
+        assert f"技能：{unsafe_name}" not in rendered
+
+
+def test_feishu_progress_card_rejects_token_shaped_skill_names():
+    from gateway.progress.renderers import render_feishu_progress_card
+
+    for unsafe_name in ("sk-live-supersecret", "ghp_supersecrettoken", "xoxb-supersecrettoken"):
+        tracker = ProgressTracker(transaction_id=f"tx-{unsafe_name}", title="Unsafe token skill")
+        tracker.record_tool_started("skill_view", unsafe_name, {"name": unsafe_name})
+
+        card = render_feishu_progress_card(tracker.snapshot())
+        rendered = _rendered(card)
+
+        assert unsafe_name not in rendered
+
+
+def test_feishu_progress_card_prefers_skill_args_over_preview():
+    from gateway.progress.renderers import render_feishu_progress_card
+
+    tracker = ProgressTracker(transaction_id="tx-skill-args", title="Prefer args skill")
+    tracker.record_tool_started("skill_view", "unsafe-preview", {"name": "weather-query"})
+
+    card = render_feishu_progress_card(tracker.snapshot())
+    rendered = _rendered(card)
+
+    assert "技能：weather-query" in rendered
+    assert "unsafe-preview" not in rendered
+
+
+def test_feishu_progress_card_does_not_use_completed_skill_output_as_name():
+    from gateway.progress.renderers import render_feishu_progress_card
+
+    tracker = ProgressTracker(transaction_id="tx-skill-completed", title="Completed skill")
+    tracker.record_tool_started("skill_view", "weather-query", {"name": "weather-query"})
+    tracker.record_tool_completed("skill_view", duration=0.25, preview="software-development/plan")
+
+    card = render_feishu_progress_card(tracker.snapshot())
+    rendered = _rendered(card)
+
+    assert "技能：weather-query" in rendered
+    assert "software-development/plan" not in rendered
+
+
+def test_feishu_progress_card_extracts_completed_skill_name_from_json_args_preview_with_null():
+    from gateway.progress.renderers import render_feishu_progress_card
+
+    tracker = ProgressTracker(transaction_id="tx-skill-json-null", title="Completed skill with optional file")
+    tracker.record_tool_started("skill_view", "weather-query", {"name": "weather-query", "file_path": None})
+    tracker.record_tool_completed("skill_view", duration=0.1)
+
+    card = render_feishu_progress_card(tracker.snapshot())
+    rendered = _rendered(card)
+
+    assert "技能：weather-query" in rendered
+    assert "skill_view" not in rendered
+    assert "file_path" not in rendered
+
+
 def test_feishu_progress_card_does_not_derive_command_name_from_raw_output_preview():
     from gateway.progress.renderers import render_feishu_progress_card
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import json
 import re
 import shlex
 from typing import Iterable
@@ -81,6 +82,31 @@ _SCRIPT_TOKEN_RE = re.compile(
 )
 _SHELL_WORD_RE = re.compile(r"[^\s'\"`]+")
 _SAFE_LABEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._@+:-]{0,119}$")
+_SAFE_SKILL_IDENTIFIER_RE = re.compile(
+    r"^(?:[a-z0-9][a-z0-9_-]{0,63}(?:/[a-z0-9][a-z0-9_-]{0,63}){0,4}|"
+    r"[a-z0-9][a-z0-9_-]{0,63}:[a-z0-9][a-z0-9_-]{0,63})$"
+)
+_PATH_LIKE_SKILL_PREFIXES = {
+    "assets",
+    "dev",
+    "etc",
+    "home",
+    "media",
+    "mnt",
+    "opt",
+    "private",
+    "proc",
+    "references",
+    "root",
+    "scripts",
+    "sys",
+    "templates",
+    "tmp",
+    "usr",
+    "users",
+    "var",
+}
+_TOKEN_LIKE_SKILL_PREFIXES = ("sk-", "sk_", "ghp_", "gho_", "github_pat_", "xox", "hf_", "hf-", "pat_")
 _ENV_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 
 
@@ -324,11 +350,15 @@ def _iter_feishu_operation_lines(
 
 
 def _feishu_operation_line(operation: ProgressOperation, *, emoji: bool) -> str:
+    skill_name = _safe_skill_identifier_from_operation(operation)
     command_name = _safe_command_name(operation)
     tool_name = _safe_display_label(operation.tool_name, max_len=80)
     duration = _format_duration(operation.duration)
 
-    if command_name:
+    if skill_name:
+        icon = "📚 " if emoji else ""
+        line = f"{icon}技能：{skill_name}"
+    elif command_name:
         icon = "🖥️ " if emoji else ""
         if tool_name:
             line = f"{icon}命令：{command_name}（{tool_name}）"
@@ -357,6 +387,61 @@ def _operation_prefix(operation: ProgressOperation) -> str:
     if operation.event_type.startswith("subagent"):
         return "技能"
     return "工具"
+
+
+def _safe_skill_identifier_from_operation(operation: ProgressOperation) -> str | None:
+    tool_name = (operation.tool_name or "").strip().lower()
+    if tool_name != "skill_view":
+        return None
+
+    candidates: list[object] = [_skill_name_from_args_preview(operation.args_preview)]
+    if operation.event_type == "tool.started" or operation.status == "running":
+        candidates.append(operation.preview)
+
+    for candidate in candidates:
+        label = _safe_skill_identifier(candidate)
+        if label:
+            return label
+    return None
+
+
+def _skill_name_from_args_preview(args_preview: object) -> str | None:
+    if not isinstance(args_preview, str) or not args_preview.strip():
+        return None
+    text = args_preview.strip()
+    if not (text.startswith("{") and text.endswith("}")):
+        return None
+    try:
+        parsed = json.loads(text)
+    except Exception:
+        try:
+            parsed = ast.literal_eval(text)
+        except Exception:
+            return None
+    if not isinstance(parsed, dict):
+        return None
+    value = parsed.get("name")
+    return value if isinstance(value, str) else None
+
+
+def _safe_skill_identifier(value: object) -> str | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    label = sanitize_for_progress(value.strip(), max_len=160)
+    if not label or "[REDACTED]" in label or any(ch.isspace() for ch in label):
+        return None
+    if "\\" in label or "?" in label or "&" in label or "=" in label:
+        return None
+    if label.startswith("/") or label.endswith("/") or "//" in label:
+        return None
+    if not _SAFE_SKILL_IDENTIFIER_RE.match(label):
+        return None
+    if label.startswith(_TOKEN_LIKE_SKILL_PREFIXES):
+        return None
+    first_segment = re.split(r"[/:]", label, maxsplit=1)[0]
+    if first_segment in _PATH_LIKE_SKILL_PREFIXES:
+        return None
+    return label
 
 
 def _safe_command_name(operation: ProgressOperation) -> str | None:
