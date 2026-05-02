@@ -123,7 +123,7 @@ def render_text_panel(
     if mode not in {"off", "new", "all", "verbose"}:
         mode = "all"
 
-    title = sanitize_for_progress(snapshot.title or "Task", max_len=160)
+    title = sanitize_for_progress(snapshot.title or "Task", max_len=320)
     status = snapshot.status or "running"
     status_icon = _STATUS_ICONS.get(status, "🔄")
     status_label = _STATUS_LABELS.get(status, status.title())
@@ -170,7 +170,7 @@ def render_feishu_progress_card(
 
     mode = _normalize_progress_mode(tool_progress_mode)
     status = snapshot.status or "running"
-    title = sanitize_for_progress(snapshot.title or "Task", max_len=120)
+    title = sanitize_for_progress(snapshot.title or "Task", max_len=320)
     status_label = sanitize_for_progress(_FEISHU_STATUS_LABELS.get(status, status.title()), max_len=80)
 
     details = [

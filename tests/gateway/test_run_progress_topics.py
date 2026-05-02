@@ -675,6 +675,7 @@ async def _run_with_agent(
     *,
     session_id,
     pending_text=None,
+    message="hello",
     config_data=None,
     platform=Platform.TELEGRAM,
     chat_id="-1001",
@@ -720,7 +721,7 @@ async def _run_with_agent(
         )
 
     result = await runner._run_agent(
-        message="hello",
+        message=message,
         context_prompt="",
         history=[],
         source=source,
@@ -1236,6 +1237,61 @@ async def test_non_feishu_feishu_card_mode_falls_back_to_text_progress(monkeypat
     assert "Transaction" in all_panels
     assert "Completed" in all_panels
     assert "read_file" in all_panels
+
+
+@pytest.mark.asyncio
+async def test_task_tracker_uses_intent_summary_instead_of_raw_user_text(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        TransactionPanelAgent,
+        message="再试一次。今晚下雨吗？",
+        session_id="sess-task-tracker-intent-title",
+        config_data={
+            "display": {
+                "tool_progress": "all",
+                "task_tracker": {"enabled": True, "mode": "text", "max_operations": 8},
+            },
+        },
+    )
+
+    assert result["final_response"] == "done"
+    all_panels = "\n".join([call["content"] for call in adapter.sent] + [call["content"] for call in adapter.edits])
+    assert "再试一次。今晚下雨吗？" not in all_panels
+    assert "今晚" in all_panels
+    assert "降雨" in all_panels or "下雨" in all_panels
+
+
+@pytest.mark.asyncio
+async def test_feishu_task_tracker_card_uses_semantic_intent_title(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        TransactionPanelAgent,
+        message="事务摘要的文字长度不要限制过短，尤其是多语言场景中。核心目标是把事情说清楚，语义密度尽可能大，信息损失小，信息熵增小。",
+        session_id="sess-feishu-intent-title",
+        platform=Platform.FEISHU,
+        chat_id="oc_1",
+        chat_type="dm",
+        thread_id=None,
+        adapter_cls=FeishuProgressCardCaptureAdapter,
+        config_data={
+            "display": {
+                "tool_progress": "all",
+                "task_tracker": {"enabled": True, "mode": "feishu_card", "max_operations": 8},
+            },
+        },
+    )
+
+    assert result["final_response"] == "done"
+    final_card = adapter.cards_patched[-1]["card"]
+    rendered = json.dumps(final_card, ensure_ascii=False)
+    assert "调整事务摘要策略" in rendered
+    assert "核心目标是把事情说清楚" not in rendered
+    assert "多语言" in rendered
+    assert "语义密度" in rendered
+    assert "信息损失" in rendered
+    assert "熵增" in rendered
 
 
 @pytest.mark.asyncio

@@ -1,5 +1,7 @@
 """Tests for gateway transaction progress text rendering."""
 
+import json
+
 from gateway.progress.tracker import ProgressTracker
 
 
@@ -137,3 +139,22 @@ def test_text_renderer_preserves_ipv6_dashboard_host_brackets():
 
     assert "Dashboard" in text
     assert "http://[::1]:9119/base/progress" in text
+
+
+def test_feishu_progress_card_preserves_dense_multilingual_task_title():
+    from gateway.progress.renderers import render_feishu_progress_card
+
+    title = (
+        "调整事务摘要策略：避免过短限制，在多语言场景中优先保证清晰表达；保留用户提出的动作、对象、范围、"
+        "关键约束和预期产物；支持中文、English、日本語、한국어 等混合输入；在不引入额外推断的前提下提高语义密度，"
+        "并明确控制信息损失与信息熵增"
+    )
+    tracker = ProgressTracker(transaction_id="tx-1", title=title)
+
+    card = render_feishu_progress_card(tracker.snapshot())
+    rendered = json.dumps(card, ensure_ascii=False)
+
+    assert "多语言" in rendered
+    assert "语义密度" in rendered
+    assert "信息损失" in rendered
+    assert "信息熵增" in rendered
