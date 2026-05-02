@@ -4635,6 +4635,14 @@ class GatewayRunner:
             if agent_result.get("session_id") and agent_result["session_id"] != session_entry.session_id:
                 session_entry.session_id = agent_result["session_id"]
 
+            response = await self._maybe_deliver_weather_rich_result(
+                event=event,
+                source=source,
+                response=response,
+                agent_messages=agent_messages,
+                agent_result=agent_result,
+            )
+
             # Prepend reasoning/thinking if display is enabled (per-platform)
             try:
                 from gateway.display_config import resolve_display_setting as _rds
@@ -4890,6 +4898,68 @@ class GatewayRunner:
             # Restore session context variables to their pre-handler state
             self._clear_session_env(_session_env_tokens)
     
+    async def _maybe_deliver_weather_rich_result(
+        self,
+        *,
+        event: MessageEvent,
+        source: SessionSource,
+        response: str,
+        agent_messages: list,
+        agent_result: dict,
+    ) -> str:
+        """Send a weather rich result card when the current platform supports it.
+
+        Returns the text fallback with any rich-result marker blocks stripped.
+        When a Feishu card is sent successfully, marks ``agent_result`` as
+        already_sent so the normal text-send path does not duplicate it.
+        """
+
+        adapter = self.adapters.get(source.platform) if source and source.platform else None
+        if not adapter:
+            try:
+                from gateway.rich_results import strip_rich_result_blocks
+
+                return strip_rich_result_blocks(response)
+            except Exception:
+                return response
+        try:
+            from gateway.display_config import resolve_display_setting
+            from gateway.rich_results import maybe_deliver_weather_result
+
+            mode = resolve_display_setting(
+                _load_gateway_config(),
+                _platform_config_key(source.platform),
+                "rich_result_weather",
+                "auto",
+            )
+            history_offset = agent_result.get("history_offset", 0)
+            try:
+                history_offset = int(history_offset)
+            except Exception:
+                history_offset = 0
+            current_messages = agent_messages[history_offset:] if history_offset > 0 else agent_messages
+            delivery = await maybe_deliver_weather_result(
+                adapter=adapter,
+                platform=source.platform,
+                chat_id=source.chat_id,
+                response_text=response,
+                messages=current_messages,
+                mode=str(mode or "auto"),
+                metadata=getattr(event, "metadata", None),
+                reply_to=getattr(event, "message_id", None),
+            )
+            if delivery.card_sent:
+                agent_result["already_sent"] = True
+            return delivery.response_text
+        except Exception as exc:
+            logger.debug("Weather rich-result delivery skipped: %s", exc)
+            try:
+                from gateway.rich_results import strip_rich_result_blocks
+
+                return strip_rich_result_blocks(response)
+            except Exception:
+                return response
+
     def _format_session_info(self) -> str:
         """Resolve current model config and return a formatted info block.
 
