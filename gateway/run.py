@@ -9507,8 +9507,9 @@ class GatewayRunner:
         if progress_queue and task_tracker_enabled:
             try:
                 from gateway.progress.store import build_progress_event_store
+                from gateway.progress.task_titles import summarize_task_intent
                 from gateway.progress.tracker import ProgressTracker
-                _tracker_title = (message or "Task").strip().splitlines()[0][:120] or "Task"
+                _tracker_title = summarize_task_intent(message)
                 progress_tracker = ProgressTracker(
                     transaction_id=session_id or session_key or "gateway-task",
                     title=_tracker_title,
