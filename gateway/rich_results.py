@@ -72,7 +72,30 @@ def extract_rich_results_from_messages(messages: Iterable[dict[str, Any]] | None
             continue
         content = msg.get("content")
         if isinstance(content, str):
-            results.extend(extract_rich_results_from_text(content))
+            results.extend(_extract_rich_results_from_tool_content(content))
+    return results
+
+
+def _extract_rich_results_from_tool_content(content: str) -> list[RichResult]:
+    """Extract rich results from direct tool text and common JSON wrappers.
+
+    Hermes terminal tool results are persisted as JSON strings such as
+    ``{"output": "...HERMES_RICH_RESULT_JSON_BEGIN..."}``.  Scan the direct
+    content first for older/plain tools, then decode the wrapper and scan stdout
+    style text fields.
+    """
+
+    results = extract_rich_results_from_text(content)
+    try:
+        wrapped = json.loads(content)
+    except Exception:
+        return results
+    if not isinstance(wrapped, dict):
+        return results
+    for key in ("output", "stdout", "result", "content", "text", "message"):
+        value = wrapped.get(key)
+        if isinstance(value, str) and RICH_RESULT_BEGIN in value:
+            results.extend(extract_rich_results_from_text(value))
     return results
 
 
