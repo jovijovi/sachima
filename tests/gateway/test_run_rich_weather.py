@@ -54,7 +54,9 @@ def _marker():
     return f"{RICH_RESULT_BEGIN}\n{json.dumps(_payload(), ensure_ascii=False)}\n{RICH_RESULT_END}"
 
 
-def _trusted_tool_messages():
+def _trusted_tool_messages(
+    command="python3 /home/ubuntu/workspace/hermes/skills/productivity/weather-query/scripts/weather_query.py --location 'Chengdu, Sichuan, China' --period today --format hermes-json",
+):
     return [
         {
             "role": "assistant",
@@ -63,11 +65,7 @@ def _trusted_tool_messages():
                     "id": "call-weather-1",
                     "function": {
                         "name": "terminal",
-                        "arguments": json.dumps(
-                            {
-                                "command": "python3 /home/ubuntu/workspace/hermes/skills/productivity/weather-query/scripts/weather_query.py --location 'Chengdu, Sichuan, China' --period today --format hermes-json"
-                            }
-                        ),
+                        "arguments": json.dumps({"command": command}),
                     },
                 }
             ],
@@ -113,6 +111,29 @@ async def test_gateway_weather_rich_result_marks_feishu_card_as_already_sent(mon
     assert agent_result["already_sent"] is True
     assert len(adapter.cards) == 1
     assert adapter.cards[0]["metadata"] == {"thread_id": "topic-1"}
+
+
+@pytest.mark.asyncio
+async def test_gateway_weather_rich_result_sends_card_for_direct_helper_without_format(monkeypatch):
+    import gateway.run as gateway_run
+
+    monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {"display": {"rich_result_weather": "auto"}})
+    adapter = WeatherCardAdapter(success=True)
+    runner = _runner(adapter)
+    agent_result = {"already_sent": False}
+    command = "python3 /home/ubuntu/workspace/hermes/skills/productivity/weather-query/scripts/weather_query.py --location Chengdu --period today"
+
+    response = await runner._maybe_deliver_weather_rich_result(
+        event=_event(),
+        source=_source(),
+        response="final answer\n" + _marker(),
+        agent_messages=_trusted_tool_messages(command=command),
+        agent_result=agent_result,
+    )
+
+    assert response == "final answer"
+    assert agent_result["already_sent"] is True
+    assert len(adapter.cards) == 1
 
 
 @pytest.mark.asyncio

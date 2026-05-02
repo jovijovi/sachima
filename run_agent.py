@@ -31,6 +31,7 @@ logger = logging.getLogger(__name__)
 import os
 import random
 import re
+import shlex
 import sys
 import tempfile
 import time
@@ -274,6 +275,9 @@ _DESTRUCTIVE_PATTERNS = re.compile(
 )
 # Output redirects that overwrite files (> but not >>)
 _REDIRECT_OVERWRITE = re.compile(r'[^>]>[^>]|^>[^>]')
+_WEATHER_HELPER_PATH = "/home/ubuntu/workspace/hermes/skills/productivity/weather-query/scripts/weather_query.py"
+_FEISHU_RICH_PLATFORMS = {"feishu", "lark"}
+_WEATHER_RICH_SHELL_OPERATOR_RE = re.compile(r"[;&|<>`$#]|[\x00-\x1f\x7f]")
 
 
 def _is_destructive_command(cmd: str) -> bool:
@@ -285,6 +289,52 @@ def _is_destructive_command(cmd: str) -> bool:
     if _REDIRECT_OVERWRITE.search(cmd):
         return True
     return False
+
+
+def _normalize_weather_rich_terminal_args(platform: str | None, function_name: str, function_args: dict) -> dict:
+    """Force Feishu/Lark direct weather helper terminal calls to emit rich JSON."""
+    if function_name != "terminal":
+        return function_args
+    if str(platform or "").strip().lower() not in _FEISHU_RICH_PLATFORMS:
+        return function_args
+    if not isinstance(function_args, dict):
+        return function_args
+
+    command = function_args.get("command")
+    if not isinstance(command, str) or not command.strip():
+        return function_args
+    if _WEATHER_RICH_SHELL_OPERATOR_RE.search(command):
+        return function_args
+
+    try:
+        parts = shlex.split(command)
+    except ValueError:
+        return function_args
+
+    if len(parts) < 2 or parts[0] not in {"python", "python3"} or parts[1] != _WEATHER_HELPER_PATH:
+        return function_args
+
+    normalized_parts: list[str] = []
+    idx = 0
+    while idx < len(parts):
+        part = parts[idx]
+        if part == "--format":
+            idx += 2 if idx + 1 < len(parts) else 1
+            continue
+        if part.startswith("--format="):
+            idx += 1
+            continue
+        normalized_parts.append(part)
+        idx += 1
+    normalized_parts.extend(["--format", "hermes-json"])
+
+    normalized_command = shlex.join(normalized_parts)
+    if normalized_command == command:
+        return function_args
+
+    normalized_args = function_args.copy()
+    normalized_args["command"] = normalized_command
+    return normalized_args
 
 
 def _should_parallelize_tool_batch(tool_calls) -> bool:
@@ -7813,6 +7863,9 @@ class AIAgent:
                 function_args = {}
             if not isinstance(function_args, dict):
                 function_args = {}
+            function_args = _normalize_weather_rich_terminal_args(
+                self.platform, function_name, function_args
+            )
 
             # Checkpoint for file-mutating tools
             if function_name in ("write_file", "patch") and self._checkpoint_mgr.enabled:
@@ -8108,6 +8161,9 @@ class AIAgent:
                 function_args = {}
             if not isinstance(function_args, dict):
                 function_args = {}
+            function_args = _normalize_weather_rich_terminal_args(
+                self.platform, function_name, function_args
+            )
 
             # Check plugin hooks for a block directive before executing.
             _block_msg: Optional[str] = None

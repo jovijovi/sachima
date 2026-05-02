@@ -141,16 +141,13 @@ def _is_direct_weather_helper_command(command: Any) -> bool:
         parts = shlex.split(command)
     except Exception:
         return False
-    if len(parts) < 3:
+    if len(parts) < 2:
         return False
     if parts[0] not in {"python", "python3"}:
         return False
     if parts[1] != _WEATHER_HELPER_PATH:
         return False
-    return "--format=hermes-json" in parts or any(
-        part == "--format" and idx + 1 < len(parts) and parts[idx + 1] == "hermes-json"
-        for idx, part in enumerate(parts)
-    )
+    return True
 
 
 def strip_rich_result_blocks(text: str | None) -> str:
