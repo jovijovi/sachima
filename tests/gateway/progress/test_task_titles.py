@@ -36,12 +36,32 @@ def test_optimization_request_is_rephrased_as_task_intent():
     assert "1、" not in title
 
 
+def test_generic_task_optimization_point_is_not_exact_raw_text():
+    message = "这个任务还有优化点"
+
+    title = summarize_task_intent(message)
+
+    assert title == "梳理任务优化点"
+    assert title != message
+
+
+def test_generic_task_optimization_point_preserves_specific_content():
+    message = "这个任务的优化点是减少日志噪音"
+
+    title = summarize_task_intent(message)
+
+    assert title == "梳理任务优化点：减少日志噪音"
+    assert title != message
+    assert "减少日志噪音" in title
+
+
 def test_english_review_request_is_preserved_without_semantic_loss():
     title = summarize_task_intent("Please review PR #12 for auth regressions without changing code")
 
-    assert "Review PR #12" in title or "review PR #12" in title
+    assert "PR #12" in title
     assert "auth regressions" in title
     assert "without changing code" in title
+    assert not title.startswith("Handle request:")
 
 
 def test_title_redacts_secrets_and_preserves_safe_context():
@@ -107,6 +127,15 @@ def test_chinese_weather_detection_does_not_match_non_weather_yu_words():
     assert "降雨" not in title
 
 
+def test_chinese_weather_detection_does_not_match_weather_card_product_terms():
+    title = summarize_task_intent("优化事务卡显示，不要修改天气卡")
+
+    assert title == "改进事务卡显示；约束：不要修改天气卡"
+    assert "天气卡" in title
+    assert "查询" not in title
+    assert "指定时段" not in title
+
+
 def test_chinese_weather_location_after_time_is_preserved():
     title = summarize_task_intent("明天上海会下雨吗？")
 
@@ -143,9 +172,133 @@ def test_generic_chinese_request_without_noise_is_not_raw_text():
     title = summarize_task_intent(message)
 
     assert title != message
-    assert "检查" in title
+    assert title != f"处理请求：{message}"
     assert "数据库连接超时" in title
     assert "不要修改账单代码" in title
+
+
+def test_generic_chinese_question_does_not_use_raw_with_prefix_fallback():
+    message = "需要更新代码吗？还是怎么着？"
+
+    title = summarize_task_intent(message)
+
+    assert title == "评估是否需要更新代码并给出处理建议"
+    assert title != message
+    assert title != f"处理请求：{message}"
+    assert "还是怎么着" not in title
+
+
+def test_generic_chinese_question_preserves_negative_constraint():
+    message = "需要更新代码吗？不要修改账单代码"
+
+    title = summarize_task_intent(message)
+
+    assert title == "评估是否需要更新代码并给出处理建议；约束：不要修改账单代码"
+    assert title != message
+    assert title != f"处理请求：{message}"
+    assert "不要修改账单代码" in title
+
+
+def test_generic_english_question_preserves_negative_constraint():
+    message = "Do we need to update code? Do not touch billing code"
+
+    title = summarize_task_intent(message)
+
+    assert title == "Assess whether code updates are needed; constraint: Do not touch billing code"
+    assert title != message
+    assert title != "Summarize user intent"
+    assert "Do not touch billing code" in title
+
+
+def test_generic_english_question_preserves_inline_without_constraint():
+    message = "Do we need to update code without changing billing code"
+
+    title = summarize_task_intent(message)
+
+    assert title == "Assess whether code updates are needed; constraint: without changing billing code"
+    assert title != message
+    assert title != "Summarize user intent"
+    assert "without changing billing code" in title
+
+
+def test_generic_english_modal_request_preserves_action_object_and_constraint():
+    message = "Can you fix the login bug without changing billing code?"
+
+    title = summarize_task_intent(message)
+
+    assert title == "Resolve the login bug; constraint: without changing billing code"
+    assert title != message
+    assert "login bug" in title
+    assert "without changing billing code" in title
+
+
+def test_generic_english_modal_multi_action_request_rewrites_modal_wrapper():
+    message = "Could you check the database timeout issue and add tests?"
+
+    title = summarize_task_intent(message)
+
+    assert title == "Inspect the database timeout issue; add tests"
+    assert title != message
+    assert "Could you" not in title
+    assert "database timeout issue" in title
+    assert "add tests" in title
+
+
+def test_non_latin_multilingual_request_never_returns_raw_text():
+    message = "Исправь ошибку без изменения биллинга"
+
+    title = summarize_task_intent(message)
+
+    assert title == "Summarize multilingual user intent"
+    assert title != message
+
+
+def test_simple_english_action_request_is_not_exact_raw_text():
+    message = "Fix bug"
+
+    title = summarize_task_intent(message)
+
+    assert title == "Resolve bug"
+    assert title != message
+
+
+def test_simple_chinese_action_request_is_not_exact_raw_text():
+    message = "检查数据库连接超时问题"
+
+    title = summarize_task_intent(message)
+
+    assert title == "排查数据库连接超时问题"
+    assert title != message
+
+
+def test_model_configuration_question_becomes_intent_summary():
+    message = "现在你在使用什么模型？思考强度是多少？"
+
+    title = summarize_task_intent(message)
+
+    assert title == "说明当前模型与思考强度配置"
+    assert title != message
+    assert title != f"处理请求：{message}"
+    assert "现在你在使用" not in title
+
+
+def test_bug_report_about_raw_task_field_becomes_fix_intent_summary():
+    message = (
+        "发现一个问题，你在事务信息卡中的“任务”字段还是显示了我发出的原文。"
+        "并没有完全遵守我之前的要求：“任务”字段中内容不是用户的原文，应该是用户意图的摘要。"
+        "事务摘要的文字长度不要限制过短，尤其是多语言场景中。"
+        "核心目标是把事情说清楚，语义密度尽可能大，信息损失小，信息熵增小。"
+    )
+
+    title = summarize_task_intent(message)
+
+    assert title.startswith("修复事务卡任务字段仍显示用户原文的问题")
+    assert "多语言" in title
+    assert "高语义密度" in title
+    assert "低信息损失" in title
+    assert "低信息熵增" in title
+    assert title != message
+    assert not title.startswith("处理请求：")
 
 
 def test_ok_noise_stripping_does_not_corrupt_okta_or_okr_names():
@@ -154,7 +307,7 @@ def test_ok_noise_stripping_does_not_corrupt_okta_or_okr_names():
 
     assert "Okta SSO" in okta_title
     assert okta_title != "Handle request: ta SSO login fails, investigate without changing billing code"
-    assert okta_title.startswith("Handle request: Okta SSO")
+    assert not okta_title.startswith("Handle request:")
     assert "OKR progress" in okr_title
     assert okr_title != "Handle request: R progress summary for Q2"
-    assert okr_title.startswith("Handle request: OKR progress")
+    assert not okr_title.startswith("Handle request:")

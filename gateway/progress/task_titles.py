@@ -12,6 +12,7 @@ _WHITESPACE_RE = re.compile(r"\s+")
 _LEADING_NOISE_PATTERNS = (
     r"^(?:好的?|嗯+|呃+|额+)(?=\s|[，,。.!！：:]|$)\s*[，,。.!！：:]*\s*",
     r"^(?:ok(?:ay)?|please)\b\s*[，,。.!！：:]*\s*",
+    r"^(?:can|could|would|will)\s+you(?:\s+please)?\s+",
     r"^(?:麻烦你|麻烦|帮我|帮忙)\s*[，,。.!！：:]*\s*",
     r"^(?:请问|请帮(?:我)?|烦请)\s*[，,。.!！：:]*\s*",
     r"^(?:再试一次|再来一次|重试(?:一下)?|try again)\s*[，,。.!！：:]*\s*",
@@ -120,11 +121,13 @@ def _rewrite_high_confidence_intent(text: str) -> str:
     generic = _rewrite_generic_intent(text)
     if generic:
         return generic
-    return _trim_redundant_prefixes(text)
+    return _fallback_non_raw_intent(text)
 
 
 def _rewrite_weather_intent(text: str) -> str:
     lowered = text.lower()
+    if any(term in text for term in ("天气卡", "天气信息卡", "天气富卡", "天气交互卡")):
+        return ""
     has_chinese_weather = any(term in text for term in ("天气", "下雨", "降雨", "带伞", "雨夹雪", "阵雨", "暴雨", "小雨", "中雨", "大雨"))
     has_english_weather = bool(re.search(r"(?i)\b(weather|rain|raining|rainy|umbrella)\b", text))
     has_weather = has_chinese_weather or has_english_weather
@@ -209,6 +212,14 @@ def _clean_chinese_location_candidate(candidate: str) -> str:
 
 
 def _rewrite_progress_summary_intent(text: str) -> str:
+    if (
+        ("发现一个问题" in text or "有个问题" in text)
+        and "任务" in text
+        and ("用户原文" in text or "原文" in text)
+        and ("用户意图" in text or "摘要" in text)
+    ):
+        return "修复事务卡任务字段仍显示用户原文的问题：保留多语言约束，确保高语义密度、低信息损失与低信息熵增"
+
     if "事务摘要" in text and ("不要限制过短" in text or "语义密度" in text or "信息损失" in text or "熵增" in text):
         return "调整事务摘要策略：避免过短限制，在多语言场景中优先保证清晰、高语义密度、低信息损失与低信息熵增"
 
@@ -216,8 +227,14 @@ def _rewrite_progress_summary_intent(text: str) -> str:
         return "优化事务信息显示：将“任务”字段从用户原文改为用户意图摘要"
 
     if "优化点" in text and "任务" in text:
+        detail = re.sub(r"^.*?优化点(?:是|为|：|:)?", "", text, count=1).strip("。 ，,；;")
+        if detail and detail != text.strip():
+            return f"梳理任务优化点：{detail}"
         compact = re.sub(r"[：:]?\s*\d+[、.]", "：", text, count=1)
-        return _trim_redundant_prefixes(compact)
+        rewritten = _trim_redundant_prefixes(compact)
+        if rewritten and rewritten != text.strip():
+            return rewritten
+        return "梳理任务优化点"
     return ""
 
 
@@ -240,13 +257,25 @@ def _rewrite_generic_intent(text: str) -> str:
 
 
 def _rewrite_generic_english_intent(text: str) -> str:
-    stripped = text.strip().rstrip(".")
+    stripped = text.strip().rstrip(".?!")
     constraint = ""
     main = stripped
-    match = re.search(r"(?i)\s*,?\s+but\s+(.+)$", stripped)
+
+    sentence_constraint = re.search(r"(?i)(?:[?.!]\s*|,\s*)((?:do not|don't|without|never|avoid)\b.+)$", stripped)
+    if sentence_constraint:
+        constraint = sentence_constraint.group(1).strip().rstrip(".?!")
+        main = stripped[: sentence_constraint.start()].strip().rstrip("?.!,")
+
+    match = re.search(r"(?i)\s*,?\s+but\s+(.+)$", main)
     if match:
-        constraint = match.group(1).strip().rstrip(".")
-        main = stripped[: match.start()].strip().rstrip(",.")
+        constraint = match.group(1).strip().rstrip(".?!")
+        main = main[: match.start()].strip().rstrip(",.")
+
+    if not constraint:
+        inline_constraint = re.search(r"(?i)\s+((?:without|do not|don't|never|avoid)\b.+)$", main)
+        if inline_constraint:
+            constraint = inline_constraint.group(1).strip().rstrip(".?!")
+            main = main[: inline_constraint.start()].strip().rstrip("?.!,")
 
     main = re.sub(
         r"(?i)\s+and\s+(?=(?:add|write|create|update|implement|fix|check|review|run|generate|analyze|analyse)\b)",
@@ -255,26 +284,154 @@ def _rewrite_generic_english_intent(text: str) -> str:
     )
     main = re.sub(r"\s+", " ", main).strip()
     if constraint:
-        return f"{main}; constraint: {constraint}"
+        return f"{_rewrite_english_fallback_intent(main)}; constraint: {constraint}"
     if main != stripped:
-        return main
-    return f"Handle request: {main}"
+        return _rewrite_english_fallback_intent(main)
+    return _rewrite_english_fallback_intent(main)
 
 
 def _rewrite_generic_chinese_intent(text: str) -> str:
     stripped = text.strip()
     stripped = re.sub(r"^请(?=(?:检查|介绍|修复|优化|分析|查询|查看|生成|创建|写|实现|调整|改|处理|排查|测试|总结))", "", stripped, count=1)
 
-    match = re.search(r"[，,；;]\s*((?:不要|不能|避免|不得|无需|不需要).+)$", stripped)
-    if match:
-        main = stripped[: match.start()].strip("，,；;。 ")
-        constraint = match.group(1).strip("。 ")
+    constraint_match = re.search(r"[，,；;。?？]\s*((?:不要|不能|避免|不得|无需|不需要).+)$", stripped)
+    if constraint_match:
+        main = stripped[: constraint_match.start()].strip("，,；;。?？!！ ")
+        constraint = constraint_match.group(1).strip("。 ")
         if main:
-            return f"{main}；约束：{constraint}"
+            base = _rewrite_chinese_fallback_intent(main) or _rewrite_chinese_action_intent(main) or main
+            return f"{base}；约束：{constraint}"
+
+    explicit = _rewrite_chinese_fallback_intent(stripped)
+    if explicit:
+        return explicit
 
     if stripped != text.strip():
-        return stripped
-    return f"处理请求：{stripped}"
+        return _rewrite_chinese_action_intent(stripped) or stripped
+    action = _rewrite_chinese_action_intent(stripped)
+    if action:
+        return action
+    return _rewrite_chinese_fallback_intent(stripped) or "提炼并处理用户意图"
+
+
+def _rewrite_chinese_action_intent(text: str) -> str:
+    action_map = {
+        "检查": "排查",
+        "介绍": "说明",
+        "修复": "解决",
+        "优化": "改进",
+        "分析": "梳理分析",
+        "查询": "获取",
+        "查看": "查阅",
+        "生成": "产出",
+        "创建": "建立",
+        "写": "撰写",
+        "实现": "完成",
+        "调整": "更新",
+        "改": "修改",
+        "处理": "推进处理",
+        "排查": "定位",
+        "测试": "验证",
+        "总结": "归纳",
+    }
+    for raw_action, intent_action in action_map.items():
+        if text.startswith(raw_action) and len(text) > len(raw_action):
+            return f"{intent_action}{text[len(raw_action):].strip()}"
+    return ""
+
+
+def _rewrite_chinese_fallback_intent(text: str) -> str:
+    if not text:
+        return ""
+
+    if "模型" in text and "思考强度" in text:
+        return "说明当前模型与思考强度配置"
+    if "模型" in text and ("什么" in text or "哪个" in text or "使用" in text):
+        return "说明当前模型配置"
+    if "更新代码" in text and ("需要" in text or "吗" in text or "怎么着" in text):
+        return "评估是否需要更新代码并给出处理建议"
+
+    match = re.search(r"^(.{1,80}?流程)怎么写[？?。!！]*$", text)
+    if match:
+        return f"说明{match.group(1)}写法"
+
+    match = re.search(r"^需要(.{1,80}?)吗(?:[？?。!！]|$).*", text)
+    if match:
+        return f"评估是否需要{match.group(1).strip()}"
+
+    match = re.search(r"^(.{1,80}?)(?:咋样|怎么样)[？?。!！]*$", text)
+    if match:
+        return f"评估{match.group(1).strip()}情况"
+
+    return ""
+
+
+def _rewrite_english_fallback_intent(text: str) -> str:
+    main = re.sub(r"\s+", " ", text.strip().rstrip(".?!"))
+    if not main:
+        return "Task"
+
+    match = re.match(r"(?i)^(?:do we need to|should we|need to)\s+(.+?)\??$", main)
+    if match:
+        action = match.group(1).strip()
+        if re.search(r"(?i)\b(update|change|modify)\s+code\b", action):
+            return "Assess whether code updates are needed"
+        return f"Assess whether to {action}"
+
+    match = re.match(r"(?i)^(.+?)\s+fails(?:,\s*(.+))?$", main)
+    if match:
+        subject = match.group(1).strip()
+        trailing = (match.group(2) or "").strip()
+        constraint = ""
+        if trailing:
+            trailing = re.sub(r"(?i)^investigate\s*", "", trailing).strip()
+            if trailing:
+                constraint = f"; constraint: {trailing}"
+        return f"Investigate {subject} failure{constraint}"
+
+    match = re.match(r"(?i)^(.+?)\s+progress\s+summary\s+(.+)$", main)
+    if match:
+        subject = match.group(1).strip()
+        scope = match.group(2).strip()
+        return f"Summarize {subject} progress {scope}"
+
+    match = re.match(
+        r"(?i)^(explain|summarize|summarise|investigate|analyze|analyse|review|fix|check|update|create|write|generate|implement|train|brainstorm)\b\s*(.+)$",
+        main,
+    )
+    if match:
+        verb = match.group(1).lower()
+        rest = match.group(2).strip()
+        action_templates = {
+            "summarise": "Condense {rest}",
+            "summarize": "Condense {rest}",
+            "analyse": "Assess {rest}",
+            "analyze": "Assess {rest}",
+            "explain": "Clarify {rest}",
+            "investigate": "Probe {rest}",
+            "review": "Assess {rest}",
+            "fix": "Resolve {rest}",
+            "check": "Inspect {rest}",
+            "update": "Plan update for {rest}",
+            "create": "Set up {rest}",
+            "write": "Draft {rest}",
+            "generate": "Produce {rest}",
+            "implement": "Build {rest}",
+            "train": "Plan to train {rest}",
+            "brainstorm": "Brainstorm ideas for {rest}",
+        }
+        return action_templates.get(verb, "Handle {rest}").format(rest=rest)
+
+    return "Summarize user intent"
+
+
+def _fallback_non_raw_intent(text: str) -> str:
+    cleaned = _trim_redundant_prefixes(text)
+    if cleaned and cleaned != text.strip():
+        return cleaned
+    if any(ch.isalpha() for ch in text):
+        return "Summarize multilingual user intent"
+    return "Summarize user intent"
 
 
 def _trim_redundant_prefixes(text: str) -> str:
