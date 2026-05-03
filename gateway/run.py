@@ -4910,8 +4910,8 @@ class GatewayRunner:
         """Send a weather rich result card when the current platform supports it.
 
         Returns the text fallback with any rich-result marker blocks stripped.
-        When a Feishu card is sent successfully, marks ``agent_result`` as
-        already_sent so the normal text-send path does not duplicate it.
+        A successful rich card delivery is recorded separately from final text
+        delivery so mixed-result turns can still send their ordinary reply.
         """
 
         adapter = self.adapters.get(source.platform) if source and source.platform else None
@@ -4949,7 +4949,12 @@ class GatewayRunner:
                 reply_to=getattr(event, "message_id", None),
             )
             if delivery.card_sent:
-                agent_result["already_sent"] = True
+                rich_cards_sent = agent_result.setdefault("rich_cards_sent", [])
+                rich_card_record = {"type": "weather.v1", "message_id": delivery.message_id}
+                if isinstance(rich_cards_sent, list):
+                    rich_cards_sent.append(rich_card_record)
+                else:
+                    agent_result["rich_cards_sent"] = [rich_card_record]
             return delivery.response_text
         except Exception as exc:
             logger.debug("Weather rich-result delivery skipped: %s", exc)
