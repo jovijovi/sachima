@@ -857,6 +857,7 @@ async def test_run_agent_previewed_final_marks_already_sent(monkeypatch, tmp_pat
     )
 
     assert result.get("already_sent") is True
+    assert result["delivery_state"]["final_text"] == {"sent": True, "reason": "response_previewed"}
     assert [call["content"] for call in adapter.sent] == ["You're welcome."]
 
 
@@ -878,6 +879,7 @@ async def test_run_agent_matrix_streaming_omits_cursor(monkeypatch, tmp_path):
     )
 
     assert result.get("already_sent") is True
+    assert result["delivery_state"]["final_text"] == {"sent": True, "reason": "stream_final_response"}
     all_text = [call["content"] for call in adapter.sent] + [call["content"] for call in adapter.edits]
     assert all_text, "expected streamed Matrix content to be sent or edited"
     assert all("▉" not in text for text in all_text)

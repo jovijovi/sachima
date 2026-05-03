@@ -90,6 +90,14 @@ def _source(platform=Platform.FEISHU):
     return SessionSource(platform=platform, chat_id="chat-1", user_id="user-1")
 
 
+def _assert_weather_card_recorded(agent_result):
+    expected_record = {"type": "weather.v1", "message_id": "card-1"}
+    assert agent_result["delivery_state"]["rich_cards_sent"] == [expected_record]
+    assert agent_result["delivery_state"]["final_text"] == {"sent": False, "reason": None}
+    assert agent_result["rich_cards_sent"] == [expected_record]
+    assert agent_result["already_sent"] is False
+
+
 @pytest.mark.asyncio
 async def test_gateway_weather_rich_result_records_feishu_card_without_marking_final_text_sent(monkeypatch):
     import gateway.run as gateway_run
@@ -108,8 +116,7 @@ async def test_gateway_weather_rich_result_records_feishu_card_without_marking_f
     )
 
     assert response == "final answer"
-    assert agent_result["already_sent"] is False
-    assert agent_result["rich_cards_sent"] == [{"type": "weather.v1", "message_id": "card-1"}]
+    _assert_weather_card_recorded(agent_result)
     assert len(adapter.cards) == 1
     assert adapter.cards[0]["metadata"] == {"thread_id": "topic-1"}
 
@@ -133,8 +140,7 @@ async def test_gateway_weather_rich_result_sends_card_for_direct_helper_without_
     )
 
     assert response == "final answer"
-    assert agent_result["already_sent"] is False
-    assert agent_result["rich_cards_sent"] == [{"type": "weather.v1", "message_id": "card-1"}]
+    _assert_weather_card_recorded(agent_result)
     assert len(adapter.cards) == 1
 
 
@@ -157,9 +163,38 @@ async def test_gateway_weather_rich_result_keeps_mixed_final_text_when_card_sent
 
     assert "服务磁盘空间：剩余 55G。" in response
     assert RICH_RESULT_BEGIN not in response
-    assert agent_result["already_sent"] is False
-    assert agent_result["rich_cards_sent"] == [{"type": "weather.v1", "message_id": "card-1"}]
+    _assert_weather_card_recorded(agent_result)
     assert len(adapter.cards) == 1
+
+
+@pytest.mark.asyncio
+async def test_gateway_weather_rich_result_card_recording_is_idempotent(monkeypatch):
+    import gateway.run as gateway_run
+
+    monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {"display": {"rich_result_weather": "auto"}})
+    adapter = WeatherCardAdapter(success=True)
+    runner = _runner(adapter)
+    agent_result = {"already_sent": False}
+
+    first_response = await runner._maybe_deliver_weather_rich_result(
+        event=_event(),
+        source=_source(),
+        response="final answer\n" + _marker(),
+        agent_messages=_trusted_tool_messages(),
+        agent_result=agent_result,
+    )
+    second_response = await runner._maybe_deliver_weather_rich_result(
+        event=_event(),
+        source=_source(),
+        response="final answer\n" + _marker(),
+        agent_messages=_trusted_tool_messages(),
+        agent_result=agent_result,
+    )
+
+    assert first_response == "final answer"
+    assert second_response == "final answer"
+    _assert_weather_card_recorded(agent_result)
+    assert len(adapter.cards) == 2
 
 
 @pytest.mark.asyncio
