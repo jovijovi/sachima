@@ -284,6 +284,7 @@ from gateway.session import (
     is_shared_multi_user_session,
 )
 from gateway.delivery import DeliveryRouter
+from gateway.delivery_state import should_skip_final_text
 from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
@@ -4811,7 +4812,7 @@ class GatewayRunner:
             )
 
             # Auto voice reply: send TTS audio before the text response
-            _already_sent = bool(agent_result.get("already_sent"))
+            _already_sent = should_skip_final_text(agent_result)
             if self._should_send_voice_reply(event, response, agent_messages, already_sent=_already_sent):
                 await self._send_voice_reply(event, response)
 
@@ -4826,7 +4827,7 @@ class GatewayRunner:
             # content the user hasn't seen (streaming only sent earlier
             # partial output before the failure).  Without this guard,
             # users see the agent "stop responding without explanation."
-            if agent_result.get("already_sent") and not agent_result.get("failed"):
+            if should_skip_final_text(agent_result) and not agent_result.get("failed"):
                 if response:
                     _media_adapter = self.adapters.get(source.platform)
                     if _media_adapter:
@@ -4949,12 +4950,13 @@ class GatewayRunner:
                 reply_to=getattr(event, "message_id", None),
             )
             if delivery.card_sent:
-                rich_cards_sent = agent_result.setdefault("rich_cards_sent", [])
-                rich_card_record = {"type": "weather.v1", "message_id": delivery.message_id}
-                if isinstance(rich_cards_sent, list):
-                    rich_cards_sent.append(rich_card_record)
-                else:
-                    agent_result["rich_cards_sent"] = [rich_card_record]
+                from gateway.delivery_state import record_rich_card_sent
+
+                record_rich_card_sent(
+                    agent_result,
+                    result_type="weather.v1",
+                    message_id=delivery.message_id,
+                )
             return delivery.response_text
         except Exception as exc:
             logger.debug("Weather rich-result delivery skipped: %s", exc)
@@ -11163,7 +11165,12 @@ class GatewayRunner:
                     _streamed,
                     _previewed,
                 )
-                response["already_sent"] = True
+                from gateway.delivery_state import mark_final_text_sent
+
+                mark_final_text_sent(
+                    response,
+                    reason="stream_final_response" if _streamed else "response_previewed",
+                )
         
         return response
 
