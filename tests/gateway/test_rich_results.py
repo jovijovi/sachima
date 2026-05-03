@@ -86,6 +86,21 @@ def test_extracts_weather_result_from_terminal_json_wrapped_output():
     assert results[0].payload["summary"] == "包装里的天气"
 
 
+def test_extracts_weather_result_from_json_wrapper_with_appended_context_text():
+    payload = _weather_payload(summary="追加上下文后的天气")
+    tool_content = json.dumps(
+        {"output": _marked(payload), "exit_code": 0, "error": None},
+        ensure_ascii=False,
+    )
+    tool_content += "\n\n[Subdirectory context discovered: workspace/hermes/repo/sachima/AGENTS.md]\n# Hermes Agent - Development Guide\n"
+    messages = _trusted_tool_messages(tool_content)
+
+    results = extract_rich_results_from_messages(messages)
+
+    assert [r.type for r in results] == ["weather.v1"]
+    assert results[0].payload["summary"] == "追加上下文后的天气"
+
+
 def test_extracts_weather_result_from_direct_helper_without_format_when_tool_output_has_marker():
     payload = _weather_payload(summary="自动补齐后的天气")
     messages = _trusted_tool_messages(

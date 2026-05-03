@@ -86,10 +86,7 @@ def _extract_rich_results_from_tool_content(content: str) -> list[RichResult]:
     """
 
     results = extract_rich_results_from_text(content)
-    try:
-        wrapped = json.loads(content)
-    except Exception:
-        return results
+    wrapped = _parse_json_object_prefix(content)
     if not isinstance(wrapped, dict):
         return results
     for key in ("output", "stdout", "result", "content", "text", "message"):
@@ -97,6 +94,19 @@ def _extract_rich_results_from_tool_content(content: str) -> list[RichResult]:
         if isinstance(value, str) and RICH_RESULT_BEGIN in value:
             results.extend(extract_rich_results_from_text(value))
     return results
+
+
+def _parse_json_object_prefix(content: str) -> dict[str, Any] | None:
+    """Parse a JSON object wrapper, tolerating non-JSON text appended after it."""
+
+    try:
+        wrapped = json.loads(content)
+    except Exception:
+        try:
+            wrapped, _ = json.JSONDecoder().raw_decode(content)
+        except Exception:
+            return None
+    return wrapped if isinstance(wrapped, dict) else None
 
 
 def _trusted_weather_tool_call_ids(messages: list[dict[str, Any]]) -> set[str]:
