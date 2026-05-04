@@ -179,8 +179,118 @@ Because this dev log was updated after those checks, the final plan checks must 
 
 ## Implementation status
 
-Not started. Design-only phase is in progress.
+Implementation approved and completed on 2026-05-05 00:31:52 CST +0800.
 
-No implementation code has been written in Phase 4G yet.
-No implementation tests have been written in Phase 4G yet.
-No production runtime files have been changed in Phase 4G yet.
+Files changed after the design commit:
+
+```text
+gateway/flowweaver_mock_durable.py
+tests/gateway/test_flowweaver_mock_durable_consumer.py
+tests/gateway/test_run_progress_topics.py
+```
+
+Implemented public surface:
+
+```python
+FLOWWEAVER_MOCK_DURABLE_CONSUMER_TYPE = "flowweaver.gateway.mock_durable_consumer.v0"
+FLOWWEAVER_MOCK_DURABLE_ACCEPTED = "accepted"
+FLOWWEAVER_MOCK_DURABLE_REJECTED = "rejected"
+
+def consume_flowweaver_shadow_corpus_as_mock_durable_state(contract_descriptor, replay_corpus) -> dict: ...
+```
+
+The implementation is pure, local, deterministic, and in-memory. It projects only safe Phase 4F descriptor plus replay-corpus aggregate output into synthetic mock durable records for transaction / intents / artifacts / deliveries. It does not read raw snapshots, captures, agent-result payloads, platform payloads, card JSON, raw command/output, delivery ACKs, or platform identifiers.
+
+Still explicitly out of scope:
+
+```text
+Temporal / Docker / daemon / service / persistence / runtime wiring / Gateway restart
+run_agent.py / model_tools.py / toolsets.py / cli.py / hermes_cli/* / gateway/run.py / gateway/platforms/*
+visible sends / edits / renders / logs
+```
+
+## TDD implementation notes
+
+RED/GREEN cycles completed:
+
+```text
+1. absent mock durable helper -> ModuleNotFoundError RED -> minimal pure projection GREEN
+2. invalid descriptor / failed corpus / raw snapshot or capture / no-mutation / no-leak cases -> RED/GREEN
+3. failed safety checks and Phase 4F fixture integration -> RED/GREEN
+4. Gateway lifecycle no-visible-side-effects regression -> GREEN
+5. hostile Mapping re-read regression -> RED/GREEN
+6. mutating entry value regression -> RED/GREEN
+7. mutating descriptor/corpus envelope regression -> RED/GREEN
+8. mutating entry-key regression -> RED/GREEN
+9. complete descriptor-surface validation regression -> RED/GREEN
+```
+
+Important hardening decisions:
+
+```text
+- Accept only exact plain dict/list/string/int/bool shapes for the mock durable input envelope.
+- Validate exact Phase 4F descriptor surface, not just type/version.
+- Reject hostile Mapping and str-subclass/key/value equality tricks before reading unsafe values.
+- Build records from sanitized entry indexes and known constants only.
+- Never echo rejected input values in rejection output.
+```
+
+## Implementation verification
+
+Focused gate after final code changes:
+
+```bash
+scripts/run_tests.sh \
+  tests/gateway/test_flowweaver_mock_durable_consumer.py \
+  tests/gateway/test_flowweaver_shadow_tap.py \
+  tests/gateway/test_flowweaver_contract_adapter.py \
+  tests/gateway/test_delivery_state.py \
+  tests/gateway/test_run_progress_topics.py \
+  tests/gateway/test_rich_weather_delivery.py \
+  -q
+python -m py_compile \
+  gateway/flowweaver_mock_durable.py \
+  tests/gateway/test_flowweaver_mock_durable_consumer.py \
+  tests/gateway/test_run_progress_topics.py
+git diff --check
+```
+
+Observed:
+
+```text
+125 passed in 15.49s
+py_compile passed
+git diff --check passed
+```
+
+Added-line scan after final code changes:
+
+```json
+{
+  "changed_files": [
+    "gateway/flowweaver_mock_durable.py",
+    "tests/gateway/test_flowweaver_mock_durable_consumer.py",
+    "tests/gateway/test_run_progress_topics.py"
+  ],
+  "unplanned_changed_files": [],
+  "added_line_secret_hits": [],
+  "forbidden_runtime_call_hits": [],
+  "production_private_id_hits": []
+}
+```
+
+Independent implementation reviews after final code changes:
+
+```text
+spec / low-intrusion review: PASS
+security / no-leak review: PASS
+```
+
+Reviewer notes:
+
+```text
+No concrete blocker remains. The helper remains default-off, pure in-memory, synthetic-record-only, with no runtime wiring or forbidden send/edit/render/persist/log calls found.
+No concrete no-leak blocker remains. Descriptor/corpus validation is fail-closed and exact-shape/type based; hostile/raw inputs are rejected without echoing sensitive values or mutating inputs.
+```
+
+Because this dev log was updated after the final code gate and reviews, rerun the full focused gate, scans, and `git diff --check` before commit.

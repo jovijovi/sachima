@@ -1471,6 +1471,58 @@ async def test_flowweaver_shadow_tap_replay_corpus_without_visible_side_effects(
 
 
 @pytest.mark.asyncio
+async def test_flowweaver_mock_durable_consumer_without_visible_side_effects(monkeypatch, tmp_path):
+    from gateway.flowweaver_mock_durable import (
+        FLOWWEAVER_MOCK_DURABLE_ACCEPTED,
+        consume_flowweaver_shadow_corpus_as_mock_durable_state,
+    )
+    from gateway.flowweaver_shadow import (
+        describe_flowweaver_shadow_consumer_contract,
+        replay_flowweaver_shadow_corpus,
+    )
+
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        OptionalProgressAgent,
+        session_id="sess-flowweaver-mock-durable-consumer",
+        config_data={
+            "display": {
+                "tool_progress": "off",
+                "task_tracker": {
+                    "enabled": False,
+                    "flowweaver_shadow": True,
+                    "max_operations": 8,
+                },
+            },
+        },
+    )
+
+    corpus = replay_flowweaver_shadow_corpus([result], attempts=2)
+    projection = consume_flowweaver_shadow_corpus_as_mock_durable_state(
+        describe_flowweaver_shadow_consumer_contract(),
+        corpus,
+    )
+
+    rendered = repr(projection).lower()
+    assert result["final_response"] == "done"
+    assert adapter.sent == []
+    assert adapter.edits == []
+    assert projection["verdict"] == FLOWWEAVER_MOCK_DURABLE_ACCEPTED
+    assert projection["entry_count"] == 1
+    assert projection["side_effects"] == []
+    assert projection["checks"]["side_effects_absent"] is True
+    assert "snapshot" not in rendered
+    assert "capture" not in rendered
+    assert "om_" not in rendered
+    assert "oc_" not in rendered
+    assert "ou_" not in rendered
+    assert "chat" not in rendered
+    assert "user" not in rendered
+    assert "message" not in rendered
+
+
+@pytest.mark.asyncio
 async def test_flowweaver_shadow_tap_default_off_preserves_existing_no_progress_behavior(monkeypatch, tmp_path):
     from gateway.flowweaver_shadow import FLOWWEAVER_SHADOW_SNAPSHOT_KEY
 
