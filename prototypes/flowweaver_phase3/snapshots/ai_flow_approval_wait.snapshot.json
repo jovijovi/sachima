@@ -1,0 +1,197 @@
+{
+  "type": "flowweaver.handle.v0",
+  "transaction_id": "tx_ai_flow_approval_wait",
+  "workflow_id": null,
+  "run_id": null,
+  "correlation_id": "turn_ai_flow_approval_wait",
+  "snapshot_id": "snap_ai_flow_approval_wait_blocked",
+  "adapter": "mock",
+  "created_at": "2026-05-04T00:30:00Z",
+  "contract_version": "flowweaver.v0",
+  "transaction": {
+    "transaction_id": "tx_ai_flow_approval_wait",
+    "status": "blocked",
+    "user_request_summary": "Inspect an AI FLOW, prepare a plan, then wait for explicit user approval before execution.",
+    "intents": [
+      {
+        "intent_id": "ai_flow_inspect",
+        "order_index": 0,
+        "title": "Inspect AI FLOW",
+        "status": "succeeded",
+        "dependencies": []
+      },
+      {
+        "intent_id": "ai_flow_plan",
+        "order_index": 1,
+        "title": "Prepare execution plan",
+        "status": "succeeded",
+        "dependencies": ["ai_flow_inspect"]
+      },
+      {
+        "intent_id": "ai_flow_approval",
+        "order_index": 2,
+        "title": "Await user approval",
+        "status": "blocked",
+        "dependencies": ["ai_flow_plan"]
+      }
+    ],
+    "operations": [
+      {
+        "operation_id": "op_ai_flow_inspect",
+        "intent_id": "ai_flow_inspect",
+        "kind": "mock_flow_inspection",
+        "status": "succeeded",
+        "attempted_at": "2026-05-04T00:30:02Z",
+        "summary": "Inspected the named AI FLOW and produced a bounded capability summary.",
+        "inputs_summary": "Flow reference: mock approval candidate."
+      },
+      {
+        "operation_id": "op_ai_flow_plan",
+        "intent_id": "ai_flow_plan",
+        "kind": "mock_flow_plan",
+        "status": "succeeded",
+        "attempted_at": "2026-05-04T00:30:03Z",
+        "summary": "Prepared a safe execution plan with human review before side effects.",
+        "inputs_summary": "Inputs: inspection summary and user goal."
+      },
+      {
+        "operation_id": "op_ai_flow_request_approval",
+        "intent_id": "ai_flow_approval",
+        "kind": "mock_user_gate",
+        "status": "blocked",
+        "attempted_at": "2026-05-04T00:30:04Z",
+        "summary": "Paused execution until the user approves or rejects the proposed plan.",
+        "inputs_summary": "Approval prompt generated from the plan summary."
+      }
+    ],
+    "artifacts": [
+      {
+        "artifact_id": "artifact_ai_flow_inspection",
+        "intent_id": "ai_flow_inspect",
+        "kind": "text_result",
+        "status": "succeeded",
+        "title": "AI FLOW inspection summary",
+        "content_summary": "The flow has two planned steps and one review gate in the mock environment.",
+        "covers_intent_ids": ["ai_flow_inspect"],
+        "data": {
+          "step_count": 2,
+          "review_gate_count": 1,
+          "risk_level": "low"
+        }
+      },
+      {
+        "artifact_id": "artifact_ai_flow_plan",
+        "intent_id": "ai_flow_plan",
+        "kind": "rich_card",
+        "status": "succeeded",
+        "title": "AI FLOW approval plan",
+        "content_summary": "Plan is ready and requires user approval before any execution step starts.",
+        "covers_intent_ids": ["ai_flow_inspect", "ai_flow_plan"],
+        "data": {
+          "planned_steps": ["inspect", "prepare"],
+          "next_gate": "user_approval",
+          "safe_to_start": false
+        }
+      }
+    ],
+    "deliveries": [
+      {
+        "delivery_idempotency_key": "feishu:om_aiflow_progress:progress_card:ai_flow_approval",
+        "surface": "progress_card",
+        "platform": "feishu",
+        "status": "sent",
+        "message_id": "om_aiflow_progress",
+        "target": {
+          "kind": "snapshot",
+          "id": "snap_ai_flow_approval_wait_blocked"
+        },
+        "reason": null,
+        "sent_at": "2026-05-04T00:30:05Z"
+      },
+      {
+        "delivery_idempotency_key": "feishu:om_aiflow_plan:rich_card:ai_flow_plan",
+        "surface": "rich_card",
+        "platform": "feishu",
+        "status": "sent",
+        "message_id": "om_aiflow_plan",
+        "target": {
+          "kind": "artifact",
+          "id": "artifact_ai_flow_plan"
+        },
+        "reason": null,
+        "sent_at": "2026-05-04T00:30:06Z"
+      },
+      {
+        "delivery_idempotency_key": "feishu:om_aiflow_final:final_text:ai_flow_approval",
+        "surface": "final_text",
+        "platform": "feishu",
+        "status": "sent",
+        "message_id": "om_aiflow_final",
+        "target": {
+          "kind": "final_text",
+          "id": "final_text_ai_flow_approval_wait"
+        },
+        "reason": null,
+        "sent_at": "2026-05-04T00:30:07Z"
+      }
+    ],
+    "intent_coverage": [
+      {
+        "intent_id": "ai_flow_inspect",
+        "mode": "delivered_artifact",
+        "artifact_id": "artifact_ai_flow_plan",
+        "delivery_idempotency_key": "feishu:om_aiflow_plan:rich_card:ai_flow_plan",
+        "reason": null
+      },
+      {
+        "intent_id": "ai_flow_plan",
+        "mode": "delivered_artifact",
+        "artifact_id": "artifact_ai_flow_plan",
+        "delivery_idempotency_key": "feishu:om_aiflow_plan:rich_card:ai_flow_plan",
+        "reason": null
+      },
+      {
+        "intent_id": "ai_flow_approval",
+        "mode": "blocked_waiting_for_user",
+        "artifact_id": null,
+        "delivery_idempotency_key": "feishu:om_aiflow_final:final_text:ai_flow_approval",
+        "reason": "Awaiting explicit approve or reject response from the user."
+      }
+    ],
+    "final_text": {
+      "final_text_id": "final_text_ai_flow_approval_wait",
+      "status": "blocked",
+      "text": "The AI FLOW plan is ready. Reply approve to start execution, or reject to stop.",
+      "covers_intent_ids": ["ai_flow_approval"]
+    }
+  },
+  "snapshot": {
+    "snapshot_id": "snap_ai_flow_approval_wait_blocked",
+    "transaction_id": "tx_ai_flow_approval_wait",
+    "status": "blocked",
+    "safe_to_render": true,
+    "ordered_intent_ids": ["ai_flow_inspect", "ai_flow_plan", "ai_flow_approval"],
+    "progress": [
+      {
+        "intent_id": "ai_flow_inspect",
+        "status": "succeeded",
+        "summary": "AI FLOW inspection completed."
+      },
+      {
+        "intent_id": "ai_flow_plan",
+        "status": "succeeded",
+        "summary": "Approval plan delivered as a rich card."
+      },
+      {
+        "intent_id": "ai_flow_approval",
+        "status": "blocked",
+        "summary": "Waiting for the user's approve or reject response."
+      }
+    ],
+    "render_text": "2 of 3 intents complete. Execution is blocked until the user replies approve or reject.",
+    "bounds": {
+      "max_progress_items": 10,
+      "max_render_text_chars": 1200
+    }
+  }
+}

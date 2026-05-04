@@ -1,0 +1,211 @@
+{
+  "type": "flowweaver.handle.v0",
+  "transaction_id": "tx_dependent_weather_compare",
+  "workflow_id": null,
+  "run_id": null,
+  "correlation_id": "turn_dependent_weather_compare",
+  "snapshot_id": "snap_dependent_weather_compare_final",
+  "adapter": "mock",
+  "created_at": "2026-05-04T00:25:00Z",
+  "contract_version": "flowweaver.v0",
+  "transaction": {
+    "transaction_id": "tx_dependent_weather_compare",
+    "status": "succeeded",
+    "user_request_summary": "Get today's weather, tomorrow's weather, then compare them.",
+    "intents": [
+      {
+        "intent_id": "weather_today",
+        "order_index": 0,
+        "title": "Weather today",
+        "status": "succeeded",
+        "dependencies": []
+      },
+      {
+        "intent_id": "weather_tomorrow",
+        "order_index": 1,
+        "title": "Weather tomorrow",
+        "status": "succeeded",
+        "dependencies": []
+      },
+      {
+        "intent_id": "weather_compare",
+        "order_index": 2,
+        "title": "Compare weather",
+        "status": "succeeded",
+        "dependencies": ["weather_today", "weather_tomorrow"]
+      }
+    ],
+    "operations": [
+      {
+        "operation_id": "op_weather_today_lookup",
+        "intent_id": "weather_today",
+        "kind": "mock_weather_lookup",
+        "status": "succeeded",
+        "attempted_at": "2026-05-04T00:25:02Z",
+        "summary": "Collected sanitized weather for today.",
+        "inputs_summary": "Location: Shanghai; day: today."
+      },
+      {
+        "operation_id": "op_weather_tomorrow_lookup",
+        "intent_id": "weather_tomorrow",
+        "kind": "mock_weather_lookup",
+        "status": "succeeded",
+        "attempted_at": "2026-05-04T00:25:03Z",
+        "summary": "Collected sanitized weather for tomorrow.",
+        "inputs_summary": "Location: Shanghai; day: tomorrow."
+      },
+      {
+        "operation_id": "op_weather_compare_synthesis",
+        "intent_id": "weather_compare",
+        "kind": "mock_synthesis",
+        "status": "succeeded",
+        "attempted_at": "2026-05-04T00:25:04Z",
+        "summary": "Compared the two bounded weather summaries.",
+        "inputs_summary": "Inputs: today's and tomorrow's summarized weather artifacts."
+      }
+    ],
+    "artifacts": [
+      {
+        "artifact_id": "artifact_weather_today",
+        "intent_id": "weather_today",
+        "kind": "text_result",
+        "status": "succeeded",
+        "title": "Today weather facts",
+        "content_summary": "Today is partly cloudy at 22 C with light east wind.",
+        "covers_intent_ids": ["weather_today"],
+        "data": {
+          "day": "today",
+          "temperature_c": 22,
+          "condition": "partly_cloudy"
+        }
+      },
+      {
+        "artifact_id": "artifact_weather_tomorrow",
+        "intent_id": "weather_tomorrow",
+        "kind": "text_result",
+        "status": "succeeded",
+        "title": "Tomorrow weather facts",
+        "content_summary": "Tomorrow is rainy at 18 C with moderate north wind.",
+        "covers_intent_ids": ["weather_tomorrow"],
+        "data": {
+          "day": "tomorrow",
+          "temperature_c": 18,
+          "condition": "rainy"
+        }
+      },
+      {
+        "artifact_id": "artifact_weather_compare",
+        "intent_id": "weather_compare",
+        "kind": "rich_card",
+        "status": "succeeded",
+        "title": "Weather comparison",
+        "content_summary": "Tomorrow is cooler and wetter than today; carry rain gear and expect a 4 C drop.",
+        "covers_intent_ids": ["weather_today", "weather_tomorrow", "weather_compare"],
+        "data": {
+          "temperature_delta_c": -4,
+          "main_change": "cooler_and_wetter",
+          "recommendation": "carry_rain_gear"
+        }
+      }
+    ],
+    "deliveries": [
+      {
+        "delivery_idempotency_key": "feishu:om_compare_progress:progress_card:weather_compare",
+        "surface": "progress_card",
+        "platform": "feishu",
+        "status": "sent",
+        "message_id": "om_compare_progress",
+        "target": {
+          "kind": "snapshot",
+          "id": "snap_dependent_weather_compare_final"
+        },
+        "reason": null,
+        "sent_at": "2026-05-04T00:25:05Z"
+      },
+      {
+        "delivery_idempotency_key": "feishu:om_compare_rich:rich_card:weather_compare",
+        "surface": "rich_card",
+        "platform": "feishu",
+        "status": "sent",
+        "message_id": "om_compare_rich",
+        "target": {
+          "kind": "artifact",
+          "id": "artifact_weather_compare"
+        },
+        "reason": null,
+        "sent_at": "2026-05-04T00:25:06Z"
+      },
+      {
+        "delivery_idempotency_key": "feishu:om_compare_final:final_text:weather_compare",
+        "surface": "final_text",
+        "platform": "feishu",
+        "status": "sent",
+        "message_id": "om_compare_final",
+        "target": {
+          "kind": "final_text",
+          "id": "final_text_dependent_weather_compare"
+        },
+        "reason": null,
+        "sent_at": "2026-05-04T00:25:07Z"
+      }
+    ],
+    "intent_coverage": [
+      {
+        "intent_id": "weather_today",
+        "mode": "delivered_artifact",
+        "artifact_id": "artifact_weather_compare",
+        "delivery_idempotency_key": "feishu:om_compare_rich:rich_card:weather_compare",
+        "reason": null
+      },
+      {
+        "intent_id": "weather_tomorrow",
+        "mode": "delivered_artifact",
+        "artifact_id": "artifact_weather_compare",
+        "delivery_idempotency_key": "feishu:om_compare_rich:rich_card:weather_compare",
+        "reason": null
+      },
+      {
+        "intent_id": "weather_compare",
+        "mode": "delivered_artifact",
+        "artifact_id": "artifact_weather_compare",
+        "delivery_idempotency_key": "feishu:om_compare_rich:rich_card:weather_compare",
+        "reason": null
+      }
+    ],
+    "final_text": {
+      "final_text_id": "final_text_dependent_weather_compare",
+      "status": "succeeded",
+      "text": "The weather comparison card was delivered. Tomorrow is cooler and wetter than today.",
+      "covers_intent_ids": []
+    }
+  },
+  "snapshot": {
+    "snapshot_id": "snap_dependent_weather_compare_final",
+    "transaction_id": "tx_dependent_weather_compare",
+    "status": "succeeded",
+    "safe_to_render": true,
+    "ordered_intent_ids": ["weather_today", "weather_tomorrow", "weather_compare"],
+    "progress": [
+      {
+        "intent_id": "weather_today",
+        "status": "succeeded",
+        "summary": "Today's weather facts collected."
+      },
+      {
+        "intent_id": "weather_tomorrow",
+        "status": "succeeded",
+        "summary": "Tomorrow's weather facts collected."
+      },
+      {
+        "intent_id": "weather_compare",
+        "status": "succeeded",
+        "summary": "Comparison card delivered after dependencies completed."
+      }
+    ],
+    "render_text": "3 of 3 intents complete. The dependent comparison used today's and tomorrow's weather facts in order.",
+    "bounds": {
+      "max_progress_items": 10,
+      "max_render_text_chars": 1200
+    }
+  }
+}

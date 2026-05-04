@@ -1,0 +1,194 @@
+{
+  "type": "flowweaver.handle.v0",
+  "transaction_id": "tx_mixed_weather_time_disk",
+  "workflow_id": null,
+  "run_id": null,
+  "correlation_id": "turn_mixed_weather_time_disk",
+  "snapshot_id": "snap_mixed_weather_time_disk_final",
+  "adapter": "mock",
+  "created_at": "2026-05-04T00:20:00Z",
+  "contract_version": "flowweaver.v0",
+  "transaction": {
+    "transaction_id": "tx_mixed_weather_time_disk",
+    "status": "succeeded",
+    "user_request_summary": "Answer a mixed request for today's weather, current time, and disk status.",
+    "intents": [
+      {
+        "intent_id": "weather_today",
+        "order_index": 0,
+        "title": "Weather today",
+        "status": "succeeded",
+        "dependencies": []
+      },
+      {
+        "intent_id": "current_time",
+        "order_index": 1,
+        "title": "Current time",
+        "status": "succeeded",
+        "dependencies": []
+      },
+      {
+        "intent_id": "disk_status",
+        "order_index": 2,
+        "title": "Disk status",
+        "status": "succeeded",
+        "dependencies": []
+      }
+    ],
+    "operations": [
+      {
+        "operation_id": "op_weather_today_lookup",
+        "intent_id": "weather_today",
+        "kind": "mock_weather_lookup",
+        "status": "succeeded",
+        "attempted_at": "2026-05-04T00:20:02Z",
+        "summary": "Looked up sanitized mock weather for Shanghai today.",
+        "inputs_summary": "Location: Shanghai; date: today."
+      },
+      {
+        "operation_id": "op_current_time_lookup",
+        "intent_id": "current_time",
+        "kind": "mock_time_lookup",
+        "status": "succeeded",
+        "attempted_at": "2026-05-04T00:20:03Z",
+        "summary": "Resolved the current mock workspace time.",
+        "inputs_summary": "Timezone: Asia Shanghai."
+      },
+      {
+        "operation_id": "op_disk_status_check",
+        "intent_id": "disk_status",
+        "kind": "mock_disk_check",
+        "status": "succeeded",
+        "attempted_at": "2026-05-04T00:20:04Z",
+        "summary": "Summarized disk health using bounded mock metrics.",
+        "inputs_summary": "Scope: workspace volume summary."
+      }
+    ],
+    "artifacts": [
+      {
+        "artifact_id": "artifact_weather_today",
+        "intent_id": "weather_today",
+        "kind": "rich_card",
+        "status": "succeeded",
+        "title": "Shanghai weather today",
+        "content_summary": "Partly cloudy, 22 C, light east wind; suitable for outdoor plans.",
+        "covers_intent_ids": ["weather_today"],
+        "data": {
+          "location": "Shanghai",
+          "temperature_c": 22,
+          "condition": "partly_cloudy",
+          "wind": "light east"
+        }
+      },
+      {
+        "artifact_id": "artifact_disk_status",
+        "intent_id": "disk_status",
+        "kind": "fallback_text",
+        "status": "succeeded",
+        "title": "Disk status summary",
+        "content_summary": "Workspace volume is healthy with 42 percent free space in mock metrics.",
+        "covers_intent_ids": ["disk_status"],
+        "fallback_text": "Disk status: healthy; 42 percent free space; no action required."
+      }
+    ],
+    "deliveries": [
+      {
+        "delivery_idempotency_key": "feishu:om_mixed_weather:rich_card:weather_today",
+        "surface": "rich_card",
+        "platform": "feishu",
+        "status": "sent",
+        "message_id": "om_mixed_weather",
+        "target": {
+          "kind": "artifact",
+          "id": "artifact_weather_today"
+        },
+        "reason": null,
+        "sent_at": "2026-05-04T00:20:05Z"
+      },
+      {
+        "delivery_idempotency_key": "feishu:om_mixed_disk:fallback_text:disk_status",
+        "surface": "fallback_text",
+        "platform": "feishu",
+        "status": "sent",
+        "message_id": "om_mixed_disk",
+        "target": {
+          "kind": "artifact",
+          "id": "artifact_disk_status"
+        },
+        "reason": null,
+        "sent_at": "2026-05-04T00:20:06Z"
+      },
+      {
+        "delivery_idempotency_key": "feishu:om_mixed_final:final_text:current_time",
+        "surface": "final_text",
+        "platform": "feishu",
+        "status": "sent",
+        "message_id": "om_mixed_final",
+        "target": {
+          "kind": "final_text",
+          "id": "final_text_mixed_weather_time_disk"
+        },
+        "reason": null,
+        "sent_at": "2026-05-04T00:20:07Z"
+      }
+    ],
+    "intent_coverage": [
+      {
+        "intent_id": "weather_today",
+        "mode": "delivered_artifact",
+        "artifact_id": "artifact_weather_today",
+        "delivery_idempotency_key": "feishu:om_mixed_weather:rich_card:weather_today",
+        "reason": null
+      },
+      {
+        "intent_id": "current_time",
+        "mode": "answered",
+        "artifact_id": null,
+        "delivery_idempotency_key": "feishu:om_mixed_final:final_text:current_time",
+        "reason": null
+      },
+      {
+        "intent_id": "disk_status",
+        "mode": "answered",
+        "artifact_id": null,
+        "delivery_idempotency_key": "feishu:om_mixed_final:final_text:current_time",
+        "reason": null
+      }
+    ],
+    "final_text": {
+      "final_text_id": "final_text_mixed_weather_time_disk",
+      "status": "succeeded",
+      "text": "Current time: 00:20 in the mock Asia Shanghai clock. Disk status: healthy with 42 percent free space. Weather details were delivered as a rich artifact.",
+      "covers_intent_ids": ["current_time", "disk_status"]
+    }
+  },
+  "snapshot": {
+    "snapshot_id": "snap_mixed_weather_time_disk_final",
+    "transaction_id": "tx_mixed_weather_time_disk",
+    "status": "succeeded",
+    "safe_to_render": true,
+    "ordered_intent_ids": ["weather_today", "current_time", "disk_status"],
+    "progress": [
+      {
+        "intent_id": "weather_today",
+        "status": "succeeded",
+        "summary": "Weather card delivered."
+      },
+      {
+        "intent_id": "current_time",
+        "status": "succeeded",
+        "summary": "Current time answered in final text."
+      },
+      {
+        "intent_id": "disk_status",
+        "status": "succeeded",
+        "summary": "Disk fallback text delivered."
+      }
+    ],
+    "render_text": "3 of 3 intents complete: weather, time, and disk status are safely covered.",
+    "bounds": {
+      "max_progress_items": 10,
+      "max_render_text_chars": 1200
+    }
+  }
+}
