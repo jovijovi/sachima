@@ -7,7 +7,7 @@ in-memory ``agent_result`` dict when explicitly enabled by config.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 import re
 from typing import Any
 
@@ -35,6 +35,11 @@ FLOWWEAVER_SHADOW_REPLAY_REJECTED = "rejected"
 FLOWWEAVER_SHADOW_REPLAY_UNSAFE = "unsafe"
 FLOWWEAVER_SHADOW_REPLAY_SCHEMA_MISMATCH = "schema_mismatch"
 FLOWWEAVER_SHADOW_REPLAY_DRIFT_DETECTED = "drift_detected"
+FLOWWEAVER_SHADOW_CONSUMER_CONTRACT_TYPE = "flowweaver.gateway.shadow_consumer_contract.v0"
+FLOWWEAVER_SHADOW_REPLAY_CORPUS_TYPE = "flowweaver.gateway.shadow_replay_corpus.v0"
+FLOWWEAVER_SHADOW_REPLAY_CORPUS_PASSED = "passed"
+FLOWWEAVER_SHADOW_REPLAY_CORPUS_FAILED = "failed"
+FLOWWEAVER_SHADOW_REPLAY_CORPUS_REJECTED = "rejected"
 _FORBIDDEN_CAPTURE_SIDE_EFFECTS = ["send", "edit", "render", "persist", "temporal"]
 _ALLOWED_CAPTURE_CONSUMERS = ["in_memory_test_probe", "future_flowweaver_runtime"]
 _SAFE_SHADOW_REF_RE = re.compile(r"^(?:tx|turn|snap)_[a-z0-9][a-z0-9_]{0,127}$")
@@ -57,6 +62,67 @@ def is_flowweaver_shadow_enabled(task_tracker_config: object) -> bool:
         task_tracker_config.get(FLOWWEAVER_SHADOW_CONFIG_KEY),
         default=False,
     )
+
+
+def describe_flowweaver_shadow_consumer_contract() -> dict[str, Any]:
+    """Return the static safe contract for shadow consumers.
+
+    The descriptor is intentionally metadata-only: it does not read live
+    Gateway state, does not expose sample payloads, and does not authorize any
+    side effects. It gives future consumers a narrow contract to satisfy before
+    durable orchestration is considered.
+    """
+
+    return {
+        "type": FLOWWEAVER_SHADOW_CONSUMER_CONTRACT_TYPE,
+        "contract_version": FLOWWEAVER_CONTRACT_VERSION,
+        "snapshot_key": FLOWWEAVER_SHADOW_SNAPSHOT_KEY,
+        "capture_key": FLOWWEAVER_SHADOW_CAPTURE_KEY,
+        "capture_type": FLOWWEAVER_SHADOW_CAPTURE_TYPE,
+        "audit_type": FLOWWEAVER_SHADOW_AUDIT_TYPE,
+        "replay_type": FLOWWEAVER_SHADOW_REPLAY_TYPE,
+        "allowed_consumer_inputs": ["agent_result_mapping"],
+        "allowed_consumers": list(_ALLOWED_CAPTURE_CONSUMERS),
+        "replay_verdicts": [
+            FLOWWEAVER_SHADOW_REPLAY_REPLAYED,
+            FLOWWEAVER_SHADOW_REPLAY_REJECTED,
+            FLOWWEAVER_SHADOW_REPLAY_UNSAFE,
+            FLOWWEAVER_SHADOW_REPLAY_SCHEMA_MISMATCH,
+            FLOWWEAVER_SHADOW_REPLAY_DRIFT_DETECTED,
+        ],
+        "forbidden_output_fields": [
+            "snapshot",
+            "capture",
+            "transaction",
+            "deliveries",
+            "artifacts",
+            "source",
+            "raw_command",
+            "raw_output",
+            "stdout",
+            "stderr",
+            "card_json",
+            "platform",
+            "chat_id",
+            "user_id",
+            "message_id",
+            "delivery_ack",
+        ],
+        "forbidden_side_effects": [
+            "send",
+            "edit",
+            "render",
+            "persist",
+            "temporal",
+            "log",
+        ],
+        "bounds": {
+            "default_replay_attempts": 2,
+            "max_replay_attempts": 5,
+            "max_corpus_entries": 20,
+        },
+        "side_effects": [],
+    }
 
 
 def attach_flowweaver_shadow_snapshot(
@@ -283,8 +349,125 @@ def replay_flowweaver_shadow_capture(
         )
 
 
+def replay_flowweaver_shadow_corpus(
+    agent_results: Sequence[Mapping[str, Any]],
+    *,
+    attempts: int = 2,
+) -> dict[str, Any]:
+    """Replay a bounded in-memory corpus through the safe replay projection."""
+
+    try:
+        if not _valid_replay_corpus(agent_results, attempts=attempts):
+            return _shadow_replay_corpus_result(
+                verdict=FLOWWEAVER_SHADOW_REPLAY_CORPUS_REJECTED,
+                reason="invalid_corpus",
+            )
+
+        entries: list[dict[str, Any]] = []
+        failed = False
+        for index, agent_result in enumerate(agent_results):
+            replay = replay_flowweaver_shadow_capture(agent_result, attempts=attempts)
+            entry = _shadow_replay_corpus_entry(index=index, replay=replay)
+            entries.append(entry)
+            if entry["verdict"] != FLOWWEAVER_SHADOW_REPLAY_REPLAYED:
+                failed = True
+
+        if failed:
+            return _shadow_replay_corpus_result(
+                verdict=FLOWWEAVER_SHADOW_REPLAY_CORPUS_FAILED,
+                reason="entry_failed",
+                entries=entries,
+            )
+        return _shadow_replay_corpus_result(
+            verdict=FLOWWEAVER_SHADOW_REPLAY_CORPUS_PASSED,
+            reason="ok",
+            entries=entries,
+        )
+    except Exception:
+        return _shadow_replay_corpus_result(
+            verdict=FLOWWEAVER_SHADOW_REPLAY_CORPUS_REJECTED,
+            reason="invalid_corpus",
+        )
+
+
 def _valid_replay_attempts(attempts: int) -> bool:
     return isinstance(attempts, int) and not isinstance(attempts, bool) and 1 <= attempts <= 5
+
+
+def _valid_replay_corpus(agent_results: object, *, attempts: int) -> bool:
+    try:
+        return (
+            _valid_replay_attempts(attempts)
+            and isinstance(agent_results, Sequence)
+            and not isinstance(agent_results, (str, bytes, bytearray))
+            and 1 <= len(agent_results) <= 20
+            and all(isinstance(agent_result, Mapping) for agent_result in agent_results)
+        )
+    except Exception:
+        return False
+
+
+def _shadow_replay_corpus_entry(*, index: int, replay: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "index": index,
+        "verdict": _safe_replay_verdict(replay.get("verdict")),
+        "reason": _safe_replay_reason(replay.get("reason")),
+        "checks": _safe_replay_checks(replay.get("checks")),
+        "side_effects": [],
+    }
+
+
+def _safe_replay_verdict(value: object) -> str:
+    if value in {
+        FLOWWEAVER_SHADOW_REPLAY_REPLAYED,
+        FLOWWEAVER_SHADOW_REPLAY_REJECTED,
+        FLOWWEAVER_SHADOW_REPLAY_UNSAFE,
+        FLOWWEAVER_SHADOW_REPLAY_SCHEMA_MISMATCH,
+        FLOWWEAVER_SHADOW_REPLAY_DRIFT_DETECTED,
+    }:
+        return str(value)
+    return FLOWWEAVER_SHADOW_REPLAY_REJECTED
+
+
+def _safe_replay_reason(value: object) -> str:
+    if value in {
+        "ok",
+        "missing_or_invalid_consumer_view",
+        "unsafe_snapshot",
+        "schema_mismatch",
+        "drift_detected",
+    }:
+        return str(value)
+    return "missing_or_invalid_consumer_view"
+
+
+def _safe_replay_checks(value: object) -> dict[str, bool]:
+    source = value if isinstance(value, Mapping) else {}
+    return {
+        "audit_ready": source.get("audit_ready") is True,
+        "consumer_view_valid": source.get("consumer_view_valid") is True,
+        "snapshot_ref_stable": source.get("snapshot_ref_stable") is True,
+        "audit_stable": source.get("audit_stable") is True,
+        "input_not_mutated": source.get("input_not_mutated") is True,
+        "side_effects_absent": source.get("side_effects_absent") is True,
+    }
+
+
+def _shadow_replay_corpus_result(
+    *,
+    verdict: str,
+    reason: str,
+    entries: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    safe_entries = entries or []
+    return {
+        "type": FLOWWEAVER_SHADOW_REPLAY_CORPUS_TYPE,
+        "verdict": verdict,
+        "reason": reason,
+        "entry_count": len(safe_entries),
+        "entries": safe_entries,
+        "side_effects": [],
+    }
 
 
 def _shadow_replay_audit_projection(audit: Mapping[str, Any]) -> dict[str, Any]:
@@ -544,6 +727,11 @@ __all__ = [
     "FLOWWEAVER_SHADOW_CAPTURE_KEY",
     "FLOWWEAVER_SHADOW_CAPTURE_TYPE",
     "FLOWWEAVER_SHADOW_CONFIG_KEY",
+    "FLOWWEAVER_SHADOW_CONSUMER_CONTRACT_TYPE",
+    "FLOWWEAVER_SHADOW_REPLAY_CORPUS_FAILED",
+    "FLOWWEAVER_SHADOW_REPLAY_CORPUS_PASSED",
+    "FLOWWEAVER_SHADOW_REPLAY_CORPUS_REJECTED",
+    "FLOWWEAVER_SHADOW_REPLAY_CORPUS_TYPE",
     "FLOWWEAVER_SHADOW_REPLAY_DRIFT_DETECTED",
     "FLOWWEAVER_SHADOW_REPLAY_REJECTED",
     "FLOWWEAVER_SHADOW_REPLAY_REPLAYED",
@@ -553,7 +741,9 @@ __all__ = [
     "FLOWWEAVER_SHADOW_SNAPSHOT_KEY",
     "attach_flowweaver_shadow_snapshot",
     "audit_flowweaver_shadow_capture",
+    "describe_flowweaver_shadow_consumer_contract",
     "get_flowweaver_shadow_capture",
     "is_flowweaver_shadow_enabled",
     "replay_flowweaver_shadow_capture",
+    "replay_flowweaver_shadow_corpus",
 ]

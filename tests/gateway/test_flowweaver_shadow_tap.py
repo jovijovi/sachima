@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Iterator, Mapping
 import copy
+import json
+from pathlib import Path
 import re
 from types import SimpleNamespace
 from typing import Any
@@ -16,6 +18,11 @@ from gateway.flowweaver_shadow import (
     FLOWWEAVER_SHADOW_AUDIT_UNSAFE,
     FLOWWEAVER_SHADOW_CAPTURE_KEY,
     FLOWWEAVER_SHADOW_CAPTURE_TYPE,
+    FLOWWEAVER_SHADOW_CONSUMER_CONTRACT_TYPE,
+    FLOWWEAVER_SHADOW_REPLAY_CORPUS_FAILED,
+    FLOWWEAVER_SHADOW_REPLAY_CORPUS_PASSED,
+    FLOWWEAVER_SHADOW_REPLAY_CORPUS_REJECTED,
+    FLOWWEAVER_SHADOW_REPLAY_CORPUS_TYPE,
     FLOWWEAVER_SHADOW_REPLAY_DRIFT_DETECTED,
     FLOWWEAVER_SHADOW_REPLAY_REJECTED,
     FLOWWEAVER_SHADOW_REPLAY_REPLAYED,
@@ -25,9 +32,11 @@ from gateway.flowweaver_shadow import (
     FLOWWEAVER_SHADOW_SNAPSHOT_KEY,
     attach_flowweaver_shadow_snapshot,
     audit_flowweaver_shadow_capture,
+    describe_flowweaver_shadow_consumer_contract,
     get_flowweaver_shadow_capture,
     is_flowweaver_shadow_enabled,
     replay_flowweaver_shadow_capture,
+    replay_flowweaver_shadow_corpus,
 )
 from gateway.progress.events import ProgressOperation, TransactionSnapshot
 
@@ -787,3 +796,256 @@ def test_shadow_replay_probe_rejects_opaque_platform_like_refs_without_leaking_t
         assert replay["snapshot_ref"] is None
         assert forbidden_fragment not in rendered
         assert "transaction_123456789012345678" not in rendered
+
+
+def test_shadow_consumer_contract_descriptor_is_static_safe_and_side_effect_free() -> None:
+    first = describe_flowweaver_shadow_consumer_contract()
+    second = describe_flowweaver_shadow_consumer_contract()
+
+    assert first == second
+    assert first["type"] == FLOWWEAVER_SHADOW_CONSUMER_CONTRACT_TYPE
+    assert first["contract_version"] == "flowweaver.v0"
+    assert first["snapshot_key"] == FLOWWEAVER_SHADOW_SNAPSHOT_KEY
+    assert first["capture_key"] == FLOWWEAVER_SHADOW_CAPTURE_KEY
+    assert first["capture_type"] == FLOWWEAVER_SHADOW_CAPTURE_TYPE
+    assert first["audit_type"] == FLOWWEAVER_SHADOW_AUDIT_TYPE
+    assert first["replay_type"] == FLOWWEAVER_SHADOW_REPLAY_TYPE
+    assert first["allowed_consumer_inputs"] == ["agent_result_mapping"]
+    assert first["allowed_consumers"] == ["in_memory_test_probe", "future_flowweaver_runtime"]
+    assert first["replay_verdicts"] == [
+        FLOWWEAVER_SHADOW_REPLAY_REPLAYED,
+        FLOWWEAVER_SHADOW_REPLAY_REJECTED,
+        FLOWWEAVER_SHADOW_REPLAY_UNSAFE,
+        FLOWWEAVER_SHADOW_REPLAY_SCHEMA_MISMATCH,
+        FLOWWEAVER_SHADOW_REPLAY_DRIFT_DETECTED,
+    ]
+    assert first["forbidden_side_effects"] == [
+        "send",
+        "edit",
+        "render",
+        "persist",
+        "temporal",
+        "log",
+    ]
+    assert first["bounds"] == {
+        "default_replay_attempts": 2,
+        "max_replay_attempts": 5,
+        "max_corpus_entries": 20,
+    }
+    assert first["side_effects"] == []
+    assert "snapshot" in first["forbidden_output_fields"]
+    assert "capture" in first["forbidden_output_fields"]
+    assert "delivery_ack" in first["forbidden_output_fields"]
+
+
+def test_shadow_consumer_contract_descriptor_omits_payloads_ids_and_secret_shapes() -> None:
+    descriptor = describe_flowweaver_shadow_consumer_contract()
+    rendered = repr(descriptor).lower()
+
+    assert "examples" not in descriptor
+    assert "snapshot_ref" not in descriptor
+    assert "om_private" not in rendered
+    assert "oc_private" not in rendered
+    assert "ou_private" not in rendered
+    assert "u123abc" not in rendered
+    assert "123456789012345678" not in rendered
+    assert "raw_card_json" not in rendered
+    assert "feishu_card_json" not in rendered
+    assert "bearer " + "fake" not in rendered
+    assert "sk-" + "123456789012" not in rendered
+    assert "fake-" + "token" not in rendered
+    assert "fake-" + "secret" not in rendered
+
+
+CORPUS_FIXTURE = Path(__file__).with_name("fixtures") / "flowweaver_shadow_replay_corpus.json"
+
+
+def load_corpus_cases() -> list[dict[str, Any]]:
+    loaded = json.loads(CORPUS_FIXTURE.read_text())
+    assert isinstance(loaded, list)
+    return loaded
+
+
+def shadow_result_from_corpus_case(case: Mapping[str, Any]) -> dict[str, Any]:
+    delivery_state: dict[str, Any] = {
+        "final_text": {"sent": bool(case["final_text_sent"]), "reason": None},
+        "rich_cards_sent": [],
+    }
+    if case["final_text_sent"]:
+        delivery_state["final_text"]["reason"] = "stream_final_response"
+    for index, card_type in enumerate(case["rich_card_types"], start=1):
+        delivery_state["rich_cards_sent"].append(
+            {"type": card_type, "message_id": f"om_corpus_{index}"}
+        )
+    agent_result: dict[str, Any] = {"delivery_state": delivery_state}
+    attached = attach_flowweaver_shadow_snapshot(
+        agent_result,
+        make_snapshot(
+            transaction_id=str(case["transaction_id"]),
+            status=str(case["status"]),
+            title=str(case["title"]),
+        ),
+        enabled=True,
+        final_text="done" if case["final_text_sent"] else None,
+    )
+    assert attached is not None
+    return agent_result
+
+
+def test_shadow_replay_corpus_fixture_is_synthetic_and_platform_neutral() -> None:
+    cases = load_corpus_cases()
+
+    assert len(cases) == 3
+    for case in cases:
+        assert set(case) == {
+            "case_id",
+            "transaction_id",
+            "status",
+            "title",
+            "final_text_sent",
+            "rich_card_types",
+            "expected_replay_verdict",
+        }
+    rendered = repr(cases).lower()
+    for forbidden in (
+        "feishu",
+        "telegram",
+        "discord",
+        "slack",
+        "chat",
+        "user",
+        "message_id",
+        "om_",
+        "oc_",
+        "ou_",
+        "raw_card_json",
+        "authorization",
+        "bearer",
+        "sk-",
+        "token",
+        "secret",
+        "password",
+    ):
+        assert forbidden not in rendered
+
+
+def test_shadow_replay_corpus_replays_expected_safe_scenarios() -> None:
+    cases = load_corpus_cases()
+    agent_results = [shadow_result_from_corpus_case(case) for case in cases]
+
+    corpus = replay_flowweaver_shadow_corpus(agent_results, attempts=2)
+
+    assert corpus["type"] == FLOWWEAVER_SHADOW_REPLAY_CORPUS_TYPE
+    assert corpus["verdict"] == FLOWWEAVER_SHADOW_REPLAY_CORPUS_PASSED
+    assert corpus["reason"] == "ok"
+    assert corpus["entry_count"] == len(cases)
+    assert len(corpus["entries"]) == len(cases)
+    for index, (entry, case) in enumerate(zip(corpus["entries"], cases, strict=True)):
+        assert entry["index"] == index
+        assert entry["verdict"] == case["expected_replay_verdict"]
+        assert entry["reason"] == "ok"
+        assert entry["side_effects"] == []
+        assert entry["checks"]["audit_ready"] is True
+        assert entry["checks"]["consumer_view_valid"] is True
+        assert entry["checks"]["snapshot_ref_stable"] is True
+        assert entry["checks"]["audit_stable"] is True
+        assert entry["checks"]["input_not_mutated"] is True
+        assert entry["checks"]["side_effects_absent"] is True
+
+
+def test_shadow_replay_corpus_reports_entry_verdicts_without_refs_or_payloads() -> None:
+    agent_results = [shadow_result_from_corpus_case(case) for case in load_corpus_cases()]
+
+    corpus = replay_flowweaver_shadow_corpus(agent_results, attempts=3)
+
+    rendered = repr(corpus).lower()
+    assert corpus["verdict"] == FLOWWEAVER_SHADOW_REPLAY_CORPUS_PASSED
+    assert corpus["side_effects"] == []
+    for entry in corpus["entries"]:
+        assert "snapshot_ref" not in entry
+        assert "snapshot" not in entry
+        assert "capture" not in entry
+        assert "transaction" not in entry
+    for forbidden in (
+        "deliveries",
+        "artifacts",
+        "om_corpus",
+        "om_",
+        "oc_",
+        "ou_",
+        "raw_card_json",
+        "authorization",
+        "bearer",
+        "fake-" + "token",
+        "fake-" + "secret",
+    ):
+        assert forbidden not in rendered
+
+
+def test_shadow_replay_corpus_rejects_invalid_or_too_large_inputs() -> None:
+    valid_result = shadow_result_from_corpus_case(load_corpus_cases()[0])
+    for invalid in (
+        [],
+        (),
+        "not-a-corpus",
+        b"not-a-corpus",
+        [valid_result] * 21,
+    ):
+        corpus = replay_flowweaver_shadow_corpus(invalid, attempts=2)  # type: ignore[arg-type]
+
+        assert corpus["type"] == FLOWWEAVER_SHADOW_REPLAY_CORPUS_TYPE
+        assert corpus["verdict"] == FLOWWEAVER_SHADOW_REPLAY_CORPUS_REJECTED
+        assert corpus["reason"] == "invalid_corpus"
+        assert corpus["entry_count"] == 0
+        assert corpus["entries"] == []
+        assert corpus["side_effects"] == []
+
+    bad_attempts = replay_flowweaver_shadow_corpus([valid_result], attempts=0)
+    assert bad_attempts["verdict"] == FLOWWEAVER_SHADOW_REPLAY_CORPUS_REJECTED
+    assert bad_attempts["reason"] == "invalid_corpus"
+
+
+def test_shadow_replay_corpus_fails_closed_for_unsafe_schema_mismatch_and_hostile_entries() -> None:
+    unsafe_result = attach_shadow_result()
+    unsafe_result[FLOWWEAVER_SHADOW_CAPTURE_KEY] = {
+        **unsafe_result[FLOWWEAVER_SHADOW_CAPTURE_KEY],
+        "lifecycle": {
+            **unsafe_result[FLOWWEAVER_SHADOW_CAPTURE_KEY]["lifecycle"],
+            "visible_side_effects": ["send"],
+        },
+    }
+    mismatch_result = attach_shadow_result()
+    mismatch_result[FLOWWEAVER_SHADOW_CAPTURE_KEY] = {
+        **mismatch_result[FLOWWEAVER_SHADOW_CAPTURE_KEY],
+        "type": "flowweaver.gateway.shadow_capture.v9",
+    }
+
+    corpus = replay_flowweaver_shadow_corpus(
+        [unsafe_result, mismatch_result, ExplodingMapping()],
+        attempts=2,
+    )
+
+    rendered = repr(corpus).lower()
+    assert corpus["verdict"] == FLOWWEAVER_SHADOW_REPLAY_CORPUS_FAILED
+    assert corpus["reason"] == "entry_failed"
+    assert [entry["verdict"] for entry in corpus["entries"]] == [
+        FLOWWEAVER_SHADOW_REPLAY_UNSAFE,
+        FLOWWEAVER_SHADOW_REPLAY_SCHEMA_MISMATCH,
+        FLOWWEAVER_SHADOW_REPLAY_REJECTED,
+    ]
+    assert corpus["side_effects"] == []
+    assert "send" not in rendered
+    assert "snapshot_ref':" not in rendered
+    assert "snapshot':" not in rendered
+    assert "capture':" not in rendered
+    assert "flowweaver.gateway.shadow_capture.v9" not in rendered
+
+
+def test_shadow_replay_corpus_does_not_mutate_entries() -> None:
+    agent_results = [shadow_result_from_corpus_case(case) for case in load_corpus_cases()]
+    before = copy.deepcopy(agent_results)
+
+    corpus = replay_flowweaver_shadow_corpus(agent_results, attempts=2)
+
+    assert corpus["verdict"] == FLOWWEAVER_SHADOW_REPLAY_CORPUS_PASSED
+    assert agent_results == before

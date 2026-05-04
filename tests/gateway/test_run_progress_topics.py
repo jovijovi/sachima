@@ -1422,6 +1422,55 @@ async def test_flowweaver_shadow_tap_replay_probe_without_visible_side_effects(m
 
 
 @pytest.mark.asyncio
+async def test_flowweaver_shadow_tap_replay_corpus_without_visible_side_effects(monkeypatch, tmp_path):
+    from gateway.flowweaver_shadow import (
+        FLOWWEAVER_SHADOW_REPLAY_CORPUS_PASSED,
+        replay_flowweaver_shadow_corpus,
+    )
+
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        OptionalProgressAgent,
+        session_id="sess-flowweaver-shadow-replay-corpus",
+        config_data={
+            "display": {
+                "tool_progress": "off",
+                "task_tracker": {
+                    "enabled": False,
+                    "flowweaver_shadow": True,
+                    "max_operations": 8,
+                },
+            },
+        },
+    )
+
+    corpus = replay_flowweaver_shadow_corpus([result], attempts=2)
+
+    rendered = repr(corpus).lower()
+    assert result["final_response"] == "done"
+    assert adapter.sent == []
+    assert adapter.edits == []
+    assert corpus["verdict"] == FLOWWEAVER_SHADOW_REPLAY_CORPUS_PASSED
+    assert corpus["reason"] == "ok"
+    assert corpus["entry_count"] == 1
+    assert corpus["entries"][0]["verdict"] == "replayed"
+    assert corpus["side_effects"] == []
+    assert "snapshot_ref" not in corpus["entries"][0]
+    assert "snapshot" not in corpus["entries"][0]
+    assert "capture" not in corpus["entries"][0]
+    assert "transaction" not in corpus["entries"][0]
+    assert "deliveries" not in rendered
+    assert "artifacts" not in rendered
+    assert "om_" not in rendered
+    assert "oc_" not in rendered
+    assert "ou_" not in rendered
+    assert "chat" not in rendered
+    assert "user" not in rendered
+    assert "message" not in rendered
+
+
+@pytest.mark.asyncio
 async def test_flowweaver_shadow_tap_default_off_preserves_existing_no_progress_behavior(monkeypatch, tmp_path):
     from gateway.flowweaver_shadow import FLOWWEAVER_SHADOW_SNAPSHOT_KEY
 
