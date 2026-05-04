@@ -9468,6 +9468,13 @@ class GatewayRunner:
         task_tracker_enabled = is_truthy_value(
             task_tracker_config.get("enabled"), default=False
         )
+        try:
+            from gateway.flowweaver_shadow import is_flowweaver_shadow_enabled
+
+            flowweaver_shadow_enabled = is_flowweaver_shadow_enabled(task_tracker_config)
+        except Exception as _fw_shadow_cfg_err:
+            logger.debug("FlowWeaver shadow tap disabled after config error: %s", _fw_shadow_cfg_err)
+            flowweaver_shadow_enabled = False
         task_tracker_mode = str(task_tracker_config.get("mode", "text") or "text").strip().lower()
         if task_tracker_mode == "feishu_card" and source.platform != Platform.FEISHU:
             task_tracker_mode = "text"
@@ -9491,7 +9498,7 @@ class GatewayRunner:
             source.platform != Platform.WEBHOOK
             and (progress_mode != "off" or task_tracker_enabled)
         )
-        tool_progress_enabled = progress_display_enabled
+        tool_progress_enabled = progress_display_enabled or flowweaver_shadow_enabled
         # Natural assistant status messages are intentionally independent from
         # tool progress and token streaming. Users can keep tool_progress quiet
         # in chat platforms while opting into concise mid-turn updates.
@@ -9503,15 +9510,20 @@ class GatewayRunner:
             )
         )
         
-        # Queue for progress messages (thread-safe)
-        progress_queue = queue.Queue() if tool_progress_enabled else None
+        # Queue for progress messages (thread-safe). Shadow collection must not
+        # create a visible progress queue; it only needs the callback/tracker.
+        progress_queue = queue.Queue() if progress_display_enabled else None
         last_tool = [None]  # Mutable container for tracking in closure
         last_progress_msg = [None]  # Track last message for dedup
         repeat_count = [0]  # How many times the same message repeated
 
         progress_tracker = None
         progress_event_store = None
-        if progress_queue and task_tracker_enabled:
+        progress_tracking_enabled = (
+            (progress_queue is not None and task_tracker_enabled)
+            or flowweaver_shadow_enabled
+        )
+        if progress_tracking_enabled:
             try:
                 from gateway.progress.store import build_progress_event_store
                 from gateway.progress.task_titles import summarize_task_intent
@@ -9522,16 +9534,18 @@ class GatewayRunner:
                     title=_tracker_title,
                     max_operations=task_tracker_max_operations,
                 )
-                progress_event_store = build_progress_event_store(task_tracker_config)
+                if progress_queue is not None and task_tracker_enabled:
+                    progress_event_store = build_progress_event_store(task_tracker_config)
             except Exception as _tracker_err:
                 logger.debug("Task tracker disabled after setup error: %s", _tracker_err)
                 progress_tracker = None
                 progress_event_store = None
                 task_tracker_enabled = False
+                flowweaver_shadow_enabled = False
         
         def progress_callback(event_type: str, tool_name: str = None, preview: str = None, args: dict = None, **kwargs):
             """Callback invoked by agent on tool lifecycle events."""
-            if not progress_queue or not _run_still_current():
+            if not _run_still_current():
                 return
 
             if progress_tracker is not None:
@@ -9549,9 +9563,15 @@ class GatewayRunner:
                                 progress_event_store.append_operation(progress_tracker.snapshot(), recorded)
                             except Exception as store_err:
                                 logger.debug("Task tracker event persistence error: %s", store_err)
-                        progress_queue.put(("__render_task_tracker__",))
+                        if progress_queue is not None and task_tracker_enabled:
+                            progress_queue.put(("__render_task_tracker__",))
+                            return
                 except Exception as cb_err:
                     logging.debug(f"Task tracker progress callback error: {cb_err}")
+                if task_tracker_enabled or progress_queue is None:
+                    return
+
+            if not progress_queue:
                 return
 
             # Only act on tool.started events (ignore tool.completed, reasoning.available, etc.)
@@ -9661,7 +9681,7 @@ class GatewayRunner:
             _PROGRESS_EDIT_INTERVAL = 1.5  # Minimum seconds between edits
 
             def _current_progress_text() -> str:
-                if progress_tracker is not None:
+                if progress_tracker is not None and task_tracker_enabled:
                     from gateway.progress.renderers import render_text_panel
                     return render_text_panel(
                         progress_tracker.snapshot(),
@@ -9695,7 +9715,7 @@ class GatewayRunner:
                     raw = progress_queue.get_nowait()
                     is_final_tracker_flush = raw is progress_final_flush_sentinel
 
-                    if progress_tracker is not None:
+                    if progress_tracker is not None and task_tracker_enabled:
                         from gateway.progress.renderers import render_text_panel
                         msg = render_text_panel(
                             progress_tracker.snapshot(),
@@ -9816,7 +9836,7 @@ class GatewayRunner:
                         except Exception:
                             break
                     # Final edit/patch with all remaining progress (only if editing works)
-                    if can_edit and progress_msg_id and (progress_lines or progress_tracker is not None):
+                    if can_edit and progress_msg_id and (progress_lines or (progress_tracker is not None and task_tracker_enabled)):
                         full_text = _current_progress_text()
                         try:
                             if using_feishu_card:
@@ -10542,7 +10562,7 @@ class GatewayRunner:
         
         # Start progress message sender if enabled
         progress_task = None
-        if tool_progress_enabled:
+        if progress_queue is not None:
             progress_task = asyncio.create_task(send_progress_messages())
 
         # Start stream consumer task — polls for consumer creation since it
@@ -11087,7 +11107,7 @@ class GatewayRunner:
                 except Exception as _tracker_final_err:
                     logger.debug("Task tracker final status update failed: %s", _tracker_final_err)
             if progress_task:
-                if progress_tracker is not None and not progress_task.done():
+                if task_tracker_enabled and progress_tracker is not None and not progress_task.done():
                     try:
                         progress_queue.put(progress_final_flush_sentinel)
                         await asyncio.wait_for(progress_final_flushed.wait(), timeout=3.0)
@@ -11171,6 +11191,19 @@ class GatewayRunner:
                     response,
                     reason="stream_final_response" if _streamed else "response_previewed",
                 )
+        if flowweaver_shadow_enabled and isinstance(response, dict) and progress_tracker is not None:
+            try:
+                from gateway.flowweaver_shadow import attach_flowweaver_shadow_snapshot
+
+                attach_flowweaver_shadow_snapshot(
+                    response,
+                    progress_tracker.snapshot(),
+                    enabled=True,
+                    source=source,
+                    final_text=response.get("final_response"),
+                )
+            except Exception as _fw_shadow_err:
+                logger.debug("FlowWeaver shadow snapshot capture failed: %s", _fw_shadow_err)
         
         return response
 
