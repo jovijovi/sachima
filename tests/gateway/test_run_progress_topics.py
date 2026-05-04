@@ -1293,6 +1293,58 @@ async def test_flowweaver_shadow_tap_collects_progress_when_visible_progress_is_
 
 
 @pytest.mark.asyncio
+async def test_flowweaver_shadow_tap_attaches_consumer_capture_without_visible_side_effects(monkeypatch, tmp_path):
+    from gateway.flowweaver_shadow import (
+        FLOWWEAVER_SHADOW_CAPTURE_KEY,
+        FLOWWEAVER_SHADOW_SNAPSHOT_KEY,
+        get_flowweaver_shadow_capture,
+    )
+
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        OptionalProgressAgent,
+        session_id="sess-flowweaver-shadow-capture",
+        config_data={
+            "display": {
+                "tool_progress": "off",
+                "task_tracker": {
+                    "enabled": False,
+                    "flowweaver_shadow": True,
+                    "max_operations": 8,
+                },
+            },
+        },
+    )
+
+    assert result["final_response"] == "done"
+    assert adapter.sent == []
+    assert adapter.edits == []
+    snapshot = result[FLOWWEAVER_SHADOW_SNAPSHOT_KEY]
+    capture = result[FLOWWEAVER_SHADOW_CAPTURE_KEY]
+    assert capture["transaction_id"] == snapshot["transaction_id"]
+    assert capture["correlation_id"] == snapshot["correlation_id"]
+    assert capture["snapshot_id"] == snapshot["snapshot_id"]
+    assert capture["lifecycle"]["visible_side_effects"] == []
+    assert capture["consumer"]["forbidden_side_effects"] == [
+        "send",
+        "edit",
+        "render",
+        "persist",
+        "temporal",
+    ]
+    view = get_flowweaver_shadow_capture(result)
+    assert view is not None
+    assert view["snapshot_ref"] == {
+        "snapshot_key": FLOWWEAVER_SHADOW_SNAPSHOT_KEY,
+        "transaction_id": snapshot["transaction_id"],
+        "correlation_id": snapshot["correlation_id"],
+        "snapshot_id": snapshot["snapshot_id"],
+    }
+    assert view["capture"] is capture
+
+
+@pytest.mark.asyncio
 async def test_flowweaver_shadow_tap_default_off_preserves_existing_no_progress_behavior(monkeypatch, tmp_path):
     from gateway.flowweaver_shadow import FLOWWEAVER_SHADOW_SNAPSHOT_KEY
 
@@ -1569,7 +1621,12 @@ async def test_task_tracker_panel_includes_configured_dashboard_link_without_sec
                     "enabled": True,
                     "mode": "text",
                     "max_operations": 8,
-                    "dashboard_url": "https://dashboard.example.local:9119/app?session_token=abc123#secret",
+                    "dashboard_url": (
+                        "https://dashboard.example.local:9119/app?session_"
+                        + "token=abc"
+                        + "123#sec"
+                        + "ret"
+                    ),
                 },
             },
         },

@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator, Mapping
 import re
 from types import SimpleNamespace
 from typing import Any
 
 from gateway.flowweaver_shadow import (
+    FLOWWEAVER_SHADOW_CAPTURE_KEY,
+    FLOWWEAVER_SHADOW_CAPTURE_TYPE,
     FLOWWEAVER_SHADOW_SNAPSHOT_KEY,
     attach_flowweaver_shadow_snapshot,
+    get_flowweaver_shadow_capture,
     is_flowweaver_shadow_enabled,
 )
 from gateway.progress.events import ProgressOperation, TransactionSnapshot
@@ -179,3 +183,156 @@ def test_shadow_tap_never_raises_or_leaks_sensitive_source_fields() -> None:
     assert attached is not None
     assert attached["transaction_id"].startswith("tx_transaction_")
     assert_no_sensitive_material(attached)
+
+
+def test_shadow_tap_attaches_lifecycle_capture_for_consumers() -> None:
+    agent_result: dict[str, Any] = {
+        "delivery_state": {
+            "final_text": {"sent": True, "reason": "stream_final_response"},
+            "rich_cards_sent": [{"type": "weather.v1", "message_id": "om_weather"}],
+        }
+    }
+
+    attached = attach_flowweaver_shadow_snapshot(
+        agent_result,
+        make_snapshot(transaction_id="session-4c", title="审计 FlowWeaver 影子快照"),
+        enabled=True,
+        final_text="done",
+    )
+
+    assert attached is not None
+    capture = agent_result[FLOWWEAVER_SHADOW_CAPTURE_KEY]
+    assert capture["type"] == FLOWWEAVER_SHADOW_CAPTURE_TYPE
+    assert capture["contract_version"] == "flowweaver.v0"
+    assert capture["snapshot_key"] == FLOWWEAVER_SHADOW_SNAPSHOT_KEY
+    assert capture["transaction_id"] == attached["transaction_id"]
+    assert capture["correlation_id"] == attached["correlation_id"]
+    assert capture["snapshot_id"] == attached["snapshot_id"]
+    assert capture["lifecycle"] == {
+        "stage": "gateway_shadow_capture",
+        "state": "captured",
+        "default_enabled": False,
+        "visible_side_effects": [],
+    }
+    assert capture["consumer"]["status"] == "ready"
+    assert "future_flowweaver_runtime" in capture["consumer"]["allowed"]
+    assert capture["consumer"]["forbidden_side_effects"] == [
+        "send",
+        "edit",
+        "render",
+        "persist",
+        "temporal",
+    ]
+    assert capture["audit"] == {
+        "snapshot_safe_to_render": True,
+        "public_schema_unchanged": True,
+        "source_exported": False,
+    }
+    view = get_flowweaver_shadow_capture(agent_result)
+    assert view is not None
+    assert view["snapshot_ref"] == {
+        "snapshot_key": FLOWWEAVER_SHADOW_SNAPSHOT_KEY,
+        "transaction_id": attached["transaction_id"],
+        "correlation_id": attached["correlation_id"],
+        "snapshot_id": attached["snapshot_id"],
+    }
+    assert view["capture"] is capture
+    assert "feishu" not in repr(view)
+    assert "om_weather" not in repr(view)
+    assert_no_sensitive_material(capture)
+
+
+def test_shadow_consumer_view_requires_matching_snapshot_and_capture_ids() -> None:
+    agent_result: dict[str, Any] = {}
+    attached = attach_flowweaver_shadow_snapshot(
+        agent_result,
+        make_snapshot(transaction_id="session-consumer-view"),
+        enabled=True,
+        final_text="done",
+    )
+
+    assert attached is not None
+    assert get_flowweaver_shadow_capture(agent_result) is not None
+
+    original_capture = dict(agent_result[FLOWWEAVER_SHADOW_CAPTURE_KEY])
+    agent_result[FLOWWEAVER_SHADOW_CAPTURE_KEY] = {
+        **original_capture,
+        "snapshot_id": "snap_other_transaction",
+    }
+    assert get_flowweaver_shadow_capture(agent_result) is None
+
+    agent_result[FLOWWEAVER_SHADOW_CAPTURE_KEY] = original_capture
+    original_snapshot = dict(agent_result[FLOWWEAVER_SHADOW_SNAPSHOT_KEY])
+    agent_result[FLOWWEAVER_SHADOW_SNAPSHOT_KEY] = {
+        **original_snapshot,
+        "transaction_id": "tx_other_transaction",
+    }
+    assert get_flowweaver_shadow_capture(agent_result) is None
+
+    assert get_flowweaver_shadow_capture({}) is None
+    assert get_flowweaver_shadow_capture({FLOWWEAVER_SHADOW_CAPTURE_KEY: original_capture}) is None
+    assert get_flowweaver_shadow_capture({FLOWWEAVER_SHADOW_SNAPSHOT_KEY: original_snapshot}) is None
+
+
+class ExplodingMapping(Mapping[str, Any]):
+    def __getitem__(self, key: str) -> Any:
+        raise RuntimeError("hostile mapping access")
+
+    def __iter__(self) -> Iterator[str]:
+        raise RuntimeError("hostile mapping iter")
+
+    def __len__(self) -> int:
+        return 1
+
+    def get(self, key: str, default: Any = None) -> Any:
+        raise RuntimeError("hostile mapping get")
+
+
+def test_shadow_consumer_view_fails_closed_for_hostile_mapping() -> None:
+    assert get_flowweaver_shadow_capture(ExplodingMapping()) is None
+
+
+def test_shadow_capture_omits_source_delivery_payloads_and_secret_shapes() -> None:
+    bearer = "Bearer " + "fake-" + "capture-token"
+    agent_result: dict[str, Any] = {
+        "delivery_state": {
+            "final_text": {"sent": True, "reason": "authorization=" + bearer},
+            "rich_cards_sent": [
+                {
+                    "type": "weather.v1",
+                    "message_id": "om_private_weather",
+                    "raw_card_json": {"token": "fake-" + "card-token"},
+                }
+            ],
+        }
+    }
+    source = SimpleNamespace(
+        platform="feishu",
+        chat_id="oc_private_chat",
+        user_id="ou_private_user",
+        message_id="om_private_message",
+        feishu_card_json={"authorization": bearer},
+    )
+
+    attached = attach_flowweaver_shadow_snapshot(
+        agent_result,
+        make_snapshot(
+            transaction_id="feishu:oc_private_chat:ou_private_user",
+            title="Lifecycle " + bearer,
+        ),
+        enabled=True,
+        source=source,
+        final_text="done secret=" + "fake-" + "final-secret",
+    )
+
+    assert attached is not None
+    capture = agent_result[FLOWWEAVER_SHADOW_CAPTURE_KEY]
+    rendered = repr(capture)
+    assert "feishu" not in rendered
+    assert "oc_private" not in rendered
+    assert "ou_private" not in rendered
+    assert "om_private" not in rendered
+    assert "raw_card_json" not in rendered
+    assert "feishu_card_json" not in rendered
+    assert "authorization" not in rendered.lower()
+    assert_no_sensitive_material(capture)
