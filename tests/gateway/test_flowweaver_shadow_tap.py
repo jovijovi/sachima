@@ -8,10 +8,16 @@ from types import SimpleNamespace
 from typing import Any
 
 from gateway.flowweaver_shadow import (
+    FLOWWEAVER_SHADOW_AUDIT_READY,
+    FLOWWEAVER_SHADOW_AUDIT_REJECTED,
+    FLOWWEAVER_SHADOW_AUDIT_SCHEMA_MISMATCH,
+    FLOWWEAVER_SHADOW_AUDIT_TYPE,
+    FLOWWEAVER_SHADOW_AUDIT_UNSAFE,
     FLOWWEAVER_SHADOW_CAPTURE_KEY,
     FLOWWEAVER_SHADOW_CAPTURE_TYPE,
     FLOWWEAVER_SHADOW_SNAPSHOT_KEY,
     attach_flowweaver_shadow_snapshot,
+    audit_flowweaver_shadow_capture,
     get_flowweaver_shadow_capture,
     is_flowweaver_shadow_enabled,
 )
@@ -301,7 +307,7 @@ def test_shadow_capture_omits_source_delivery_payloads_and_secret_shapes() -> No
                 {
                     "type": "weather.v1",
                     "message_id": "om_private_weather",
-                    "raw_card_json": {"token": "fake-" + "card-token"},
+                    "raw_card_json": {"token": "***" + "card-token"},
                 }
             ],
         }
@@ -336,3 +342,235 @@ def test_shadow_capture_omits_source_delivery_payloads_and_secret_shapes() -> No
     assert "feishu_card_json" not in rendered
     assert "authorization" not in rendered.lower()
     assert_no_sensitive_material(capture)
+
+
+def attach_shadow_result(
+    *,
+    status: str = "completed",
+    delivery_state: dict[str, Any] | None = None,
+    final_text: str | None = "done",
+    transaction_id: str = "session-audit",
+) -> dict[str, Any]:
+    agent_result: dict[str, Any] = {"delivery_state": delivery_state or {}}
+    attached = attach_flowweaver_shadow_snapshot(
+        agent_result,
+        make_snapshot(transaction_id=transaction_id, status=status),
+        enabled=True,
+        final_text=final_text,
+    )
+    assert attached is not None
+    return agent_result
+
+
+def test_shadow_audit_ready_for_safe_consumer_view() -> None:
+    agent_result = attach_shadow_result(
+        delivery_state={
+            "final_text": {"sent": True, "reason": "stream_final_response"},
+            "rich_cards_sent": [{"type": "weather.v1", "message_id": "om_weather"}],
+        }
+    )
+
+    audit = audit_flowweaver_shadow_capture(agent_result)
+
+    snapshot = agent_result[FLOWWEAVER_SHADOW_SNAPSHOT_KEY]
+    capture = agent_result[FLOWWEAVER_SHADOW_CAPTURE_KEY]
+    assert audit["type"] == FLOWWEAVER_SHADOW_AUDIT_TYPE
+    assert audit["verdict"] == FLOWWEAVER_SHADOW_AUDIT_READY
+    assert audit["reason"] == "ok"
+    assert audit["snapshot_ref"] == {
+        "snapshot_key": FLOWWEAVER_SHADOW_SNAPSHOT_KEY,
+        "transaction_id": snapshot["transaction_id"],
+        "correlation_id": snapshot["correlation_id"],
+        "snapshot_id": snapshot["snapshot_id"],
+    }
+    assert audit["checks"] == {
+        "consumer_view_valid": True,
+        "ids_match": True,
+        "contract_version_valid": True,
+        "snapshot_safe_to_render": True,
+        "public_schema_unchanged": True,
+        "source_not_exported": True,
+        "side_effects_absent": True,
+    }
+    assert audit["side_effects"] == []
+    assert "capture" not in audit
+
+
+def test_shadow_audit_rejects_missing_or_mismatched_pair() -> None:
+    assert audit_flowweaver_shadow_capture({})["verdict"] == FLOWWEAVER_SHADOW_AUDIT_REJECTED
+
+    agent_result = attach_shadow_result()
+    original_capture = dict(agent_result[FLOWWEAVER_SHADOW_CAPTURE_KEY])
+    agent_result[FLOWWEAVER_SHADOW_CAPTURE_KEY] = {
+        **original_capture,
+        "snapshot_id": "snap_wrong",
+    }
+
+    audit = audit_flowweaver_shadow_capture(agent_result)
+
+    assert audit["verdict"] == FLOWWEAVER_SHADOW_AUDIT_REJECTED
+    assert audit["reason"] == "missing_or_invalid_consumer_view"
+    assert audit["snapshot_ref"] is None
+    assert audit["side_effects"] == []
+
+
+def test_shadow_audit_marks_unsafe_snapshot_as_unsafe() -> None:
+    agent_result = attach_shadow_result()
+    agent_result[FLOWWEAVER_SHADOW_SNAPSHOT_KEY]["snapshot"] = {
+        **agent_result[FLOWWEAVER_SHADOW_SNAPSHOT_KEY]["snapshot"],
+        "safe_to_render": False,
+    }
+    agent_result[FLOWWEAVER_SHADOW_CAPTURE_KEY] = {
+        **agent_result[FLOWWEAVER_SHADOW_CAPTURE_KEY],
+        "audit": {
+            **agent_result[FLOWWEAVER_SHADOW_CAPTURE_KEY]["audit"],
+            "snapshot_safe_to_render": False,
+        },
+    }
+
+    audit = audit_flowweaver_shadow_capture(agent_result)
+
+    assert audit["verdict"] == FLOWWEAVER_SHADOW_AUDIT_UNSAFE
+    assert audit["reason"] == "unsafe_snapshot"
+    assert audit["checks"]["snapshot_safe_to_render"] is False
+
+
+def test_shadow_audit_marks_source_export_or_side_effects_as_unsafe() -> None:
+    agent_result = attach_shadow_result()
+    agent_result[FLOWWEAVER_SHADOW_CAPTURE_KEY] = {
+        **agent_result[FLOWWEAVER_SHADOW_CAPTURE_KEY],
+        "audit": {
+            **agent_result[FLOWWEAVER_SHADOW_CAPTURE_KEY]["audit"],
+            "source_exported": True,
+        },
+    }
+
+    source_audit = audit_flowweaver_shadow_capture(agent_result)
+
+    assert source_audit["verdict"] == FLOWWEAVER_SHADOW_AUDIT_UNSAFE
+    assert source_audit["reason"] == "unsafe_snapshot"
+    assert source_audit["checks"]["source_not_exported"] is False
+
+    agent_result = attach_shadow_result()
+    agent_result[FLOWWEAVER_SHADOW_CAPTURE_KEY] = {
+        **agent_result[FLOWWEAVER_SHADOW_CAPTURE_KEY],
+        "lifecycle": {
+            **agent_result[FLOWWEAVER_SHADOW_CAPTURE_KEY]["lifecycle"],
+            "visible_side_effects": ["send"],
+        },
+    }
+
+    side_effect_audit = audit_flowweaver_shadow_capture(agent_result)
+
+    assert side_effect_audit["verdict"] == FLOWWEAVER_SHADOW_AUDIT_UNSAFE
+    assert side_effect_audit["reason"] == "unsafe_snapshot"
+    assert side_effect_audit["checks"]["side_effects_absent"] is False
+
+
+def test_shadow_audit_marks_contract_or_capture_type_mismatch_as_schema_mismatch() -> None:
+    agent_result = attach_shadow_result()
+    agent_result[FLOWWEAVER_SHADOW_SNAPSHOT_KEY] = {
+        **agent_result[FLOWWEAVER_SHADOW_SNAPSHOT_KEY],
+        "contract_version": "flowweaver.v9",
+    }
+
+    audit = audit_flowweaver_shadow_capture(agent_result)
+
+    assert audit["verdict"] == FLOWWEAVER_SHADOW_AUDIT_SCHEMA_MISMATCH
+    assert audit["reason"] == "schema_mismatch"
+
+    agent_result = attach_shadow_result()
+    agent_result[FLOWWEAVER_SHADOW_CAPTURE_KEY] = {
+        **agent_result[FLOWWEAVER_SHADOW_CAPTURE_KEY],
+        "type": "flowweaver.gateway.shadow_capture.v9",
+    }
+
+    audit = audit_flowweaver_shadow_capture(agent_result)
+
+    assert audit["verdict"] == FLOWWEAVER_SHADOW_AUDIT_SCHEMA_MISMATCH
+    assert audit["reason"] == "schema_mismatch"
+
+
+def test_shadow_audit_fails_closed_for_hostile_mapping() -> None:
+    audit = audit_flowweaver_shadow_capture(ExplodingMapping())
+
+    assert audit["verdict"] == FLOWWEAVER_SHADOW_AUDIT_REJECTED
+    assert audit["reason"] == "missing_or_invalid_consumer_view"
+    assert audit["snapshot_ref"] is None
+    assert audit["side_effects"] == []
+
+
+def test_shadow_audit_output_omits_full_snapshot_delivery_payloads_and_secret_shapes() -> None:
+    bearer = "Bearer " + "fake-" + "audit-token"
+    agent_result = attach_shadow_result(
+        transaction_id="feishu:oc_private_chat:ou_private_user",
+        delivery_state={
+            "final_text": {"sent": True, "reason": "authorization=" + bearer},
+            "rich_cards_sent": [
+                {
+                    "type": "weather.v1",
+                    "message_id": "om_private_weather",
+                    "raw_card_json": {"authorization": bearer},
+                }
+            ],
+        },
+        final_text="done token=" + "fake-" + "audit-secret",
+    )
+
+    audit = audit_flowweaver_shadow_capture(agent_result)
+
+    rendered = repr(audit)
+    assert audit["verdict"] == FLOWWEAVER_SHADOW_AUDIT_READY
+    assert "transaction" not in audit
+    assert "snapshot" not in audit
+    assert "capture" not in audit
+    assert "deliveries" not in rendered
+    assert "artifacts" not in rendered
+    assert "feishu" not in rendered
+    assert "om_private" not in rendered
+    assert "oc_private" not in rendered
+    assert "ou_private" not in rendered
+    assert "raw_card_json" not in rendered
+    assert "authorization" not in rendered.lower()
+    assert_no_sensitive_material(audit)
+
+
+def test_shadow_audit_rejects_platform_like_snapshot_ref_ids_without_leaking_them() -> None:
+    agent_result = attach_shadow_result()
+    snapshot = {
+        **agent_result[FLOWWEAVER_SHADOW_SNAPSHOT_KEY],
+        "transaction_id": "feishu:oc_private_chat:ou_private_user",
+        "correlation_id": "turn_oc_private_chat",
+        "snapshot_id": "snap_om_private_message",
+    }
+    agent_result[FLOWWEAVER_SHADOW_SNAPSHOT_KEY] = snapshot
+    agent_result[FLOWWEAVER_SHADOW_CAPTURE_KEY] = {
+        **agent_result[FLOWWEAVER_SHADOW_CAPTURE_KEY],
+        "transaction_id": snapshot["transaction_id"],
+        "correlation_id": snapshot["correlation_id"],
+        "snapshot_id": snapshot["snapshot_id"],
+    }
+
+    audit = audit_flowweaver_shadow_capture(agent_result)
+
+    rendered = repr(audit)
+    assert audit["verdict"] == FLOWWEAVER_SHADOW_AUDIT_SCHEMA_MISMATCH
+    assert audit["snapshot_ref"] is None
+    assert "feishu" not in rendered
+    assert "oc_private" not in rendered
+    assert "ou_private" not in rendered
+    assert "om_private" not in rendered
+
+
+def test_shadow_audit_accepts_failed_cancelled_blocked_and_pending_lifecycle_states() -> None:
+    for status, expected_transaction_status in (
+        ("failed", "failed"),
+        ("cancelled", "cancelled"),
+        ("blocked", "blocked"),
+        ("running", "running"),
+    ):
+        agent_result = attach_shadow_result(status=status, final_text=None, transaction_id=f"session-{status}")
+        audit = audit_flowweaver_shadow_capture(agent_result)
+
+        assert audit["verdict"] == FLOWWEAVER_SHADOW_AUDIT_READY
+        assert agent_result[FLOWWEAVER_SHADOW_SNAPSHOT_KEY]["transaction"]["status"] == expected_transaction_status

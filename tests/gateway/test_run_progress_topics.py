@@ -1345,6 +1345,44 @@ async def test_flowweaver_shadow_tap_attaches_consumer_capture_without_visible_s
 
 
 @pytest.mark.asyncio
+async def test_flowweaver_shadow_tap_audit_ready_without_visible_side_effects(monkeypatch, tmp_path):
+    from gateway.flowweaver_shadow import (
+        FLOWWEAVER_SHADOW_AUDIT_READY,
+        audit_flowweaver_shadow_capture,
+    )
+
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        OptionalProgressAgent,
+        session_id="sess-flowweaver-shadow-audit",
+        config_data={
+            "display": {
+                "tool_progress": "off",
+                "task_tracker": {
+                    "enabled": False,
+                    "flowweaver_shadow": True,
+                    "max_operations": 8,
+                },
+            },
+        },
+    )
+
+    audit = audit_flowweaver_shadow_capture(result)
+
+    assert result["final_response"] == "done"
+    assert adapter.sent == []
+    assert adapter.edits == []
+    assert audit["verdict"] == FLOWWEAVER_SHADOW_AUDIT_READY
+    assert audit["reason"] == "ok"
+    assert audit["side_effects"] == []
+    assert "snapshot" not in audit
+    assert "capture" not in audit
+    assert "deliveries" not in repr(audit)
+    assert "om_" not in repr(audit)
+
+
+@pytest.mark.asyncio
 async def test_flowweaver_shadow_tap_default_off_preserves_existing_no_progress_behavior(monkeypatch, tmp_path):
     from gateway.flowweaver_shadow import FLOWWEAVER_SHADOW_SNAPSHOT_KEY
 
