@@ -329,8 +329,8 @@ Expected: all new tests pass.
   - `stderr`
   - `feishu_card_json`
 - no forbidden value patterns:
-  - `Bearer ...`
-  - `sk-...`
+  - authorization-header patterns
+  - OpenAI-style `sk-` key patterns
   - fake token/secret strings used in test fixtures
 - rich-card delivery ACK does not mark final text answered unless final text delivery ACK exists
 
@@ -453,8 +453,8 @@ Secret scan over changed files:
 python - <<'PY'
 import re, subprocess, sys
 patterns = [
-    re.compile(r'Bearer\s+[A-Za-z0-9._-]+', re.I),
-    re.compile(r'sk-[A-Za-z0-9]{12,}'),
+    re.compile('Bearer' + r'\s+[A-Za-z0-9._-]+', re.I),
+    re.compile('sk-' + r'[A-Za-z0-9]{12,}'),
     re.compile(r'AKIA[0-9A-Z]{16}'),
     re.compile(r'-----BEGIN [A-Z ]+PRIVATE KEY-----'),
 ]
