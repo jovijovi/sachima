@@ -612,6 +612,24 @@ class SingleProgressFastReturnAgent:
         }
 
 
+class OptionalProgressAgent:
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        if self.tool_progress_callback:
+            self.tool_progress_callback("tool.started", "read_file", "gateway/run.py", {"path": "gateway/run.py"})
+            time.sleep(0.35)
+            self.tool_progress_callback("tool.started", "search_files", "tool_progress", {"pattern": "tool_progress"})
+        time.sleep(0.35)
+        return {
+            "final_response": "done",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
 class PersistentProgressAgent:
     def __init__(self, **kwargs):
         self.tool_progress_callback = kwargs.get("tool_progress_callback")
@@ -1239,6 +1257,131 @@ async def test_non_feishu_feishu_card_mode_falls_back_to_text_progress(monkeypat
     assert "Transaction" in all_panels
     assert "Completed" in all_panels
     assert "read_file" in all_panels
+
+
+@pytest.mark.asyncio
+async def test_flowweaver_shadow_tap_collects_progress_when_visible_progress_is_off(monkeypatch, tmp_path):
+    from gateway.flowweaver_shadow import FLOWWEAVER_SHADOW_SNAPSHOT_KEY
+
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        OptionalProgressAgent,
+        session_id="sess-flowweaver-shadow-progress-off",
+        config_data={
+            "display": {
+                "tool_progress": "off",
+                "task_tracker": {
+                    "enabled": False,
+                    "flowweaver_shadow": True,
+                    "max_operations": 8,
+                },
+            },
+        },
+    )
+
+    assert result["final_response"] == "done"
+    assert adapter.sent == []
+    assert adapter.edits == []
+    shadow = result[FLOWWEAVER_SHADOW_SNAPSHOT_KEY]
+    assert shadow["type"] == "flowweaver.handle.v0"
+    assert shadow["transaction"]["status"] == "succeeded"
+    assert shadow["snapshot"]["status"] == "succeeded"
+    assert len(shadow["transaction"]["operations"]) == 2
+    assert "gateway/run.py" not in repr(shadow)
+    assert "tool_progress" not in repr(shadow)
+
+
+@pytest.mark.asyncio
+async def test_flowweaver_shadow_tap_default_off_preserves_existing_no_progress_behavior(monkeypatch, tmp_path):
+    from gateway.flowweaver_shadow import FLOWWEAVER_SHADOW_SNAPSHOT_KEY
+
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        OptionalProgressAgent,
+        session_id="sess-flowweaver-shadow-default-off",
+        config_data={
+            "display": {
+                "tool_progress": "off",
+                "task_tracker": {"enabled": False},
+            },
+        },
+    )
+
+    assert result["final_response"] == "done"
+    assert adapter.sent == []
+    assert adapter.edits == []
+    assert FLOWWEAVER_SHADOW_SNAPSHOT_KEY not in result
+
+
+@pytest.mark.asyncio
+async def test_flowweaver_shadow_tap_streamed_final_text_counts_as_answered_coverage(monkeypatch, tmp_path):
+    from gateway.flowweaver_shadow import FLOWWEAVER_SHADOW_SNAPSHOT_KEY
+
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        StreamingRefineAgent,
+        session_id="sess-flowweaver-shadow-streamed-final",
+        config_data={
+            "display": {
+                "tool_progress": "off",
+                "interim_assistant_messages": False,
+                "task_tracker": {
+                    "enabled": False,
+                    "flowweaver_shadow": True,
+                },
+            },
+            "streaming": {"enabled": True, "edit_interval": 0.01, "buffer_threshold": 1},
+        },
+        platform=Platform.MATRIX,
+        chat_id="!room:matrix.example.org",
+        chat_type="group",
+        thread_id="$thread",
+    )
+
+    assert result.get("already_sent") is True
+    assert result["delivery_state"]["final_text"] == {"sent": True, "reason": "stream_final_response"}
+    shadow = result[FLOWWEAVER_SHADOW_SNAPSHOT_KEY]
+    assert shadow["transaction"]["final_text"]["status"] == "succeeded"
+    assert shadow["transaction"]["intent_coverage"][0]["mode"] == "answered"
+    assert shadow["transaction"]["deliveries"][0]["surface"] == "final_text"
+    assert any(
+        "Continuing to refine:" in call["content"]
+        for call in adapter.sent + adapter.edits
+    )
+
+
+@pytest.mark.asyncio
+async def test_flowweaver_shadow_tap_preserves_legacy_tool_progress_when_progress_is_visible(monkeypatch, tmp_path):
+    from gateway.flowweaver_shadow import FLOWWEAVER_SHADOW_SNAPSHOT_KEY
+
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        OptionalProgressAgent,
+        session_id="sess-flowweaver-shadow-visible-progress",
+        config_data={
+            "display": {
+                "tool_progress": "all",
+                "task_tracker": {
+                    "enabled": False,
+                    "flowweaver_shadow": True,
+                },
+            },
+        },
+    )
+
+    visible_progress = "\n".join(
+        [call["content"] for call in adapter.sent]
+        + [call["content"] for call in adapter.edits]
+    )
+    assert result["final_response"] == "done"
+    assert FLOWWEAVER_SHADOW_SNAPSHOT_KEY in result
+    assert "read_file" in visible_progress
+    assert "Transaction" not in visible_progress
+    assert "**Status:**" not in visible_progress
 
 
 @pytest.mark.asyncio
