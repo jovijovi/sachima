@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator, Mapping
+import copy
 import re
 from types import SimpleNamespace
 from typing import Any
@@ -15,11 +16,18 @@ from gateway.flowweaver_shadow import (
     FLOWWEAVER_SHADOW_AUDIT_UNSAFE,
     FLOWWEAVER_SHADOW_CAPTURE_KEY,
     FLOWWEAVER_SHADOW_CAPTURE_TYPE,
+    FLOWWEAVER_SHADOW_REPLAY_DRIFT_DETECTED,
+    FLOWWEAVER_SHADOW_REPLAY_REJECTED,
+    FLOWWEAVER_SHADOW_REPLAY_REPLAYED,
+    FLOWWEAVER_SHADOW_REPLAY_SCHEMA_MISMATCH,
+    FLOWWEAVER_SHADOW_REPLAY_TYPE,
+    FLOWWEAVER_SHADOW_REPLAY_UNSAFE,
     FLOWWEAVER_SHADOW_SNAPSHOT_KEY,
     attach_flowweaver_shadow_snapshot,
     audit_flowweaver_shadow_capture,
     get_flowweaver_shadow_capture,
     is_flowweaver_shadow_enabled,
+    replay_flowweaver_shadow_capture,
 )
 from gateway.progress.events import ProgressOperation, TransactionSnapshot
 
@@ -574,3 +582,208 @@ def test_shadow_audit_accepts_failed_cancelled_blocked_and_pending_lifecycle_sta
 
         assert audit["verdict"] == FLOWWEAVER_SHADOW_AUDIT_READY
         assert agent_result[FLOWWEAVER_SHADOW_SNAPSHOT_KEY]["transaction"]["status"] == expected_transaction_status
+
+
+def test_shadow_replay_probe_replays_safe_capture_without_returning_capture_or_snapshot() -> None:
+    agent_result = attach_shadow_result(
+        delivery_state={
+            "final_text": {"sent": True, "reason": "stream_final_response"},
+            "rich_cards_sent": [{"type": "weather.v1", "message_id": "om_weather"}],
+        },
+    )
+
+    replay = replay_flowweaver_shadow_capture(agent_result, attempts=3)
+
+    snapshot = agent_result[FLOWWEAVER_SHADOW_SNAPSHOT_KEY]
+    assert replay["type"] == FLOWWEAVER_SHADOW_REPLAY_TYPE
+    assert replay["verdict"] == FLOWWEAVER_SHADOW_REPLAY_REPLAYED
+    assert replay["reason"] == "ok"
+    assert replay["snapshot_ref"] == {
+        "snapshot_key": FLOWWEAVER_SHADOW_SNAPSHOT_KEY,
+        "transaction_id": snapshot["transaction_id"],
+        "correlation_id": snapshot["correlation_id"],
+        "snapshot_id": snapshot["snapshot_id"],
+    }
+    assert replay["replay_count"] == 3
+    assert replay["checks"] == {
+        "audit_ready": True,
+        "consumer_view_valid": True,
+        "snapshot_ref_stable": True,
+        "audit_stable": True,
+        "input_not_mutated": True,
+        "side_effects_absent": True,
+    }
+    assert replay["side_effects"] == []
+    assert "snapshot" not in replay
+    assert "capture" not in replay
+    assert_no_sensitive_material(replay)
+
+
+def test_shadow_replay_probe_rejects_missing_invalid_or_bad_attempt_counts() -> None:
+    for agent_result, attempts in (
+        ({}, 2),
+        (attach_shadow_result(), 0),
+        (attach_shadow_result(), 6),
+        (attach_shadow_result(), "2"),
+    ):
+        replay = replay_flowweaver_shadow_capture(agent_result, attempts=attempts)  # type: ignore[arg-type]
+
+        assert replay["type"] == FLOWWEAVER_SHADOW_REPLAY_TYPE
+        assert replay["verdict"] == FLOWWEAVER_SHADOW_REPLAY_REJECTED
+        assert replay["reason"] == "missing_or_invalid_consumer_view"
+        assert replay["snapshot_ref"] is None
+        assert replay["replay_count"] == 0
+        assert replay["side_effects"] == []
+
+
+def test_shadow_replay_probe_propagates_audit_unsafe_and_schema_mismatch() -> None:
+    unsafe_result = attach_shadow_result()
+    unsafe_result[FLOWWEAVER_SHADOW_CAPTURE_KEY] = {
+        **unsafe_result[FLOWWEAVER_SHADOW_CAPTURE_KEY],
+        "lifecycle": {
+            **unsafe_result[FLOWWEAVER_SHADOW_CAPTURE_KEY]["lifecycle"],
+            "visible_side_effects": ["send"],
+        },
+    }
+
+    unsafe_replay = replay_flowweaver_shadow_capture(unsafe_result)
+
+    assert unsafe_replay["verdict"] == FLOWWEAVER_SHADOW_REPLAY_UNSAFE
+    assert unsafe_replay["reason"] == "unsafe_snapshot"
+    assert unsafe_replay["checks"]["side_effects_absent"] is False
+    assert unsafe_replay["side_effects"] == []
+
+    mismatch_result = attach_shadow_result()
+    mismatch_result[FLOWWEAVER_SHADOW_CAPTURE_KEY] = {
+        **mismatch_result[FLOWWEAVER_SHADOW_CAPTURE_KEY],
+        "type": "flowweaver.gateway.shadow_capture.v9",
+    }
+
+    mismatch_replay = replay_flowweaver_shadow_capture(mismatch_result)
+
+    assert mismatch_replay["verdict"] == FLOWWEAVER_SHADOW_REPLAY_SCHEMA_MISMATCH
+    assert mismatch_replay["reason"] == "schema_mismatch"
+    assert mismatch_replay["snapshot_ref"] is None
+    assert mismatch_replay["side_effects"] == []
+
+
+def test_shadow_replay_probe_detects_unstable_snapshot_ref_or_audit_output() -> None:
+    first_result = attach_shadow_result(transaction_id="session-replay-first")
+    second_result = attach_shadow_result(transaction_id="session-replay-second")
+
+    class FlappingShadowMapping(Mapping[str, Any]):
+        def __init__(self) -> None:
+            self._pairs = (
+                (
+                    first_result[FLOWWEAVER_SHADOW_SNAPSHOT_KEY],
+                    first_result[FLOWWEAVER_SHADOW_CAPTURE_KEY],
+                ),
+                (
+                    second_result[FLOWWEAVER_SHADOW_SNAPSHOT_KEY],
+                    second_result[FLOWWEAVER_SHADOW_CAPTURE_KEY],
+                ),
+            )
+            self._snapshot_reads = -1
+            self._active_index = 0
+
+        def __getitem__(self, key: str) -> Any:
+            value = self.get(key)
+            if value is None:
+                raise KeyError(key)
+            return value
+
+        def __iter__(self) -> Iterator[str]:
+            return iter((FLOWWEAVER_SHADOW_SNAPSHOT_KEY, FLOWWEAVER_SHADOW_CAPTURE_KEY))
+
+        def __len__(self) -> int:
+            return 2
+
+        def get(self, key: str, default: Any = None) -> Any:
+            if key == FLOWWEAVER_SHADOW_SNAPSHOT_KEY:
+                self._snapshot_reads += 1
+                self._active_index = min(self._snapshot_reads, len(self._pairs) - 1)
+                return self._pairs[self._active_index][0]
+            if key == FLOWWEAVER_SHADOW_CAPTURE_KEY:
+                return self._pairs[self._active_index][1]
+            return default
+
+    replay = replay_flowweaver_shadow_capture(FlappingShadowMapping(), attempts=2)
+
+    assert replay["verdict"] == FLOWWEAVER_SHADOW_REPLAY_DRIFT_DETECTED
+    assert replay["reason"] == "drift_detected"
+    assert replay["snapshot_ref"] is None
+    assert replay["checks"]["snapshot_ref_stable"] is False
+    assert replay["side_effects"] == []
+
+
+def test_shadow_replay_probe_does_not_mutate_agent_result() -> None:
+    agent_result = attach_shadow_result(
+        delivery_state={"final_text": {"sent": True, "reason": "stream_final_response"}},
+    )
+    before = copy.deepcopy(agent_result)
+
+    replay = replay_flowweaver_shadow_capture(agent_result, attempts=3)
+
+    assert replay["verdict"] == FLOWWEAVER_SHADOW_REPLAY_REPLAYED
+    assert agent_result == before
+
+
+def test_shadow_replay_probe_fails_closed_for_hostile_mapping() -> None:
+    replay = replay_flowweaver_shadow_capture(ExplodingMapping())
+
+    assert replay["verdict"] == FLOWWEAVER_SHADOW_REPLAY_REJECTED
+    assert replay["reason"] == "missing_or_invalid_consumer_view"
+    assert replay["snapshot_ref"] is None
+    assert replay["side_effects"] == []
+
+
+def test_shadow_replay_probe_output_omits_delivery_payloads_platform_ids_and_secret_shapes() -> None:
+    bearer = "Bearer " + "fake-" + "replay-token"
+    agent_result = attach_shadow_result(
+        transaction_id="feishu:oc_private_chat:ou_private_user",
+        delivery_state={
+            "final_text": {"sent": True, "reason": "authorization=" + bearer},
+            "rich_cards_sent": [
+                {
+                    "type": "weather.v1",
+                    "message_id": "om_private_weather",
+                    "raw_card_json": {"authorization": bearer},
+                }
+            ],
+        },
+        final_text="done token=" + "fake-" + "replay-secret",
+    )
+
+    replay = replay_flowweaver_shadow_capture(agent_result, attempts=2)
+
+    rendered = repr(replay)
+    assert replay["verdict"] == FLOWWEAVER_SHADOW_REPLAY_REPLAYED
+    assert "transaction" not in replay
+    assert "snapshot" not in replay
+    assert "capture" not in replay
+    assert "deliveries" not in rendered
+    assert "artifacts" not in rendered
+    assert "feishu" not in rendered
+    assert "om_private" not in rendered
+    assert "oc_private" not in rendered
+    assert "ou_private" not in rendered
+    assert "raw_card_json" not in rendered
+    assert "authorization" not in rendered.lower()
+    assert_no_sensitive_material(replay)
+
+
+def test_shadow_replay_probe_rejects_opaque_platform_like_refs_without_leaking_them() -> None:
+    for transaction_id, forbidden_fragment in (
+        ("U123ABC", "u123abc"),
+        ("123456789012345678", "123456789012345678"),
+    ):
+        agent_result = attach_shadow_result(transaction_id=transaction_id)
+
+        replay = replay_flowweaver_shadow_capture(agent_result, attempts=2)
+
+        rendered = repr(replay).lower()
+        assert replay["verdict"] == FLOWWEAVER_SHADOW_REPLAY_SCHEMA_MISMATCH
+        assert replay["reason"] == "schema_mismatch"
+        assert replay["snapshot_ref"] is None
+        assert forbidden_fragment not in rendered
+        assert "transaction_123456789012345678" not in rendered

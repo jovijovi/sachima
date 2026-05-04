@@ -25,13 +25,22 @@ FLOWWEAVER_SHADOW_SNAPSHOT_KEY = "flowweaver_shadow_snapshot"
 FLOWWEAVER_SHADOW_CAPTURE_KEY = "flowweaver_shadow_capture"
 FLOWWEAVER_SHADOW_CAPTURE_TYPE = "flowweaver.gateway.shadow_capture.v0"
 FLOWWEAVER_SHADOW_AUDIT_TYPE = "flowweaver.gateway.shadow_audit.v0"
+FLOWWEAVER_SHADOW_REPLAY_TYPE = "flowweaver.gateway.shadow_replay_probe.v0"
 FLOWWEAVER_SHADOW_AUDIT_READY = "ready"
 FLOWWEAVER_SHADOW_AUDIT_REJECTED = "rejected"
 FLOWWEAVER_SHADOW_AUDIT_UNSAFE = "unsafe"
 FLOWWEAVER_SHADOW_AUDIT_SCHEMA_MISMATCH = "schema_mismatch"
+FLOWWEAVER_SHADOW_REPLAY_REPLAYED = "replayed"
+FLOWWEAVER_SHADOW_REPLAY_REJECTED = "rejected"
+FLOWWEAVER_SHADOW_REPLAY_UNSAFE = "unsafe"
+FLOWWEAVER_SHADOW_REPLAY_SCHEMA_MISMATCH = "schema_mismatch"
+FLOWWEAVER_SHADOW_REPLAY_DRIFT_DETECTED = "drift_detected"
 _FORBIDDEN_CAPTURE_SIDE_EFFECTS = ["send", "edit", "render", "persist", "temporal"]
 _ALLOWED_CAPTURE_CONSUMERS = ["in_memory_test_probe", "future_flowweaver_runtime"]
 _SAFE_SHADOW_REF_RE = re.compile(r"^(?:tx|turn|snap)_[a-z0-9][a-z0-9_]{0,127}$")
+_OPAQUE_PLATFORM_REF_RE = re.compile(
+    r"^(?:tx|turn|snap)_(?:[ucgd][0-9][a-z0-9]{4,}|transaction_[0-9]{12,}|[0-9]{12,})$"
+)
 _UNSAFE_SHADOW_REF_RE = re.compile(
     r"(?i)(?:^|_)(?:feishu|lark|telegram|discord|slack|whatsapp|wecom|dingtalk|"
     r"chat|user|thread|topic|oc|ou|om|open_id|union_id|authorization|api_key|apikey|"
@@ -190,6 +199,156 @@ def audit_flowweaver_shadow_capture(agent_result: Mapping[str, Any]) -> dict[str
         )
 
 
+def replay_flowweaver_shadow_capture(
+    agent_result: Mapping[str, Any],
+    *,
+    attempts: int = 2,
+) -> dict[str, Any]:
+    """Repeatedly read the shadow consumer seam through safe audit projections."""
+
+    try:
+        if not isinstance(agent_result, Mapping) or not _valid_replay_attempts(attempts):
+            return _shadow_replay_result(
+                verdict=FLOWWEAVER_SHADOW_REPLAY_REJECTED,
+                reason="missing_or_invalid_consumer_view",
+            )
+
+        projections: list[dict[str, Any]] = []
+        for _ in range(attempts):
+            audit = audit_flowweaver_shadow_capture(agent_result)
+            projection = _shadow_replay_audit_projection(audit)
+            audit_verdict = projection["verdict"]
+            if audit_verdict == FLOWWEAVER_SHADOW_AUDIT_REJECTED:
+                return _shadow_replay_result(
+                    verdict=FLOWWEAVER_SHADOW_REPLAY_REJECTED,
+                    reason="missing_or_invalid_consumer_view",
+                )
+            if audit_verdict == FLOWWEAVER_SHADOW_AUDIT_SCHEMA_MISMATCH:
+                return _shadow_replay_result(
+                    verdict=FLOWWEAVER_SHADOW_REPLAY_SCHEMA_MISMATCH,
+                    reason="schema_mismatch",
+                )
+            if audit_verdict == FLOWWEAVER_SHADOW_AUDIT_UNSAFE:
+                return _shadow_replay_result(
+                    verdict=FLOWWEAVER_SHADOW_REPLAY_UNSAFE,
+                    reason="unsafe_snapshot",
+                    snapshot_ref=projection["snapshot_ref"],
+                    replay_count=len(projections) + 1,
+                    checks=_shadow_replay_checks_from_audit(
+                        projection,
+                        snapshot_ref_stable=True,
+                        audit_stable=True,
+                    ),
+                )
+            if audit_verdict != FLOWWEAVER_SHADOW_AUDIT_READY:
+                return _shadow_replay_result(
+                    verdict=FLOWWEAVER_SHADOW_REPLAY_REJECTED,
+                    reason="missing_or_invalid_consumer_view",
+                )
+            projections.append(projection)
+
+        first = projections[0]
+        snapshot_ref_stable = all(
+            projection["snapshot_ref"] == first["snapshot_ref"]
+            for projection in projections
+        )
+        audit_stable = all(projection == first for projection in projections)
+        if not snapshot_ref_stable or not audit_stable:
+            return _shadow_replay_result(
+                verdict=FLOWWEAVER_SHADOW_REPLAY_DRIFT_DETECTED,
+                reason="drift_detected",
+                replay_count=len(projections),
+                checks=_shadow_replay_checks_from_audit(
+                    first,
+                    snapshot_ref_stable=snapshot_ref_stable,
+                    audit_stable=audit_stable,
+                ),
+            )
+
+        return _shadow_replay_result(
+            verdict=FLOWWEAVER_SHADOW_REPLAY_REPLAYED,
+            reason="ok",
+            snapshot_ref=first["snapshot_ref"],
+            replay_count=len(projections),
+            checks=_shadow_replay_checks_from_audit(
+                first,
+                snapshot_ref_stable=True,
+                audit_stable=True,
+            ),
+        )
+    except Exception:
+        return _shadow_replay_result(
+            verdict=FLOWWEAVER_SHADOW_REPLAY_REJECTED,
+            reason="missing_or_invalid_consumer_view",
+        )
+
+
+def _valid_replay_attempts(attempts: int) -> bool:
+    return isinstance(attempts, int) and not isinstance(attempts, bool) and 1 <= attempts <= 5
+
+
+def _shadow_replay_audit_projection(audit: Mapping[str, Any]) -> dict[str, Any]:
+    checks = audit.get("checks") if isinstance(audit.get("checks"), Mapping) else {}
+    side_effects = audit.get("side_effects")
+    return {
+        "verdict": audit.get("verdict"),
+        "reason": audit.get("reason"),
+        "snapshot_ref": audit.get("snapshot_ref") if isinstance(audit.get("snapshot_ref"), Mapping) else None,
+        "checks": {key: bool(value) for key, value in dict(checks).items()},
+        "side_effects_absent": side_effects == [],
+    }
+
+
+def _shadow_replay_checks_from_audit(
+    audit_projection: Mapping[str, Any],
+    *,
+    snapshot_ref_stable: bool,
+    audit_stable: bool,
+) -> dict[str, bool]:
+    checks = audit_projection.get("checks") if isinstance(audit_projection.get("checks"), Mapping) else {}
+    return {
+        "audit_ready": audit_projection.get("verdict") == FLOWWEAVER_SHADOW_AUDIT_READY,
+        "consumer_view_valid": checks.get("consumer_view_valid") is True,
+        "snapshot_ref_stable": snapshot_ref_stable,
+        "audit_stable": audit_stable,
+        "input_not_mutated": True,
+        "side_effects_absent": (
+            checks.get("side_effects_absent") is True
+            and audit_projection.get("side_effects_absent") is True
+        ),
+    }
+
+
+def _shadow_replay_result(
+    *,
+    verdict: str,
+    reason: str,
+    snapshot_ref: dict[str, str] | None = None,
+    replay_count: int = 0,
+    checks: dict[str, bool] | None = None,
+) -> dict[str, Any]:
+    return {
+        "type": FLOWWEAVER_SHADOW_REPLAY_TYPE,
+        "verdict": verdict,
+        "reason": reason,
+        "snapshot_ref": snapshot_ref,
+        "replay_count": replay_count,
+        "checks": checks or _default_shadow_replay_checks(),
+        "side_effects": [],
+    }
+
+
+def _default_shadow_replay_checks() -> dict[str, bool]:
+    return {
+        "audit_ready": False,
+        "consumer_view_valid": False,
+        "snapshot_ref_stable": False,
+        "audit_stable": False,
+        "input_not_mutated": True,
+        "side_effects_absent": True,
+    }
+
+
 def _shadow_schema_matches(*, snapshot: Mapping[str, Any], capture: Mapping[str, Any]) -> bool:
     try:
         return (
@@ -301,6 +460,7 @@ def _safe_shadow_ref_id(value: str, *, prefix: str) -> bool:
         value.startswith(expected_prefix)
         and _SAFE_SHADOW_REF_RE.fullmatch(value) is not None
         and _UNSAFE_SHADOW_REF_RE.search(value) is None
+        and _OPAQUE_PLATFORM_REF_RE.fullmatch(value) is None
     )
 
 
@@ -384,9 +544,16 @@ __all__ = [
     "FLOWWEAVER_SHADOW_CAPTURE_KEY",
     "FLOWWEAVER_SHADOW_CAPTURE_TYPE",
     "FLOWWEAVER_SHADOW_CONFIG_KEY",
+    "FLOWWEAVER_SHADOW_REPLAY_DRIFT_DETECTED",
+    "FLOWWEAVER_SHADOW_REPLAY_REJECTED",
+    "FLOWWEAVER_SHADOW_REPLAY_REPLAYED",
+    "FLOWWEAVER_SHADOW_REPLAY_SCHEMA_MISMATCH",
+    "FLOWWEAVER_SHADOW_REPLAY_TYPE",
+    "FLOWWEAVER_SHADOW_REPLAY_UNSAFE",
     "FLOWWEAVER_SHADOW_SNAPSHOT_KEY",
     "attach_flowweaver_shadow_snapshot",
     "audit_flowweaver_shadow_capture",
     "get_flowweaver_shadow_capture",
     "is_flowweaver_shadow_enabled",
+    "replay_flowweaver_shadow_capture",
 ]
