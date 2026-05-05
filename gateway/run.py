@@ -9470,11 +9470,14 @@ class GatewayRunner:
         )
         try:
             from gateway.flowweaver_shadow import is_flowweaver_shadow_enabled
+            from gateway.flowweaver_shadow_dry_run import is_flowweaver_shadow_dry_run_enabled
 
             flowweaver_shadow_enabled = is_flowweaver_shadow_enabled(task_tracker_config)
+            flowweaver_shadow_dry_run_enabled = is_flowweaver_shadow_dry_run_enabled(task_tracker_config)
         except Exception as _fw_shadow_cfg_err:
             logger.debug("FlowWeaver shadow tap disabled after config error: %s", _fw_shadow_cfg_err)
             flowweaver_shadow_enabled = False
+            flowweaver_shadow_dry_run_enabled = False
         task_tracker_mode = str(task_tracker_config.get("mode", "text") or "text").strip().lower()
         if task_tracker_mode == "feishu_card" and source.platform != Platform.FEISHU:
             task_tracker_mode = "text"
@@ -9542,6 +9545,7 @@ class GatewayRunner:
                 progress_event_store = None
                 task_tracker_enabled = False
                 flowweaver_shadow_enabled = False
+                flowweaver_shadow_dry_run_enabled = False
         
         def progress_callback(event_type: str, tool_name: str = None, preview: str = None, args: dict = None, **kwargs):
             """Callback invoked by agent on tool lifecycle events."""
@@ -11202,6 +11206,13 @@ class GatewayRunner:
                     source=source,
                     final_text=response.get("final_response"),
                 )
+                if flowweaver_shadow_dry_run_enabled:
+                    try:
+                        from gateway.flowweaver_shadow_dry_run import attach_flowweaver_gateway_shadow_dry_run
+
+                        attach_flowweaver_gateway_shadow_dry_run(response, enabled=True)
+                    except Exception:
+                        pass
             except Exception as _fw_shadow_err:
                 logger.debug("FlowWeaver shadow snapshot capture failed: %s", _fw_shadow_err)
         

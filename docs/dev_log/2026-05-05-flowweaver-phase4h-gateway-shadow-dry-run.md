@@ -8,7 +8,7 @@ Plan a default-off Gateway shadow dry-run that executes the safe Phase 4F replay
 
 This phase should add a dry-run helper and a narrow Gateway seam after approval. It must consume only the current in-memory agent result after the existing FlowWeaver shadow capture has attached safe shadow material, then return/store only a safe dry-run summary. It must not expose raw snapshots, captures, agent results, platform payloads, card JSON, raw command/output, delivery ACKs, or platform identifiers.
 
-Phase 4H design-only status: no implementation code has been written in Phase 4H yet.
+Phase 4H implementation status: completed in this worktree after explicit user approval.
 
 No Temporal integration is planned.
 No persistence, service startup, Docker, daemon startup, or Gateway restart is planned.
@@ -198,12 +198,118 @@ No concrete spec-coherence or low-intrusion blockers. The boundary patch is cohe
 No concrete no-leak/display-safety blockers. The plan covers post-validation re-read/hostile mapping rejection, no raw payload/ID/card/ACK/secret output, no dry-run logging/print/exception-string logging scans, and Feishu card-mode no-send/no-patch assertions.
 ```
 
-Because this dev log was updated after those checks, the final plan checks must be rerun before commit.
+The design log was updated after those checks; final implementation verification is recorded below.
 
 ## Implementation status
 
-Not started. Design-only phase is in progress.
+Completed after user approval at 2026-05-05 11:13:16 CST +0800.
 
-No implementation code has been written in Phase 4H yet.
-No implementation tests have been written in Phase 4H yet.
-No production runtime files have been changed in Phase 4H yet.
+Changed files:
+
+```text
+gateway/flowweaver_shadow_dry_run.py
+gateway/run.py
+tests/gateway/test_flowweaver_shadow_dry_run.py
+tests/gateway/test_run_progress_topics.py
+docs/dev_log/2026-05-05-flowweaver-phase4h-gateway-shadow-dry-run.md
+```
+
+Implementation summary:
+
+```text
+- Added pure in-memory Gateway shadow dry-run helper.
+- Added explicit config helper requiring both flowweaver_shadow and flowweaver_shadow_dry_run.
+- Added safe dry-run summary only: verdicts, counts, checks, side_effects [].
+- Added narrow gateway/run.py seam immediately after existing FlowWeaver shadow capture.
+- Added RED/GREEN helper tests, Gateway lifecycle tests, hostile input/no-leak tests, and visibility matrix regressions.
+- No Temporal, persistence, platform adapter changes, service startup, Gateway restart, or visible dry-run send/edit/render path.
+```
+
+RED/GREEN evidence:
+
+```text
+RED helper import: ModuleNotFoundError: No module named 'gateway.flowweaver_shadow_dry_run'
+GREEN helper focused: 3 passed
+RED Gateway seam: 3 failed / 2 passed because flowweaver_shadow_dry_run key was absent when both gates were enabled
+GREEN Gateway seam: 5 passed
+Hardening RED: 3 failed / 8 passed for missing-shadow reason, raw snapshot/capture rejection, and mock durable count mismatch
+Hardening GREEN: 11 passed
+Focused helper + Gateway dry-run set: 17 passed
+Visibility matrix: 1 passed
+```
+
+Final verification before this dev-log edit:
+
+```bash
+scripts/run_tests.sh \
+  tests/gateway/test_flowweaver_shadow_dry_run.py \
+  tests/gateway/test_flowweaver_mock_durable_consumer.py \
+  tests/gateway/test_flowweaver_shadow_tap.py \
+  tests/gateway/test_flowweaver_contract_adapter.py \
+  tests/gateway/test_delivery_state.py \
+  tests/gateway/test_run_progress_topics.py \
+  tests/gateway/test_rich_weather_delivery.py \
+  -q
+python -m py_compile \
+  gateway/flowweaver_shadow_dry_run.py \
+  gateway/flowweaver_mock_durable.py \
+  gateway/flowweaver_shadow.py \
+  gateway/run.py \
+  tests/gateway/test_flowweaver_shadow_dry_run.py \
+  tests/gateway/test_flowweaver_mock_durable_consumer.py \
+  tests/gateway/test_run_progress_topics.py
+git diff --check
+```
+
+Observed before dev-log edit:
+
+```text
+142 passed in 18.12s
+py_compile passed
+git diff --check passed
+```
+
+Static scans before dev-log edit:
+
+```json
+{
+  "changed_files": [
+    "gateway/flowweaver_shadow_dry_run.py",
+    "gateway/run.py",
+    "tests/gateway/test_flowweaver_shadow_dry_run.py",
+    "tests/gateway/test_run_progress_topics.py"
+  ],
+  "forbidden_paths": [],
+  "sensitive_added_line_hits": [],
+  "forbidden_runtime_hits": [],
+  "forbidden_logging_hits": [],
+  "forbidden_send_render_persist_hits": [],
+  "production_private_id_hits": []
+}
+```
+
+Independent implementation reviews:
+
+```text
+spec / low-intrusion review: PASS — no concrete blockers
+security / no-leak review: PASS — no concrete blockers
+```
+
+Reviewer notes:
+
+```text
+Implementation stays within allowed production surfaces: new pure helper plus narrow gateway/run.py seam.
+Dry-run is default-off and gated behind existing flowweaver_shadow.
+No Temporal/persistence/service restart/platform adapter changes found.
+Dry-run output is limited to sanitized verdict/count/check metadata.
+No visible send/edit/render/Feishu card patch/persistence/logging paths introduced.
+```
+
+Final verification after this dev-log edit was rerun before commit:
+
+```text
+142 passed in 18.12s
+py_compile passed
+git diff --check passed
+sensitive / forbidden runtime / forbidden logging / send-render-persist / production private-id scans clean
+```

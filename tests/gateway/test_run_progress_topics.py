@@ -1523,6 +1523,291 @@ async def test_flowweaver_mock_durable_consumer_without_visible_side_effects(mon
 
 
 @pytest.mark.asyncio
+async def test_flowweaver_shadow_dry_run_default_off_no_result_key(monkeypatch, tmp_path):
+    from gateway.flowweaver_shadow import FLOWWEAVER_SHADOW_SNAPSHOT_KEY
+    from gateway.flowweaver_shadow_dry_run import FLOWWEAVER_SHADOW_DRY_RUN_RESULT_KEY
+
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        OptionalProgressAgent,
+        session_id="sess-flowweaver-shadow-dry-run-default-off",
+        config_data={
+            "display": {
+                "tool_progress": "off",
+                "task_tracker": {
+                    "enabled": False,
+                    "flowweaver_shadow": True,
+                    "max_operations": 8,
+                },
+            },
+        },
+    )
+
+    assert result["final_response"] == "done"
+    assert adapter.sent == []
+    assert adapter.edits == []
+    assert FLOWWEAVER_SHADOW_SNAPSHOT_KEY in result
+    assert FLOWWEAVER_SHADOW_DRY_RUN_RESULT_KEY not in result
+
+
+@pytest.mark.asyncio
+async def test_flowweaver_shadow_dry_run_requires_explicit_dry_run_gate(monkeypatch, tmp_path):
+    from gateway.flowweaver_shadow import FLOWWEAVER_SHADOW_SNAPSHOT_KEY
+    from gateway.flowweaver_shadow_dry_run import FLOWWEAVER_SHADOW_DRY_RUN_RESULT_KEY
+
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        OptionalProgressAgent,
+        session_id="sess-flowweaver-shadow-dry-run-shadow-missing",
+        config_data={
+            "display": {
+                "tool_progress": "off",
+                "task_tracker": {
+                    "enabled": False,
+                    "flowweaver_shadow": False,
+                    "flowweaver_shadow_dry_run": True,
+                    "max_operations": 8,
+                },
+            },
+        },
+    )
+
+    assert result["final_response"] == "done"
+    assert adapter.sent == []
+    assert adapter.edits == []
+    assert FLOWWEAVER_SHADOW_SNAPSHOT_KEY not in result
+    assert FLOWWEAVER_SHADOW_DRY_RUN_RESULT_KEY not in result
+
+
+@pytest.mark.asyncio
+async def test_flowweaver_shadow_dry_run_runs_without_visible_side_effects(monkeypatch, tmp_path):
+    from gateway.flowweaver_shadow_dry_run import (
+        FLOWWEAVER_SHADOW_DRY_RUN_PASSED,
+        FLOWWEAVER_SHADOW_DRY_RUN_RESULT_KEY,
+    )
+
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        OptionalProgressAgent,
+        session_id="sess-flowweaver-shadow-dry-run-side-effects",
+        config_data={
+            "display": {
+                "tool_progress": "off",
+                "task_tracker": {
+                    "enabled": False,
+                    "flowweaver_shadow": True,
+                    "flowweaver_shadow_dry_run": True,
+                    "max_operations": 8,
+                },
+            },
+        },
+    )
+
+    dry_run = result[FLOWWEAVER_SHADOW_DRY_RUN_RESULT_KEY]
+    rendered = repr(dry_run).lower()
+    assert result["final_response"] == "done"
+    assert adapter.sent == []
+    assert adapter.edits == []
+    assert dry_run["verdict"] == FLOWWEAVER_SHADOW_DRY_RUN_PASSED
+    assert dry_run["entry_count"] == 1
+    assert dry_run["record_counts"] == {"intents": 1, "artifacts": 1, "deliveries": 1}
+    assert dry_run["side_effects"] == []
+    assert "snapshot" not in rendered
+    assert "flowweaver_shadow_capture" not in rendered
+    assert "om_" not in rendered
+    assert "oc_" not in rendered
+    assert "ou_" not in rendered
+    assert "chat" not in rendered
+    assert "user" not in rendered
+    assert "message" not in rendered
+
+
+@pytest.mark.asyncio
+async def test_flowweaver_shadow_dry_run_preserves_legacy_tool_progress_when_visible(monkeypatch, tmp_path):
+    from gateway.flowweaver_shadow_dry_run import FLOWWEAVER_SHADOW_DRY_RUN_RESULT_KEY
+
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        OptionalProgressAgent,
+        session_id="sess-flowweaver-shadow-dry-run-visible-progress",
+        config_data={
+            "display": {
+                "tool_progress": "all",
+                "task_tracker": {
+                    "enabled": False,
+                    "flowweaver_shadow": True,
+                    "flowweaver_shadow_dry_run": True,
+                },
+            },
+        },
+    )
+
+    visible_progress = "\n".join(
+        [call["content"] for call in adapter.sent]
+        + [call["content"] for call in adapter.edits]
+    )
+    assert result["final_response"] == "done"
+    assert FLOWWEAVER_SHADOW_DRY_RUN_RESULT_KEY in result
+    assert "read_file" in visible_progress
+    assert "search_files" in visible_progress
+    assert "Transaction" not in visible_progress
+    assert "**Status:**" not in visible_progress
+
+
+@pytest.mark.asyncio
+async def test_flowweaver_shadow_dry_run_feishu_card_mode_does_not_send_or_patch_when_tracker_disabled(monkeypatch, tmp_path):
+    from gateway.flowweaver_shadow_dry_run import (
+        FLOWWEAVER_SHADOW_DRY_RUN_PASSED,
+        FLOWWEAVER_SHADOW_DRY_RUN_RESULT_KEY,
+    )
+
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        OptionalProgressAgent,
+        session_id="sess-flowweaver-shadow-dry-run-feishu-card-off",
+        platform=Platform.FEISHU,
+        chat_id="oc_1",
+        chat_type="dm",
+        thread_id=None,
+        adapter_cls=FeishuProgressCardCaptureAdapter,
+        config_data={
+            "display": {
+                "tool_progress": "off",
+                "task_tracker": {
+                    "enabled": False,
+                    "mode": "feishu_card",
+                    "flowweaver_shadow": True,
+                    "flowweaver_shadow_dry_run": True,
+                    "max_operations": 8,
+                },
+            },
+        },
+    )
+
+    dry_run = result[FLOWWEAVER_SHADOW_DRY_RUN_RESULT_KEY]
+    assert result["final_response"] == "done"
+    assert adapter.sent == []
+    assert adapter.edits == []
+    assert adapter.cards_sent == []
+    assert adapter.cards_patched == []
+    assert dry_run["verdict"] == FLOWWEAVER_SHADOW_DRY_RUN_PASSED
+    assert dry_run["side_effects"] == []
+
+
+@pytest.mark.asyncio
+async def test_flowweaver_shadow_dry_run_config_matrix_preserves_visibility_boundaries(monkeypatch, tmp_path):
+    from gateway.flowweaver_shadow import FLOWWEAVER_SHADOW_SNAPSHOT_KEY
+    from gateway.flowweaver_shadow_dry_run import FLOWWEAVER_SHADOW_DRY_RUN_RESULT_KEY
+
+    cases = [
+        (
+            "shadow-off-dry-run-on",
+            {"tool_progress": "off", "task_tracker": {"enabled": False, "flowweaver_shadow": False, "flowweaver_shadow_dry_run": True}},
+            {"shadow": False, "dry_run": False, "visible": False, "tracker": False},
+        ),
+        (
+            "shadow-on-dry-run-off",
+            {"tool_progress": "off", "task_tracker": {"enabled": False, "flowweaver_shadow": True, "flowweaver_shadow_dry_run": False}},
+            {"shadow": True, "dry_run": False, "visible": False, "tracker": False},
+        ),
+        (
+            "both-on-progress-off-tracker-off",
+            {"tool_progress": "off", "task_tracker": {"enabled": False, "flowweaver_shadow": True, "flowweaver_shadow_dry_run": True}},
+            {"shadow": True, "dry_run": True, "visible": False, "tracker": False},
+        ),
+        (
+            "both-on-progress-all-tracker-off",
+            {"tool_progress": "all", "task_tracker": {"enabled": False, "flowweaver_shadow": True, "flowweaver_shadow_dry_run": True}},
+            {"shadow": True, "dry_run": True, "visible": True, "tracker": False},
+        ),
+        (
+            "both-on-tracker-on",
+            {"tool_progress": "off", "task_tracker": {"enabled": True, "mode": "text", "flowweaver_shadow": True, "flowweaver_shadow_dry_run": True, "max_operations": 8}},
+            {"shadow": True, "dry_run": True, "visible": True, "tracker": True},
+        ),
+    ]
+
+    for name, display_config, expected in cases:
+        case_tmp = tmp_path / name
+        case_tmp.mkdir()
+        adapter, result = await _run_with_agent(
+            monkeypatch,
+            case_tmp,
+            OptionalProgressAgent,
+            session_id=f"sess-flowweaver-shadow-dry-run-matrix-{name}",
+            config_data={"display": display_config},
+        )
+        visible = "\n".join([call["content"] for call in adapter.sent] + [call["content"] for call in adapter.edits])
+
+        assert (FLOWWEAVER_SHADOW_SNAPSHOT_KEY in result) is expected["shadow"], name
+        assert (FLOWWEAVER_SHADOW_DRY_RUN_RESULT_KEY in result) is expected["dry_run"], name
+        assert bool(adapter.sent or adapter.edits) is expected["visible"], name
+        if expected["dry_run"]:
+            assert result[FLOWWEAVER_SHADOW_DRY_RUN_RESULT_KEY]["verdict"] == "passed", name
+        if expected["tracker"]:
+            assert "Transaction" in visible, name
+        elif display_config["tool_progress"] == "all":
+            assert "read_file" in visible, name
+            assert "Transaction" not in visible, name
+        else:
+            assert "Transaction" not in visible, name
+
+    feishu_base = {
+        "display": {
+            "tool_progress": "off",
+            "task_tracker": {
+                "enabled": True,
+                "mode": "feishu_card",
+                "flowweaver_shadow": True,
+                "max_operations": 8,
+            },
+        },
+    }
+    feishu_without_tmp = tmp_path / "feishu-without-dry-run"
+    feishu_without_tmp.mkdir()
+    adapter_without_dry_run, result_without_dry_run = await _run_with_agent(
+        monkeypatch,
+        feishu_without_tmp,
+        OptionalProgressAgent,
+        session_id="sess-flowweaver-shadow-dry-run-feishu-base",
+        platform=Platform.FEISHU,
+        chat_id="oc_1",
+        chat_type="dm",
+        thread_id=None,
+        adapter_cls=FeishuProgressCardCaptureAdapter,
+        config_data=feishu_base,
+    )
+    feishu_with_dry_run = json.loads(json.dumps(feishu_base))
+    feishu_with_dry_run["display"]["task_tracker"]["flowweaver_shadow_dry_run"] = True
+    feishu_with_tmp = tmp_path / "feishu-with-dry-run"
+    feishu_with_tmp.mkdir()
+    adapter_with_dry_run, result_with_dry_run = await _run_with_agent(
+        monkeypatch,
+        feishu_with_tmp,
+        OptionalProgressAgent,
+        session_id="sess-flowweaver-shadow-dry-run-feishu-enabled",
+        platform=Platform.FEISHU,
+        chat_id="oc_1",
+        chat_type="dm",
+        thread_id=None,
+        adapter_cls=FeishuProgressCardCaptureAdapter,
+        config_data=feishu_with_dry_run,
+    )
+
+    assert FLOWWEAVER_SHADOW_DRY_RUN_RESULT_KEY not in result_without_dry_run
+    assert FLOWWEAVER_SHADOW_DRY_RUN_RESULT_KEY in result_with_dry_run
+    assert len(adapter_with_dry_run.cards_sent) == len(adapter_without_dry_run.cards_sent)
+    assert len(adapter_with_dry_run.cards_patched) == len(adapter_without_dry_run.cards_patched)
+    assert adapter_with_dry_run.sent == adapter_without_dry_run.sent == []
+    assert adapter_with_dry_run.edits == adapter_without_dry_run.edits == []
+
+
+@pytest.mark.asyncio
 async def test_flowweaver_shadow_tap_default_off_preserves_existing_no_progress_behavior(monkeypatch, tmp_path):
     from gateway.flowweaver_shadow import FLOWWEAVER_SHADOW_SNAPSHOT_KEY
 
