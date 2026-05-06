@@ -118,6 +118,12 @@ async def test_shadow_publication_adapter_starts_runtime_once_then_applies_acks_
     assert len(runtime_client.started) == 1
     assert runtime_client.started[0]["workflow_id"] == publication["workflow_id"]
     assert getattr(runtime_client.started[0]["payload"], "transaction_id") == publication["transaction_id"]
+    assert getattr(runtime_client.started[0]["payload"], "record_counts") == {
+        "transactions": 1,
+        "intents": 1,
+        "artifacts": 1,
+        "deliveries": 2,
+    }
     assert [call["workflow_id"] for call in runtime_client.acks] == [publication["workflow_id"], publication["workflow_id"]]
     assert [getattr(call["update"], "target_id") for call in runtime_client.acks] == ["runtime_delivery_0", "runtime_delivery_1"]
 

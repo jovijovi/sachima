@@ -146,16 +146,17 @@ async def test_phase5f_detects_extra_ack_surface_without_matching_runtime_delive
     )
 
     publication = ready_publication(index=3, rich_cards_sent=[{"type": "result_card", "message_id": PRIVATE_MESSAGE_ID}])
+    tampered_publication = copy.deepcopy(publication)
+    tampered_publication["start_request"]["start_payload"]["record_counts"]["deliveries"] = 1
     runtime_client = InMemoryFlowWeaverRuntimeClient()
 
-    assert publication["start_request"]["start_payload"]["record_counts"]["deliveries"] == 1
     assert [update["target_id"] for update in publication["ack_bridge"]["updates"]] == [
         "runtime_delivery_0",
         "runtime_delivery_1",
     ]
 
-    result = await reconcile_shadow_runtime_publication(publication, runtime_client=runtime_client)
-    snapshot_result = await runtime_client.query_snapshot(publication["workflow_id"])
+    result = await reconcile_shadow_runtime_publication(tampered_publication, runtime_client=runtime_client)
+    snapshot_result = await runtime_client.query_snapshot(tampered_publication["workflow_id"])
 
     assert result == {
         "ok": False,

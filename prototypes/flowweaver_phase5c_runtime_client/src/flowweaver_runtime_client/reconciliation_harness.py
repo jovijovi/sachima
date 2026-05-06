@@ -224,6 +224,7 @@ def _apply_delivery_ack(state: _RuntimeState, update: DeliveryAckUpdate) -> str:
 
 def _snapshot_from_payload(payload: RuntimeStartPayload) -> dict[str, object]:
     entry_count = payload.entry_count
+    delivery_count = payload.record_counts["deliveries"]
     return {
         "type": _SNAPSHOT_TYPE,
         "version": FLOWWEAVER_TEMPORAL_POC_VERSION,
@@ -234,11 +235,11 @@ def _snapshot_from_payload(payload: RuntimeStartPayload) -> dict[str, object]:
         "counts": {
             "intents": entry_count,
             "artifacts": entry_count,
-            "deliveries": entry_count,
+            "deliveries": delivery_count,
         },
         "intent_statuses": {f"runtime_intent_{index}": "pending" for index in range(entry_count)},
         "artifact_statuses": {f"runtime_artifact_{index}": "available" for index in range(entry_count)},
-        "delivery_statuses": {f"runtime_delivery_{index}": "planned" for index in range(entry_count)},
+        "delivery_statuses": {f"runtime_delivery_{index}": "planned" for index in range(delivery_count)},
         "applied_event_count": 0,
         "resume_count": 0,
         "side_effects": [],
@@ -428,18 +429,19 @@ def _reconciliation_checks(
 def _record_counts_and_status_maps_match(*, start_payload: dict[str, object], snapshot: dict[str, object]) -> bool:
     entry_count = start_payload.get("entry_count")
     expected_record_counts = _plain_dict(start_payload.get("record_counts")) or {}
-    if type(entry_count) is not int:
+    delivery_count = expected_record_counts.get("deliveries")
+    if type(entry_count) is not int or type(delivery_count) is not int:
         return False
     expected_counts = {
         "intents": expected_record_counts.get("intents"),
         "artifacts": expected_record_counts.get("artifacts"),
-        "deliveries": expected_record_counts.get("deliveries"),
+        "deliveries": delivery_count,
     }
     if snapshot.get("record_counts") != expected_record_counts or snapshot.get("counts") != expected_counts:
         return False
     expected_intent_keys = {f"runtime_intent_{index}" for index in range(entry_count)}
     expected_artifact_keys = {f"runtime_artifact_{index}" for index in range(entry_count)}
-    expected_delivery_keys = {f"runtime_delivery_{index}" for index in range(entry_count)}
+    expected_delivery_keys = {f"runtime_delivery_{index}" for index in range(delivery_count)}
     intent_statuses = _plain_dict(snapshot.get("intent_statuses")) or {}
     artifact_statuses = _plain_dict(snapshot.get("artifact_statuses")) or {}
     delivery_statuses = _plain_dict(snapshot.get("delivery_statuses")) or {}
