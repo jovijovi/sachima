@@ -2,22 +2,13 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 from flowweaver_temporal_poc.payloads import (
     ALLOWED_DELIVERY_STATUSES,
-    ALLOWED_RUNTIME_EVENTS,
-    ALLOWED_SURFACES,
-    ALLOWED_TARGET_KINDS,
     CancelTransactionUpdate,
     DeliveryAckUpdate,
     HumanDecisionUpdate,
     ResumeUserInputUpdate,
     RuntimeStartPayload,
-    validate_cancel_transaction_update,
-    validate_delivery_ack_update,
-    validate_human_decision_update,
-    validate_resume_user_input_update,
     validate_runtime_workflow_id as _phase5b_validate_workflow_id,
     validate_start_payload,
 )
@@ -447,7 +438,7 @@ def _synthetic_id(value: object, *, prefixes: tuple[str, ...], error: str) -> st
     body = lowered[len(body_prefix) :]
     if any(lowered.startswith(prefix) for prefix in _PRIVATE_PREFIXES):
         _raise(error)
-    if any(marker in body for marker in ("om_", "oc_", "ou_", "chat_", "message_", "platform_", "feishu", "lark", "telegram", "private")):
+    if any(marker in body for marker in ("om_", "oc_", "ou_", "chat", "message", "platform", "feishu", "lark", "telegram", "private")):
         _raise(error)
     if any(marker in lowered for marker in ("raw_", "tool_output", "platform_payload", "token", "secret", "password", "credential", "api_key", "bearer", "sk-")):
         _raise(error)
@@ -457,6 +448,8 @@ def _synthetic_id(value: object, *, prefixes: tuple[str, ...], error: str) -> st
 
 
 def _reject_unsafe_material(value: object, *, error: str, allow_claim_policy: bool = False, path: tuple[str, ...] = ()) -> None:
+    if allow_claim_policy and path == ("claim_check_policy", "forbidden_material"):
+        return
     if type(value) is dict:
         for key, item in value.items():
             lowered = key.lower()

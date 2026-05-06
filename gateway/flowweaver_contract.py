@@ -450,7 +450,7 @@ def _safe_iso_time(value: Any) -> str:
         timestamp = 0.0
     if not math.isfinite(timestamp) or timestamp < 0:
         timestamp = 0.0
-    return datetime.fromtimestamp(timestamp, UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    return datetime.fromtimestamp(timestamp, UTC).isoformat(timespec="microseconds").replace("+00:00", "Z")
 
 
 __all__ = [

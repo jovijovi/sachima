@@ -12,10 +12,17 @@ from gateway.flowweaver_runtime_contract import (
     FLOWWEAVER_RUNTIME_MODEL_VERSION,
     build_flowweaver_runtime_ingress_envelope,
 )
+from gateway.flowweaver_runtime_identity import (
+    FLOWWEAVER_RUNTIME_IDENTITY_ACCEPTED,
+    FLOWWEAVER_RUNTIME_IDENTITY_STRATEGY,
+    FLOWWEAVER_RUNTIME_IDENTITY_TYPE,
+    derive_flowweaver_runtime_identity,
+)
 from gateway.flowweaver_shadow import (
     FLOWWEAVER_SHADOW_CAPTURE_KEY,
     FLOWWEAVER_SHADOW_SNAPSHOT_KEY,
     describe_flowweaver_shadow_consumer_contract,
+    get_flowweaver_shadow_capture,
     is_flowweaver_shadow_enabled,
     replay_flowweaver_shadow_corpus,
 )
@@ -102,6 +109,15 @@ def build_flowweaver_shadow_runtime_publication(agent_result: object) -> dict[st
         return _rejected(reason="unsafe_delivery_state")
 
     try:
+        shadow_capture = get_flowweaver_shadow_capture(safe_agent_result)
+        if type(shadow_capture) is not dict:
+            return _rejected(reason="invalid_shadow")
+        identity_ref = _runtime_identity_ref_from_shadow_capture(shadow_capture)
+        if identity_ref is None:
+            return _rejected(reason="invalid_shadow")
+        identity = derive_flowweaver_runtime_identity(identity_ref)
+        if identity.get("type") != FLOWWEAVER_RUNTIME_IDENTITY_TYPE or identity.get("verdict") != FLOWWEAVER_RUNTIME_IDENTITY_ACCEPTED:
+            return _rejected(reason="runtime_identity_rejected")
         descriptor = describe_flowweaver_shadow_consumer_contract()
         corpus = replay_flowweaver_shadow_corpus([safe_agent_result], attempts=2)
         projection = consume_flowweaver_shadow_corpus_as_mock_durable_state(descriptor, corpus)
@@ -110,6 +126,7 @@ def build_flowweaver_shadow_runtime_publication(agent_result: object) -> dict[st
             corpus,
             projection,
             dry_run_summary,
+            runtime_identity=identity,
         )
         if envelope.get("type") != FLOWWEAVER_RUNTIME_ENVELOPE_TYPE or envelope.get("verdict") != FLOWWEAVER_RUNTIME_ACCEPTED:
             return _rejected(reason="runtime_envelope_rejected")
@@ -117,14 +134,16 @@ def build_flowweaver_shadow_runtime_publication(agent_result: object) -> dict[st
         if start_request is None:
             return _rejected(reason="runtime_envelope_rejected")
         ack_updates = build_flowweaver_delivery_ack_updates(delivery_state or {})
+        transaction_id = start_request["workflow_id"]
         return {
             "type": FLOWWEAVER_SHADOW_RUNTIME_PUBLICATION_TYPE,
             "verdict": FLOWWEAVER_SHADOW_RUNTIME_PUBLICATION_READY,
             "reason": "ok",
             "runtime_model_version": FLOWWEAVER_RUNTIME_MODEL_VERSION,
             "runtime_envelope_type": FLOWWEAVER_RUNTIME_ENVELOPE_TYPE,
-            "transaction_id": _TRANSACTION_ID,
-            "workflow_id": _TRANSACTION_ID,
+            "transaction_id": transaction_id,
+            "workflow_id": transaction_id,
+            "runtime_identity": _runtime_identity_metadata(identity),
             "start_request": start_request,
             "ack_bridge": {
                 "status": FLOWWEAVER_SHADOW_RUNTIME_PUBLICATION_READY,
@@ -176,7 +195,6 @@ def _start_request_from_envelope(envelope: dict[str, object]) -> dict[str, objec
         type(entry_count) is int
         and entry_count > 0
         and type(idempotency) is dict
-        and idempotency.get("transaction_key") == _TRANSACTION_ID
         and type(allowed_events) is list
         and all(type(event) is str for event in allowed_events)
         and _START_OPERATION in allowed_events
@@ -184,18 +202,79 @@ def _start_request_from_envelope(envelope: dict[str, object]) -> dict[str, objec
         and type(claim_check_policy) is dict
     ):
         return None
+    transaction_key = idempotency.get("transaction_key")
+    start_event_key = idempotency.get("start_event_key")
+    if _legacy_idempotency(idempotency):
+        transaction_key = _TRANSACTION_ID
+        start_event_key = f"runtime_event_start_{_TRANSACTION_ID}"
+    if not (_safe_runtime_transaction_id(transaction_key) and _safe_runtime_start_event_key(start_event_key)):
+        return None
     return {
         "operation": _START_OPERATION,
-        "workflow_id": _TRANSACTION_ID,
+        "workflow_id": transaction_key,
         "start_payload": {
-            "transaction_id": _TRANSACTION_ID,
-            "idempotency_key": f"runtime_event_start_{_TRANSACTION_ID}",
+            "transaction_id": transaction_key,
+            "idempotency_key": start_event_key,
             "entry_count": entry_count,
             "record_counts": record_counts,
             "allowed_runtime_events": list(allowed_events),
             "claim_check_policy": _plain_copy_dict(claim_check_policy) or {},
         },
     }
+
+
+def _runtime_identity_metadata(identity: dict[str, object]) -> dict[str, object]:
+    return {
+        "type": FLOWWEAVER_RUNTIME_IDENTITY_TYPE,
+        "strategy": FLOWWEAVER_RUNTIME_IDENTITY_STRATEGY,
+        "transaction_id": identity.get("transaction_id"),
+        "workflow_id": identity.get("workflow_id"),
+        "idempotency_key": identity.get("idempotency_key"),
+    }
+
+
+def _runtime_identity_ref_from_shadow_capture(shadow_capture: dict[str, object]) -> dict[str, object] | None:
+    snapshot_ref = _plain_copy_dict(shadow_capture.get("snapshot_ref"))
+    capture = _plain_copy_dict(shadow_capture.get("capture"))
+    if snapshot_ref is None or capture is None:
+        return None
+    created_at = capture.get("created_at")
+    if type(created_at) is not str:
+        return None
+    identity_ref = dict(snapshot_ref)
+    identity_ref["created_at"] = created_at
+    return identity_ref
+
+
+def _legacy_idempotency(value: dict[str, object]) -> bool:
+    return (
+        value.get("strategy") == "synthetic_index_v0"
+        and value.get("transaction_key") == _TRANSACTION_ID
+        and value.get("intent_key_prefix") == "runtime_intent_"
+        and value.get("artifact_key_prefix") == "runtime_artifact_"
+        and value.get("delivery_key_prefix") == "runtime_delivery_"
+        and "start_event_key" not in value
+    )
+
+
+def _safe_runtime_transaction_id(value: object) -> bool:
+    if type(value) is not str:
+        return False
+    if value == _TRANSACTION_ID:
+        return True
+    prefix = "runtime_tx_shadow_"
+    suffix = value[len(prefix) :] if value.startswith(prefix) else ""
+    return len(suffix) == 20 and all(("0" <= char <= "9") or ("a" <= char <= "f") for char in suffix)
+
+
+def _safe_runtime_start_event_key(value: object) -> bool:
+    if type(value) is not str:
+        return False
+    if value == f"runtime_event_start_{_TRANSACTION_ID}":
+        return True
+    prefix = "runtime_event_start_shadow_"
+    suffix = value[len(prefix) :] if value.startswith(prefix) else ""
+    return len(suffix) == 20 and all(("0" <= char <= "9") or ("a" <= char <= "f") for char in suffix)
 
 
 def _ack_update(*, surface: str, surface_index: int, target_index: int, status: str) -> dict[str, str]:
