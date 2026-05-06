@@ -281,6 +281,12 @@ def test_shadow_runtime_publication_ack_targets_remain_bounded_synthetic_deliver
     rendered = repr(updates).lower()
 
     assert summary["verdict"] == FLOWWEAVER_SHADOW_RUNTIME_PUBLICATION_READY
+    assert summary["start_request"]["start_payload"]["record_counts"] == {
+        "transactions": 1,
+        "intents": 1,
+        "artifacts": 1,
+        "deliveries": 2,
+    }
     assert [update["target_id"] for update in updates] == ["runtime_delivery_0", "runtime_delivery_1"]
     assert all(re.fullmatch(r"runtime_event_delivery_ack_(final_text|rich_card)_\d+", update["delivery_key"]) for update in updates)
     assert "runtime_tx_shadow_" not in rendered

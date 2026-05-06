@@ -362,8 +362,8 @@ def _record_counts(value: object, *, entry_count: int, error: str) -> dict[str, 
         counts["transactions"] == 1
         and counts["intents"] == entry_count
         and counts["artifacts"] == entry_count
-        and counts["deliveries"] == entry_count
         and all(type(counts[key]) is int for key in _RECORD_COUNT_KEYS)
+        and entry_count <= counts["deliveries"] <= 20
     ):
         _raise(error)
     return {key: counts[key] for key in ("transactions", "intents", "artifacts", "deliveries")}

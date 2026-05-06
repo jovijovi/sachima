@@ -76,17 +76,21 @@ def build_flowweaver_delivery_ack_updates(delivery_state: object) -> list[dict[s
 
     rich_cards = state.get("rich_cards_sent")
     if type(rich_cards) is list:
-        for item in rich_cards[:20]:
+        rich_index = 0
+        for item in rich_cards:
+            if len(updates) >= 20:
+                break
             if type(item) is not dict or not _plain_string_keys(item):
                 continue
             updates.append(
                 _ack_update(
                     surface="rich_card",
-                    surface_index=sum(1 for update in updates if update["surface"] == "rich_card"),
+                    surface_index=rich_index,
                     target_index=len(updates),
                     status="sent",
                 )
             )
+            rich_index += 1
     return updates
 
 
@@ -130,10 +134,10 @@ def build_flowweaver_shadow_runtime_publication(agent_result: object) -> dict[st
         )
         if envelope.get("type") != FLOWWEAVER_RUNTIME_ENVELOPE_TYPE or envelope.get("verdict") != FLOWWEAVER_RUNTIME_ACCEPTED:
             return _rejected(reason="runtime_envelope_rejected")
-        start_request = _start_request_from_envelope(envelope)
+        ack_updates = build_flowweaver_delivery_ack_updates(delivery_state or {})
+        start_request = _start_request_from_envelope(envelope, ack_update_count=len(ack_updates))
         if start_request is None:
             return _rejected(reason="runtime_envelope_rejected")
-        ack_updates = build_flowweaver_delivery_ack_updates(delivery_state or {})
         transaction_id = start_request["workflow_id"]
         return {
             "type": FLOWWEAVER_SHADOW_RUNTIME_PUBLICATION_TYPE,
@@ -185,7 +189,7 @@ def attach_flowweaver_shadow_runtime_publication(
     return summary
 
 
-def _start_request_from_envelope(envelope: dict[str, object]) -> dict[str, object] | None:
+def _start_request_from_envelope(envelope: dict[str, object], *, ack_update_count: int) -> dict[str, object] | None:
     record_counts = _safe_record_counts(envelope.get("record_counts"))
     entry_count = envelope.get("entry_count")
     idempotency = envelope.get("idempotency")
@@ -202,6 +206,11 @@ def _start_request_from_envelope(envelope: dict[str, object]) -> dict[str, objec
         and type(claim_check_policy) is dict
     ):
         return None
+    delivery_slot_count = _delivery_slot_count(record_counts, entry_count=entry_count, ack_update_count=ack_update_count)
+    if delivery_slot_count is None:
+        return None
+    runtime_record_counts = dict(record_counts)
+    runtime_record_counts["deliveries"] = delivery_slot_count
     transaction_key = idempotency.get("transaction_key")
     start_event_key = idempotency.get("start_event_key")
     if _legacy_idempotency(idempotency):
@@ -216,7 +225,7 @@ def _start_request_from_envelope(envelope: dict[str, object]) -> dict[str, objec
             "transaction_id": transaction_key,
             "idempotency_key": start_event_key,
             "entry_count": entry_count,
-            "record_counts": record_counts,
+            "record_counts": runtime_record_counts,
             "allowed_runtime_events": list(allowed_events),
             "claim_check_policy": _plain_copy_dict(claim_check_policy) or {},
         },
@@ -310,6 +319,22 @@ def _safe_record_counts(value: object) -> dict[str, int]:
             return dict(_ZERO_RECORD_COUNTS)
         result[key] = item
     return result
+
+
+def _delivery_slot_count(record_counts: dict[str, int], *, entry_count: int, ack_update_count: int) -> int | None:
+    if type(ack_update_count) is not int or not (0 <= ack_update_count <= 20):
+        return None
+    if not (
+        record_counts.get("transactions") == 1
+        and record_counts.get("intents") == entry_count
+        and record_counts.get("artifacts") == entry_count
+        and type(record_counts.get("deliveries")) is int
+    ):
+        return None
+    slot_count = max(record_counts["deliveries"], ack_update_count)
+    if not (entry_count <= slot_count <= 20):
+        return None
+    return slot_count
 
 
 def _plain_copy_dict(value: object) -> dict[str, object] | None:

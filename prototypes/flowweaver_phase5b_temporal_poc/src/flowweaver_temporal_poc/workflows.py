@@ -47,9 +47,10 @@ class FlowWeaverTransactionWorkflow:
         self._status = "running"
         self._entry_count = payload.entry_count
         self._record_counts = dict(payload.record_counts)
+        delivery_count = payload.record_counts["deliveries"]
         self._intent_statuses = {f"runtime_intent_{index}": "pending" for index in range(payload.entry_count)}
         self._artifact_statuses = {f"runtime_artifact_{index}": "available" for index in range(payload.entry_count)}
-        self._delivery_statuses = {f"runtime_delivery_{index}": "planned" for index in range(payload.entry_count)}
+        self._delivery_statuses = {f"runtime_delivery_{index}": "planned" for index in range(delivery_count)}
         self._event_fingerprints = {}
         self._resume_count = 0
         self._terminal = False
