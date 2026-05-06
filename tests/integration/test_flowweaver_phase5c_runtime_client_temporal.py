@@ -21,18 +21,19 @@ for path in (PHASE5C_SRC, PHASE5B_SRC):
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
 
-from flowweaver_temporal_poc import FLOWWEAVER_TEMPORAL_TASK_QUEUE
-from flowweaver_temporal_poc.payloads import (
+from flowweaver_temporal_poc import FLOWWEAVER_TEMPORAL_TASK_QUEUE  # noqa: E402
+from flowweaver_temporal_poc.payloads import (  # noqa: E402
     CancelTransactionUpdate,
     DeliveryAckUpdate,
     HumanDecisionUpdate,
     ResumeUserInputUpdate,
     RuntimeStartPayload,
+    build_runtime_start_payload,
 )
-from flowweaver_temporal_poc.workflows import FlowWeaverTransactionWorkflow
+from flowweaver_temporal_poc.workflows import FlowWeaverTransactionWorkflow  # noqa: E402
 
-from flowweaver_runtime_client.runtime_client import FlowWeaverRuntimeClient
-from flowweaver_runtime_client.tool_adapter import FlowWeaverRuntimeToolAdapter
+from flowweaver_runtime_client.runtime_client import FlowWeaverRuntimeClient  # noqa: E402
+from flowweaver_runtime_client.tool_adapter import FlowWeaverRuntimeToolAdapter  # noqa: E402
 
 
 pytestmark = pytest.mark.integration
@@ -44,7 +45,7 @@ FORBIDDEN_HISTORY_SENTINELS = (PRIVATE_CHAT_ID, PRIVATE_USER_ID, SENSITIVE_SENTI
 
 
 def make_start_payload(*, count: int = 2) -> RuntimeStartPayload:
-    return RuntimeStartPayload(
+    return build_runtime_start_payload(
         transaction_id="runtime_tx_replay_corpus",
         idempotency_key="runtime_event_start_runtime_tx_replay_corpus",
         entry_count=count,

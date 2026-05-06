@@ -13,6 +13,7 @@ from flowweaver_temporal_poc.payloads import (
     HumanDecisionUpdate,
     ResumeUserInputUpdate,
     RuntimeStartPayload,
+    start_signature_from_payload,
     validate_cancel_transaction_update,
     validate_delivery_ack_update,
     validate_human_decision_update,
@@ -33,6 +34,7 @@ class FlowWeaverTransactionWorkflow:
         self._status = "created"
         self._entry_count = 0
         self._record_counts = {"transactions": 0, "intents": 0, "artifacts": 0, "deliveries": 0}
+        self._start_signature: dict[str, Any] = {}
         self._intent_statuses: dict[str, str] = {}
         self._artifact_statuses: dict[str, str] = {}
         self._delivery_statuses: dict[str, str] = {}
@@ -47,6 +49,7 @@ class FlowWeaverTransactionWorkflow:
         self._status = "running"
         self._entry_count = payload.entry_count
         self._record_counts = dict(payload.record_counts)
+        self._start_signature = start_signature_from_payload(payload)
         delivery_count = payload.record_counts["deliveries"]
         self._intent_statuses = {f"runtime_intent_{index}": "pending" for index in range(payload.entry_count)}
         self._artifact_statuses = {f"runtime_artifact_{index}": "available" for index in range(payload.entry_count)}
@@ -170,6 +173,7 @@ class FlowWeaverTransactionWorkflow:
             "status": self._status,
             "entry_count": self._entry_count,
             "record_counts": dict(self._record_counts),
+            "start_signature": dict(self._start_signature),
             "counts": {
                 "intents": len(self._intent_statuses),
                 "artifacts": len(self._artifact_statuses),

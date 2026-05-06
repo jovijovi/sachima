@@ -19,15 +19,16 @@ WORKFLOW_SOURCE = PROTO_SRC / "flowweaver_temporal_poc" / "workflows.py"
 if str(PROTO_SRC) not in sys.path:
     sys.path.insert(0, str(PROTO_SRC))
 
-from flowweaver_temporal_poc import FLOWWEAVER_TEMPORAL_TASK_QUEUE
-from flowweaver_temporal_poc.payloads import (
+from flowweaver_temporal_poc import FLOWWEAVER_TEMPORAL_TASK_QUEUE  # noqa: E402
+from flowweaver_temporal_poc.payloads import (  # noqa: E402
     CancelTransactionUpdate,
     DeliveryAckUpdate,
     HumanDecisionUpdate,
     ResumeUserInputUpdate,
     RuntimeStartPayload,
+    build_runtime_start_payload,
 )
-from flowweaver_temporal_poc.workflows import FlowWeaverTransactionWorkflow
+from flowweaver_temporal_poc.workflows import FlowWeaverTransactionWorkflow  # noqa: E402
 
 
 pytestmark = pytest.mark.integration
@@ -65,7 +66,7 @@ EXPECTED_FORBIDDEN_MATERIAL = (
 
 
 def make_start_payload(*, count: int = 2) -> RuntimeStartPayload:
-    return RuntimeStartPayload(
+    return build_runtime_start_payload(
         transaction_id="runtime_tx_replay_corpus",
         idempotency_key="runtime_event_start_runtime_tx_replay_corpus",
         entry_count=count,

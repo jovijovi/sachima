@@ -157,7 +157,12 @@ def test_temporal_poc_package_imports_are_isolated_under_prototypes() -> None:
 
 
 def test_start_payload_is_built_from_accepted_phase5a_envelope() -> None:
-    from flowweaver_temporal_poc.payloads import build_start_payload_from_ingress_envelope
+    from flowweaver_temporal_poc.payloads import (
+        RUNTIME_SIGNATURE_PREFIX,
+        START_SIGNATURE_TYPE,
+        build_start_payload_from_ingress_envelope,
+        start_signature_from_payload,
+    )
 
     payload = build_start_payload_from_ingress_envelope(make_runtime_envelope(count=2))
 
@@ -165,19 +170,16 @@ def test_start_payload_is_built_from_accepted_phase5a_envelope() -> None:
     assert payload.idempotency_key == "runtime_event_start_runtime_tx_replay_corpus"
     assert payload.entry_count == 2
     assert payload.record_counts == {"transactions": 1, "intents": 2, "artifacts": 2, "deliveries": 2}
-    assert payload.allowed_runtime_events == (
-        "start_transaction",
-        "record_operation",
-        "publish_artifact",
-        "plan_delivery",
-        "record_delivery_ack",
-        "approve_intent",
-        "reject_intent",
-        "cancel_transaction",
-        "resume_after_user_input",
-    )
-    assert payload.claim_check_policy["mode"] == "references_only"
-    assert "forbidden_material" in payload.claim_check_policy
+    assert payload.event_contract_digest.startswith(RUNTIME_SIGNATURE_PREFIX)
+    assert payload.claim_policy_digest.startswith(RUNTIME_SIGNATURE_PREFIX)
+    assert not hasattr(payload, "allowed_runtime_events")
+    assert not hasattr(payload, "claim_check_policy")
+
+    signature = start_signature_from_payload(payload)
+    assert signature["type"] == START_SIGNATURE_TYPE
+    assert signature["idempotency_key"] == payload.idempotency_key
+    assert signature["event_contract_digest"] == payload.event_contract_digest
+    assert signature["claim_policy_digest"] == payload.claim_policy_digest
 
 
 def test_start_payload_rejects_raw_snapshot_capture_agent_result_and_platform_ids() -> None:
@@ -225,9 +227,8 @@ def test_start_payload_uses_synthetic_idempotency_key() -> None:
 
 def test_start_payload_rejects_attacker_controlled_claim_check_policy_values() -> None:
     from flowweaver_temporal_poc.payloads import (
-        RuntimeStartPayload,
+        build_runtime_start_payload,
         build_start_payload_from_ingress_envelope,
-        validate_start_payload,
     )
 
     unsafe_envelope = make_runtime_envelope(count=1)
@@ -240,16 +241,15 @@ def test_start_payload_rejects_attacker_controlled_claim_check_policy_values() -
         build_start_payload_from_ingress_envelope(unsafe_envelope)
     assert_safe_error(excinfo.value)
 
-    unsafe_direct = RuntimeStartPayload(
-        transaction_id="runtime_tx_replay_corpus",
-        idempotency_key="runtime_event_start_runtime_tx_replay_corpus",
-        entry_count=1,
-        record_counts={"transactions": 1, "intents": 1, "artifacts": 1, "deliveries": 1},
-        allowed_runtime_events=tuple(unsafe_envelope["allowed_runtime_events"]),
-        claim_check_policy=unsafe_envelope["claim_check_policy"],
-    )
     with pytest.raises(ValueError, match="invalid_start_payload") as direct_excinfo:
-        validate_start_payload(unsafe_direct)
+        build_runtime_start_payload(
+            transaction_id="runtime_tx_replay_corpus",
+            idempotency_key="runtime_event_start_runtime_tx_replay_corpus",
+            entry_count=1,
+            record_counts={"transactions": 1, "intents": 1, "artifacts": 1, "deliveries": 1},
+            allowed_runtime_events=unsafe_envelope["allowed_runtime_events"],
+            claim_check_policy=unsafe_envelope["claim_check_policy"],
+        )
     assert_safe_error(direct_excinfo.value)
 
 

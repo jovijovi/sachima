@@ -308,8 +308,23 @@ def test_phase5h_diff_does_not_add_gateway_wiring_or_runtime_lifecycle_outside_i
     allowed_changed_files = {
         "docs/plans/2026-05-06-flowweaver-phase5h-local-temporal-worker-reconciliation-harness.md",
         "docs/dev_log/2026-05-06-flowweaver-phase5h-local-temporal-worker-reconciliation-harness.md",
+        "docs/plans/2026-05-06-flowweaver-phase5i-start-signature-parity.md",
+        "docs/dev_log/2026-05-06-flowweaver-phase5i-start-signature-parity.md",
+        "prototypes/flowweaver_phase5b_temporal_poc/src/flowweaver_temporal_poc/payloads.py",
+        "prototypes/flowweaver_phase5b_temporal_poc/src/flowweaver_temporal_poc/workflows.py",
+        "prototypes/flowweaver_phase5c_runtime_client/src/flowweaver_runtime_client/contracts.py",
+        "prototypes/flowweaver_phase5c_runtime_client/src/flowweaver_runtime_client/reconciliation_harness.py",
         "prototypes/flowweaver_phase5c_runtime_client/src/flowweaver_runtime_client/runtime_client.py",
+        "tests/integration/test_flowweaver_phase5b_temporal_workflow.py",
+        "tests/integration/test_flowweaver_phase5c_runtime_client_temporal.py",
         "tests/integration/test_flowweaver_phase5h_local_temporal_worker_reconciliation.py",
+        "tests/integration/test_flowweaver_phase5i_start_signature_parity.py",
+        "tests/prototypes/test_flowweaver_phase5b_temporal_payloads.py",
+        "tests/prototypes/test_flowweaver_phase5c_runtime_client_contract.py",
+        "tests/prototypes/test_flowweaver_phase5c_tool_adapter.py",
+        "tests/prototypes/test_flowweaver_phase5e_variable_runtime_ids.py",
+        "tests/prototypes/test_flowweaver_phase5g_delivery_cardinality.py",
+        "tests/prototypes/test_flowweaver_phase5i_start_signature_contract.py",
     }
 
     assert changed_files <= allowed_changed_files

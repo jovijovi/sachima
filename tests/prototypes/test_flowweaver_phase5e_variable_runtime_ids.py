@@ -33,7 +33,7 @@ from flowweaver_temporal_poc.payloads import (  # noqa: E402
     ALLOWED_RUNTIME_EVENTS,
     RUNTIME_START_IDEMPOTENCY_KEY,
     RUNTIME_TRANSACTION_ID,
-    RuntimeStartPayload,
+    build_runtime_start_payload,
     build_start_payload_from_ingress_envelope,
     validate_start_payload,
 )
@@ -148,7 +148,7 @@ def test_runtime_ingress_envelope_uses_supplied_variable_runtime_identity() -> N
 
 
 def test_phase5b_and_phase5c_accept_variable_runtime_start_payloads_and_legacy_fixture() -> None:
-    variable_payload = RuntimeStartPayload(
+    variable_payload = build_runtime_start_payload(
         transaction_id=_VARIABLE_TRANSACTION_ID,
         idempotency_key=_VARIABLE_START_EVENT_KEY,
         entry_count=1,
@@ -163,7 +163,7 @@ def test_phase5b_and_phase5c_accept_variable_runtime_start_payloads_and_legacy_f
     assert built.transaction_id == _VARIABLE_TRANSACTION_ID
     assert built.idempotency_key == _VARIABLE_START_EVENT_KEY
 
-    legacy_payload = RuntimeStartPayload(
+    legacy_payload = build_runtime_start_payload(
         transaction_id=RUNTIME_TRANSACTION_ID,
         idempotency_key=RUNTIME_START_IDEMPOTENCY_KEY,
         entry_count=1,
@@ -196,15 +196,13 @@ def test_variable_runtime_contracts_reject_embedded_private_platform_and_secret_
 
     for marker in markers:
         with pytest.raises(ValueError, match="invalid_start_payload"):
-            validate_start_payload(
-                RuntimeStartPayload(
-                    transaction_id=f"runtime_tx_shadow_{marker}_bad",
-                    idempotency_key=_VARIABLE_START_EVENT_KEY,
-                    entry_count=1,
-                    record_counts={"transactions": 1, "intents": 1, "artifacts": 1, "deliveries": 1},
-                    allowed_runtime_events=ALLOWED_RUNTIME_EVENTS,
-                    claim_check_policy=copy.deepcopy(CLAIM_CHECK_POLICY),
-                )
+            build_runtime_start_payload(
+                transaction_id=f"runtime_tx_shadow_{marker}_bad",
+                idempotency_key=_VARIABLE_START_EVENT_KEY,
+                entry_count=1,
+                record_counts={"transactions": 1, "intents": 1, "artifacts": 1, "deliveries": 1},
+                allowed_runtime_events=ALLOWED_RUNTIME_EVENTS,
+                claim_check_policy=copy.deepcopy(CLAIM_CHECK_POLICY),
             )
         bad_fields = safe_start_fields(idempotency_key=f"runtime_event_start_shadow_{marker}_bad")
         with pytest.raises(ValueError, match="invalid_start_payload"):
