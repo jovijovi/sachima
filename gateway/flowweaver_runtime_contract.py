@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any
 
 from gateway.flowweaver_mock_durable import (
     FLOWWEAVER_MOCK_DURABLE_ACCEPTED,
     FLOWWEAVER_MOCK_DURABLE_CONSUMER_TYPE,
+)
+from gateway.flowweaver_runtime_identity import (
+    FLOWWEAVER_RUNTIME_IDENTITY_ACCEPTED,
+    FLOWWEAVER_RUNTIME_IDENTITY_STRATEGY,
+    FLOWWEAVER_RUNTIME_IDENTITY_TYPE,
 )
 from gateway.flowweaver_shadow import (
     FLOWWEAVER_SHADOW_CONSUMER_CONTRACT_TYPE,
@@ -161,6 +165,8 @@ def build_flowweaver_runtime_ingress_envelope(
     replay_corpus: Mapping[str, object],
     mock_durable_projection: Mapping[str, object],
     dry_run_summary: Mapping[str, object] | None = None,
+    *,
+    runtime_identity: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     """Project safe Phase 4F/4G/4H outputs into a narrow runtime envelope."""
 
@@ -193,6 +199,12 @@ def build_flowweaver_runtime_ingress_envelope(
                 return _rejected(reason="invalid_dry_run")
             dry_run_type = FLOWWEAVER_SHADOW_DRY_RUN_TYPE
 
+        runtime_idempotency = dict(_IDEMPOTENCY)
+        if runtime_identity is not None:
+            runtime_idempotency = _idempotency_from_runtime_identity(runtime_identity)
+            if runtime_idempotency is None:
+                return _rejected(reason="runtime_identity_rejected")
+
         return {
             "type": FLOWWEAVER_RUNTIME_ENVELOPE_TYPE,
             "verdict": FLOWWEAVER_RUNTIME_ACCEPTED,
@@ -206,7 +218,7 @@ def build_flowweaver_runtime_ingress_envelope(
             "source_dry_run_type": dry_run_type,
             "entry_count": corpus_entry_count,
             "record_counts": projection_counts,
-            "idempotency": dict(_IDEMPOTENCY),
+            "idempotency": runtime_idempotency,
             "allowed_runtime_events": list(_ALLOWED_RUNTIME_EVENTS),
             "claim_check_policy": _claim_check_policy(),
             "checks": {
@@ -232,6 +244,74 @@ def _claim_check_policy() -> dict[str, object]:
         "allowed_reference_fields": list(_CLAIM_CHECK_POLICY["allowed_reference_fields"]),
         "forbidden_material": list(_FORBIDDEN_MATERIAL),
     }
+
+
+def _idempotency_from_runtime_identity(identity: object) -> dict[str, str] | None:
+    safe = _plain_copy_dict(identity)
+    if safe is None:
+        return None
+    expected_keys = {
+        "type",
+        "verdict",
+        "reason",
+        "strategy",
+        "transaction_id",
+        "workflow_id",
+        "idempotency_key",
+        "checks",
+        "side_effects",
+    }
+    if not _has_exact_string_keys(safe, expected_keys):
+        return None
+    transaction_id = safe.get("transaction_id")
+    workflow_id = safe.get("workflow_id")
+    idempotency_key = safe.get("idempotency_key")
+    checks = safe.get("checks")
+    if not (
+        safe.get("type") == FLOWWEAVER_RUNTIME_IDENTITY_TYPE
+        and safe.get("verdict") == FLOWWEAVER_RUNTIME_IDENTITY_ACCEPTED
+        and safe.get("reason") == "ok"
+        and safe.get("strategy") == FLOWWEAVER_RUNTIME_IDENTITY_STRATEGY
+        and type(transaction_id) is str
+        and workflow_id == transaction_id
+        and type(idempotency_key) is str
+        and _runtime_shadow_transaction_id(transaction_id)
+        and _runtime_shadow_start_event_key(idempotency_key)
+        and _identity_checks_valid(checks)
+        and _empty_plain_list(safe.get("side_effects"))
+    ):
+        return None
+    return {
+        "strategy": FLOWWEAVER_RUNTIME_IDENTITY_STRATEGY,
+        "transaction_key": transaction_id,
+        "start_event_key": idempotency_key,
+        "intent_key_prefix": "runtime_intent_",
+        "artifact_key_prefix": "runtime_artifact_",
+        "delivery_key_prefix": "runtime_delivery_",
+    }
+
+
+def _identity_checks_valid(value: object) -> bool:
+    expected = {
+        "snapshot_ref_valid",
+        "ids_synthetic",
+        "private_markers_absent",
+        "secret_markers_absent",
+        "source_values_not_exported",
+    }
+    return type(value) is dict and _has_exact_string_keys(value, expected) and all(value.get(key) is True for key in expected)
+
+
+def _runtime_shadow_transaction_id(value: str) -> bool:
+    prefix = "runtime_tx_shadow_"
+    suffix = value[len(prefix) :] if value.startswith(prefix) else ""
+    return len(suffix) == 20 and all(("0" <= char <= "9") or ("a" <= char <= "f") for char in suffix)
+
+
+def _runtime_shadow_start_event_key(value: str) -> bool:
+    prefix = "runtime_event_start_shadow_"
+    suffix = value[len(prefix) :] if value.startswith(prefix) else ""
+    return len(suffix) == 20 and all(("0" <= char <= "9") or ("a" <= char <= "f") for char in suffix)
 
 
 def _plain_copy_dict(value: object) -> dict[str, object] | None:

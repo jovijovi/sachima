@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import re
 import subprocess
 from collections.abc import Iterator, Mapping
 from pathlib import Path
@@ -66,14 +67,15 @@ class MutatingValue:
         return PRIVATE_MESSAGE_ID
 
 
-def make_snapshot(*, index: int = 0) -> TransactionSnapshot:
+def make_snapshot(*, index: int = 0, transaction_id: str | None = None, updated_at: float | None = None) -> TransactionSnapshot:
+    snapshot_updated_at = updated_at if updated_at is not None else 1002.0 + index
     return TransactionSnapshot(
-        transaction_id=f"session_shadow_publisher_{index}",
+        transaction_id=transaction_id or f"session_shadow_publisher_{index}",
         title="Gateway shadow publisher task",
         status="completed",
         started_at=1000.0 + index,
-        updated_at=1002.0 + index,
-        completed_at=1002.0 + index,
+        updated_at=snapshot_updated_at,
+        completed_at=snapshot_updated_at,
         recent_operations=(),
     )
 
@@ -84,6 +86,8 @@ def make_shadow_agent_result(
     final_text_sent: bool = True,
     rich_cards_sent: list[dict[str, Any]] | None = None,
     attach_dry_run: bool = True,
+    transaction_id: str | None = None,
+    updated_at: float | None = None,
 ) -> dict[str, Any]:
     agent_result: dict[str, Any] = {
         "final_response": "done",
@@ -94,7 +98,7 @@ def make_shadow_agent_result(
     }
     attached = attach_flowweaver_shadow_snapshot(
         agent_result,
-        make_snapshot(index=index),
+        make_snapshot(index=index, transaction_id=transaction_id, updated_at=updated_at),
         enabled=True,
         final_text="done",
     )
@@ -158,7 +162,7 @@ def test_shadow_runtime_publisher_boundary_scans_are_diff_hunk_aware() -> None:
     assert not [line for line in added_lines for term in forbidden_runtime_terms if term in line]
 
 
-def test_shadow_runtime_publisher_changed_file_guard_allows_only_phase5d_files() -> None:
+def test_shadow_runtime_publisher_changed_file_guard_allows_only_phase5e_files() -> None:
     repo_root = Path(__file__).resolve().parents[2]
     changed = set(
         subprocess.check_output(["git", "diff", "--name-only", "HEAD"], cwd=repo_root, text=True).splitlines()
@@ -167,16 +171,24 @@ def test_shadow_runtime_publisher_changed_file_guard_allows_only_phase5d_files()
         subprocess.check_output(["git", "ls-files", "--others", "--exclude-standard"], cwd=repo_root, text=True).splitlines()
     )
     allowed = {
-        "docs/dev_log/2026-05-05-flowweaver-phase5d-gateway-shadow-publisher-ack-bridge.md",
-        "docs/plans/2026-05-05-flowweaver-phase5d-gateway-shadow-publisher-ack-bridge.md",
+        "docs/dev_log/2026-05-06-flowweaver-phase5e-variable-runtime-ids-local-publish-adapter.md",
+        "docs/plans/2026-05-06-flowweaver-phase5e-variable-runtime-ids-local-publish-adapter.md",
+        "gateway/flowweaver_contract.py",
+        "gateway/flowweaver_runtime_contract.py",
+        "gateway/flowweaver_runtime_identity.py",
         "gateway/flowweaver_shadow_publisher.py",
-        "gateway/run.py",
+        "prototypes/flowweaver_phase5b_temporal_poc/src/flowweaver_temporal_poc/payloads.py",
+        "prototypes/flowweaver_phase5c_runtime_client/src/flowweaver_runtime_client/contracts.py",
+        "prototypes/flowweaver_phase5c_runtime_client/src/flowweaver_runtime_client/publication_adapter.py",
+        "tests/gateway/test_flowweaver_runtime_contract.py",
+        "tests/gateway/test_flowweaver_runtime_identity.py",
         "tests/gateway/test_flowweaver_shadow_publisher.py",
-        "tests/gateway/test_flowweaver_shadow_publisher_run_hook.py",
-        "tests/gateway/test_run_progress_topics.py",
+        "tests/prototypes/test_flowweaver_phase5c_runtime_client_contract.py",
+        "tests/prototypes/test_flowweaver_phase5e_local_publish_adapter.py",
+        "tests/prototypes/test_flowweaver_phase5e_variable_runtime_ids.py",
     }
     forbidden_prefixes = ("gateway/platforms/", "tools/")
-    forbidden_exact = {"run_agent.py", "model_tools.py", "toolsets.py", "mcp_serve.py"}
+    forbidden_exact = {"gateway/run.py", "run_agent.py", "model_tools.py", "toolsets.py", "mcp_serve.py"}
 
     assert changed <= allowed
     assert not [path for path in changed if path.startswith(forbidden_prefixes) or path in forbidden_exact]
@@ -193,8 +205,19 @@ def test_build_shadow_runtime_publication_returns_ready_safe_start_request() -> 
     assert summary["reason"] == "ok"
     assert summary["runtime_model_version"] == "flowweaver.runtime.v0"
     assert summary["runtime_envelope_type"] == "flowweaver.gateway.runtime_ingress_envelope.v0"
-    assert summary["transaction_id"] == "runtime_tx_replay_corpus"
-    assert summary["workflow_id"] == "runtime_tx_replay_corpus"
+    runtime_tx_pattern = re.compile(r"^runtime_tx_shadow_[a-f0-9]{20}$")
+    runtime_event_pattern = re.compile(r"^runtime_event_start_shadow_[a-f0-9]{20}$")
+    assert runtime_tx_pattern.fullmatch(summary["transaction_id"])
+    assert runtime_tx_pattern.fullmatch(summary["workflow_id"])
+    assert summary["transaction_id"] == summary["workflow_id"]
+    assert summary["runtime_identity"] == {
+        "type": "flowweaver.gateway.runtime_identity.v0",
+        "strategy": "shadow_ref_hash_v0",
+        "transaction_id": summary["transaction_id"],
+        "workflow_id": summary["workflow_id"],
+        "idempotency_key": summary["start_request"]["start_payload"]["idempotency_key"],
+    }
+    assert runtime_event_pattern.fullmatch(summary["runtime_identity"]["idempotency_key"])
     assert summary["side_effects"] == []
     assert summary["checks"] == {
         "shadow_capture_present": True,
@@ -207,18 +230,62 @@ def test_build_shadow_runtime_publication_returns_ready_safe_start_request() -> 
         "runtime_side_effects_absent": True,
     }
     assert summary["start_request"]["operation"] == "start_transaction"
-    assert summary["start_request"]["workflow_id"] == "runtime_tx_replay_corpus"
+    assert summary["start_request"]["workflow_id"] == summary["workflow_id"]
     payload = summary["start_request"]["start_payload"]
-    assert payload["transaction_id"] == "runtime_tx_replay_corpus"
-    assert payload["idempotency_key"] == "runtime_event_start_runtime_tx_replay_corpus"
+    assert payload["transaction_id"] == summary["transaction_id"]
+    assert payload["idempotency_key"] == summary["runtime_identity"]["idempotency_key"]
     assert payload["entry_count"] == 1
     assert payload["record_counts"] == {"transactions": 1, "intents": 1, "artifacts": 1, "deliveries": 1}
     assert payload["claim_check_policy"]["mode"] == "references_only"
     assert "record_delivery_ack" in payload["allowed_runtime_events"]
+    assert "runtime_tx_replay_corpus" not in rendered
     assert "flowweaver_shadow_snapshot" not in rendered
     assert "flowweaver_shadow_capture" not in rendered
     assert "session_shadow_publisher" not in rendered
     assert "final_response" not in rendered
+
+
+def test_shadow_runtime_publication_uses_different_variable_ids_for_different_shadow_results() -> None:
+    first = build_flowweaver_shadow_runtime_publication(make_shadow_agent_result(index=1))
+    second = build_flowweaver_shadow_runtime_publication(make_shadow_agent_result(index=2))
+
+    assert first["verdict"] == FLOWWEAVER_SHADOW_RUNTIME_PUBLICATION_READY
+    assert second["verdict"] == FLOWWEAVER_SHADOW_RUNTIME_PUBLICATION_READY
+    assert first["transaction_id"] != second["transaction_id"]
+    assert first["workflow_id"] != second["workflow_id"]
+    assert first["start_request"]["start_payload"]["idempotency_key"] != second["start_request"]["start_payload"]["idempotency_key"]
+
+
+def test_shadow_runtime_publication_uses_different_ids_for_same_session_across_turns() -> None:
+    first = build_flowweaver_shadow_runtime_publication(
+        make_shadow_agent_result(index=8, transaction_id="session_shadow_publisher_same", updated_at=2001.1)
+    )
+    second = build_flowweaver_shadow_runtime_publication(
+        make_shadow_agent_result(index=8, transaction_id="session_shadow_publisher_same", updated_at=2001.2)
+    )
+
+    assert first["verdict"] == FLOWWEAVER_SHADOW_RUNTIME_PUBLICATION_READY
+    assert second["verdict"] == FLOWWEAVER_SHADOW_RUNTIME_PUBLICATION_READY
+    assert first["transaction_id"] != second["transaction_id"]
+    assert first["start_request"]["start_payload"]["idempotency_key"] != second["start_request"]["start_payload"]["idempotency_key"]
+
+
+def test_shadow_runtime_publication_ack_targets_remain_bounded_synthetic_delivery_ids() -> None:
+    summary = build_flowweaver_shadow_runtime_publication(
+        make_shadow_agent_result(
+            index=3,
+            rich_cards_sent=[{"type": "result_card", "message_id": PRIVATE_MESSAGE_ID}],
+        )
+    )
+    updates = summary["ack_bridge"]["updates"]
+    rendered = repr(updates).lower()
+
+    assert summary["verdict"] == FLOWWEAVER_SHADOW_RUNTIME_PUBLICATION_READY
+    assert [update["target_id"] for update in updates] == ["runtime_delivery_0", "runtime_delivery_1"]
+    assert all(re.fullmatch(r"runtime_event_delivery_ack_(final_text|rich_card)_\d+", update["delivery_key"]) for update in updates)
+    assert "runtime_tx_shadow_" not in rendered
+    assert "session_shadow_publisher" not in rendered
+    assert PRIVATE_MESSAGE_ID not in rendered
 
 
 def test_build_shadow_runtime_publication_rejects_missing_or_bad_inputs_without_echoing_values() -> None:

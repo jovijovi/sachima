@@ -49,13 +49,14 @@ _START_ENVELOPE_KEYS = {
     "side_effects",
 }
 _RECORD_COUNT_KEYS = {"transactions", "intents", "artifacts", "deliveries"}
-_IDEMPOTENCY_KEYS = {
+_IDEMPOTENCY_REQUIRED_KEYS = {
     "strategy",
     "transaction_key",
     "intent_key_prefix",
     "artifact_key_prefix",
     "delivery_key_prefix",
 }
+_IDEMPOTENCY_VARIABLE_KEYS = _IDEMPOTENCY_REQUIRED_KEYS | {"start_event_key"}
 _CLAIM_CHECK_KEYS = {"mode", "allowed_reference_fields", "forbidden_material"}
 _EXPECTED_FORBIDDEN_MATERIAL = (
     "raw_snapshot",
@@ -107,9 +108,9 @@ _EMBEDDED_PRIVATE_MARKERS = (
     "om_",
     "oc_",
     "ou_",
-    "chat_",
-    "message_",
-    "platform_",
+    "chat",
+    "message",
+    "platform",
     "feishu",
     "lark",
     "telegram",
@@ -189,15 +190,7 @@ def build_start_payload_from_ingress_envelope(envelope: object) -> RuntimeStartP
 
     counts = _record_counts(safe["record_counts"], entry_count=safe["entry_count"], error="invalid_runtime_envelope")
     idempotency = _plain_dict(safe["idempotency"], error="invalid_runtime_envelope")
-    if not (
-        set(idempotency) == _IDEMPOTENCY_KEYS
-        and idempotency["strategy"] == "synthetic_index_v0"
-        and idempotency["transaction_key"] == RUNTIME_TRANSACTION_ID
-        and idempotency["intent_key_prefix"] == "runtime_intent_"
-        and idempotency["artifact_key_prefix"] == "runtime_artifact_"
-        and idempotency["delivery_key_prefix"] == "runtime_delivery_"
-    ):
-        _raise("invalid_runtime_envelope")
+    transaction_id, idempotency_key = _start_ids_from_idempotency(idempotency)
 
     allowed_runtime_events = _plain_string_tuple(safe["allowed_runtime_events"], error="invalid_runtime_envelope")
     if allowed_runtime_events != ALLOWED_RUNTIME_EVENTS:
@@ -209,13 +202,36 @@ def build_start_payload_from_ingress_envelope(envelope: object) -> RuntimeStartP
         _raise("invalid_runtime_envelope")
 
     return RuntimeStartPayload(
-        transaction_id=RUNTIME_TRANSACTION_ID,
-        idempotency_key=RUNTIME_START_IDEMPOTENCY_KEY,
+        transaction_id=transaction_id,
+        idempotency_key=idempotency_key,
         entry_count=safe["entry_count"],
         record_counts=counts,
         allowed_runtime_events=allowed_runtime_events,
         claim_check_policy=claim_check_policy,
     )
+
+
+def _start_ids_from_idempotency(idempotency: dict[str, object]) -> tuple[str, str]:
+    keys = set(idempotency)
+    if keys != _IDEMPOTENCY_REQUIRED_KEYS and keys != _IDEMPOTENCY_VARIABLE_KEYS:
+        _raise("invalid_runtime_envelope")
+    if not (
+        idempotency["intent_key_prefix"] == "runtime_intent_"
+        and idempotency["artifact_key_prefix"] == "runtime_artifact_"
+        and idempotency["delivery_key_prefix"] == "runtime_delivery_"
+    ):
+        _raise("invalid_runtime_envelope")
+    strategy = idempotency["strategy"]
+    transaction_key = idempotency["transaction_key"]
+    if strategy == "synthetic_index_v0" and keys == _IDEMPOTENCY_REQUIRED_KEYS and transaction_key == RUNTIME_TRANSACTION_ID:
+        return RUNTIME_TRANSACTION_ID, RUNTIME_START_IDEMPOTENCY_KEY
+    if strategy == "shadow_ref_hash_v0" and keys == _IDEMPOTENCY_VARIABLE_KEYS:
+        transaction_id = _synthetic_id(transaction_key, prefixes=("runtime_tx_",), error="invalid_runtime_envelope")
+        idempotency_key = _synthetic_id(
+            idempotency["start_event_key"], prefixes=("runtime_event_",), error="invalid_runtime_envelope"
+        )
+        return transaction_id, idempotency_key
+    _raise("invalid_runtime_envelope")
 
 
 def delivery_ack_from_safe_update(update: object) -> DeliveryAckUpdate:
@@ -288,8 +304,6 @@ def snapshot_to_safe_dict(snapshot: object) -> dict[str, object]:
 
 def validate_start_payload(payload: RuntimeStartPayload) -> None:
     if type(payload) is not RuntimeStartPayload:
-        _raise("invalid_start_payload")
-    if payload.transaction_id != RUNTIME_TRANSACTION_ID:
         _raise("invalid_start_payload")
     _synthetic_id(payload.transaction_id, prefixes=("runtime_tx_",), error="invalid_start_payload")
     _synthetic_id(payload.idempotency_key, prefixes=("runtime_event_",), error="invalid_start_payload")
