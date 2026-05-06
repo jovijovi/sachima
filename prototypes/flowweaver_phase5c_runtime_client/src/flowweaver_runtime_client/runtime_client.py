@@ -184,6 +184,8 @@ class FlowWeaverRuntimeClient:
 
 
 def _snapshot_matches_start_payload(snapshot: dict[str, object], payload: Any) -> bool:
+    from flowweaver_temporal_poc.payloads import start_signature_from_payload
+
     if snapshot.get("status") not in {"running", "waiting_for_user"}:
         return False
     if snapshot.get("transaction_id") != payload.transaction_id:
@@ -191,6 +193,8 @@ def _snapshot_matches_start_payload(snapshot: dict[str, object], payload: Any) -
     if snapshot.get("entry_count") != payload.entry_count:
         return False
     if snapshot.get("record_counts") != payload.record_counts:
+        return False
+    if snapshot.get("start_signature") != start_signature_from_payload(payload):
         return False
     expected_counts = {
         "intents": payload.entry_count,

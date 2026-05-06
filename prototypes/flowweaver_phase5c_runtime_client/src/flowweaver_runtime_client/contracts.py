@@ -7,8 +7,11 @@ from flowweaver_temporal_poc.payloads import (
     CancelTransactionUpdate,
     DeliveryAckUpdate,
     HumanDecisionUpdate,
+    START_SIGNATURE_TYPE,
     ResumeUserInputUpdate,
     RuntimeStartPayload,
+    build_runtime_start_payload,
+    validate_runtime_signature_digest,
     validate_runtime_workflow_id as _phase5b_validate_workflow_id,
     validate_start_payload,
 )
@@ -30,6 +33,7 @@ ALLOWED_SNAPSHOT_FIELDS = {
     "status",
     "entry_count",
     "record_counts",
+    "start_signature",
     "counts",
     "intent_statuses",
     "artifact_statuses",
@@ -84,6 +88,21 @@ _UNSAFE_VALUE_MARKERS = (
     "api" + "_key=",
 )
 _PRIVATE_PREFIXES = ("om_", "oc_", "ou_", "chat_", "message_", "platform_", "feishu_", "lark_", "telegram_")
+_SYNTHETIC_ID_FORBIDDEN_SUBSTRINGS = (
+    "allowed_runtime_events",
+    "claim_check_policy",
+    "forbidden_material",
+    "raw_",
+    "tool_output",
+    "platform_payload",
+    "token",
+    "secret",
+    "password",
+    "credential",
+    "api_key",
+    "bearer",
+    "sk-",
+)
 _INVALID = object()
 
 
@@ -130,7 +149,7 @@ def build_start_payload_from_safe_fields(fields: object) -> RuntimeStartPayload:
     if set(safe) != expected:
         _raise("invalid_start_payload")
     try:
-        payload = RuntimeStartPayload(
+        payload = build_runtime_start_payload(
             transaction_id=_expect_plain_string(safe["transaction_id"], error="invalid_start_payload"),
             idempotency_key=_synthetic_id(
                 safe["idempotency_key"], prefixes=("runtime_event_",), error="invalid_start_payload"
@@ -217,6 +236,7 @@ def sanitize_snapshot(snapshot: object) -> dict[str, object]:
         "status",
         "entry_count",
         "record_counts",
+        "start_signature",
         "counts",
         "intent_statuses",
         "artifact_statuses",
@@ -234,6 +254,7 @@ def sanitize_snapshot(snapshot: object) -> dict[str, object]:
         "status": _safe_literal_string(source["status"], allowed=_ALLOWED_SNAPSHOT_STATUSES, error="unsafe_tool_output"),
         "entry_count": _expect_plain_int(source["entry_count"], error="unsafe_tool_output"),
         "record_counts": _record_counts(source["record_counts"], error="unsafe_tool_output"),
+        "start_signature": _start_signature(source["start_signature"], error="unsafe_tool_output"),
         "counts": _counts(source["counts"], error="unsafe_tool_output"),
         "intent_statuses": _status_map(
             source["intent_statuses"], key_prefix="runtime_intent_", statuses=_ALLOWED_INTENT_STATUSES, error="unsafe_tool_output"
@@ -396,6 +417,22 @@ def _counts(value: object, *, error: str) -> dict[str, int]:
     return {key: counts[key] for key in ("intents", "artifacts", "deliveries")}
 
 
+def _start_signature(value: object, *, error: str) -> dict[str, object]:
+    signature = _plain_dict(value, error=error)
+    expected = {"type", "version", "idempotency_key", "event_contract_digest", "claim_policy_digest"}
+    if set(signature) != expected:
+        _raise(error)
+    safe = {
+        "type": _safe_literal_string(signature["type"], allowed=(START_SIGNATURE_TYPE,), error=error),
+        "version": _safe_literal_string(signature["version"], allowed=("flowweaver.temporal_poc.v0",), error=error),
+        "idempotency_key": _synthetic_id(signature["idempotency_key"], prefixes=("runtime_event_",), error=error),
+        "event_contract_digest": validate_runtime_signature_digest(signature["event_contract_digest"], error=error),
+        "claim_policy_digest": validate_runtime_signature_digest(signature["claim_policy_digest"], error=error),
+    }
+    _assert_no_forbidden_rendered_material(safe, error=error)
+    return safe
+
+
 def _status_map(value: object, *, key_prefix: str, statuses: tuple[str, ...], error: str) -> dict[str, str]:
     mapping = _plain_dict(value, error=error)
     safe: dict[str, str] = {}
@@ -440,7 +477,7 @@ def _synthetic_id(value: object, *, prefixes: tuple[str, ...], error: str) -> st
         _raise(error)
     if any(marker in body for marker in ("om_", "oc_", "ou_", "chat", "message", "platform", "feishu", "lark", "telegram", "private")):
         _raise(error)
-    if any(marker in lowered for marker in ("raw_", "tool_output", "platform_payload", "token", "secret", "password", "credential", "api_key", "bearer", "sk-")):
+    if any(marker in lowered for marker in _SYNTHETIC_ID_FORBIDDEN_SUBSTRINGS):
         _raise(error)
     if not all(("a" <= char <= "z") or ("0" <= char <= "9") or char == "_" for char in value):
         _raise(error)
@@ -479,6 +516,9 @@ def _assert_result_shape(result: dict[str, object]) -> None:
 def _assert_no_forbidden_rendered_material(value: object, *, error: str) -> None:
     rendered = repr(value).lower()
     forbidden = (
+        "allowed_runtime_events",
+        "claim_check_policy",
+        "forbidden_material",
         "raw_payload",
         "raw_capture",
         "raw_prompt",

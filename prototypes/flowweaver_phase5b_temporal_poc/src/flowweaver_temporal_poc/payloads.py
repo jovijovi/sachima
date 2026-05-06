@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+import hashlib
+import json
 
 from flowweaver_temporal_poc import FLOWWEAVER_TEMPORAL_POC_VERSION, FLOWWEAVER_TEMPORAL_TASK_QUEUE
 
@@ -12,6 +13,8 @@ RUNTIME_CONTRACT_TYPE = "flowweaver.gateway.runtime_ingress_contract.v0"
 RUNTIME_MODEL_VERSION = "flowweaver.runtime.v0"
 RUNTIME_TRANSACTION_ID = "runtime_tx_replay_corpus"
 RUNTIME_START_IDEMPOTENCY_KEY = "runtime_event_start_runtime_tx_replay_corpus"
+START_SIGNATURE_TYPE = "flowweaver.temporal_poc.start_signature.v0"
+RUNTIME_SIGNATURE_PREFIX = "runtime_sig_"
 
 ALLOWED_RUNTIME_EVENTS = (
     "start_transaction",
@@ -117,6 +120,9 @@ _EMBEDDED_PRIVATE_MARKERS = (
     "private",
 )
 _FORBIDDEN_SUBSTRINGS = (
+    "allowed_runtime_events",
+    "claim_check_policy",
+    "forbidden_material",
     "token",
     "secret",
     "password",
@@ -138,8 +144,8 @@ class RuntimeStartPayload:
     idempotency_key: str
     entry_count: int
     record_counts: dict[str, int]
-    allowed_runtime_events: tuple[str, ...]
-    claim_check_policy: dict[str, Any]
+    event_contract_digest: str
+    claim_policy_digest: str
 
 
 @dataclass(frozen=True)
@@ -169,6 +175,44 @@ class CancelTransactionUpdate:
 class ResumeUserInputUpdate:
     event_id: str
     input_ref: str
+
+
+def build_runtime_start_payload(
+    *,
+    transaction_id: object,
+    idempotency_key: object,
+    entry_count: object,
+    record_counts: object,
+    allowed_runtime_events: object,
+    claim_check_policy: object,
+) -> RuntimeStartPayload:
+    safe_entry_count = entry_count
+    if type(safe_entry_count) is not int or not (1 <= safe_entry_count <= 20):
+        _raise("invalid_start_payload")
+    counts = _record_counts(record_counts, entry_count=safe_entry_count, error="invalid_start_payload")
+    safe_events = _plain_string_tuple(allowed_runtime_events, error="invalid_start_payload")
+    if safe_events != ALLOWED_RUNTIME_EVENTS:
+        _raise("invalid_start_payload")
+    safe_policy = _claim_check_policy(claim_check_policy, error="invalid_start_payload")
+    return RuntimeStartPayload(
+        transaction_id=_synthetic_id(transaction_id, prefixes=("runtime_tx_",), error="invalid_start_payload"),
+        idempotency_key=_synthetic_id(idempotency_key, prefixes=("runtime_event_",), error="invalid_start_payload"),
+        entry_count=safe_entry_count,
+        record_counts=counts,
+        event_contract_digest=_runtime_signature_digest(safe_events, error="invalid_start_payload"),
+        claim_policy_digest=_runtime_signature_digest(safe_policy, error="invalid_start_payload"),
+    )
+
+
+def start_signature_from_payload(payload: RuntimeStartPayload) -> dict[str, object]:
+    validate_start_payload(payload)
+    return {
+        "type": START_SIGNATURE_TYPE,
+        "version": FLOWWEAVER_TEMPORAL_POC_VERSION,
+        "idempotency_key": payload.idempotency_key,
+        "event_contract_digest": payload.event_contract_digest,
+        "claim_policy_digest": payload.claim_policy_digest,
+    }
 
 
 def build_start_payload_from_ingress_envelope(envelope: object) -> RuntimeStartPayload:
@@ -201,7 +245,7 @@ def build_start_payload_from_ingress_envelope(envelope: object) -> RuntimeStartP
     if set(checks) != _CHECK_KEYS or not all(checks[key] is True for key in _CHECK_KEYS):
         _raise("invalid_runtime_envelope")
 
-    return RuntimeStartPayload(
+    return build_runtime_start_payload(
         transaction_id=transaction_id,
         idempotency_key=idempotency_key,
         entry_count=safe["entry_count"],
@@ -310,9 +354,8 @@ def validate_start_payload(payload: RuntimeStartPayload) -> None:
     if type(payload.entry_count) is not int or not (1 <= payload.entry_count <= 20):
         _raise("invalid_start_payload")
     _record_counts(payload.record_counts, entry_count=payload.entry_count, error="invalid_start_payload")
-    if tuple(payload.allowed_runtime_events) != ALLOWED_RUNTIME_EVENTS:
-        _raise("invalid_start_payload")
-    _claim_check_policy(payload.claim_check_policy, error="invalid_start_payload")
+    validate_runtime_signature_digest(payload.event_contract_digest, error="invalid_start_payload")
+    validate_runtime_signature_digest(payload.claim_policy_digest, error="invalid_start_payload")
 
 
 def validate_delivery_ack_update(update: DeliveryAckUpdate) -> None:
@@ -384,6 +427,23 @@ def _claim_check_policy(value: object, *, error: str) -> dict[str, object]:
         "allowed_reference_fields": tuple(allowed),
         "forbidden_material": tuple(forbidden),
     }
+
+
+def _runtime_signature_digest(value: object, *, error: str) -> str:
+    copied = _plain_copy(value)
+    if copied is _INVALID:
+        _raise(error)
+    encoded = json.dumps(copied, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+    return RUNTIME_SIGNATURE_PREFIX + hashlib.sha256(encoded).hexdigest()
+
+
+def validate_runtime_signature_digest(value: object, *, error: str) -> str:
+    if type(value) is not str or not value.startswith(RUNTIME_SIGNATURE_PREFIX):
+        _raise(error)
+    body = value.removeprefix(RUNTIME_SIGNATURE_PREFIX)
+    if len(body) != 64 or not all(char in "0123456789abcdef" for char in body):
+        _raise(error)
+    return value
 
 
 def _optional_claim_ref(value: object, *, error: str) -> str | None:
@@ -483,18 +543,23 @@ __all__ = [
     "HumanDecisionUpdate",
     "RUNTIME_START_IDEMPOTENCY_KEY",
     "RUNTIME_TRANSACTION_ID",
+    "RUNTIME_SIGNATURE_PREFIX",
+    "START_SIGNATURE_TYPE",
     "ResumeUserInputUpdate",
     "RuntimeStartPayload",
+    "build_runtime_start_payload",
     "build_start_payload_from_ingress_envelope",
     "cancel_transaction_from_safe_update",
     "delivery_ack_from_safe_update",
     "human_decision_from_safe_update",
     "resume_user_input_from_safe_update",
     "snapshot_to_safe_dict",
+    "start_signature_from_payload",
     "validate_cancel_transaction_update",
     "validate_delivery_ack_update",
     "validate_human_decision_update",
     "validate_resume_user_input_update",
     "validate_runtime_workflow_id",
+    "validate_runtime_signature_digest",
     "validate_start_payload",
 ]

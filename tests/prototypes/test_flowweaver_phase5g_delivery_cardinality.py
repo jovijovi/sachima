@@ -199,9 +199,9 @@ def test_phase5g_delivery_ack_projection_caps_total_updates_at_twenty() -> None:
 
 
 def test_phase5g_start_payload_validation_allows_extra_delivery_slots_but_rejects_invalid_counts() -> None:
-    from flowweaver_temporal_poc.payloads import RuntimeStartPayload, validate_start_payload
+    from flowweaver_temporal_poc.payloads import build_runtime_start_payload, validate_start_payload
 
-    valid = RuntimeStartPayload(
+    valid = build_runtime_start_payload(
         transaction_id="runtime_tx_shadow_11111111111111111111",
         idempotency_key="runtime_event_start_shadow_11111111111111111111",
         entry_count=1,
@@ -217,16 +217,15 @@ def test_phase5g_start_payload_validation_allows_extra_delivery_slots_but_reject
         {"transactions": 1, "intents": 1, "artifacts": 1, "deliveries": 21},
     )
     for counts in invalid_counts:
-        invalid = RuntimeStartPayload(
-            transaction_id="runtime_tx_shadow_22222222222222222222",
-            idempotency_key="runtime_event_start_shadow_22222222222222222222",
-            entry_count=1,
-            record_counts=counts,
-            allowed_runtime_events=tuple(SAFE_ALLOWED_EVENTS),
-            claim_check_policy=copy.deepcopy(SAFE_CLAIM_CHECK_POLICY),
-        )
         with pytest.raises(ValueError, match="invalid_start_payload") as excinfo:
-            validate_start_payload(invalid)
+            build_runtime_start_payload(
+                transaction_id="runtime_tx_shadow_22222222222222222222",
+                idempotency_key="runtime_event_start_shadow_22222222222222222222",
+                entry_count=1,
+                record_counts=counts,
+                allowed_runtime_events=tuple(SAFE_ALLOWED_EVENTS),
+                claim_check_policy=copy.deepcopy(SAFE_CLAIM_CHECK_POLICY),
+            )
         assert str(excinfo.value) == "invalid_start_payload"
         assert_no_private_or_credential_material(excinfo.value)
 

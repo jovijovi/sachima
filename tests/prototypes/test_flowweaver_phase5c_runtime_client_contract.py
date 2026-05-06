@@ -17,6 +17,8 @@ for path in (PHASE5C_SRC, PHASE5B_SRC):
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
 
+from flowweaver_temporal_poc.payloads import build_runtime_start_payload, start_signature_from_payload  # noqa: E402
+
 
 SAFE_START_FIELDS = {
     "transaction_id": "runtime_tx_replay_corpus",
@@ -62,6 +64,8 @@ SAFE_START_FIELDS = {
     },
 }
 
+SAFE_START_PAYLOAD = build_runtime_start_payload(**SAFE_START_FIELDS)
+
 SAFE_SNAPSHOT = {
     "type": "flowweaver.temporal_poc.snapshot.v0",
     "version": "flowweaver.temporal_poc.v0",
@@ -69,6 +73,7 @@ SAFE_SNAPSHOT = {
     "status": "running",
     "entry_count": 1,
     "record_counts": {"transactions": 1, "intents": 1, "artifacts": 1, "deliveries": 1},
+    "start_signature": start_signature_from_payload(SAFE_START_PAYLOAD),
     "counts": {"intents": 1, "artifacts": 1, "deliveries": 1},
     "intent_statuses": {"runtime_intent_0": "pending"},
     "artifact_statuses": {"runtime_artifact_0": "available"},
@@ -105,12 +110,14 @@ def test_general_contract_import_does_not_import_temporalio_mcp_or_workflow_modu
     for module_name in (
         "flowweaver_runtime_client",
         "flowweaver_runtime_client.contracts",
-        "temporalio",
         "mcp",
         "flowweaver_temporal_poc.client",
         "flowweaver_temporal_poc.workflows",
     ):
         sys.modules.pop(module_name, None)
+    for module_name in list(sys.modules):
+        if module_name == "temporalio" or module_name.startswith("temporalio."):
+            sys.modules.pop(module_name, None)
 
     package = importlib.import_module("flowweaver_runtime_client")
     contracts = importlib.import_module("flowweaver_runtime_client.contracts")

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import ast
 import sys
 from pathlib import Path
@@ -19,18 +18,19 @@ for path in (PHASE5C_SRC, PHASE5B_SRC):
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
 
-from flowweaver_temporal_poc import FLOWWEAVER_TEMPORAL_TASK_QUEUE
-from flowweaver_temporal_poc.payloads import (
+from flowweaver_temporal_poc import FLOWWEAVER_TEMPORAL_TASK_QUEUE  # noqa: E402
+from flowweaver_temporal_poc.payloads import (  # noqa: E402
     CancelTransactionUpdate,
     DeliveryAckUpdate,
     HumanDecisionUpdate,
     ResumeUserInputUpdate,
-    RuntimeStartPayload,
+    build_runtime_start_payload,
+    start_signature_from_payload,
 )
-from flowweaver_temporal_poc.workflows import FlowWeaverTransactionWorkflow
+from flowweaver_temporal_poc.workflows import FlowWeaverTransactionWorkflow  # noqa: E402
 
 
-SAFE_START_PAYLOAD = RuntimeStartPayload(
+SAFE_START_PAYLOAD = build_runtime_start_payload(
     transaction_id="runtime_tx_replay_corpus",
     idempotency_key="runtime_event_start_runtime_tx_replay_corpus",
     entry_count=1,
@@ -81,6 +81,7 @@ SAFE_SNAPSHOT = {
     "status": "running",
     "entry_count": 1,
     "record_counts": {"transactions": 1, "intents": 1, "artifacts": 1, "deliveries": 1},
+    "start_signature": start_signature_from_payload(SAFE_START_PAYLOAD),
     "counts": {"intents": 1, "artifacts": 1, "deliveries": 1},
     "intent_statuses": {"runtime_intent_0": "pending"},
     "artifact_statuses": {"runtime_artifact_0": "available"},

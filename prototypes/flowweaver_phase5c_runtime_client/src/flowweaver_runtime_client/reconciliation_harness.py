@@ -17,6 +17,7 @@ from flowweaver_temporal_poc import FLOWWEAVER_TEMPORAL_POC_VERSION
 from flowweaver_temporal_poc.payloads import (
     DeliveryAckUpdate,
     RuntimeStartPayload,
+    start_signature_from_payload,
     validate_delivery_ack_update,
     validate_start_payload,
 )
@@ -232,6 +233,7 @@ def _snapshot_from_payload(payload: RuntimeStartPayload) -> dict[str, object]:
         "status": "running",
         "entry_count": entry_count,
         "record_counts": dict(payload.record_counts),
+        "start_signature": start_signature_from_payload(payload),
         "counts": {
             "intents": entry_count,
             "artifacts": entry_count,
@@ -262,8 +264,7 @@ def _payload_signature(payload: RuntimeStartPayload) -> dict[str, object]:
         "idempotency_key": payload.idempotency_key,
         "entry_count": payload.entry_count,
         "record_counts": dict(payload.record_counts),
-        "allowed_runtime_events": tuple(payload.allowed_runtime_events),
-        "claim_check_policy": _plain_copy(payload.claim_check_policy),
+        "start_signature": start_signature_from_payload(payload),
     }
 
 
