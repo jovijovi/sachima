@@ -250,6 +250,10 @@ def test_phase5j_diff_does_not_add_gateway_wiring_or_real_activity_side_effects(
         "docs/runbooks/flowweaver-controlled-shadow-plan-builder.md",
         "prototypes/flowweaver_phase5c_runtime_client/src/flowweaver_runtime_client/controlled_shadow_design.py",
         "tests/prototypes/test_flowweaver_phase9_controlled_shadow_design.py",
+        "docs/dev_log/2026-05-07-flowweaver-phase10-controlled-shadow-prototype-loop-implementation.md",
+        "docs/runbooks/flowweaver-controlled-shadow-prototype-loop.md",
+        "prototypes/flowweaver_phase5c_runtime_client/src/flowweaver_runtime_client/controlled_shadow_prototype_loop.py",
+        "tests/prototypes/test_flowweaver_phase10_controlled_shadow_prototype_loop.py",
     }
     forbidden_prefixes = (
         "gateway/run.py",

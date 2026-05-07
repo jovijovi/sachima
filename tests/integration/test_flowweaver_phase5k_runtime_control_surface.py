@@ -298,6 +298,10 @@ def test_phase5k_diff_stays_inside_runtime_control_surface_allowlist() -> None:
         "docs/runbooks/flowweaver-controlled-shadow-plan-builder.md",
         "prototypes/flowweaver_phase5c_runtime_client/src/flowweaver_runtime_client/controlled_shadow_design.py",
         "tests/prototypes/test_flowweaver_phase9_controlled_shadow_design.py",
+        "docs/dev_log/2026-05-07-flowweaver-phase10-controlled-shadow-prototype-loop-implementation.md",
+        "docs/runbooks/flowweaver-controlled-shadow-prototype-loop.md",
+        "prototypes/flowweaver_phase5c_runtime_client/src/flowweaver_runtime_client/controlled_shadow_prototype_loop.py",
+        "tests/prototypes/test_flowweaver_phase10_controlled_shadow_prototype_loop.py",
     }
     forbidden_prefixes = (
         "gateway/run.py",
