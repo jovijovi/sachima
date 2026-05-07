@@ -103,8 +103,76 @@ Design-gate verification current status:
 9. Pending: final document gate after this evidence append.
 ```
 
+## Implementation Progress
+
+2026-05-07 — 狗哥 approved Phase 8 implementation after the design gate.
+
+Implemented files:
+
+```text
+prototypes/flowweaver_phase5c_runtime_client/src/flowweaver_runtime_client/production_readiness_gate.py
+tests/prototypes/test_flowweaver_phase8_production_readiness_gate.py
+docs/runbooks/flowweaver-production-readiness.md
+```
+
+Implementation summary:
+
+```text
+safe Phase 7 result + strict Gateway/runtime/operational descriptors -> readiness report
+```
+
+The Phase 8 module is synchronous and pure. It imports no Gateway/platform/tool/config/runtime service lifecycle surfaces and does not import Temporal client/worker/workflow modules.
+
+## TDD Notes
+
+```text
+1. RED: scripts/run_tests.sh tests/prototypes/test_flowweaver_phase8_production_readiness_gate.py -q
+   -> 7 failed with ModuleNotFoundError for flowweaver_runtime_client.production_readiness_gate.
+2. GREEN first attempt: implementation added but 4 tests failed because the unsafe-material scanner treated safe descriptor policy field names as leaks.
+3. Fix: allow descriptor policy field names only at the descriptor top level while still scanning their values and rejecting unsafe extra keys/values.
+4. GREEN: scripts/run_tests.sh tests/prototypes/test_flowweaver_phase8_production_readiness_gate.py -q
+   -> 7 passed.
+5. Integration guard RED: direct integration pytest failed because Phase 5H/I/J/K changed-file allowlists did not know Phase 8 files.
+6. Fix: append only Phase 8 plan/dev log/runbook/module/test paths to those guard allowlists; no forbidden production path was added.
+7. Codex implementation review found blockers:
+   - nested Phase 7 raw material / private snapshot identifiers could bypass the sanitizer;
+   - malformed Gateway descriptor values could raise TypeError instead of returning a stable blocked report.
+8. RED: added focused regressions for nested raw material, nested private snapshot IDs, and malformed descriptor values.
+9. GREEN: fixed Phase 7 input scanning, private-prefix key rejection, and Gateway descriptor type checks.
+10. Codex blocker re-check found one remaining blocker: policy-name-only nested raw material was not proven rejected.
+11. RED: added policy-name-only nested `forbidden_material`, `runbook_outline`, and raw-card value cases.
+12. GREEN: exact input keys `forbidden_material` / `runbook_outline` and raw-material value markers now fail closed as `unsafe_material`.
+```
+
+## Final Verification
+
+```text
+Focused Phase 8:
+- scripts/run_tests.sh tests/prototypes/test_flowweaver_phase8_production_readiness_gate.py -q
+- 9 passed
+
+Prototype regression:
+- Phase 8 + Phase 7/6/5K/5J/5I/5G/5F/5E/5C/5B prototype suite
+- 127 passed
+
+Integration regression:
+- Direct pytest, not scripts/run_tests.sh, for Phase 7/6/5K/5J/5I/5H/5C/5B integration suite
+- 38 passed
+
+Static gates:
+- python -m py_compile: PASS
+- python -m ruff check: PASS
+- git diff --check: PASS
+- changed-file allowlist / forbidden path / forbidden import-call-marker / added-line secret-shaped scan: PASS
+
+Codex review:
+- Implementation review: BLOCK on sanitizer / malformed descriptor handling.
+- Blocker re-check #1: BLOCK on policy-name-only nested raw material.
+- Blocker re-check #2: PASS, blockers none.
+```
+
 ## Follow-up Notes
 
-- Phase 8 should not be treated as permission to edit behavior code.
-- After design review, 狗哥 must explicitly approve implementation before tests/code/runbook changes beyond the design artifacts.
-- If Codex finds design blockers, patch the plan/dev log and run blocker-only re-review before asking for approval.
+- Phase 8 still must not be treated as production activation.
+- Any future controlled Gateway design requires separate approval.
+- This implementation remains default-off, prototype-only, lifecycle-free, and side-effect-free.
