@@ -318,6 +318,11 @@ def test_phase5i_diff_does_not_add_gateway_wiring_or_runtime_lifecycle_outside_a
         "prototypes/flowweaver_phase5c_runtime_client/src/flowweaver_runtime_client/gateway_shadow_e2e_loop.py",
         "tests/integration/test_flowweaver_phase7_gateway_shadow_e2e_loop.py",
         "tests/prototypes/test_flowweaver_phase7_gateway_shadow_e2e_loop.py",
+        "docs/dev_log/2026-05-07-flowweaver-phase8-production-readiness-gate.md",
+        "docs/plans/2026-05-07-flowweaver-phase8-production-readiness-gate.md",
+        "docs/runbooks/flowweaver-production-readiness.md",
+        "prototypes/flowweaver_phase5c_runtime_client/src/flowweaver_runtime_client/production_readiness_gate.py",
+        "tests/prototypes/test_flowweaver_phase8_production_readiness_gate.py",
     }
 
     assert changed_files <= allowed_changed_files
