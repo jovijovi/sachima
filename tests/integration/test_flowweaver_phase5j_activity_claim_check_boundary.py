@@ -236,6 +236,11 @@ def test_phase5j_diff_does_not_add_gateway_wiring_or_real_activity_side_effects(
         "tests/prototypes/test_flowweaver_phase5c_runtime_client_contract.py",
         "tests/prototypes/test_flowweaver_phase5f_local_runtime_reconciliation.py",
         "tests/prototypes/test_flowweaver_phase5j_activity_contract.py",
+        "docs/dev_log/2026-05-07-flowweaver-phase7-gateway-shadow-e2e-loop.md",
+        "docs/plans/2026-05-07-flowweaver-phase7-gateway-shadow-e2e-loop.md",
+        "prototypes/flowweaver_phase5c_runtime_client/src/flowweaver_runtime_client/gateway_shadow_e2e_loop.py",
+        "tests/integration/test_flowweaver_phase7_gateway_shadow_e2e_loop.py",
+        "tests/prototypes/test_flowweaver_phase7_gateway_shadow_e2e_loop.py",
     }
     forbidden_prefixes = (
         "gateway/run.py",

@@ -284,6 +284,11 @@ def test_phase5k_diff_stays_inside_runtime_control_surface_allowlist() -> None:
         "tests/prototypes/test_flowweaver_phase5k_runtime_control_surface.py",
         "tests/prototypes/test_flowweaver_phase5k_mcp_control_surface.py",
         "tests/prototypes/test_flowweaver_phase6_gateway_ack_shadow_bridge.py",
+        "docs/dev_log/2026-05-07-flowweaver-phase7-gateway-shadow-e2e-loop.md",
+        "docs/plans/2026-05-07-flowweaver-phase7-gateway-shadow-e2e-loop.md",
+        "prototypes/flowweaver_phase5c_runtime_client/src/flowweaver_runtime_client/gateway_shadow_e2e_loop.py",
+        "tests/integration/test_flowweaver_phase7_gateway_shadow_e2e_loop.py",
+        "tests/prototypes/test_flowweaver_phase7_gateway_shadow_e2e_loop.py",
     }
     forbidden_prefixes = (
         "gateway/run.py",
