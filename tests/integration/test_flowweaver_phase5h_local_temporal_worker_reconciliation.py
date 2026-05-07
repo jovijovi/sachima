@@ -393,6 +393,10 @@ def test_phase5h_diff_does_not_add_gateway_wiring_or_runtime_lifecycle_outside_i
         "docs/runbooks/flowweaver-production-readiness.md",
         "prototypes/flowweaver_phase5c_runtime_client/src/flowweaver_runtime_client/production_readiness_gate.py",
         "tests/prototypes/test_flowweaver_phase8_production_readiness_gate.py",
+        "docs/dev_log/2026-05-07-flowweaver-phase9-controlled-shadow-implementation.md",
+        "docs/runbooks/flowweaver-controlled-shadow-plan-builder.md",
+        "prototypes/flowweaver_phase5c_runtime_client/src/flowweaver_runtime_client/controlled_shadow_design.py",
+        "tests/prototypes/test_flowweaver_phase9_controlled_shadow_design.py",
     }
 
     assert changed_files <= allowed_changed_files
