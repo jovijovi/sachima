@@ -255,10 +255,14 @@ def test_phase5j_diff_does_not_add_gateway_wiring_or_real_activity_side_effects(
         "prototypes/flowweaver_phase5c_runtime_client/src/flowweaver_runtime_client/controlled_shadow_prototype_loop.py",
         "tests/prototypes/test_flowweaver_phase10_controlled_shadow_prototype_loop.py",
         "docs/dev_log/2026-05-07-flowweaver-phase11-controlled-gateway-observation-implementation.md",
-        "docs/runbooks/flowweaver-controlled-gateway-observation-design.md",
-        "prototypes/flowweaver_phase5c_runtime_client/src/flowweaver_runtime_client/controlled_gateway_observation_design.py",
-        "tests/prototypes/test_flowweaver_phase11_controlled_gateway_observation_design.py",
-    }
+            "docs/runbooks/flowweaver-controlled-gateway-observation-design.md",
+            "prototypes/flowweaver_phase5c_runtime_client/src/flowweaver_runtime_client/controlled_gateway_observation_design.py",
+            "tests/prototypes/test_flowweaver_phase11_controlled_gateway_observation_design.py",
+            "docs/dev_log/2026-05-07-flowweaver-phase12-controlled-gateway-observation-hook.md",
+            "docs/runbooks/flowweaver-controlled-gateway-observation-hook.md",
+            "gateway/flowweaver_controlled_gateway_observation.py",
+            "tests/gateway/test_flowweaver_controlled_gateway_observation.py",
+        }
     forbidden_prefixes = (
         "gateway/run.py",
         "gateway/platforms/",
