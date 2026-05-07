@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from flowweaver_temporal_poc.payloads import (
     ALLOWED_DELIVERY_STATUSES,
+    ACTIVITY_BOUNDARY_TYPE,
     CancelTransactionUpdate,
     DeliveryAckUpdate,
     HumanDecisionUpdate,
@@ -11,6 +12,7 @@ from flowweaver_temporal_poc.payloads import (
     ResumeUserInputUpdate,
     RuntimeStartPayload,
     build_runtime_start_payload,
+    validate_activity_boundary_summary,
     validate_runtime_signature_digest,
     validate_runtime_workflow_id as _phase5b_validate_workflow_id,
     validate_start_payload,
@@ -41,6 +43,7 @@ ALLOWED_SNAPSHOT_FIELDS = {
     "applied_event_count",
     "resume_count",
     "side_effects",
+    "activity_boundary",
 }
 _ALLOWED_SNAPSHOT_STATUSES = ("created", "running", "waiting_for_user", "canceled", "completed", "failed")
 _ALLOWED_INTENT_STATUSES = ("pending", "approved", "rejected", "canceled", "completed", "failed")
@@ -272,6 +275,11 @@ def sanitize_snapshot(snapshot: object) -> dict[str, object]:
         "resume_count": _expect_plain_int(source["resume_count"], error="unsafe_tool_output"),
         "side_effects": _empty_list(source["side_effects"], error="unsafe_tool_output"),
     }
+    if "activity_boundary" in source:
+        activity_boundary = validate_activity_boundary_summary(source["activity_boundary"])
+        if activity_boundary["type"] != ACTIVITY_BOUNDARY_TYPE:
+            _raise("unsafe_tool_output")
+        safe["activity_boundary"] = activity_boundary
     _assert_no_forbidden_rendered_material(safe, error="unsafe_tool_output")
     return safe
 

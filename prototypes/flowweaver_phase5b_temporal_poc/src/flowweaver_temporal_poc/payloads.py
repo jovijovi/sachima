@@ -14,6 +14,8 @@ RUNTIME_MODEL_VERSION = "flowweaver.runtime.v0"
 RUNTIME_TRANSACTION_ID = "runtime_tx_replay_corpus"
 RUNTIME_START_IDEMPOTENCY_KEY = "runtime_event_start_runtime_tx_replay_corpus"
 START_SIGNATURE_TYPE = "flowweaver.temporal_poc.start_signature.v0"
+ACTIVITY_BOUNDARY_TYPE = "flowweaver.temporal_poc.activity_boundary.v0"
+ACTIVITY_RESULT_TYPE = "flowweaver.temporal_poc.activity_result.v0"
 RUNTIME_SIGNATURE_PREFIX = "runtime_sig_"
 
 ALLOWED_RUNTIME_EVENTS = (
@@ -131,9 +133,20 @@ _FORBIDDEN_SUBSTRINGS = (
     "bearer",
     "sk-",
     "raw_",
+    "raw_prompt",
+    "raw_command",
+    "stdout",
+    "stderr",
+    "tool_output",
     "card_json",
+    "media_bytes",
+    "media_path",
     "delivery_ack_payload",
     "platform_payload",
+    "platform_id",
+    "chat_id",
+    "user_id",
+    "message_id",
 )
 _INVALID = object()
 
@@ -175,6 +188,64 @@ class CancelTransactionUpdate:
 class ResumeUserInputUpdate:
     event_id: str
     input_ref: str
+
+@dataclass(frozen=True)
+class ClaimCheckRefValidationInput:
+    ref: str
+    kind: str
+    count: int
+    size: int
+    checksum_hint: str
+
+
+@dataclass(frozen=True)
+class ClaimCheckRefValidationResult:
+    activity_type: str
+    ref: str
+    kind: str
+    status: str
+    checksum_hint: str
+
+
+@dataclass(frozen=True)
+class AgentTurnActivityInput:
+    event_id: str
+    intent_id: str
+    input_ref: str
+    output_artifact_id: str
+    output_artifact_ref: str
+
+
+@dataclass(frozen=True)
+class AgentTurnActivityResult:
+    activity_type: str
+    event_id: str
+    intent_id: str
+    artifact_id: str
+    artifact_ref: str
+    status: str
+
+
+@dataclass(frozen=True)
+class DeliverArtifactActivityInput:
+    event_id: str
+    artifact_id: str
+    artifact_ref: str
+    delivery_id: str
+    delivery_ref: str
+    surface: str
+
+
+@dataclass(frozen=True)
+class DeliverArtifactActivityResult:
+    activity_type: str
+    event_id: str
+    artifact_id: str
+    delivery_id: str
+    delivery_ref: str
+    surface: str
+    status: str
+
 
 
 def build_runtime_start_payload(
@@ -393,8 +464,147 @@ def validate_resume_user_input_update(update: ResumeUserInputUpdate) -> None:
     _claim_ref(update.input_ref, error="invalid_resume_user_input_update")
 
 
+def build_activity_boundary_summary(
+    *,
+    validation: ClaimCheckRefValidationResult,
+    agent_turn: AgentTurnActivityResult,
+    delivery: DeliverArtifactActivityResult,
+    status: object,
+) -> dict[str, object]:
+    validate_claim_check_ref_validation_result(validation)
+    validate_agent_turn_activity_result(agent_turn)
+    validate_deliver_artifact_activity_result(delivery)
+    safe_status = _closed_string(status, ("completed",), error="unsafe_activity_boundary")
+    summary = {
+        "type": ACTIVITY_BOUNDARY_TYPE,
+        "version": FLOWWEAVER_TEMPORAL_POC_VERSION,
+        "status": safe_status,
+        "activities": {
+            "validate_claim_check_ref": validation.status,
+            "execute_agent_turn": agent_turn.status,
+            "deliver_artifact": delivery.status,
+        },
+        "refs": {
+            "input_ref": validation.ref,
+            "artifact_ref": agent_turn.artifact_ref,
+            "delivery_ref": delivery.delivery_ref,
+        },
+        "side_effects": [],
+    }
+    validate_activity_boundary_summary(summary)
+    return summary
+
+
+def validate_claim_check_ref_validation_input(value: ClaimCheckRefValidationInput) -> None:
+    if type(value) is not ClaimCheckRefValidationInput:
+        _raise("invalid_activity_input")
+    _claim_ref(value.ref, error="invalid_activity_input")
+    _closed_string(value.kind, ("input", "artifact", "delivery"), error="invalid_activity_input")
+    _bounded_int(value.count, minimum=0, maximum=20, error="invalid_activity_input")
+    _bounded_int(value.size, minimum=0, maximum=1_048_576, error="invalid_activity_input")
+    validate_runtime_signature_digest(value.checksum_hint, error="invalid_activity_input")
+
+
+def validate_claim_check_ref_validation_result(value: ClaimCheckRefValidationResult) -> None:
+    if type(value) is not ClaimCheckRefValidationResult:
+        _raise("invalid_activity_result")
+    _closed_string(value.activity_type, ("validate_claim_check_ref",), error="invalid_activity_result")
+    _claim_ref(value.ref, error="invalid_activity_result")
+    _closed_string(value.kind, ("input", "artifact", "delivery"), error="invalid_activity_result")
+    _closed_string(value.status, ("validated",), error="invalid_activity_result")
+    validate_runtime_signature_digest(value.checksum_hint, error="invalid_activity_result")
+
+
+def validate_agent_turn_activity_input(value: AgentTurnActivityInput) -> None:
+    if type(value) is not AgentTurnActivityInput:
+        _raise("invalid_activity_input")
+    _synthetic_id(value.event_id, prefixes=("runtime_event_",), error="invalid_activity_input")
+    _synthetic_id(value.intent_id, prefixes=("runtime_intent_",), error="invalid_activity_input")
+    _claim_ref(value.input_ref, error="invalid_activity_input")
+    _synthetic_id(value.output_artifact_id, prefixes=("runtime_artifact_",), error="invalid_activity_input")
+    _claim_ref(value.output_artifact_ref, error="invalid_activity_input")
+
+
+def validate_agent_turn_activity_result(value: AgentTurnActivityResult) -> None:
+    if type(value) is not AgentTurnActivityResult:
+        _raise("invalid_activity_result")
+    _closed_string(value.activity_type, ("execute_agent_turn",), error="invalid_activity_result")
+    _synthetic_id(value.event_id, prefixes=("runtime_event_",), error="invalid_activity_result")
+    _synthetic_id(value.intent_id, prefixes=("runtime_intent_",), error="invalid_activity_result")
+    _synthetic_id(value.artifact_id, prefixes=("runtime_artifact_",), error="invalid_activity_result")
+    _claim_ref(value.artifact_ref, error="invalid_activity_result")
+    _closed_string(value.status, ("completed",), error="invalid_activity_result")
+
+
+def validate_deliver_artifact_activity_input(value: DeliverArtifactActivityInput) -> None:
+    if type(value) is not DeliverArtifactActivityInput:
+        _raise("invalid_activity_input")
+    _synthetic_id(value.event_id, prefixes=("runtime_event_",), error="invalid_activity_input")
+    _synthetic_id(value.artifact_id, prefixes=("runtime_artifact_",), error="invalid_activity_input")
+    _claim_ref(value.artifact_ref, error="invalid_activity_input")
+    _synthetic_id(value.delivery_id, prefixes=("runtime_delivery_",), error="invalid_activity_input")
+    _claim_ref(value.delivery_ref, error="invalid_activity_input")
+    _closed_string(value.surface, ALLOWED_SURFACES, error="invalid_activity_input")
+
+
+def validate_deliver_artifact_activity_result(value: DeliverArtifactActivityResult) -> None:
+    if type(value) is not DeliverArtifactActivityResult:
+        _raise("invalid_activity_result")
+    _closed_string(value.activity_type, ("deliver_artifact",), error="invalid_activity_result")
+    _synthetic_id(value.event_id, prefixes=("runtime_event_",), error="invalid_activity_result")
+    _synthetic_id(value.artifact_id, prefixes=("runtime_artifact_",), error="invalid_activity_result")
+    _synthetic_id(value.delivery_id, prefixes=("runtime_delivery_",), error="invalid_activity_result")
+    _claim_ref(value.delivery_ref, error="invalid_activity_result")
+    _closed_string(value.surface, ALLOWED_SURFACES, error="invalid_activity_result")
+    _closed_string(value.status, ("planned",), error="invalid_activity_result")
+
+
+def validate_activity_boundary_summary(value: object) -> dict[str, object]:
+    summary = _plain_dict(value, error="unsafe_activity_boundary")
+    if set(summary) != {"type", "version", "status", "activities", "refs", "side_effects"}:
+        _raise("unsafe_activity_boundary")
+    activities = _plain_dict(summary["activities"], error="unsafe_activity_boundary")
+    refs = _plain_dict(summary["refs"], error="unsafe_activity_boundary")
+    if set(activities) != {"validate_claim_check_ref", "execute_agent_turn", "deliver_artifact"}:
+        _raise("unsafe_activity_boundary")
+    if set(refs) != {"input_ref", "artifact_ref", "delivery_ref"}:
+        _raise("unsafe_activity_boundary")
+    safe = {
+        "type": _closed_string(summary["type"], (ACTIVITY_BOUNDARY_TYPE,), error="unsafe_activity_boundary"),
+        "version": _closed_string(summary["version"], (FLOWWEAVER_TEMPORAL_POC_VERSION,), error="unsafe_activity_boundary"),
+        "status": _closed_string(summary["status"], ("completed",), error="unsafe_activity_boundary"),
+        "activities": {
+            "validate_claim_check_ref": _closed_string(
+                activities["validate_claim_check_ref"], ("validated",), error="unsafe_activity_boundary"
+            ),
+            "execute_agent_turn": _closed_string(activities["execute_agent_turn"], ("completed",), error="unsafe_activity_boundary"),
+            "deliver_artifact": _closed_string(activities["deliver_artifact"], ("planned",), error="unsafe_activity_boundary"),
+        },
+        "refs": {
+            "input_ref": _claim_ref(refs["input_ref"], error="unsafe_activity_boundary"),
+            "artifact_ref": _claim_ref(refs["artifact_ref"], error="unsafe_activity_boundary"),
+            "delivery_ref": _claim_ref(refs["delivery_ref"], error="unsafe_activity_boundary"),
+        },
+        "side_effects": _empty_activity_side_effects(summary["side_effects"], error="unsafe_activity_boundary"),
+    }
+    return safe
+
+
 def validate_runtime_workflow_id(workflow_id: str) -> str:
     return _synthetic_id(workflow_id, prefixes=("runtime_tx_",), error="invalid_workflow_id")
+
+
+def _bounded_int(value: object, *, minimum: int, maximum: int, error: str) -> int:
+    if type(value) is not int or not (minimum <= value <= maximum):
+        _raise(error)
+    return value
+
+
+def _empty_activity_side_effects(value: object, *, error: str) -> list[object]:
+    copied = _plain_copy(value)
+    if copied != []:
+        _raise(error)
+    return []
 
 
 def _record_counts(value: object, *, entry_count: int, error: str) -> dict[str, int]:
@@ -536,6 +746,22 @@ __all__ = [
     "ALLOWED_RUNTIME_EVENTS",
     "ALLOWED_SURFACES",
     "ALLOWED_TARGET_KINDS",
+    "ACTIVITY_BOUNDARY_TYPE",
+    "ACTIVITY_RESULT_TYPE",
+    "AgentTurnActivityInput",
+    "AgentTurnActivityResult",
+    "ClaimCheckRefValidationInput",
+    "ClaimCheckRefValidationResult",
+    "DeliverArtifactActivityInput",
+    "DeliverArtifactActivityResult",
+    "build_activity_boundary_summary",
+    "validate_activity_boundary_summary",
+    "validate_agent_turn_activity_input",
+    "validate_agent_turn_activity_result",
+    "validate_claim_check_ref_validation_input",
+    "validate_claim_check_ref_validation_result",
+    "validate_deliver_artifact_activity_input",
+    "validate_deliver_artifact_activity_result",
     "CancelTransactionUpdate",
     "DeliveryAckUpdate",
     "FLOWWEAVER_TEMPORAL_POC_VERSION",

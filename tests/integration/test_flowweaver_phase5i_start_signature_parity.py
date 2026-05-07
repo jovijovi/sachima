@@ -32,6 +32,7 @@ from flowweaver_runtime_client.runtime_client import FlowWeaverRuntimeClient  # 
 from flowweaver_temporal_poc import FLOWWEAVER_TEMPORAL_TASK_QUEUE  # noqa: E402
 from flowweaver_temporal_poc.payloads import CancelTransactionUpdate  # noqa: E402
 from flowweaver_temporal_poc.workflows import FlowWeaverTransactionWorkflow  # noqa: E402
+from flowweaver_temporal_poc.activities import deliver_artifact, execute_agent_turn, validate_claim_check_ref  # noqa: E402
 
 pytestmark = pytest.mark.integration
 
@@ -52,7 +53,12 @@ RESULT_FORBIDDEN_MARKERS = (PRIVATE_MESSAGE_ID, SENSITIVE_SENTINEL, "workflowalr
 
 async def open_real_worker() -> tuple[WorkflowEnvironment, Worker, FlowWeaverRuntimeClient]:
     env = await WorkflowEnvironment.start_time_skipping()
-    worker = Worker(env.client, task_queue=FLOWWEAVER_TEMPORAL_TASK_QUEUE, workflows=[FlowWeaverTransactionWorkflow])
+    worker = Worker(
+        env.client,
+        task_queue=FLOWWEAVER_TEMPORAL_TASK_QUEUE,
+        workflows=[FlowWeaverTransactionWorkflow],
+        activities=[validate_claim_check_ref, execute_agent_turn, deliver_artifact],
+    )
     await env.__aenter__()
     await worker.__aenter__()
     return env, worker, FlowWeaverRuntimeClient(env.client, temporal_address="localhost:7233")
@@ -275,6 +281,11 @@ def test_phase5i_diff_does_not_add_gateway_wiring_or_runtime_lifecycle_outside_a
     allowed_changed_files = {
         "docs/plans/2026-05-06-flowweaver-phase5i-start-signature-parity.md",
         "docs/dev_log/2026-05-06-flowweaver-phase5i-start-signature-parity.md",
+        "docs/plans/2026-05-06-flowweaver-phase5j-activity-claim-check-boundary.md",
+        "docs/dev_log/2026-05-06-flowweaver-phase5j-activity-claim-check-boundary.md",
+        "prototypes/flowweaver_phase5b_temporal_poc/src/flowweaver_temporal_poc/activities.py",
+        "tests/integration/test_flowweaver_phase5j_activity_claim_check_boundary.py",
+        "tests/prototypes/test_flowweaver_phase5j_activity_contract.py",
         "prototypes/flowweaver_phase5b_temporal_poc/src/flowweaver_temporal_poc/payloads.py",
         "prototypes/flowweaver_phase5b_temporal_poc/src/flowweaver_temporal_poc/workflows.py",
         "prototypes/flowweaver_phase5c_runtime_client/src/flowweaver_runtime_client/contracts.py",

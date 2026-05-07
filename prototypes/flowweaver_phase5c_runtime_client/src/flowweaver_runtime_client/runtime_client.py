@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from flowweaver_runtime_client.contracts import (
@@ -48,8 +49,10 @@ class FlowWeaverRuntimeClient:
                 id=safe_workflow_id,
                 task_queue=self._task_queue or FLOWWEAVER_TEMPORAL_TASK_QUEUE,
             )
-        except WorkflowAlreadyStartedError:
-            return await self._duplicate_start_result(payload, workflow_id=safe_workflow_id)
+        except Exception as exc:
+            if isinstance(exc, WorkflowAlreadyStartedError) or _is_workflow_already_started_error(exc):
+                return await self._duplicate_start_result(payload, workflow_id=safe_workflow_id)
+            raise
         return make_success_result(
             operation="start_transaction",
             workflow_id=handle.id,
@@ -132,14 +135,8 @@ class FlowWeaverRuntimeClient:
         )
 
     async def _duplicate_start_result(self, payload: Any, *, workflow_id: str) -> dict[str, object]:
-        from flowweaver_temporal_poc.payloads import snapshot_to_safe_dict
-        from flowweaver_temporal_poc.workflows import FlowWeaverTransactionWorkflow
-
-        try:
-            handle = self._temporal_client.get_workflow_handle(workflow_id)
-            snapshot = await handle.query(FlowWeaverTransactionWorkflow.query_snapshot)
-            safe_snapshot = sanitize_snapshot(snapshot_to_safe_dict(snapshot))
-        except Exception:
+        safe_snapshot = await self._query_safe_snapshot_for_duplicate(workflow_id)
+        if safe_snapshot is None:
             return make_error_result(operation="start_transaction", error_code="runtime_error")
         if not _snapshot_matches_start_payload(safe_snapshot, payload):
             return make_error_result(operation="start_transaction", error_code="invalid_start_payload")
@@ -152,14 +149,9 @@ class FlowWeaverRuntimeClient:
 
     async def _rejected_delivery_ack_if_target_missing(self, workflow_id: str, update: Any) -> dict[str, object] | None:
         from flowweaver_temporal_poc import FLOWWEAVER_TEMPORAL_POC_VERSION
-        from flowweaver_temporal_poc.payloads import snapshot_to_safe_dict
-        from flowweaver_temporal_poc.workflows import FlowWeaverTransactionWorkflow
 
-        try:
-            handle = self._temporal_client.get_workflow_handle(workflow_id)
-            snapshot = await handle.query(FlowWeaverTransactionWorkflow.query_snapshot)
-            safe_snapshot = sanitize_snapshot(snapshot_to_safe_dict(snapshot))
-        except Exception:
+        safe_snapshot = await self._query_safe_snapshot_for_duplicate(workflow_id)
+        if safe_snapshot is None:
             return make_error_result(operation="record_delivery_ack", error_code="runtime_error")
         delivery_statuses = safe_snapshot["delivery_statuses"]
         if type(delivery_statuses) is dict and update.target_id in delivery_statuses:
@@ -175,6 +167,19 @@ class FlowWeaverRuntimeClient:
                 "side_effects": [],
             },
         )
+
+    async def _query_safe_snapshot_for_duplicate(self, workflow_id: str) -> dict[str, object] | None:
+        from flowweaver_temporal_poc.payloads import snapshot_to_safe_dict
+        from flowweaver_temporal_poc.workflows import FlowWeaverTransactionWorkflow
+
+        handle = self._temporal_client.get_workflow_handle(workflow_id)
+        for _ in range(20):
+            try:
+                snapshot = await handle.query(FlowWeaverTransactionWorkflow.query_snapshot)
+                return sanitize_snapshot(snapshot_to_safe_dict(snapshot))
+            except Exception:
+                await asyncio.sleep(0.05)
+        return None
 
     async def _execute_update(self, workflow_id: str, *, operation: str, update_callable: Any, update: Any) -> dict[str, object]:
         safe_workflow_id = validate_workflow_id(workflow_id)
@@ -211,6 +216,10 @@ def _snapshot_matches_start_payload(snapshot: dict[str, object], payload: Any) -
         and set(snapshot.get("delivery_statuses", {}))
         == {f"runtime_delivery_{index}" for index in range(payload.record_counts["deliveries"])}
     )
+
+
+def _is_workflow_already_started_error(exc: Exception) -> bool:
+    return exc.__class__.__name__ == "WorkflowAlreadyStartedError"
 
 
 __all__ = ["FlowWeaverRuntimeClient"]

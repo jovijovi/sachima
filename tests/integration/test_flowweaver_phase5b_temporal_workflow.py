@@ -29,6 +29,7 @@ from flowweaver_temporal_poc.payloads import (  # noqa: E402
     build_runtime_start_payload,
 )
 from flowweaver_temporal_poc.workflows import FlowWeaverTransactionWorkflow  # noqa: E402
+from flowweaver_temporal_poc.activities import deliver_artifact, execute_agent_turn, validate_claim_check_ref  # noqa: E402
 
 
 pytestmark = pytest.mark.integration
@@ -118,7 +119,12 @@ async def query_until_running(handle: Any) -> dict[str, object]:
 
 async def run_single_workflow(*, workflow_id: str, count: int = 2):
     env = await WorkflowEnvironment.start_time_skipping()
-    worker = Worker(env.client, task_queue=FLOWWEAVER_TEMPORAL_TASK_QUEUE, workflows=[FlowWeaverTransactionWorkflow])
+    worker = Worker(
+        env.client,
+        task_queue=FLOWWEAVER_TEMPORAL_TASK_QUEUE,
+        workflows=[FlowWeaverTransactionWorkflow],
+        activities=[validate_claim_check_ref, execute_agent_turn, deliver_artifact],
+    )
     await env.__aenter__()
     await worker.__aenter__()
     handle = await start_workflow(env, workflow_id=workflow_id, count=count)
@@ -289,7 +295,7 @@ def test_temporal_workflow_code_does_not_import_gateway_runtime_or_platform_adap
     assert not any("gateway.platforms" in name or "gateway.run" in name for name in imports)
 
 
-def test_temporal_workflow_code_has_no_activity_schedule_or_nondeterministic_calls() -> None:
+def test_temporal_workflow_code_has_no_unsafe_activity_or_nondeterministic_calls() -> None:
     tree = ast.parse(WORKFLOW_SOURCE.read_text(encoding="utf-8"))
     source = WORKFLOW_SOURCE.read_text(encoding="utf-8")
     forbidden_names = {
@@ -300,7 +306,6 @@ def test_temporal_workflow_code_has_no_activity_schedule_or_nondeterministic_cal
         "datetime",
         "uuid4",
         "random",
-        "execute_activity",
         "start_activity",
     }
     forbidden_modules = {"os", "pathlib", "socket", "subprocess", "requests", "httpx", "aiohttp", "random", "uuid"}
@@ -317,5 +322,5 @@ def test_temporal_workflow_code_has_no_activity_schedule_or_nondeterministic_cal
         elif isinstance(node, ast.ImportFrom) and node.module:
             assert node.module.split(".")[0] not in forbidden_modules
 
-    assert "execute_activity" not in source
+    assert "workflow.execute_activity" in source
     assert "start_activity" not in source

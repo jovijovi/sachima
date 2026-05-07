@@ -15,8 +15,12 @@ from flowweaver_runtime_client.contracts import (
 from flowweaver_runtime_client.publication_adapter import publish_shadow_runtime_publication
 from flowweaver_temporal_poc import FLOWWEAVER_TEMPORAL_POC_VERSION
 from flowweaver_temporal_poc.payloads import (
+    AgentTurnActivityResult,
+    ClaimCheckRefValidationResult,
     DeliveryAckUpdate,
+    DeliverArtifactActivityResult,
     RuntimeStartPayload,
+    build_activity_boundary_summary,
     start_signature_from_payload,
     validate_delivery_ack_update,
     validate_start_payload,
@@ -226,6 +230,33 @@ def _apply_delivery_ack(state: _RuntimeState, update: DeliveryAckUpdate) -> str:
 def _snapshot_from_payload(payload: RuntimeStartPayload) -> dict[str, object]:
     entry_count = payload.entry_count
     delivery_count = payload.record_counts["deliveries"]
+    activity_boundary = build_activity_boundary_summary(
+        validation=ClaimCheckRefValidationResult(
+            activity_type="validate_claim_check_ref",
+            ref="claim_ref_phase5j_start",
+            kind="input",
+            status="validated",
+            checksum_hint=payload.claim_policy_digest,
+        ),
+        agent_turn=AgentTurnActivityResult(
+            activity_type="execute_agent_turn",
+            event_id="runtime_event_phase5j_agent",
+            intent_id="runtime_intent_0",
+            artifact_id="runtime_artifact_0",
+            artifact_ref="claim_ref_phase5j_artifact_0",
+            status="completed",
+        ),
+        delivery=DeliverArtifactActivityResult(
+            activity_type="deliver_artifact",
+            event_id="runtime_event_phase5j_delivery",
+            artifact_id="runtime_artifact_0",
+            delivery_id="runtime_delivery_0",
+            delivery_ref="claim_ref_phase5j_delivery_0",
+            surface="prototype",
+            status="planned",
+        ),
+        status="completed",
+    )
     return {
         "type": _SNAPSHOT_TYPE,
         "version": FLOWWEAVER_TEMPORAL_POC_VERSION,
@@ -245,6 +276,7 @@ def _snapshot_from_payload(payload: RuntimeStartPayload) -> dict[str, object]:
         "applied_event_count": 0,
         "resume_count": 0,
         "side_effects": [],
+        "activity_boundary": activity_boundary,
     }
 
 
