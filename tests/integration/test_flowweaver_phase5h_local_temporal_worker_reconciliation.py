@@ -36,6 +36,7 @@ from flowweaver_runtime_client.runtime_client import FlowWeaverRuntimeClient  # 
 from flowweaver_temporal_poc import FLOWWEAVER_TEMPORAL_TASK_QUEUE  # noqa: E402
 from flowweaver_temporal_poc.payloads import CancelTransactionUpdate  # noqa: E402
 from flowweaver_temporal_poc.workflows import FlowWeaverTransactionWorkflow  # noqa: E402
+from flowweaver_temporal_poc.activities import deliver_artifact, execute_agent_turn, validate_claim_check_ref  # noqa: E402
 
 pytestmark = pytest.mark.integration
 
@@ -46,10 +47,49 @@ FORBIDDEN_SENTINELS = (PRIVATE_MESSAGE_ID, SENSITIVE_SENTINEL)
 
 async def open_real_worker() -> tuple[WorkflowEnvironment, Worker, FlowWeaverRuntimeClient]:
     env = await WorkflowEnvironment.start_time_skipping()
-    worker = Worker(env.client, task_queue=FLOWWEAVER_TEMPORAL_TASK_QUEUE, workflows=[FlowWeaverTransactionWorkflow])
+    worker = Worker(
+        env.client,
+        task_queue=FLOWWEAVER_TEMPORAL_TASK_QUEUE,
+        workflows=[FlowWeaverTransactionWorkflow],
+        activities=[validate_claim_check_ref, execute_agent_turn, deliver_artifact],
+    )
     await env.__aenter__()
     await worker.__aenter__()
     return env, worker, FlowWeaverRuntimeClient(env.client, temporal_address="localhost:7233")
+
+
+class RecordingRuntimeClient:
+    def __init__(self, inner: FlowWeaverRuntimeClient) -> None:
+        self.inner = inner
+        self.calls: list[dict[str, object]] = []
+
+    @staticmethod
+    def _compact(operation: str, result: dict[str, object]) -> dict[str, object]:
+        return {
+            "call": operation,
+            "ok": result.get("ok"),
+            "operation": result.get("operation"),
+            "status": result.get("status"),
+            "error_code": result.get("error_code"),
+        }
+
+    async def start_transaction(self, payload: object, *, workflow_id: str) -> dict[str, object]:
+        result = await self.inner.start_transaction(payload, workflow_id=workflow_id)
+        self.calls.append(self._compact("start_transaction", result))
+        return result
+
+    async def record_delivery_ack(self, workflow_id: str, update: object) -> dict[str, object]:
+        result = await self.inner.record_delivery_ack(workflow_id, update)
+        self.calls.append(self._compact("record_delivery_ack", result))
+        return result
+
+    async def query_snapshot(self, workflow_id: str) -> dict[str, object]:
+        result = await self.inner.query_snapshot(workflow_id)
+        self.calls.append(self._compact("query_snapshot", result))
+        return result
+
+    async def cancel_transaction(self, workflow_id: str, update: object) -> dict[str, object]:
+        return await self.inner.cancel_transaction(workflow_id, update)
 
 
 async def close_real_worker(env: WorkflowEnvironment, worker: Worker) -> None:
@@ -271,7 +311,8 @@ async def test_phase5h_real_temporal_history_omits_gateway_private_ids_and_crede
     assert publication["verdict"] == "ready"
     assert_no_forbidden_material(publication)
 
-    env, worker, facade = await open_real_worker()
+    env, worker, raw_facade = await open_real_worker()
+    facade = RecordingRuntimeClient(raw_facade)
     workflow_id = str(publication["workflow_id"])
     try:
         first = await reconcile_shadow_runtime_publication(publication, runtime_client=facade)
@@ -279,8 +320,8 @@ async def test_phase5h_real_temporal_history_omits_gateway_private_ids_and_crede
         snapshot_result = await query_until_running(facade, workflow_id)
         snapshot = snapshot_result["snapshot"]
 
-        assert first["ok"] is True
-        assert second["ok"] is True
+        assert first["ok"] is True, repr((first, facade.calls[-8:]))
+        assert second["ok"] is True, repr((second, facade.calls[-8:]))
         assert_no_forbidden_material(first)
         assert_no_forbidden_material(second)
         assert_no_forbidden_material(snapshot)
@@ -310,6 +351,11 @@ def test_phase5h_diff_does_not_add_gateway_wiring_or_runtime_lifecycle_outside_i
         "docs/dev_log/2026-05-06-flowweaver-phase5h-local-temporal-worker-reconciliation-harness.md",
         "docs/plans/2026-05-06-flowweaver-phase5i-start-signature-parity.md",
         "docs/dev_log/2026-05-06-flowweaver-phase5i-start-signature-parity.md",
+        "docs/plans/2026-05-06-flowweaver-phase5j-activity-claim-check-boundary.md",
+        "docs/dev_log/2026-05-06-flowweaver-phase5j-activity-claim-check-boundary.md",
+        "prototypes/flowweaver_phase5b_temporal_poc/src/flowweaver_temporal_poc/activities.py",
+        "tests/integration/test_flowweaver_phase5j_activity_claim_check_boundary.py",
+        "tests/prototypes/test_flowweaver_phase5j_activity_contract.py",
         "prototypes/flowweaver_phase5b_temporal_poc/src/flowweaver_temporal_poc/payloads.py",
         "prototypes/flowweaver_phase5b_temporal_poc/src/flowweaver_temporal_poc/workflows.py",
         "prototypes/flowweaver_phase5c_runtime_client/src/flowweaver_runtime_client/contracts.py",

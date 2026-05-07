@@ -31,6 +31,7 @@ from flowweaver_temporal_poc.payloads import (  # noqa: E402
     build_runtime_start_payload,
 )
 from flowweaver_temporal_poc.workflows import FlowWeaverTransactionWorkflow  # noqa: E402
+from flowweaver_temporal_poc.activities import deliver_artifact, execute_agent_turn, validate_claim_check_ref  # noqa: E402
 
 from flowweaver_runtime_client.runtime_client import FlowWeaverRuntimeClient  # noqa: E402
 from flowweaver_runtime_client.tool_adapter import FlowWeaverRuntimeToolAdapter  # noqa: E402
@@ -116,7 +117,12 @@ def history_text_and_bytes(history: Any) -> tuple[str, bytes]:
 @pytest.mark.asyncio
 async def test_phase5c_facade_starts_queries_updates_and_preserves_history_no_leak() -> None:
     env = await WorkflowEnvironment.start_time_skipping()
-    worker = Worker(env.client, task_queue=FLOWWEAVER_TEMPORAL_TASK_QUEUE, workflows=[FlowWeaverTransactionWorkflow])
+    worker = Worker(
+        env.client,
+        task_queue=FLOWWEAVER_TEMPORAL_TASK_QUEUE,
+        workflows=[FlowWeaverTransactionWorkflow],
+        activities=[validate_claim_check_ref, execute_agent_turn, deliver_artifact],
+    )
     await env.__aenter__()
     await worker.__aenter__()
     workflow_id = "runtime_tx_phase5c_integration"
@@ -184,7 +190,12 @@ async def test_phase5c_facade_starts_queries_updates_and_preserves_history_no_le
 @pytest.mark.asyncio
 async def test_hostile_adapter_input_is_rejected_before_temporal_history_can_record_it() -> None:
     env = await WorkflowEnvironment.start_time_skipping()
-    worker = Worker(env.client, task_queue=FLOWWEAVER_TEMPORAL_TASK_QUEUE, workflows=[FlowWeaverTransactionWorkflow])
+    worker = Worker(
+        env.client,
+        task_queue=FLOWWEAVER_TEMPORAL_TASK_QUEUE,
+        workflows=[FlowWeaverTransactionWorkflow],
+        activities=[validate_claim_check_ref, execute_agent_turn, deliver_artifact],
+    )
     await env.__aenter__()
     await worker.__aenter__()
     workflow_id = "runtime_tx_phase5c_negative"
