@@ -210,6 +210,13 @@ def test_phase5j_diff_does_not_add_gateway_wiring_or_real_activity_side_effects(
     allowed_changed_files = {
         "docs/dev_log/2026-05-06-flowweaver-phase5j-activity-claim-check-boundary.md",
         "docs/plans/2026-05-06-flowweaver-phase5j-activity-claim-check-boundary.md",
+        "docs/dev_log/2026-05-07-flowweaver-phase5k-runtime-control-surface.md",
+        "docs/plans/2026-05-07-flowweaver-phase5k-runtime-control-surface.md",
+        "prototypes/flowweaver_phase5c_runtime_client/src/flowweaver_runtime_client/control_surface.py",
+        "prototypes/flowweaver_phase5c_runtime_client/src/flowweaver_runtime_client/mcp_control_server.py",
+        "tests/integration/test_flowweaver_phase5k_runtime_control_surface.py",
+        "tests/prototypes/test_flowweaver_phase5k_runtime_control_surface.py",
+        "tests/prototypes/test_flowweaver_phase5k_mcp_control_surface.py",
         "prototypes/flowweaver_phase5b_temporal_poc/src/flowweaver_temporal_poc/activities.py",
         "prototypes/flowweaver_phase5b_temporal_poc/src/flowweaver_temporal_poc/payloads.py",
         "prototypes/flowweaver_phase5b_temporal_poc/src/flowweaver_temporal_poc/workflows.py",
