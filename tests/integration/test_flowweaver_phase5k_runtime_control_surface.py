@@ -269,16 +269,21 @@ def test_phase5k_diff_stays_inside_runtime_control_surface_allowlist() -> None:
     allowed_changed_files = {
         "docs/plans/2026-05-07-flowweaver-phase5k-runtime-control-surface.md",
         "docs/dev_log/2026-05-07-flowweaver-phase5k-runtime-control-surface.md",
+        "docs/plans/2026-05-07-flowweaver-phase6-gateway-ack-shadow-bridge.md",
+        "docs/dev_log/2026-05-07-flowweaver-phase6-gateway-ack-shadow-bridge.md",
         "prototypes/flowweaver_phase5c_runtime_client/src/flowweaver_runtime_client/__init__.py",
         "prototypes/flowweaver_phase5c_runtime_client/src/flowweaver_runtime_client/contracts.py",
         "prototypes/flowweaver_phase5c_runtime_client/src/flowweaver_runtime_client/control_surface.py",
         "prototypes/flowweaver_phase5c_runtime_client/src/flowweaver_runtime_client/mcp_control_server.py",
+        "prototypes/flowweaver_phase5c_runtime_client/src/flowweaver_runtime_client/gateway_ack_shadow_bridge.py",
         "tests/integration/test_flowweaver_phase5h_local_temporal_worker_reconciliation.py",
         "tests/integration/test_flowweaver_phase5i_start_signature_parity.py",
         "tests/integration/test_flowweaver_phase5j_activity_claim_check_boundary.py",
         "tests/integration/test_flowweaver_phase5k_runtime_control_surface.py",
+        "tests/integration/test_flowweaver_phase6_gateway_ack_shadow_bridge.py",
         "tests/prototypes/test_flowweaver_phase5k_runtime_control_surface.py",
         "tests/prototypes/test_flowweaver_phase5k_mcp_control_surface.py",
+        "tests/prototypes/test_flowweaver_phase6_gateway_ack_shadow_bridge.py",
     }
     forbidden_prefixes = (
         "gateway/run.py",
