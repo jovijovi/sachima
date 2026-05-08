@@ -415,6 +415,92 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
         )
 
     @patch.dict(os.environ, {}, clear=True)
+    def test_send_interactive_card_uses_interactive_msg_type(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._client = SimpleNamespace()
+        calls = []
+
+        async def _fake_send_with_retry(**kwargs):
+            calls.append(kwargs)
+            return SimpleNamespace(success=lambda: True, data=SimpleNamespace(message_id="om_card_1"))
+
+        adapter._feishu_send_with_retry = _fake_send_with_retry
+
+        result = asyncio.run(
+            adapter.send_interactive_card(
+                "oc_chat",
+                {"config": {"wide_screen_mode": True}, "elements": []},
+                reply_to="om_parent",
+                metadata={"purpose": "progress"},
+            )
+        )
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.message_id, "om_card_1")
+        self.assertEqual(calls[0]["chat_id"], "oc_chat")
+        self.assertEqual(calls[0]["msg_type"], "interactive")
+        self.assertEqual(calls[0]["reply_to"], "om_parent")
+        self.assertEqual(calls[0]["metadata"], {"purpose": "progress"})
+        self.assertEqual(json.loads(calls[0]["payload"])["config"], {"wide_screen_mode": True})
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_patch_interactive_card_uses_message_patch_not_update(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {"patch": None, "update_called": False}
+
+        class _MessageAPI:
+            def patch(self, request):
+                captured["patch"] = request
+                return SimpleNamespace(success=lambda: True)
+
+            def update(self, request):
+                captured["update_called"] = True
+                return SimpleNamespace(success=lambda: True)
+
+        adapter._client = SimpleNamespace(im=SimpleNamespace(v1=SimpleNamespace(message=_MessageAPI())))
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        card = {"config": {"wide_screen_mode": True}, "elements": []}
+        with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+            result = asyncio.run(adapter.patch_interactive_card("oc_chat", "om_card_1", card, finalize=True))
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.message_id, "om_card_1")
+        self.assertFalse(captured["update_called"])
+        self.assertEqual(captured["patch"].message_id, "om_card_1")
+        self.assertEqual(json.loads(captured["patch"].request_body.content)["config"], {"wide_screen_mode": True})
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_patch_interactive_card_returns_failure_without_raising(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+
+        class _MessageAPI:
+            def patch(self, request):
+                return SimpleNamespace(success=lambda: False, code=230001, msg="invalid msg_type")
+
+        adapter._client = SimpleNamespace(im=SimpleNamespace(v1=SimpleNamespace(message=_MessageAPI())))
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+            result = asyncio.run(adapter.patch_interactive_card("oc_chat", "om_card_1", {"elements": []}))
+
+        self.assertFalse(result.success)
+        self.assertIn("invalid msg_type", result.error)
+
+    @patch.dict(os.environ, {}, clear=True)
     def test_get_chat_info_uses_real_feishu_chat_api(self):
         from gateway.config import PlatformConfig
         from gateway.platforms.feishu import FeishuAdapter

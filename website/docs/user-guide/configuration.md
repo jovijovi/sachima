@@ -1181,7 +1181,24 @@ display:
   tool_preview_length: 0  # Max chars for tool call previews (0 = no limit, show full paths/commands)
   runtime_metadata_footer: false  # Gateway: append a runtime-context footer to final replies
   language: en            # UI language for static messages (approval prompts, some gateway replies). en | zh | ja | de | es | fr | tr | uk
+  task_tracker:
+    enabled: false         # Gateway: replace raw tool progress with a transaction panel
+    mode: text             # text panel renderer
+    max_operations: 8      # Recent operations shown in the panel
+    persist_events: false  # Append sanitized progress events to JSONL for dashboard history
+    event_store: jsonl     # JSONL is the supported store type
+    event_store_path: ~/.hermes/progress/events.jsonl  # Optional path override
+    dashboard_url: ""      # Optional dashboard base URL; IM panels link to /progress
 ```
+
+| Mode | What you see |
+|------|-------------|
+| `off` | Silent — just the final response |
+| `new` | Tool indicator only when the tool changes |
+| `all` | Every tool call with a short preview (default) |
+| `verbose` | Full args, results, and debug logs |
+
+In the CLI, cycle through these modes with `/verbose`. To use `/verbose` in messaging platforms (Telegram, Discord, Slack, etc.), set `tool_progress_command: true` in the `display` section above. The command will then cycle the mode and save to config.
 
 ### UI language for static messages
 
@@ -1195,15 +1212,6 @@ You can also set this per-session with the `HERMES_LANGUAGE` env var, which over
 display:
   language: zh   # CLI approval prompts appear in Chinese
 ```
-
-| Mode | What you see |
-|------|-------------|
-| `off` | Silent — just the final response |
-| `new` | Tool indicator only when the tool changes |
-| `all` | Every tool call with a short preview (default) |
-| `verbose` | Full args, results, and debug logs |
-
-In the CLI, cycle through these modes with `/verbose`. To use `/verbose` in messaging platforms (Telegram, Discord, Slack, etc.), set `tool_progress_command: true` in the `display` section above. The command will then cycle the mode and save to config.
 
 ### Runtime-metadata footer (gateway only)
 
@@ -1221,6 +1229,22 @@ Example footer appended to a Telegram/Discord/Slack reply:
 ```
 
 Only the **final** message of a turn gets the footer; interim updates stay clean.
+
+### Task tracker panel and progress history
+
+`display.task_tracker.enabled` turns gateway tool progress into a compact transaction panel. The panel uses `display.tool_progress` for detail level:
+
+- `off` — show transaction status only, without operation details
+- `new` / `all` — show recent operations with short previews
+- `verbose` — show more detailed sanitized previews
+
+Set `persist_events: true` with `event_store: jsonl` to append sanitized progress records for the dashboard Progress page. The writer sanitizes records before disk, and the dashboard reader sanitizes again before returning API responses.
+
+`dashboard_url` is optional. When set, IM progress panels include a link to the dashboard Progress page. Hermes strips query strings, fragments, and userinfo before rendering the link, so do not put session tokens in the URL expecting them to be preserved.
+
+:::warning
+Progress records are meant for status visibility, not full-fidelity debugging. Tool names, previews, metadata, URLs, headers, and JSON-like values are redacted before display/persistence when they look sensitive.
+:::
 
 ### Per-platform progress overrides
 

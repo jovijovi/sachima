@@ -41,6 +41,7 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     # live, just cleaned up after success so the chat doesn't fill up with
     # stale breadcrumbs. Failed runs leave bubbles in place as breadcrumbs.
     "cleanup_progress": False,
+    "rich_result_weather": "auto",  # off | auto | text | card
 }
 
 # ---------------------------------------------------------------------------
@@ -56,6 +57,7 @@ _TIER_HIGH = {
     "show_reasoning": False,
     "tool_preview_length": 40,
     "streaming": None,  # follow global
+    "rich_result_weather": "auto",
 }
 
 _TIER_MEDIUM = {
@@ -63,6 +65,7 @@ _TIER_MEDIUM = {
     "show_reasoning": False,
     "tool_preview_length": 40,
     "streaming": None,
+    "rich_result_weather": "auto",
 }
 
 _TIER_LOW = {
@@ -90,7 +93,7 @@ _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
     "slack":           {**_TIER_MEDIUM, "tool_progress": "off"},
     "mattermost":      _TIER_MEDIUM,
     "matrix":          _TIER_MEDIUM,
-    "feishu":          _TIER_MEDIUM,
+    "feishu":          {**_TIER_MEDIUM, "rich_result_weather": "card"},
 
     # Tier 3 — no edit support, progress messages are permanent
     "signal":          _TIER_LOW,
@@ -203,4 +206,13 @@ def _normalise(setting: str, value: Any) -> Any:
             return int(value)
         except (TypeError, ValueError):
             return 0
+    if setting == "rich_result_weather":
+        if value is False:
+            return "off"
+        if value is True:
+            return "auto"
+        normalized = str(value).strip().lower()
+        if normalized in {"off", "auto", "text", "card"}:
+            return normalized
+        return "auto"
     return value

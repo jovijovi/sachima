@@ -102,6 +102,11 @@ try:
         UpdateMessageRequest,
         UpdateMessageRequestBody,
     )
+    try:
+        from lark_oapi.api.im.v1 import PatchMessageRequest, PatchMessageRequestBody
+    except ImportError:
+        PatchMessageRequest = None  # type: ignore[assignment]
+        PatchMessageRequestBody = None  # type: ignore[assignment]
     from lark_oapi.core import AccessTokenType, HttpMethod
     from lark_oapi.core.const import FEISHU_DOMAIN, LARK_DOMAIN
     from lark_oapi.core.model import BaseRequest
@@ -1784,6 +1789,60 @@ class FeishuAdapter(BasePlatformAdapter):
             return result
         except Exception as exc:
             logger.error("[Feishu] Failed to edit message %s: %s", message_id, exc, exc_info=True)
+            return SendResult(success=False, error=str(exc))
+
+    async def send_interactive_card(
+        self,
+        chat_id: str,
+        card: Dict[str, Any],
+        *,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a Feishu interactive card without routing through text formatting."""
+        if not self._client:
+            return SendResult(success=False, error="Not connected")
+
+        try:
+            payload = json.dumps(card, ensure_ascii=False)
+            response = await self._feishu_send_with_retry(
+                chat_id=chat_id,
+                msg_type="interactive",
+                payload=payload,
+                reply_to=reply_to,
+                metadata=metadata,
+            )
+            return self._finalize_send_result(response, "interactive card send failed")
+        except Exception as exc:
+            logger.error("[Feishu] Failed to send interactive card: %s", exc, exc_info=True)
+            return SendResult(success=False, error=str(exc))
+
+    async def patch_interactive_card(
+        self,
+        chat_id: str,
+        message_id: str,
+        card: Dict[str, Any],
+        *,
+        finalize: bool = False,
+    ) -> SendResult:
+        """Patch a sent Feishu interactive card via im.v1.message.patch.
+
+        Feishu rejects interactive card edits through ordinary message.update.
+        """
+        if not self._client:
+            return SendResult(success=False, error="Not connected")
+
+        try:
+            payload = json.dumps(card, ensure_ascii=False)
+            body = self._build_patch_message_body(content=payload)
+            request = self._build_patch_message_request(message_id=message_id, request_body=body)
+            response = await asyncio.to_thread(self._client.im.v1.message.patch, request)
+            result = self._finalize_send_result(response, "interactive card patch failed")
+            if result.success:
+                result.message_id = message_id
+            return result
+        except Exception as exc:
+            logger.error("[Feishu] Failed to patch interactive card %s: %s", message_id, exc, exc_info=True)
             return SendResult(success=False, error=str(exc))
 
     async def send_exec_approval(
@@ -4400,6 +4459,20 @@ class FeishuAdapter(BasePlatformAdapter):
                 .request_body(request_body)
                 .build()
             )
+        return SimpleNamespace(message_id=message_id, request_body=request_body)
+
+    @staticmethod
+    def _build_patch_message_body(*, content: str) -> Any:
+        patch_body_cls = globals().get("PatchMessageRequestBody")
+        if patch_body_cls is not None:
+            return patch_body_cls.builder().content(content).build()
+        return SimpleNamespace(content=content)
+
+    @staticmethod
+    def _build_patch_message_request(message_id: str, request_body: Any) -> Any:
+        patch_request_cls = globals().get("PatchMessageRequest")
+        if patch_request_cls is not None:
+            return patch_request_cls.builder().message_id(message_id).request_body(request_body).build()
         return SimpleNamespace(message_id=message_id, request_body=request_body)
 
     @staticmethod

@@ -232,6 +232,28 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "SLACK_FREE_RESPONSE_CHANNELS",
     "SLACK_ALLOW_BOTS",
     "SLACK_REACTIONS",
+    # API server non-secret env vars are loaded from real ~/.hermes/.env by
+    # collection-time imports such as run_agent. Clear them per test so a
+    # developer's running gateway config cannot override explicit YAML
+    # fixtures like platforms.api_server.enabled: "false".
+    "API_SERVER_ENABLED",
+    "API_SERVER_HOST",
+    "API_SERVER_PORT",
+    "API_SERVER_CORS_ORIGINS",
+    "API_SERVER_MODEL_NAME",
+    # Google Chat is a bundled platform plugin. Its project/subscription/home
+    # settings are non-secret but still enable a platform, so they need the
+    # same hermetic treatment as built-in platform gates.
+    "GOOGLE_CHAT_PROJECT_ID",
+    "GOOGLE_CLOUD_PROJECT",
+    "GOOGLE_CHAT_SUBSCRIPTION_NAME",
+    "GOOGLE_CHAT_SUBSCRIPTION",
+    "GOOGLE_CHAT_SERVICE_ACCOUNT_JSON",
+    "GOOGLE_APPLICATION_CREDENTIALS",
+    "GOOGLE_CHAT_HOME_CHANNEL",
+    "GOOGLE_CHAT_HOME_CHANNEL_NAME",
+    "GOOGLE_CHAT_ALLOWED_USERS",
+    "GOOGLE_CHAT_ALLOW_ALL_USERS",
     "DISCORD_REQUIRE_MENTION",
     "DISCORD_FREE_RESPONSE_CHANNELS",
     "TELEGRAM_REQUIRE_MENTION",

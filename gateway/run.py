@@ -554,6 +554,7 @@ from gateway.session import (
     is_shared_multi_user_session,
 )
 from gateway.delivery import DeliveryRouter
+from gateway.delivery_state import should_skip_final_text
 from gateway.platforms.base import (
     BasePlatformAdapter,
     EphemeralReply,
@@ -3029,6 +3030,7 @@ class GatewayRunner:
             "BLUEBUBBLES_ALLOWED_USERS",
             "QQ_ALLOWED_USERS",
             "YUANBAO_ALLOWED_USERS",
+            "SACHIMA_ALLOWED_USERS",
             "GATEWAY_ALLOWED_USERS",
         )
         _builtin_allow_all_vars = (
@@ -3044,6 +3046,7 @@ class GatewayRunner:
             "BLUEBUBBLES_ALLOW_ALL_USERS",
             "QQ_ALLOW_ALL_USERS",
             "YUANBAO_ALLOW_ALL_USERS",
+            "SACHIMA_ALLOW_ALL_USERS",
         )
         # Also pick up plugin-registered platforms — each entry can declare
         # its own allowed_users_env / allow_all_env, so the warning stays
@@ -4621,6 +4624,13 @@ class GatewayRunner:
                 return None
             return YuanbaoAdapter(config)
 
+        elif platform == Platform.SACHIMA:
+            from gateway.platforms.sachima import SachimaAdapter, check_sachima_requirements
+            if not check_sachima_requirements():
+                logger.warning("Sachima: requirements are not satisfied")
+                return None
+            return SachimaAdapter(config)
+
         return None
     def _is_user_authorized(self, source: SessionSource) -> bool:
         """
@@ -4663,6 +4673,7 @@ class GatewayRunner:
             Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOWED_USERS",
             Platform.QQBOT: "QQ_ALLOWED_USERS",
             Platform.YUANBAO: "YUANBAO_ALLOWED_USERS",
+            Platform.SACHIMA: "SACHIMA_ALLOWED_USERS",
         }
         platform_group_user_env_map = {
             Platform.TELEGRAM: "TELEGRAM_GROUP_ALLOWED_USERS",
@@ -4689,6 +4700,7 @@ class GatewayRunner:
             Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOW_ALL_USERS",
             Platform.QQBOT: "QQ_ALLOW_ALL_USERS",
             Platform.YUANBAO: "YUANBAO_ALLOW_ALL_USERS",
+            Platform.SACHIMA: "SACHIMA_ALLOW_ALL_USERS",
         }
         # Bots admitted by {PLATFORM}_ALLOW_BOTS bypass the human allowlist (#4466).
         platform_allow_bots_map = {
@@ -4874,6 +4886,7 @@ class GatewayRunner:
                 Platform.WEIXIN:   "WEIXIN_ALLOWED_USERS",
                 Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOWED_USERS",
                 Platform.QQBOT:    "QQ_ALLOWED_USERS",
+                Platform.SACHIMA:  "SACHIMA_ALLOWED_USERS",
             }
             platform_group_env_map = {
                 Platform.TELEGRAM: (
@@ -6829,6 +6842,14 @@ class GatewayRunner:
             if agent_result.get("session_id") and agent_result["session_id"] != session_entry.session_id:
                 session_entry.session_id = agent_result["session_id"]
 
+            response = await self._maybe_deliver_weather_rich_result(
+                event=event,
+                source=source,
+                response=response,
+                agent_messages=agent_messages,
+                agent_result=agent_result,
+            )
+
             # Prepend reasoning/thinking if display is enabled (per-platform)
             try:
                 from gateway.display_config import resolve_display_setting as _rds
@@ -7060,7 +7081,7 @@ class GatewayRunner:
             )
 
             # Auto voice reply: send TTS audio before the text response
-            _already_sent = bool(agent_result.get("already_sent"))
+            _already_sent = should_skip_final_text(agent_result)
             if self._should_send_voice_reply(event, response, agent_messages, already_sent=_already_sent):
                 await self._send_voice_reply(event, response)
 
@@ -7075,7 +7096,7 @@ class GatewayRunner:
             # content the user hasn't seen (streaming only sent earlier
             # partial output before the failure).  Without this guard,
             # users see the agent "stop responding without explanation."
-            if agent_result.get("already_sent") and not agent_result.get("failed"):
+            if should_skip_final_text(agent_result) and not agent_result.get("failed"):
                 if response:
                     _media_adapter = self.adapters.get(source.platform)
                     if _media_adapter:
@@ -7157,6 +7178,74 @@ class GatewayRunner:
         finally:
             # Restore session context variables to their pre-handler state
             self._clear_session_env(_session_env_tokens)
+
+    async def _maybe_deliver_weather_rich_result(
+        self,
+        *,
+        event: MessageEvent,
+        source: SessionSource,
+        response: str,
+        agent_messages: list,
+        agent_result: dict,
+    ) -> str:
+        """Send a weather rich result card when the current platform supports it.
+
+        Returns the text fallback with any rich-result marker blocks stripped.
+        A successful rich card delivery is recorded separately from final text
+        delivery so mixed-result turns can still send their ordinary reply.
+        """
+
+        adapter = self.adapters.get(source.platform) if source and source.platform else None
+        if not adapter:
+            try:
+                from gateway.rich_results import strip_rich_result_blocks
+
+                return strip_rich_result_blocks(response)
+            except Exception:
+                return response
+        try:
+            from gateway.display_config import resolve_display_setting
+            from gateway.rich_results import maybe_deliver_weather_result
+
+            mode = resolve_display_setting(
+                _load_gateway_config(),
+                _platform_config_key(source.platform),
+                "rich_result_weather",
+                "auto",
+            )
+            history_offset = agent_result.get("history_offset", 0)
+            try:
+                history_offset = int(history_offset)
+            except Exception:
+                history_offset = 0
+            current_messages = agent_messages[history_offset:] if history_offset > 0 else agent_messages
+            delivery = await maybe_deliver_weather_result(
+                adapter=adapter,
+                platform=source.platform,
+                chat_id=source.chat_id,
+                response_text=response,
+                messages=current_messages,
+                mode=str(mode or "auto"),
+                metadata=getattr(event, "metadata", None),
+                reply_to=getattr(event, "message_id", None),
+            )
+            if delivery.card_sent:
+                from gateway.delivery_state import record_rich_card_sent
+
+                record_rich_card_sent(
+                    agent_result,
+                    result_type="weather.v1",
+                    message_id=delivery.message_id,
+                )
+            return delivery.response_text
+        except Exception as exc:
+            logger.debug("Weather rich-result delivery skipped: %s", exc)
+            try:
+                from gateway.rich_results import strip_rich_result_blocks
+
+                return strip_rich_result_blocks(response)
+            except Exception:
+                return response
 
     def _format_session_info(self) -> str:
         """Resolve current model config and return a formatted info block.
@@ -13199,10 +13288,53 @@ class GatewayRunner:
             if _env_tp and not _tool_progress_configured
             else (_resolved_tp or _env_tp or "all")
         )
-        # Disable tool progress for webhooks - they don't support message editing,
-        # so each progress line would be sent as a separate message.
+        # Optional transaction-style progress panel.  When enabled, the existing
+        # tool progress callback is still the signal source, but rendering is
+        # handled as one editable transaction panel instead of raw tool lines.
         from gateway.config import Platform
-        tool_progress_enabled = progress_mode != "off" and source.platform != Platform.WEBHOOK
+        task_tracker_config = display_config.get("task_tracker")
+        if not isinstance(task_tracker_config, dict):
+            task_tracker_config = {}
+        task_tracker_enabled = is_truthy_value(
+            task_tracker_config.get("enabled"), default=False
+        )
+        try:
+            from gateway.flowweaver_shadow import is_flowweaver_shadow_enabled
+            from gateway.flowweaver_shadow_dry_run import is_flowweaver_shadow_dry_run_enabled
+            from gateway.flowweaver_shadow_publisher import is_flowweaver_shadow_runtime_publish_enabled
+
+            flowweaver_shadow_enabled = is_flowweaver_shadow_enabled(task_tracker_config)
+            flowweaver_shadow_dry_run_enabled = is_flowweaver_shadow_dry_run_enabled(task_tracker_config)
+            flowweaver_shadow_runtime_publish_enabled = is_flowweaver_shadow_runtime_publish_enabled(task_tracker_config)
+        except Exception:
+            logger.debug("FlowWeaver shadow tap disabled after config error")
+            flowweaver_shadow_enabled = False
+            flowweaver_shadow_dry_run_enabled = False
+            flowweaver_shadow_runtime_publish_enabled = False
+        task_tracker_mode = str(task_tracker_config.get("mode", "text") or "text").strip().lower()
+        if task_tracker_mode == "feishu_card" and source.platform != Platform.FEISHU:
+            task_tracker_mode = "text"
+        task_tracker_enabled = task_tracker_enabled and task_tracker_mode in {"text", "feishu_card"}
+        task_tracker_card_enabled = task_tracker_enabled and task_tracker_mode == "feishu_card" and source.platform == Platform.FEISHU
+        try:
+            task_tracker_max_operations = int(task_tracker_config.get("max_operations", 12))
+        except Exception:
+            task_tracker_max_operations = 12
+        try:
+            task_tracker_max_length = int(task_tracker_config.get("max_length", 3500))
+        except Exception:
+            task_tracker_max_length = 3500
+        task_tracker_dashboard_url = task_tracker_config.get("dashboard_url")
+
+        # Disable progress for webhooks - they don't support message editing,
+        # so each progress line would be sent as a separate message.  A task
+        # tracker with tool_progress=off still needs the callback so it can show
+        # transaction status while hiding operation details.
+        progress_display_enabled = (
+            source.platform != Platform.WEBHOOK
+            and (progress_mode != "off" or task_tracker_enabled)
+        )
+        tool_progress_enabled = progress_display_enabled or flowweaver_shadow_enabled
         # Natural assistant status messages are intentionally independent from
         # tool progress and token streaming. Users can keep tool_progress quiet
         # in chat platforms while opting into concise mid-turn updates.
@@ -13214,8 +13346,9 @@ class GatewayRunner:
             )
         )
         
-        # Queue for progress messages (thread-safe)
-        progress_queue = queue.Queue() if tool_progress_enabled else None
+        # Queue for progress messages (thread-safe). Shadow collection must not
+        # create a visible progress queue; it only needs the callback/tracker.
+        progress_queue = queue.Queue() if progress_display_enabled else None
         last_tool = [None]  # Mutable container for tracking in closure
         last_progress_msg = [None]  # Track last message for dedup
         repeat_count = [0]  # How many times the same message repeated
@@ -13242,9 +13375,63 @@ class GatewayRunner:
         long_tool_hint_fired = [False]
         _LONG_TOOL_THRESHOLD_S = 30.0
 
+        progress_tracker = None
+        progress_event_store = None
+        progress_tracking_enabled = (
+            (progress_queue is not None and task_tracker_enabled)
+            or flowweaver_shadow_enabled
+        )
+        if progress_tracking_enabled:
+            try:
+                from gateway.progress.store import build_progress_event_store
+                from gateway.progress.task_titles import summarize_task_intent
+                from gateway.progress.tracker import ProgressTracker
+                _tracker_title = summarize_task_intent(message)
+                progress_tracker = ProgressTracker(
+                    transaction_id=session_id or session_key or "gateway-task",
+                    title=_tracker_title,
+                    max_operations=task_tracker_max_operations,
+                )
+                if progress_queue is not None and task_tracker_enabled:
+                    progress_event_store = build_progress_event_store(task_tracker_config)
+            except Exception as _tracker_err:
+                logger.debug("Task tracker disabled after setup error: %s", _tracker_err)
+                progress_tracker = None
+                progress_event_store = None
+                task_tracker_enabled = False
+                flowweaver_shadow_enabled = False
+                flowweaver_shadow_dry_run_enabled = False
+                flowweaver_shadow_runtime_publish_enabled = False
+
         def progress_callback(event_type: str, tool_name: str = None, preview: str = None, args: dict = None, **kwargs):
             """Callback invoked by agent on tool lifecycle events."""
-            if not progress_queue or not _run_still_current():
+            if not _run_still_current():
+                return
+
+            if progress_tracker is not None:
+                try:
+                    recorded = progress_tracker.record_callback_event(
+                        event_type,
+                        tool_name=tool_name,
+                        preview=preview,
+                        args=args,
+                        **kwargs,
+                    )
+                    if recorded is not None:
+                        if progress_event_store is not None:
+                            try:
+                                progress_event_store.append_operation(progress_tracker.snapshot(), recorded)
+                            except Exception as store_err:
+                                logger.debug("Task tracker event persistence error: %s", store_err)
+                        if progress_queue is not None and task_tracker_enabled:
+                            progress_queue.put(("__render_task_tracker__",))
+                            return
+                except Exception as cb_err:
+                    logging.debug(f"Task tracker progress callback error: {cb_err}")
+                if task_tracker_enabled or progress_queue is None:
+                    return
+
+            if not progress_queue:
                 return
 
             # First-touch onboarding: the first time a tool takes longer than
@@ -13372,6 +13559,8 @@ class GatewayRunner:
             if source.platform == Platform.FEISHU and source.thread_id and event_message_id
             else None
         )
+        progress_final_flush_sentinel = object()
+        progress_final_flushed = asyncio.Event()
 
         async def send_progress_messages():
             if not progress_queue:
@@ -13383,8 +13572,14 @@ class GatewayRunner:
 
             # Skip tool progress for platforms that don't support message
             # editing (e.g. iMessage/BlueBubbles) — each progress update
-            # would become a separate message bubble, which is noisy.
-            if type(adapter).edit_message is BasePlatformAdapter.edit_message:
+            # would become a separate message bubble, which is noisy. Feishu
+            # card mode uses explicit card send/patch helpers instead.
+            using_feishu_card = (
+                task_tracker_card_enabled
+                and hasattr(adapter, "send_interactive_card")
+                and hasattr(adapter, "patch_interactive_card")
+            )
+            if not using_feishu_card and type(adapter).edit_message is BasePlatformAdapter.edit_message:
                 while not progress_queue.empty():
                     try:
                         progress_queue.get_nowait()
@@ -13393,10 +13588,32 @@ class GatewayRunner:
                 return
 
             progress_lines = []      # Accumulated tool lines
-            progress_msg_id = None   # ID of the progress message to edit
+            progress_msg_id = None   # ID of the progress message/card to edit
             can_edit = True          # False once an edit fails (platform doesn't support it)
             _last_edit_ts = 0.0      # Throttle edits to avoid Telegram flood control
             _PROGRESS_EDIT_INTERVAL = 1.5  # Minimum seconds between edits
+
+            def _current_progress_text() -> str:
+                if progress_tracker is not None and task_tracker_enabled:
+                    from gateway.progress.renderers import render_text_panel
+                    return render_text_panel(
+                        progress_tracker.snapshot(),
+                        tool_progress_mode=progress_mode,
+                        max_length=task_tracker_max_length,
+                        dashboard_url=task_tracker_dashboard_url,
+                    )
+                return "\n".join(progress_lines)
+
+            def _current_progress_card() -> dict:
+                from gateway.progress.renderers import render_feishu_progress_card
+                return render_feishu_progress_card(
+                    progress_tracker.snapshot(),
+                    tool_progress_mode=progress_mode,
+                    max_operations=task_tracker_max_operations,
+                    dashboard_url=task_tracker_dashboard_url,
+                    style=str(task_tracker_config.get("style", "lively")),
+                    emoji=is_truthy_value(task_tracker_config.get("emoji"), default=True),
+                )
 
             while True:
                 try:
@@ -13409,6 +13626,7 @@ class GatewayRunner:
                         return
 
                     raw = progress_queue.get_nowait()
+                    is_final_tracker_flush = raw is progress_final_flush_sentinel
 
                     # Drain silently when interrupted: events queued in the
                     # window between tool parse and interrupt processing
@@ -13426,8 +13644,16 @@ class GatewayRunner:
                     except Exception:
                         pass
 
+                    if progress_tracker is not None and task_tracker_enabled:
+                        from gateway.progress.renderers import render_text_panel
+                        msg = render_text_panel(
+                            progress_tracker.snapshot(),
+                            tool_progress_mode=progress_mode,
+                            max_length=task_tracker_max_length,
+                            dashboard_url=task_tracker_dashboard_url,
+                        )
                     # Handle dedup messages: update last line with repeat counter
-                    if isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":
+                    elif isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":
                         _, base_msg, count = raw
                         if progress_lines:
                             progress_lines[-1] = f"{base_msg} (×{count + 1})"
@@ -13456,10 +13682,13 @@ class GatewayRunner:
                     # instead of reacting to 429s.)
                     _now = time.monotonic()
                     _remaining = _PROGRESS_EDIT_INTERVAL - (_now - _last_edit_ts)
-                    if _remaining > 0:
+                    if _remaining > 0 and not is_final_tracker_flush:
                         # Wait out the throttle interval, then loop back to
                         # drain any additional queued messages before sending
-                        # a single batched edit.
+                        # a single batched edit.  The explicit final task-
+                        # tracker flush bypasses throttling: otherwise the
+                        # sentinel can be consumed and discarded during cleanup,
+                        # leaving the visible panel stuck in Running.
                         await asyncio.sleep(_remaining)
                         continue
 
@@ -13467,14 +13696,25 @@ class GatewayRunner:
                         return
 
                     if can_edit and progress_msg_id is not None:
-                        # Try to edit the existing progress message
-                        full_text = "\n".join(progress_lines)
-                        result = await adapter.edit_message(
-                            chat_id=source.chat_id,
-                            message_id=progress_msg_id,
-                            content=full_text,
-                        )
-                        if not result.success:
+                        # Try to edit/patch the existing progress surface.
+                        full_text = _current_progress_text()
+                        if using_feishu_card:
+                            result = await adapter.patch_interactive_card(
+                                source.chat_id,
+                                progress_msg_id,
+                                _current_progress_card(),
+                                finalize=is_final_tracker_flush,
+                            )
+                        else:
+                            result = await adapter.edit_message(
+                                chat_id=source.chat_id,
+                                message_id=progress_msg_id,
+                                content=full_text,
+                            )
+                        if result.success:
+                            if is_final_tracker_flush:
+                                progress_final_flushed.set()
+                        else:
                             _err = (getattr(result, "error", "") or "").lower()
                             if "flood" in _err or "retry after" in _err:
                                 # Flood control hit — disable further edits,
@@ -13485,28 +13725,46 @@ class GatewayRunner:
                                     adapter.name,
                                 )
                             can_edit = False
-                            _flood_result = await adapter.send(
+                            fallback = await adapter.send(
                                 chat_id=source.chat_id,
-                                content=msg,
+                                content=full_text if is_final_tracker_flush else msg,
                                 reply_to=_progress_reply_to,
                                 metadata=_progress_metadata,
                             )
                             if (
                                 _cleanup_progress
-                                and getattr(_flood_result, "success", False)
-                                and getattr(_flood_result, "message_id", None)
+                                and getattr(fallback, "success", False)
+                                and getattr(fallback, "message_id", None)
                             ):
-                                _cleanup_msg_ids.append(str(_flood_result.message_id))
+                                _cleanup_msg_ids.append(str(fallback.message_id))
+                            if getattr(fallback, "success", False) and is_final_tracker_flush:
+                                progress_final_flushed.set()
                     else:
                         if can_edit:
-                            # First tool: send all accumulated text as new message
-                            full_text = "\n".join(progress_lines)
-                            result = await adapter.send(
-                                chat_id=source.chat_id,
-                                content=full_text,
-                                reply_to=_progress_reply_to,
-                                metadata=_progress_metadata,
-                            )
+                            # First tool: send all accumulated progress as a new message/card.
+                            full_text = _current_progress_text()
+                            if using_feishu_card:
+                                result = await adapter.send_interactive_card(
+                                    source.chat_id,
+                                    _current_progress_card(),
+                                    reply_to=_progress_reply_to,
+                                    metadata=_progress_metadata,
+                                )
+                                if not result.success:
+                                    can_edit = False
+                                    result = await adapter.send(
+                                        chat_id=source.chat_id,
+                                        content=full_text,
+                                        reply_to=_progress_reply_to,
+                                        metadata=_progress_metadata,
+                                    )
+                            else:
+                                result = await adapter.send(
+                                    chat_id=source.chat_id,
+                                    content=full_text,
+                                    reply_to=_progress_reply_to,
+                                    metadata=_progress_metadata,
+                                )
                         else:
                             # Editing unsupported: send just this line
                             result = await adapter.send(
@@ -13515,10 +13773,13 @@ class GatewayRunner:
                                 reply_to=_progress_reply_to,
                                 metadata=_progress_metadata,
                             )
-                        if result.success and result.message_id:
-                            progress_msg_id = result.message_id
-                            if _cleanup_progress:
-                                _cleanup_msg_ids.append(str(result.message_id))
+                        if result.success:
+                            if result.message_id:
+                                progress_msg_id = result.message_id
+                                if _cleanup_progress:
+                                    _cleanup_msg_ids.append(str(result.message_id))
+                            if is_final_tracker_flush:
+                                progress_final_flushed.set()
 
                     _last_edit_ts = time.monotonic()
 
@@ -13560,17 +13821,48 @@ class GatewayRunner:
                                 progress_lines.append(raw)
                         except Exception:
                             break
-                    # Final edit with all remaining tools (only if editing works)
-                    if can_edit and progress_lines and progress_msg_id:
-                        full_text = "\n".join(progress_lines)
+                    # Final edit/patch with all remaining progress (only if editing works)
+                    if can_edit and progress_msg_id and (progress_lines or (progress_tracker is not None and task_tracker_enabled)):
+                        full_text = _current_progress_text()
                         try:
-                            await adapter.edit_message(
-                                chat_id=source.chat_id,
-                                message_id=progress_msg_id,
-                                content=full_text,
+                            if using_feishu_card:
+                                result = await adapter.patch_interactive_card(
+                                    source.chat_id,
+                                    progress_msg_id,
+                                    _current_progress_card(),
+                                    finalize=True,
+                                )
+                            else:
+                                result = await adapter.edit_message(
+                                    chat_id=source.chat_id,
+                                    message_id=progress_msg_id,
+                                    content=full_text,
+                                )
+                            if not result.success:
+                                logger.warning(
+                                    "[%s] Final progress edit failed; sending fallback progress panel: %s",
+                                    adapter.name,
+                                    result.error or "unknown error",
+                                )
+                                await adapter.send(
+                                    chat_id=source.chat_id,
+                                    content=full_text,
+                                    metadata=_progress_metadata,
+                                )
+                        except Exception as _final_edit_err:
+                            logger.warning(
+                                "[%s] Final progress edit raised; sending fallback progress panel: %s",
+                                adapter.name,
+                                _final_edit_err,
                             )
-                        except Exception:
-                            pass
+                            try:
+                                await adapter.send(
+                                    chat_id=source.chat_id,
+                                    content=full_text,
+                                    metadata=_progress_metadata,
+                                )
+                            except Exception:
+                                pass
                     return
                 except Exception as e:
                     logger.error("Progress message error: %s", e)
@@ -14391,7 +14683,7 @@ class GatewayRunner:
         
         # Start progress message sender if enabled
         progress_task = None
-        if tool_progress_enabled:
+        if progress_queue is not None:
             progress_task = asyncio.create_task(send_progress_messages())
 
         # Start stream consumer task — polls for consumer creation since it
@@ -14941,7 +15233,35 @@ class GatewayRunner:
                 )
         finally:
             # Stop progress sender, interrupt monitor, and notification task
+            if progress_tracker is not None:
+                try:
+                    _progress_failed = sys.exc_info()[0] is not None
+                    _response_for_progress = locals().get("response")
+                    if isinstance(_response_for_progress, dict):
+                        _progress_failed = _progress_failed or bool(_response_for_progress.get("failed"))
+                    _result_for_progress = result_holder[0]
+                    if isinstance(_result_for_progress, dict):
+                        _progress_failed = _progress_failed or bool(_result_for_progress.get("failed"))
+                    progress_tracker.mark_completed(is_error=_progress_failed)
+                    if progress_event_store is not None:
+                        try:
+                            progress_event_store.append_snapshot(progress_tracker.snapshot())
+                        except Exception as _store_final_err:
+                            logger.debug("Task tracker final persistence failed: %s", _store_final_err)
+                except Exception as _tracker_final_err:
+                    logger.debug("Task tracker final status update failed: %s", _tracker_final_err)
             if progress_task:
+                if task_tracker_enabled and progress_tracker is not None and not progress_task.done():
+                    try:
+                        progress_queue.put(progress_final_flush_sentinel)
+                        await asyncio.wait_for(progress_final_flushed.wait(), timeout=3.0)
+                    except asyncio.TimeoutError:
+                        logger.warning(
+                            "[%s] Timed out waiting for final task-tracker progress flush",
+                            source.platform.value if source.platform else "gateway",
+                        )
+                    except Exception as _progress_flush_err:
+                        logger.debug("Task tracker final visible flush failed: %s", _progress_flush_err)
                 progress_task.cancel()
             interrupt_monitor.cancel()
             _notify_task.cancel()
@@ -15009,7 +15329,12 @@ class GatewayRunner:
                     _streamed,
                     _previewed,
                 )
-                response["already_sent"] = True
+                from gateway.delivery_state import mark_final_text_sent
+
+                mark_final_text_sent(
+                    response,
+                    reason="stream_final_response" if _streamed else "response_previewed",
+                )
 
         # Schedule deletion of tracked temporary progress bubbles after the
         # final response lands. Failed runs skip this so bubbles remain as
@@ -15052,6 +15377,34 @@ class GatewayRunner:
                 )
             except Exception as _rpe:
                 logger.debug("Post-delivery cleanup registration failed: %s", _rpe)
+
+        if flowweaver_shadow_enabled and isinstance(response, dict) and progress_tracker is not None:
+            try:
+                from gateway.flowweaver_shadow import attach_flowweaver_shadow_snapshot
+
+                attach_flowweaver_shadow_snapshot(
+                    response,
+                    progress_tracker.snapshot(),
+                    enabled=True,
+                    source=source,
+                    final_text=response.get("final_response"),
+                )
+                if flowweaver_shadow_dry_run_enabled:
+                    try:
+                        from gateway.flowweaver_shadow_dry_run import attach_flowweaver_gateway_shadow_dry_run
+
+                        attach_flowweaver_gateway_shadow_dry_run(response, enabled=True)
+                    except Exception:
+                        pass
+                    if flowweaver_shadow_runtime_publish_enabled:
+                        try:
+                            from gateway.flowweaver_shadow_publisher import attach_flowweaver_shadow_runtime_publication
+
+                            attach_flowweaver_shadow_runtime_publication(response, enabled=True)
+                        except Exception:
+                            logger.debug("FlowWeaver shadow runtime publication attach failed")
+            except Exception as _fw_shadow_err:
+                logger.debug("FlowWeaver shadow snapshot capture failed: %s", _fw_shadow_err)
 
         return response
 
