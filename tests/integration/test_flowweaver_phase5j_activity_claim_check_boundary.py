@@ -272,6 +272,11 @@ def test_phase5j_diff_does_not_add_gateway_wiring_or_real_activity_side_effects(
             "docs/runbooks/flowweaver-live-gateway-observation-enablement-implementation.md",
             "gateway/flowweaver_live_gateway_observation_enablement.py",
             "tests/gateway/test_flowweaver_live_gateway_observation_enablement.py",
+            "docs/plans/2026-05-08-flowweaver-phase15-manual-live-gateway-observation-review-gate.md",
+            "docs/dev_log/2026-05-08-flowweaver-phase15-manual-live-gateway-observation-review-gate.md",
+            "docs/runbooks/flowweaver-live-gateway-observation-manual-review.md",
+            "gateway/flowweaver_live_gateway_observation_manual_review.py",
+            "tests/gateway/test_flowweaver_live_gateway_observation_manual_review.py",
         }
     forbidden_prefixes = (
         "gateway/run.py",
