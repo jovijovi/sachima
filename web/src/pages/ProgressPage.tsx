@@ -17,8 +17,8 @@ import type {
   ProgressTransactionSummary,
 } from "@/lib/api";
 import { cn, timeAgo } from "@/lib/utils";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import { Badge } from "@nous-research/ui/ui/components/badge";
+import { Button } from "@nous-research/ui/ui/components/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
 const STATUS_OPTIONS = ["all", "running", "completed", "failed"] as const;
@@ -26,16 +26,16 @@ type StatusFilter = (typeof STATUS_OPTIONS)[number];
 
 const STATUS_BADGE: Record<
   string,
-  { label: string; variant: "success" | "warning" | "destructive" | "outline" }
+  { label: string; tone: "success" | "warning" | "destructive" | "outline" }
 > = {
-  completed: { label: "Completed", variant: "success" },
-  failed: { label: "Failed", variant: "destructive" },
-  running: { label: "Running", variant: "warning" },
-  cancelled: { label: "Cancelled", variant: "outline" },
+  completed: { label: "Completed", tone: "success" },
+  failed: { label: "Failed", tone: "destructive" },
+  running: { label: "Running", tone: "warning" },
+  cancelled: { label: "Cancelled", tone: "outline" },
 };
 
 function statusBadge(status?: string | null) {
-  return STATUS_BADGE[status || ""] ?? { label: status || "Unknown", variant: "outline" as const };
+  return STATUS_BADGE[status || ""] ?? { label: status || "Unknown", tone: "outline" as const };
 }
 
 function formatTime(ts?: number | null): string {
@@ -85,7 +85,7 @@ function TransactionRow({
             <p className="truncate text-sm font-medium text-foreground normal-case">
               {tx.title || tx.id}
             </p>
-            <Badge variant={badge.variant} className="text-[9px]">
+            <Badge tone={badge.tone} className="text-[9px]">
               {badge.label}
             </Badge>
           </div>
@@ -127,7 +127,7 @@ function EventRow({ event }: { event: ProgressEventRecord }) {
           <Terminal className="h-4 w-4 text-muted-foreground" />
         )}
         <span className="font-mono-ui text-xs text-foreground normal-case">{title}</span>
-        <Badge variant={badge.variant} className="text-[9px]">
+        <Badge tone={badge.tone} className="text-[9px]">
           {badge.label}
         </Badge>
         <span className="ml-auto text-[10px] text-muted-foreground">
@@ -215,7 +215,7 @@ export default function ProgressPage() {
           <Activity className="h-5 w-5 text-muted-foreground" />
           <H2 variant="sm">Progress</H2>
           {loading && <Loader2 className="h-4 w-4 animate-spin text-primary" />}
-          <Badge variant={enabled ? "success" : "outline"} className="text-[10px]">
+          <Badge tone={enabled ? "success" : "outline"} className="text-[10px]">
             {enabled ? "Event store enabled" : "Event store off"}
           </Badge>
         </div>
@@ -231,8 +231,13 @@ export default function ProgressPage() {
               </option>
             ))}
           </select>
-          <Button variant="outline" size="sm" onClick={loadTransactions} disabled={loading}>
-            <RefreshCw className="h-3 w-3" />
+          <Button
+            outlined
+            size="sm"
+            onClick={loadTransactions}
+            disabled={loading}
+            prefix={<RefreshCw className="h-3 w-3" />}
+          >
             Refresh
           </Button>
         </div>
@@ -306,7 +311,7 @@ export default function ProgressPage() {
                 <div className="border-b border-border/70 p-4">
                   <div className="flex flex-wrap items-center gap-2">
                     <h3 className="text-sm font-medium text-foreground normal-case">{selected.title}</h3>
-                    <Badge variant={statusBadge(selected.status).variant} className="text-[9px]">
+                    <Badge tone={statusBadge(selected.status).tone} className="text-[9px]">
                       {statusBadge(selected.status).label}
                     </Badge>
                   </div>
