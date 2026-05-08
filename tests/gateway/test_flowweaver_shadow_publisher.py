@@ -169,16 +169,26 @@ def _flowweaver_boundary_diff_base(repo_root: Path) -> str:
 
     Phase branches are normally linear on ``origin/feature/sachima-channel``, so
     their guard scans the phase diff from that merge-base.  The main/Sachima
-    integration branch is a merge commit whose first parent is latest upstream
-    ``main`` and whose second parent is the Sachima channel.  In that shape,
-    scanning against ``origin/feature/sachima-channel`` would falsely inspect
-    upstream release changes such as terminal docker/Popen comments that were
-    already present on the main parent.  The guard must still fail closed on the
-    integration delta, so merge commits scan against their first parent.
+    integration branch is rooted in a merge commit whose first parent is latest
+    upstream ``main`` and whose second parent is the Sachima channel.  Follow-up
+    integration-fix commits are ordinary single-parent commits on top of that
+    merge, so the guard finds the most recent first-parent merge and scans from
+    that merge's first parent.  This keeps the scan focused on the integration
+    delta without re-scanning unrelated upstream release changes.
     """
-    parents = subprocess.check_output(["git", "rev-list", "--parents", "-n", "1", "HEAD"], cwd=repo_root, text=True).split()
-    if len(parents) > 2:
-        return parents[1]
+    merge_line = subprocess.check_output(
+        ["git", "rev-list", "--first-parent", "--merges", "-n", "1", "HEAD"],
+        cwd=repo_root,
+        text=True,
+    ).strip()
+    if merge_line:
+        parents = subprocess.check_output(
+            ["git", "rev-list", "--parents", "-n", "1", merge_line],
+            cwd=repo_root,
+            text=True,
+        ).split()
+        if len(parents) > 2:
+            return parents[1]
     return subprocess.check_output(
         ["git", "merge-base", "HEAD", "origin/feature/sachima-channel"],
         cwd=repo_root,

@@ -7211,7 +7211,7 @@ class GatewayRunner:
                 _load_gateway_config(),
                 _platform_config_key(source.platform),
                 "rich_result_weather",
-                "auto",
+                "off",
             )
             history_offset = agent_result.get("history_offset", 0)
             try:
@@ -13288,6 +13288,10 @@ class GatewayRunner:
             if _env_tp and not _tool_progress_configured
             else (_resolved_tp or _env_tp or "all")
         )
+        weather_rich_mode = str(
+            resolve_display_setting(user_config, platform_key, "rich_result_weather", "off") or "off"
+        ).strip().lower()
+        weather_rich_terminal_normalization_enabled = weather_rich_mode != "off"
         # Optional transaction-style progress panel.  When enabled, the existing
         # tool progress callback is still the signal source, but rendering is
         # handled as one editable transaction panel instead of raw tool lines.
@@ -14185,6 +14189,9 @@ class GatewayRunner:
             agent.reasoning_config = reasoning_config
             agent.service_tier = self._service_tier
             agent.request_overrides = turn_route.get("request_overrides") or {}
+            agent._weather_rich_terminal_normalization_enabled = (
+                weather_rich_terminal_normalization_enabled
+            )
 
             _bg_review_release = threading.Event()
             _bg_review_pending: list[str] = []

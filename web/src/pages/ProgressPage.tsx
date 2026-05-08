@@ -10,7 +10,7 @@ import {
   Terminal,
   XCircle,
 } from "lucide-react";
-import { H2 } from "@nous-research/ui";
+import { H2 } from "@/components/NouiTypography";
 import { api } from "@/lib/api";
 import type {
   ProgressEventRecord,

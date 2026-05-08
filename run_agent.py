@@ -378,8 +378,16 @@ def _is_destructive_command(cmd: str) -> bool:
     return False
 
 
-def _normalize_weather_rich_terminal_args(platform: str | None, function_name: str, function_args: dict) -> dict:
-    """Force Feishu/Lark direct weather helper terminal calls to emit rich JSON."""
+def _normalize_weather_rich_terminal_args(
+    platform: str | None,
+    function_name: str,
+    function_args: dict,
+    *,
+    enabled: bool = False,
+) -> dict:
+    """Force Feishu/Lark direct weather helper terminal calls to emit rich JSON when opted in."""
+    if not enabled:
+        return function_args
     if function_name != "terminal":
         return function_args
     if str(platform or "").strip().lower() not in _FEISHU_RICH_PLATFORMS:
@@ -1079,6 +1087,7 @@ class AIAgent:
         self.quiet_mode = quiet_mode
         self.ephemeral_system_prompt = ephemeral_system_prompt
         self.platform = platform  # "cli", "telegram", "discord", "whatsapp", etc.
+        self._weather_rich_terminal_normalization_enabled = False
         self._user_id = user_id  # Platform user identifier (gateway sessions)
         self._user_name = user_name
         self._chat_id = chat_id
@@ -9864,7 +9873,10 @@ class AIAgent:
             if not isinstance(function_args, dict):
                 function_args = {}
             function_args = _normalize_weather_rich_terminal_args(
-                self.platform, function_name, function_args
+                getattr(self, "platform", None),
+                function_name,
+                function_args,
+                enabled=bool(getattr(self, "_weather_rich_terminal_normalization_enabled", False)),
             )
 
             # Checkpoint for file-mutating tools
@@ -10240,7 +10252,10 @@ class AIAgent:
             if not isinstance(function_args, dict):
                 function_args = {}
             function_args = _normalize_weather_rich_terminal_args(
-                self.platform, function_name, function_args
+                getattr(self, "platform", None),
+                function_name,
+                function_args,
+                enabled=bool(getattr(self, "_weather_rich_terminal_normalization_enabled", False)),
             )
 
             # Check plugin hooks for a block directive before executing.
