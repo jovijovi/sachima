@@ -414,6 +414,11 @@ def test_phase5h_diff_does_not_add_gateway_wiring_or_runtime_lifecycle_outside_i
             "docs/runbooks/flowweaver-live-gateway-observation-enablement-design.md",
             "prototypes/flowweaver_phase5c_runtime_client/src/flowweaver_runtime_client/live_gateway_observation_enablement_design.py",
             "tests/prototypes/test_flowweaver_phase13_live_gateway_observation_enablement_design.py",
+            "docs/plans/2026-05-08-flowweaver-phase14-live-gateway-observation-enablement-implementation.md",
+            "docs/dev_log/2026-05-08-flowweaver-phase14-live-gateway-observation-enablement-implementation.md",
+            "docs/runbooks/flowweaver-live-gateway-observation-enablement-implementation.md",
+            "gateway/flowweaver_live_gateway_observation_enablement.py",
+            "tests/gateway/test_flowweaver_live_gateway_observation_enablement.py",
         }
 
     assert changed_files <= allowed_changed_files
