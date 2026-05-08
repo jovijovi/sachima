@@ -332,6 +332,11 @@ def test_phase5k_diff_stays_inside_runtime_control_surface_allowlist() -> None:
             "docs/runbooks/flowweaver-live-gateway-observation-manual-review.md",
             "gateway/flowweaver_live_gateway_observation_manual_review.py",
             "tests/gateway/test_flowweaver_live_gateway_observation_manual_review.py",
+            "docs/plans/2026-05-08-flowweaver-phase16-operator-live-gateway-observation-decision-gate.md",
+            "docs/dev_log/2026-05-08-flowweaver-phase16-operator-live-gateway-observation-decision-gate.md",
+            "docs/runbooks/flowweaver-live-gateway-observation-operator-decision.md",
+            "gateway/flowweaver_live_gateway_observation_operator_decision.py",
+            "tests/gateway/test_flowweaver_live_gateway_observation_operator_decision.py",
         }
     forbidden_prefixes = (
         "gateway/run.py",
