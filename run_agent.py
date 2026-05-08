@@ -180,6 +180,63 @@ from hermes_cli.config import cfg_get
 
 
 
+def _resolve_context_overflow_context_length(
+    *,
+    old_ctx: int,
+    parsed_limit: Optional[int],
+    minimax_delta_only_overflow: bool,
+    config_context_length: Optional[int],
+    preserve_explicit_context_length: bool,
+) -> SimpleNamespace:
+    """Resolve context length changes after a context-overflow error.
+
+    A user-provided ``model.context_length`` is an explicit capability claim.
+    When the provider reports only a generic overflow, compression should retry
+    at that configured window instead of blindly stepping down to the next probe
+    tier.  If the provider gives a concrete lower limit, the provider wins.
+    """
+    if parsed_limit and parsed_limit < old_ctx:
+        return SimpleNamespace(
+            context_length=parsed_limit,
+            should_update_context_length=True,
+            persistable=True,
+            reason="parsed_limit",
+        )
+
+    if minimax_delta_only_overflow:
+        return SimpleNamespace(
+            context_length=old_ctx,
+            should_update_context_length=False,
+            persistable=False,
+            reason="provider_delta_only_overflow",
+        )
+
+    explicit_ctx = (
+        config_context_length
+        if isinstance(config_context_length, int) and config_context_length > 0
+        else None
+    )
+    if (
+        preserve_explicit_context_length
+        and explicit_ctx is not None
+        and old_ctx == explicit_ctx
+    ):
+        return SimpleNamespace(
+            context_length=old_ctx,
+            should_update_context_length=False,
+            persistable=False,
+            reason="preserve_explicit_context_length",
+        )
+
+    probe_ctx = get_next_probe_tier(old_ctx)
+    return SimpleNamespace(
+        context_length=probe_ctx,
+        should_update_context_length=bool(probe_ctx and probe_ctx < old_ctx),
+        persistable=False,
+        reason="probe_tier" if probe_ctx else "minimum_tier",
+    )
+
+
 class _SafeWriter:
     """Transparent stdio wrapper that catches OSError/ValueError from broken pipes.
 
@@ -2085,11 +2142,31 @@ class AIAgent:
         # 4. Fall back to built-in ContextCompressor
         _selected_engine = None
         _engine_name = "compressor"  # default
+        _preserve_explicit_context_length = True
         try:
             _ctx_cfg = _agent_cfg.get("context", {}) if isinstance(_agent_cfg, dict) else {}
+            if not isinstance(_ctx_cfg, dict):
+                _ctx_cfg = {}
             _engine_name = _ctx_cfg.get("engine", "compressor") or "compressor"
+            _preserve_explicit_context_length = _ctx_cfg.get(
+                "preserve_explicit_context_length", True
+            )
+            if isinstance(_preserve_explicit_context_length, str):
+                _preserve_explicit_context_length = (
+                    _preserve_explicit_context_length.strip().lower()
+                    not in {"0", "false", "no", "off"}
+                )
+            elif _preserve_explicit_context_length is None:
+                _preserve_explicit_context_length = True
+            else:
+                _preserve_explicit_context_length = bool(
+                    _preserve_explicit_context_length
+                )
         except Exception:
             pass
+        self._preserve_explicit_context_length = bool(
+            _preserve_explicit_context_length
+        )
 
         if _engine_name != "compressor":
             # Try loading from plugins/context_engine/<name>/
@@ -13041,21 +13118,41 @@ class AIAgent:
                             and parsed_limit is None
                             and "context window exceeds limit (" in error_msg
                         )
-                        if parsed_limit and parsed_limit < old_ctx:
-                            new_ctx = parsed_limit
-                            self._vprint(f"{self.log_prefix}Context limit detected from API: {new_ctx:,} tokens (was {old_ctx:,})", force=True)
-                        elif minimax_delta_only_overflow:
-                            new_ctx = old_ctx
+                        resolution = _resolve_context_overflow_context_length(
+                            old_ctx=old_ctx,
+                            parsed_limit=parsed_limit,
+                            minimax_delta_only_overflow=minimax_delta_only_overflow,
+                            config_context_length=getattr(
+                                self, "_config_context_length", None
+                            ),
+                            preserve_explicit_context_length=getattr(
+                                self, "_preserve_explicit_context_length", True
+                            ),
+                        )
+                        new_ctx = resolution.context_length
+                        context_length_changed = resolution.should_update_context_length
+
+                        if resolution.reason == "parsed_limit":
+                            self._vprint(
+                                f"{self.log_prefix}Context limit detected from API: "
+                                f"{new_ctx:,} tokens (was {old_ctx:,})",
+                                force=True,
+                            )
+                        elif resolution.reason == "provider_delta_only_overflow":
                             self._vprint(
                                 f"{self.log_prefix}Provider reported overflow amount only; "
                                 f"keeping context_length at {old_ctx:,} tokens and compressing.",
                                 force=True,
                             )
-                        else:
-                            # Step down to the next probe tier
-                            new_ctx = get_next_probe_tier(old_ctx)
+                        elif resolution.reason == "preserve_explicit_context_length":
+                            self._vprint(
+                                f"{self.log_prefix}Context overflow with explicit "
+                                f"model.context_length={old_ctx:,}; preserving the "
+                                f"configured window and compressing.",
+                                force=True,
+                            )
 
-                        if new_ctx and new_ctx < old_ctx:
+                        if context_length_changed:
                             compressor.update_model(
                                 model=self.model,
                                 context_length=new_ctx,
@@ -13073,10 +13170,10 @@ class AIAgent:
                                 # in-memory only — persisting them pollutes the
                                 # cache with wrong values.
                                 compressor._context_probe_persistable = bool(
-                                    parsed_limit and parsed_limit == new_ctx
+                                    resolution.persistable
                                 )
                             self._vprint(f"{self.log_prefix}⚠️  Context length exceeded — stepping down: {old_ctx:,} → {new_ctx:,} tokens", force=True)
-                        else:
+                        elif resolution.reason == "minimum_tier":
                             self._vprint(f"{self.log_prefix}⚠️  Context length exceeded at minimum tier — attempting compression...", force=True)
 
                         compression_attempts += 1
@@ -13106,14 +13203,14 @@ class AIAgent:
                         # messages to the new session, not skipping them.
                         conversation_history = None
 
-                        if len(messages) < original_len or new_ctx and new_ctx < old_ctx:
+                        if len(messages) < original_len or context_length_changed:
                             if len(messages) < original_len:
                                 self._emit_status(f"🗜️ Compressed {original_len} → {len(messages)} messages, retrying...")
                             time.sleep(2)  # Brief pause between compression retries
                             restart_with_compressed_messages = True
                             break
                         else:
-                            # Can't compress further and already at minimum tier
+                            # Can't compress further without a context-window change.
                             self._vprint(f"{self.log_prefix}❌ Context length exceeded and cannot compress further.", force=True)
                             self._vprint(f"{self.log_prefix}   💡 The conversation has accumulated too much content. Try /new to start fresh, or /compress to manually trigger compression.", force=True)
                             logging.error(f"{self.log_prefix}Context length exceeded: {approx_tokens:,} tokens. Cannot compress further.")
