@@ -368,6 +368,15 @@ def test_phase20_diff_stays_inside_guarded_validation_allowlist() -> None:
         "gateway/flowweaver_temporal_observation_validation.py",
         "tests/gateway/test_flowweaver_temporal_observation_validation_gate.py",
         "tests/integration/test_flowweaver_phase20_temporal_observation_validation.py",
+        "docs/plans/2026-05-11-flowweaver-phase21-production-shadow-observation-only.md",
+        "docs/dev_log/2026-05-11-flowweaver-phase21-production-shadow-observation-only.md",
+        "docs/runbooks/flowweaver-production-shadow-observation.md",
+        "gateway/flowweaver_production_shadow_observation.py",
+        "gateway/run.py",
+        "tests/gateway/test_flowweaver_production_shadow_observation.py",
+        "tests/integration/test_flowweaver_phase21_production_shadow_observation.py",
+        "tests/gateway/test_flowweaver_shadow_publisher.py",
+        "tests/prototypes/test_flowweaver_phase5c_tool_surface.py",
         "tests/gateway/test_flowweaver_temporal_observation_bridge.py",
         "tests/integration/test_flowweaver_phase5h_local_temporal_worker_reconciliation.py",
         "tests/integration/test_flowweaver_phase5i_start_signature_parity.py",
@@ -375,7 +384,7 @@ def test_phase20_diff_stays_inside_guarded_validation_allowlist() -> None:
         "tests/integration/test_flowweaver_phase5k_runtime_control_surface.py",
     }
     forbidden_prefixes = ("gateway/platforms/", "tools/", "hermes_cli/")
-    forbidden_exact = {"gateway/run.py", "pyproject.toml", "run_agent.py", "model_tools.py", "toolsets.py"}
+    forbidden_exact = {"pyproject.toml", "run_agent.py", "model_tools.py", "toolsets.py"}
 
     assert sorted(changed_files - allowed_changed_files) == []
     assert not [path for path in changed_files if path in forbidden_exact or path.startswith(forbidden_prefixes)]

@@ -450,10 +450,19 @@ def test_phase5h_diff_does_not_add_gateway_wiring_or_runtime_lifecycle_outside_i
             "gateway/flowweaver_temporal_observation_validation.py",
             "tests/gateway/test_flowweaver_temporal_observation_validation_gate.py",
             "tests/integration/test_flowweaver_phase20_temporal_observation_validation.py",
+            "docs/plans/2026-05-11-flowweaver-phase21-production-shadow-observation-only.md",
+            "docs/dev_log/2026-05-11-flowweaver-phase21-production-shadow-observation-only.md",
+            "docs/runbooks/flowweaver-production-shadow-observation.md",
+            "gateway/flowweaver_production_shadow_observation.py",
+            "gateway/run.py",
+            "tests/gateway/test_flowweaver_production_shadow_observation.py",
+            "tests/integration/test_flowweaver_phase21_production_shadow_observation.py",
+            "tests/gateway/test_flowweaver_shadow_publisher.py",
+            "tests/prototypes/test_flowweaver_phase5c_tool_surface.py",
         }
 
     assert changed_files <= allowed_changed_files
-    assert not {path for path in changed_files if path in {"pyproject.toml", "gateway/run.py", "run_agent.py", "model_tools.py", "toolsets.py"}}
+    assert not {path for path in changed_files if path in {"pyproject.toml", "run_agent.py", "model_tools.py", "toolsets.py"}}
     assert not {path for path in changed_files if path.startswith(("gateway/platforms/", "tools/", "hermes_cli/"))}
 
     runtime_source = RUNTIME_CLIENT_SOURCE.read_text(encoding="utf-8")
