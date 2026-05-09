@@ -374,6 +374,12 @@ def test_phase5i_diff_does_not_add_gateway_wiring_or_runtime_lifecycle_outside_a
             "docs/runbooks/flowweaver-temporal-observation-bridge.md",
             "gateway/flowweaver_temporal_observation_bridge.py",
             "tests/gateway/test_flowweaver_temporal_observation_bridge.py",
+            "docs/plans/2026-05-10-flowweaver-phase20-guarded-temporal-observation-validation.md",
+            "docs/dev_log/2026-05-10-flowweaver-phase20-guarded-temporal-observation-validation.md",
+            "docs/runbooks/flowweaver-temporal-observation-validation.md",
+            "gateway/flowweaver_temporal_observation_validation.py",
+            "tests/gateway/test_flowweaver_temporal_observation_validation_gate.py",
+            "tests/integration/test_flowweaver_phase20_temporal_observation_validation.py",
         }
 
     assert changed_files <= allowed_changed_files

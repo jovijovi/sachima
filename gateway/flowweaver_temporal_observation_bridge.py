@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import inspect
 import json
@@ -201,7 +202,7 @@ async def observe_gateway_turn_for_flowweaver_temporal(
 
     query_request = {"operation": "query_transaction", "workflow_id": workflow_id}
     try:
-        query_result = await _invoke_handle(handle, query_request)
+        query_result = await _invoke_query_with_bounded_retry(handle, query_request)
         snapshot_summary = _snapshot_summary_from_query_result(query_result, workflow_id=workflow_id)
     except ValueError:
         return _error_result("unsafe_runtime_output")
@@ -327,6 +328,24 @@ async def _invoke_handle(handle: Any, request: dict[str, object]) -> dict[str, o
     if type(awaited) is not dict:
         _raise("runtime_error")
     return awaited
+
+
+async def _invoke_query_with_bounded_retry(handle: Any, request: dict[str, object]) -> dict[str, object]:
+    attempts = 20
+    for attempt in range(attempts):
+        result = await _invoke_handle(handle, request)
+        if not _query_result_is_temporarily_unavailable(result) or attempt == attempts - 1:
+            return result
+        await asyncio.sleep(0.05)
+    return result
+
+
+def _query_result_is_temporarily_unavailable(result: dict[str, object]) -> bool:
+    if result.get("ok") is not False:
+        return False
+    if result.get("operation") != "query_transaction":
+        return False
+    return result.get("error_code") in {"runtime_error", "runtime_query_failed", "workflow_not_ready", "query_unavailable"}
 
 
 def _start_result_ok(result: dict[str, object], *, workflow_id: str) -> bool:
