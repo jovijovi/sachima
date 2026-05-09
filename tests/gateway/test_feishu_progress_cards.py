@@ -114,6 +114,63 @@ def test_feishu_progress_card_failed_uses_warning_copy_without_raw_output():
     assert "/tmp/" not in rendered
 
 
+def test_feishu_progress_card_includes_compact_context_usage_summary():
+    from gateway.progress.renderers import render_feishu_progress_card
+
+    tracker = ProgressTracker(transaction_id="tx-context", title="上下文压力观察")
+    tracker.update_context_usage(
+        current_tokens=40_960,
+        context_window=128_000,
+        peak_tokens=65_536,
+        compression_count=2,
+    )
+
+    card = render_feishu_progress_card(tracker.snapshot(), tool_progress_mode="off")
+    rendered = _rendered(card)
+
+    assert "上下文" in rendered
+    assert "40,960 / 128,000" in rendered
+    assert "32.0%" in rendered
+    assert "峰值 65,536" in rendered
+    assert "压缩 2 次" in rendered
+
+
+def test_feishu_progress_card_hides_context_usage_until_tokens_are_known():
+    from gateway.progress.renderers import render_feishu_progress_card
+
+    tracker = ProgressTracker(transaction_id="tx-context-empty", title="等待首次用量")
+    tracker.update_context_usage(
+        current_tokens=0,
+        context_window=128_000,
+        peak_tokens=0,
+        compression_count=0,
+        threshold_tokens=102_400,
+    )
+
+    card = render_feishu_progress_card(tracker.snapshot(), tool_progress_mode="off")
+    rendered = _rendered(card)
+
+    assert "上下文" not in rendered
+    assert "0 / 128,000" not in rendered
+
+
+def test_feishu_progress_card_does_not_show_zero_ratio_for_partial_context_usage():
+    from gateway.progress.renderers import render_feishu_progress_card
+
+    peak_tracker = ProgressTracker(transaction_id="tx-peak-only", title="只有峰值")
+    peak_tracker.update_context_usage(current_tokens=0, context_window=128_000, peak_tokens=65_536)
+    compression_tracker = ProgressTracker(transaction_id="tx-compress-only", title="只有压缩次数")
+    compression_tracker.update_context_usage(current_tokens=0, context_window=128_000, compression_count=2)
+
+    peak_rendered = _rendered(render_feishu_progress_card(peak_tracker.snapshot(), tool_progress_mode="off"))
+    compression_rendered = _rendered(render_feishu_progress_card(compression_tracker.snapshot(), tool_progress_mode="off"))
+
+    assert "峰值 65,536" in peak_rendered
+    assert "压缩 2 次" in compression_rendered
+    assert "0 / 128,000" not in peak_rendered
+    assert "0 / 128,000" not in compression_rendered
+
+
 def test_feishu_progress_card_sanitizes_dashboard_link():
     from gateway.progress.renderers import render_feishu_progress_card
 

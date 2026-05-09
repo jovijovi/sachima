@@ -9,7 +9,7 @@ import shlex
 from typing import Iterable
 from urllib.parse import urlsplit, urlunsplit
 
-from gateway.progress.events import ProgressOperation, TransactionSnapshot
+from gateway.progress.events import ContextUsageSnapshot, ProgressOperation, TransactionSnapshot
 from gateway.progress.redaction import sanitize_for_progress
 
 _STATUS_LABELS = {
@@ -132,6 +132,9 @@ def render_text_panel(
         f"📌 **Transaction:** {title}",
         f"{status_icon} **Status:** {status_label}",
     ]
+    context_line = _context_usage_text_line(snapshot.context_usage)
+    if context_line:
+        lines.append(context_line)
 
     operations = list(snapshot.recent_operations or ())
     if mode != "off":
@@ -180,6 +183,9 @@ def render_feishu_progress_card(
     total_duration = _snapshot_duration(snapshot)
     if total_duration:
         details.append(f"**耗时：** {total_duration}")
+    context_detail = _context_usage_feishu_line(snapshot.context_usage)
+    if context_detail:
+        details.append(context_detail)
 
     elements: list[dict] = [{"tag": "markdown", "content": "\n".join(details)}]
 
@@ -306,6 +312,73 @@ def _feishu_footer_copy(status: str, *, style: object) -> str:
     else:
         text = "完整调用链已记录，飞书只显示摘要。" if lively else "Full trace is recorded; this card shows a summary only."
     return sanitize_for_progress(text, max_len=160)
+
+
+def _context_usage_text_line(usage: ContextUsageSnapshot | None) -> str:
+    if usage is None:
+        return ""
+    body = _context_usage_body(usage, language="en")
+    if not body:
+        return ""
+    return sanitize_for_progress(f"🧠 **Context:** {body}", max_len=240)
+
+
+def _context_usage_feishu_line(usage: ContextUsageSnapshot | None) -> str:
+    if usage is None:
+        return ""
+    body = _context_usage_body(usage, language="zh")
+    if not body:
+        return ""
+    return sanitize_for_progress(f"**上下文：** {body}", max_len=240)
+
+
+def _context_usage_body(usage: ContextUsageSnapshot, *, language: str) -> str:
+    current = _safe_nonnegative_int(getattr(usage, "current_tokens", 0))
+    window = _safe_nonnegative_int(getattr(usage, "context_window", 0))
+    peak = _safe_nonnegative_int(getattr(usage, "peak_tokens", 0))
+    compressions = _safe_nonnegative_int(getattr(usage, "compression_count", 0))
+    if not any((current, peak, compressions)):
+        return ""
+
+    if current > 0:
+        if window > 0:
+            percent = (current / window) * 100
+            if language == "zh":
+                parts = [f"{_format_count(current)} / {_format_count(window)}（{percent:.1f}%）"]
+            else:
+                parts = [f"{_format_count(current)} / {_format_count(window)} tokens ({percent:.1f}%)"]
+        elif language == "zh":
+            parts = [f"{_format_count(current)} tokens"]
+        else:
+            parts = [f"{_format_count(current)} tokens"]
+    else:
+        parts = []
+
+    if language == "zh":
+        if peak > 0:
+            parts.append(f"峰值 {_format_count(peak)}")
+        if compressions > 0 or current > 0:
+            parts.append(f"压缩 {compressions} 次")
+    else:
+        if peak > 0:
+            parts.append(f"peak {_format_count(peak)}")
+        if compressions > 0 or current > 0:
+            parts.append(f"compressions {compressions}")
+    return " · ".join(parts)
+
+
+def _format_count(value: int) -> str:
+    return f"{_safe_nonnegative_int(value):,}"
+
+
+def _safe_nonnegative_int(value: object) -> int:
+    if value is None or isinstance(value, bool):
+        return 0
+    try:
+        number = int(value)
+    except Exception:
+        return 0
+    return max(0, number)
 
 
 def _snapshot_duration(snapshot: TransactionSnapshot) -> str:

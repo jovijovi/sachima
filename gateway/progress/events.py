@@ -25,6 +25,17 @@ class ProgressOperation:
 
 
 @dataclass
+class ContextUsageSnapshot:
+    """Sanitized context-pressure counters for one transaction."""
+
+    current_tokens: int = 0
+    context_window: int = 0
+    peak_tokens: int = 0
+    compression_count: int = 0
+    threshold_tokens: int = 0
+
+
+@dataclass
 class TransactionSnapshot:
     """A sanitized, display-ready snapshot of one running transaction."""
 
@@ -35,3 +46,4 @@ class TransactionSnapshot:
     updated_at: float
     completed_at: float | None = None
     recent_operations: tuple[ProgressOperation, ...] = ()
+    context_usage: ContextUsageSnapshot | None = None

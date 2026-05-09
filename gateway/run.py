@@ -13407,6 +13407,41 @@ class GatewayRunner:
                 flowweaver_shadow_dry_run_enabled = False
                 flowweaver_shadow_runtime_publish_enabled = False
 
+        def _safe_progress_context_int(value: Any) -> int:
+            if value is None or isinstance(value, bool):
+                return 0
+            try:
+                number = int(value)
+            except Exception:
+                return 0
+            return max(0, number)
+
+        def _progress_context_usage_from_agent(agent_obj: Any) -> dict[str, int] | None:
+            compressor = getattr(agent_obj, "context_compressor", None) if agent_obj is not None else None
+            if compressor is None:
+                return None
+            current = _safe_progress_context_int(getattr(compressor, "last_prompt_tokens", 0))
+            window = _safe_progress_context_int(getattr(compressor, "context_length", 0))
+            peak = _safe_progress_context_int(getattr(compressor, "peak_prompt_tokens", current))
+            compressions = _safe_progress_context_int(getattr(compressor, "compression_count", 0))
+            threshold = _safe_progress_context_int(getattr(compressor, "threshold_tokens", 0))
+            if not any((current, peak, compressions)):
+                return None
+            return {
+                "current_tokens": current,
+                "context_window": window,
+                "peak_tokens": max(peak, current),
+                "compression_count": compressions,
+                "threshold_tokens": threshold,
+            }
+
+        def _refresh_progress_context_usage(agent_obj: Any) -> None:
+            if progress_tracker is None:
+                return
+            usage = _progress_context_usage_from_agent(agent_obj)
+            if usage is not None:
+                progress_tracker.update_context_usage(**usage)
+
         def progress_callback(event_type: str, tool_name: str = None, preview: str = None, args: dict = None, **kwargs):
             """Callback invoked by agent on tool lifecycle events."""
             if not _run_still_current():
@@ -13414,6 +13449,10 @@ class GatewayRunner:
 
             if progress_tracker is not None:
                 try:
+                    try:
+                        _refresh_progress_context_usage(agent_holder[0] if agent_holder else None)
+                    except Exception as usage_err:
+                        logger.debug("Task tracker context usage update failed: %s", usage_err)
                     recorded = progress_tracker.record_callback_event(
                         event_type,
                         tool_name=tool_name,
@@ -15249,6 +15288,10 @@ class GatewayRunner:
                     _result_for_progress = result_holder[0]
                     if isinstance(_result_for_progress, dict):
                         _progress_failed = _progress_failed or bool(_result_for_progress.get("failed"))
+                    try:
+                        _refresh_progress_context_usage(agent_holder[0] if agent_holder else None)
+                    except Exception as usage_err:
+                        logger.debug("Task tracker final context usage update failed: %s", usage_err)
                     progress_tracker.mark_completed(is_error=_progress_failed)
                     if progress_event_store is not None:
                         try:

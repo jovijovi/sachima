@@ -149,7 +149,7 @@ def _normalize_transaction(raw: Any) -> dict[str, Any] | None:
     tx_id = _safe_text(raw.get("id"), key="transaction_id", max_len=240)
     if not tx_id:
         return None
-    return {
+    transaction = {
         "id": tx_id,
         "title": _safe_text(raw.get("title"), key="title", max_len=500),
         "status": _safe_text(raw.get("status"), key="status", max_len=80),
@@ -157,6 +157,25 @@ def _normalize_transaction(raw: Any) -> dict[str, Any] | None:
         "updated_at": _safe_number(raw.get("updated_at")),
         "completed_at": _safe_optional_number(raw.get("completed_at")),
     }
+    context_usage = _safe_context_usage(raw.get("context_usage"))
+    if context_usage is not None:
+        transaction["context_usage"] = context_usage
+    return transaction
+
+
+def _safe_context_usage(raw: Any) -> dict[str, int] | None:
+    if not isinstance(raw, dict):
+        return None
+    usage = {
+        "current_tokens": _safe_nonnegative_int(raw.get("current_tokens")),
+        "context_window": _safe_nonnegative_int(raw.get("context_window")),
+        "peak_tokens": _safe_nonnegative_int(raw.get("peak_tokens")),
+        "compression_count": _safe_nonnegative_int(raw.get("compression_count")),
+        "threshold_tokens": _safe_nonnegative_int(raw.get("threshold_tokens")),
+    }
+    if not any(usage.values()):
+        return None
+    return usage
 
 
 def _normalize_operation(raw: Any) -> dict[str, Any] | None:
@@ -194,6 +213,7 @@ def _summarize_transactions(records: list[dict[str, Any]]) -> list[dict[str, Any
                 "started_at": transaction.get("started_at"),
                 "updated_at": transaction.get("updated_at"),
                 "completed_at": transaction.get("completed_at"),
+                "context_usage": transaction.get("context_usage"),
                 "operation_count": 0,
                 "last_operation": None,
                 "_sort_at": record.get("written_at"),
@@ -222,6 +242,8 @@ def _merge_transaction(summary: dict[str, Any], transaction: dict[str, Any], wri
         summary["updated_at"] = transaction.get("updated_at")
     if transaction.get("completed_at") is not None:
         summary["completed_at"] = transaction.get("completed_at")
+    if transaction.get("context_usage") is not None:
+        summary["context_usage"] = transaction.get("context_usage")
     summary["_sort_at"] = max(
         _sort_value(summary.get("_sort_at")),
         _sort_value(written_at),
@@ -277,6 +299,16 @@ def _safe_int(value: Any, *, default: int) -> int:
         return int(value)
     except Exception:
         return default
+
+
+def _safe_nonnegative_int(value: Any) -> int:
+    if value is None or isinstance(value, bool):
+        return 0
+    try:
+        number = int(value)
+    except Exception:
+        return 0
+    return max(0, number)
 
 
 def _safe_optional_text(value: Any, *, key: str, max_len: int) -> str | None:
