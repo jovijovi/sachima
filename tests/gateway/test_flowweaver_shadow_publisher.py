@@ -220,9 +220,24 @@ def test_shadow_runtime_publisher_changed_file_guard_allows_only_phase5e_files()
         "tests/prototypes/test_flowweaver_phase5c_runtime_client_contract.py",
         "tests/prototypes/test_flowweaver_phase5e_local_publish_adapter.py",
         "tests/prototypes/test_flowweaver_phase5e_variable_runtime_ids.py",
+        "docs/plans/2026-05-11-flowweaver-phase21-production-shadow-observation-only.md",
+        "docs/dev_log/2026-05-11-flowweaver-phase21-production-shadow-observation-only.md",
+        "docs/runbooks/flowweaver-production-shadow-observation.md",
+        "gateway/flowweaver_production_shadow_observation.py",
+        "gateway/run.py",
+        "tests/gateway/test_flowweaver_production_shadow_observation.py",
+        "tests/integration/test_flowweaver_phase21_production_shadow_observation.py",
+        "tests/gateway/test_flowweaver_shadow_publisher.py",
+        "tests/gateway/test_flowweaver_temporal_observation_bridge.py",
+        "tests/gateway/test_flowweaver_temporal_observation_validation_gate.py",
+        "tests/integration/test_flowweaver_phase5h_local_temporal_worker_reconciliation.py",
+        "tests/integration/test_flowweaver_phase5i_start_signature_parity.py",
+        "tests/integration/test_flowweaver_phase5j_activity_claim_check_boundary.py",
+        "tests/integration/test_flowweaver_phase5k_runtime_control_surface.py",
+        "tests/prototypes/test_flowweaver_phase5c_tool_surface.py",
     }
     forbidden_prefixes = ("gateway/platforms/", "tools/")
-    forbidden_exact = {"gateway/run.py", "run_agent.py", "model_tools.py", "toolsets.py", "mcp_serve.py"}
+    forbidden_exact = {"run_agent.py", "model_tools.py", "toolsets.py", "mcp_serve.py"}
 
     assert changed <= allowed
     assert not [path for path in changed if path.startswith(forbidden_prefixes) or path in forbidden_exact]

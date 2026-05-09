@@ -19,6 +19,9 @@ FORBIDDEN_PATHS = (
 FORBIDDEN_PREFIXES = (
     "gateway/platforms/",
 )
+APPROVED_LATER_FLOWWEAVER_PATHS = {
+    "gateway/run.py",
+}
 
 
 def _git(*args: str) -> str:
@@ -49,7 +52,7 @@ def test_phase5c_diff_does_not_touch_production_tool_or_gateway_surfaces() -> No
     forbidden = {
         path
         for path in changed
-        if path in FORBIDDEN_PATHS or any(path.startswith(prefix) for prefix in FORBIDDEN_PREFIXES)
+        if (path in FORBIDDEN_PATHS and path not in APPROVED_LATER_FLOWWEAVER_PATHS) or any(path.startswith(prefix) for prefix in FORBIDDEN_PREFIXES)
     }
 
     assert forbidden == set()

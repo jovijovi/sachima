@@ -6170,6 +6170,84 @@ class GatewayRunner:
                 pass
         return source
 
+    async def _maybe_observe_flowweaver_production_shadow(
+        self,
+        *,
+        source,
+        session_key: str,
+        session_id: str,
+        history_length: int,
+        agent_result: dict,
+        response: str,
+        turn_started_at_ns: int,
+    ) -> dict[str, object]:
+        """Run the bounded default-off FlowWeaver production-shadow sidecar."""
+
+        try:
+            from gateway.flowweaver_production_shadow_observation import (
+                observe_gateway_turn_for_flowweaver_production_shadow,
+                production_shadow_observation_policy_from_config,
+            )
+
+            platform_value = source.platform.value if getattr(source, "platform", None) else "local"
+            try:
+                user_config = _load_gateway_config()
+            except Exception:
+                user_config = {}
+            policy = production_shadow_observation_policy_from_config(
+                user_config if isinstance(user_config, dict) else {},
+                platform=str(platform_value),
+            )
+            runtime_control_surface = getattr(self, "_flowweaver_runtime_control_surface", None)
+            delivery_state = agent_result.get("delivery_state") if isinstance(agent_result, dict) else None
+            rich_card_count = 0
+            media_count = 0
+            if isinstance(delivery_state, dict):
+                rich_cards = delivery_state.get("rich_cards_sent")
+                media_sent = delivery_state.get("media_sent")
+                rich_card_count = len(rich_cards) if isinstance(rich_cards, list) else 0
+                media_count = len(media_sent) if isinstance(media_sent, list) else 0
+            if not media_count and isinstance(response, str):
+                media_count = response.count("MEDIA:")
+            turn = {
+                "platform": str(platform_value),
+                "session_key": str(session_key or ""),
+                "session_id": str(session_id or ""),
+                "message_id": "safe_missing_message_id",
+                "turn_started_at_ns": int(turn_started_at_ns),
+                "turn_sequence": int(history_length),
+                "history_length": int(history_length),
+                "api_call_count": int(agent_result.get("api_calls", 0) or 0),
+                "final_text_present": bool(isinstance(response, str) and response.strip()),
+                "rich_card_count": int(rich_card_count),
+                "media_count": int(media_count),
+            }
+            result = await observe_gateway_turn_for_flowweaver_production_shadow(
+                gateway_turn=turn,
+                runtime_control_surface=runtime_control_surface,
+                shadow_policy=policy,
+            )
+            counters = getattr(self, "_flowweaver_production_shadow_observation_counters", None)
+            if not isinstance(counters, dict):
+                counters = {}
+            result_counters = result.get("counters") if isinstance(result, dict) else None
+            if isinstance(result_counters, dict):
+                for key, value in result_counters.items():
+                    if isinstance(key, str) and type(value) is int:
+                        counters[key] = int(counters.get(key, 0) or 0) + value
+                self._flowweaver_production_shadow_observation_counters = counters
+            return result
+        except Exception:
+            return {
+                "type": "flowweaver.gateway.production_shadow_observation_result.v0",
+                "version": "flowweaver.production_shadow_observation.v0",
+                "ok": False,
+                "operation": "observe_gateway_turn_for_flowweaver_production_shadow",
+                "error_code": "runtime_query_failed",
+                "counters": {"disabled": 0, "skipped": 1, "started": 0, "query_failed": 0, "unsafe_runtime_output": 0, "timeout": 0},
+                "side_effects": [],
+            }
+
     async def _handle_message_with_agent(self, event, source, _quick_key: str, run_generation: int):
         """Inner handler that runs under the _running_agents sentinel guard."""
         _msg_start_time = time.time()
@@ -6893,6 +6971,16 @@ class GatewayRunner:
                 _footer_line = ""
             if _footer_line and response and not agent_result.get("already_sent"):
                 response = f"{response}\n\n{_footer_line}"
+
+            await self._maybe_observe_flowweaver_production_shadow(
+                source=source,
+                session_key=session_key,
+                session_id=session_entry.session_id,
+                history_length=len(history),
+                agent_result=agent_result,
+                response=response,
+                turn_started_at_ns=int(_msg_start_time * 1_000_000_000),
+            )
 
             # Emit agent:end hook
             await self.hooks.emit("agent:end", {

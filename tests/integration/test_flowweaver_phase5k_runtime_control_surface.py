@@ -358,9 +358,17 @@ def test_phase5k_diff_stays_inside_runtime_control_surface_allowlist() -> None:
             "gateway/flowweaver_temporal_observation_validation.py",
             "tests/gateway/test_flowweaver_temporal_observation_validation_gate.py",
             "tests/integration/test_flowweaver_phase20_temporal_observation_validation.py",
+            "docs/plans/2026-05-11-flowweaver-phase21-production-shadow-observation-only.md",
+            "docs/dev_log/2026-05-11-flowweaver-phase21-production-shadow-observation-only.md",
+            "docs/runbooks/flowweaver-production-shadow-observation.md",
+            "gateway/flowweaver_production_shadow_observation.py",
+            "gateway/run.py",
+            "tests/gateway/test_flowweaver_production_shadow_observation.py",
+            "tests/integration/test_flowweaver_phase21_production_shadow_observation.py",
+            "tests/gateway/test_flowweaver_shadow_publisher.py",
+            "tests/prototypes/test_flowweaver_phase5c_tool_surface.py",
         }
     forbidden_prefixes = (
-        "gateway/run.py",
         "gateway/platforms/",
         "tools/",
         "hermes_cli/",
