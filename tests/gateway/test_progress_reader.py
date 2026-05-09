@@ -127,6 +127,33 @@ def test_progress_reader_aggregates_transactions_and_latest_snapshot_wins(tmp_pa
     }
 
 
+def test_progress_reader_preserves_sanitized_context_usage_in_summary_and_events(tmp_path):
+    path = tmp_path / "events.jsonl"
+    snapshot = _snapshot("tx-context", written_at=5.0, status="completed")
+    snapshot["transaction"]["context_usage"] = {
+        "current_tokens": "40960",
+        "context_window": 128000,
+        "peak_tokens": 65536,
+        "compression_count": 2,
+        "threshold_tokens": 102400,
+    }
+    _write_jsonl(path, [_operation("tx-context", written_at=3.0), snapshot])
+
+    result = list_progress_transactions(path)
+    detail = get_progress_transaction_events(path, "tx-context")
+
+    expected = {
+        "current_tokens": 40_960,
+        "context_window": 128_000,
+        "peak_tokens": 65_536,
+        "compression_count": 2,
+        "threshold_tokens": 102_400,
+    }
+    assert result["transactions"][0]["context_usage"] == expected
+    assert detail["transaction"]["context_usage"] == expected
+    assert detail["events"][-1]["transaction"]["context_usage"] == expected
+
+
 def test_progress_reader_filters_status_and_applies_limits(tmp_path):
     path = tmp_path / "events.jsonl"
     _write_jsonl(

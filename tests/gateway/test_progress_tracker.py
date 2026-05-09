@@ -145,3 +145,37 @@ def test_metadata_values_are_sanitized_with_their_keys():
     operation = tracker.snapshot().recent_operations[0]
     assert operation.metadata["api_key"] == "[REDACTED]"
     assert sensitive_value not in repr(operation)
+
+
+def test_tracker_snapshot_carries_context_usage_without_raw_metadata():
+    tracker = ProgressTracker("tx-context", "Context pressure")
+
+    tracker.update_context_usage(
+        current_tokens=40_960,
+        context_window=128_000,
+        peak_tokens=65_536,
+        compression_count=2,
+        threshold_tokens=102_400,
+    )
+
+    usage = tracker.snapshot().context_usage
+    assert usage is not None
+    assert usage.current_tokens == 40_960
+    assert usage.context_window == 128_000
+    assert usage.peak_tokens == 65_536
+    assert usage.compression_count == 2
+    assert usage.threshold_tokens == 102_400
+
+
+def test_tracker_context_usage_peak_is_monotonic_and_values_are_bounded():
+    tracker = ProgressTracker("tx-context-bounds", "Context pressure")
+
+    tracker.update_context_usage(current_tokens=50_000, context_window=128_000, compression_count=1)
+    tracker.update_context_usage(current_tokens=-1, context_window="bad", peak_tokens=10, compression_count=-5)
+
+    usage = tracker.snapshot().context_usage
+    assert usage is not None
+    assert usage.current_tokens == 0
+    assert usage.context_window == 0
+    assert usage.peak_tokens == 50_000
+    assert usage.compression_count == 0

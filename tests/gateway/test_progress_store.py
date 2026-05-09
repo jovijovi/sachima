@@ -65,6 +65,30 @@ def test_jsonl_store_appends_final_transaction_snapshot_record(tmp_path):
     assert records[0]["transaction"]["completed_at"] is not None
 
 
+def test_progress_records_include_sanitized_context_usage(tmp_path):
+    store_path = tmp_path / "events.jsonl"
+    store = JsonlProgressEventStore(store_path)
+    tracker = ProgressTracker("tx-context", "Persist context usage")
+    tracker.update_context_usage(
+        current_tokens=40_960,
+        context_window=128_000,
+        peak_tokens=65_536,
+        compression_count=2,
+        threshold_tokens=102_400,
+    )
+
+    store.append_snapshot(tracker.snapshot())
+
+    record = _read_jsonl(store_path)[0]
+    assert record["transaction"]["context_usage"] == {
+        "current_tokens": 40_960,
+        "context_window": 128_000,
+        "peak_tokens": 65_536,
+        "compression_count": 2,
+        "threshold_tokens": 102_400,
+    }
+
+
 def test_jsonl_store_serializes_concurrent_writes(monkeypatch, tmp_path):
     store_path = tmp_path / "events.jsonl"
     store = JsonlProgressEventStore(store_path)

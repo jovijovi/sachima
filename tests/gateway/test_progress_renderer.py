@@ -107,6 +107,43 @@ def test_text_renderer_includes_safe_dashboard_progress_link_when_configured():
     assert "abc123" not in text
 
 
+def test_text_renderer_includes_context_usage_summary():
+    from gateway.progress.renderers import render_text_panel
+
+    tracker = ProgressTracker(transaction_id="tx-context", title="Context task")
+    tracker.update_context_usage(
+        current_tokens=40_960,
+        context_window=128_000,
+        peak_tokens=65_536,
+        compression_count=2,
+    )
+
+    text = render_text_panel(tracker.snapshot(), tool_progress_mode="off")
+
+    assert "Context" in text
+    assert "40,960 / 128,000" in text
+    assert "32.0%" in text
+    assert "peak 65,536" in text
+    assert "compressions 2" in text
+
+
+def test_text_renderer_does_not_show_zero_ratio_for_partial_context_usage():
+    from gateway.progress.renderers import render_text_panel
+
+    peak_tracker = ProgressTracker(transaction_id="tx-peak-only", title="Peak only")
+    peak_tracker.update_context_usage(current_tokens=0, context_window=128_000, peak_tokens=65_536)
+    compression_tracker = ProgressTracker(transaction_id="tx-compress-only", title="Compression only")
+    compression_tracker.update_context_usage(current_tokens=0, context_window=128_000, compression_count=2)
+
+    peak_text = render_text_panel(peak_tracker.snapshot(), tool_progress_mode="off")
+    compression_text = render_text_panel(compression_tracker.snapshot(), tool_progress_mode="off")
+
+    assert "peak 65,536" in peak_text
+    assert "compressions 2" in compression_text
+    assert "0 / 128,000" not in peak_text
+    assert "0 / 128,000" not in compression_text
+
+
 def test_text_renderer_omits_unsafe_dashboard_link():
     from gateway.progress.renderers import render_text_panel
 

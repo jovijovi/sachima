@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 from typing import Any, Protocol
 
-from gateway.progress.events import ProgressOperation, TransactionSnapshot
+from gateway.progress.events import ContextUsageSnapshot, ProgressOperation, TransactionSnapshot
 from gateway.progress.redaction import sanitize_value_for_progress
 from hermes_constants import get_hermes_home
 
@@ -121,13 +121,26 @@ def progress_operation_to_record(
 
 
 def _safe_transaction(snapshot: TransactionSnapshot) -> dict[str, Any]:
-    return {
+    transaction = {
         "id": _safe_text(snapshot.transaction_id, key="transaction_id", max_len=240),
         "title": _safe_text(snapshot.title, key="title", max_len=500),
         "status": _safe_text(snapshot.status, key="status", max_len=80),
         "started_at": _safe_scalar(snapshot.started_at),
         "updated_at": _safe_scalar(snapshot.updated_at),
         "completed_at": _safe_optional_scalar(snapshot.completed_at),
+    }
+    if snapshot.context_usage is not None:
+        transaction["context_usage"] = _safe_context_usage(snapshot.context_usage)
+    return transaction
+
+
+def _safe_context_usage(usage: ContextUsageSnapshot) -> dict[str, int]:
+    return {
+        "current_tokens": _safe_nonnegative_int(usage.current_tokens),
+        "context_window": _safe_nonnegative_int(usage.context_window),
+        "peak_tokens": _safe_nonnegative_int(usage.peak_tokens),
+        "compression_count": _safe_nonnegative_int(usage.compression_count),
+        "threshold_tokens": _safe_nonnegative_int(usage.threshold_tokens),
     }
 
 
@@ -166,6 +179,16 @@ def _safe_scalar(value: Any) -> int | float | None:
         return float(value)
     except Exception:
         return None
+
+
+def _safe_nonnegative_int(value: Any) -> int:
+    if value is None or isinstance(value, bool):
+        return 0
+    try:
+        number = int(value)
+    except Exception:
+        return 0
+    return max(0, number)
 
 
 def _is_truthy(value: Any, *, default: bool = False) -> bool:

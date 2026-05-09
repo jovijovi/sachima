@@ -7,7 +7,7 @@ import time
 from dataclasses import replace
 from typing import Any
 
-from gateway.progress.events import ProgressOperation, TransactionSnapshot
+from gateway.progress.events import ContextUsageSnapshot, ProgressOperation, TransactionSnapshot
 from gateway.progress.redaction import sanitize_for_progress, sanitize_value_for_progress
 
 TRANSACTION_RUNNING = "running"
@@ -47,6 +47,7 @@ class ProgressTracker:
         self._completed_at: float | None = None
         self._status = TRANSACTION_RUNNING
         self._operations: list[ProgressOperation] = []
+        self._context_usage: ContextUsageSnapshot | None = None
         self._next_operation_id = 1
         self._lock = threading.Lock()
 
@@ -169,6 +170,7 @@ class ProgressTracker:
 
         with self._lock:
             operations = tuple(replace(op, metadata=dict(op.metadata)) for op in self._operations)
+            context_usage = replace(self._context_usage) if self._context_usage is not None else None
             return TransactionSnapshot(
                 transaction_id=self.transaction_id,
                 title=self.title,
@@ -177,7 +179,34 @@ class ProgressTracker:
                 updated_at=self._updated_at,
                 completed_at=self._completed_at,
                 recent_operations=operations,
+                context_usage=context_usage,
             )
+
+    def update_context_usage(
+        self,
+        *,
+        current_tokens: Any = None,
+        context_window: Any = None,
+        peak_tokens: Any = None,
+        compression_count: Any = None,
+        threshold_tokens: Any = None,
+    ) -> ContextUsageSnapshot:
+        """Update sanitized context-pressure counters for the transaction."""
+
+        with self._lock:
+            previous_peak = self._context_usage.peak_tokens if self._context_usage is not None else 0
+            current = _safe_nonnegative_int(current_tokens)
+            explicit_peak = _safe_nonnegative_int(peak_tokens)
+            usage = ContextUsageSnapshot(
+                current_tokens=current,
+                context_window=_safe_nonnegative_int(context_window),
+                peak_tokens=max(previous_peak, current, explicit_peak),
+                compression_count=_safe_nonnegative_int(compression_count),
+                threshold_tokens=_safe_nonnegative_int(threshold_tokens),
+            )
+            self._context_usage = usage
+            self._touch()
+            return replace(usage)
 
     def mark_completed(self, is_error: bool = False) -> None:
         """Mark the transaction itself complete/failed."""
@@ -263,3 +292,13 @@ class ProgressTracker:
 
 def _sanitize_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
     return {str(key): sanitize_value_for_progress(value, key=key) for key, value in metadata.items()}
+
+
+def _safe_nonnegative_int(value: Any) -> int:
+    if value is None or isinstance(value, bool):
+        return 0
+    try:
+        number = int(value)
+    except Exception:
+        return 0
+    return max(0, number)

@@ -662,6 +662,18 @@ class TransactionPanelAgent:
         }
 
 
+class ContextUsagePanelAgent(TransactionPanelAgent):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.context_compressor = SimpleNamespace(
+            last_prompt_tokens=40_960,
+            peak_prompt_tokens=65_536,
+            context_length=128_000,
+            threshold_tokens=102_400,
+            compression_count=2,
+        )
+
+
 class SingleProgressFastReturnAgent:
     def __init__(self, **kwargs):
         self.tool_progress_callback = kwargs.get("tool_progress_callback")
@@ -1288,6 +1300,35 @@ async def test_feishu_task_tracker_card_mode_sends_and_patches_one_card(monkeypa
     assert "read_file" in rendered
     assert "search_files" in rendered
     assert adapter.edits == []
+
+
+@pytest.mark.asyncio
+async def test_feishu_task_tracker_card_mode_final_card_includes_context_usage(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        ContextUsagePanelAgent,
+        session_id="sess-feishu-progress-card-context",
+        platform=Platform.FEISHU,
+        chat_id="oc_1",
+        chat_type="dm",
+        thread_id=None,
+        adapter_cls=FeishuProgressCardCaptureAdapter,
+        config_data={
+            "display": {
+                "tool_progress": "all",
+                "task_tracker": {"enabled": True, "mode": "feishu_card", "max_operations": 8},
+            },
+        },
+    )
+
+    assert result["final_response"] == "done"
+    final_card = adapter.cards_patched[-1]["card"]
+    rendered = json.dumps(final_card, ensure_ascii=False)
+    assert "上下文" in rendered
+    assert "40,960 / 128,000" in rendered
+    assert "峰值 65,536" in rendered
+    assert "压缩 2 次" in rendered
 
 
 @pytest.mark.asyncio
