@@ -424,6 +424,11 @@ def test_phase20_diff_stays_inside_guarded_validation_allowlist() -> None:
         "docs/runbooks/flowweaver-stub-activity-implementation.md",
         "gateway/flowweaver_stub_activity_implementation.py",
         "tests/gateway/test_flowweaver_stub_activity_implementation.py",
+        "docs/plans/2026-05-09-flowweaver-phase30-temporal-stub-activity-orchestration.md",
+        "docs/dev_log/2026-05-09-flowweaver-phase30-temporal-stub-activity-orchestration.md",
+        "docs/runbooks/flowweaver-temporal-stub-activity-orchestration.md",
+        "gateway/flowweaver_temporal_stub_activity_orchestration.py",
+        "tests/integration/test_flowweaver_phase30_temporal_stub_activity_orchestration.py",
     }
     forbidden_prefixes = ("gateway/platforms/", "tools/", "hermes_cli/")
     forbidden_exact = {"pyproject.toml", "run_agent.py", "model_tools.py", "toolsets.py"}
