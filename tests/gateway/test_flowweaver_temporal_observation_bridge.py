@@ -538,6 +538,11 @@ def test_phase19_diff_stays_inside_temporal_observation_bridge_allowlist() -> No
         "docs/runbooks/flowweaver-stub-activity-boundary-contract-validation.md",
         "gateway/flowweaver_stub_activity_boundary_contract_validation.py",
         "tests/gateway/test_flowweaver_stub_activity_boundary_contract_validation.py",
+        "docs/plans/2026-05-09-flowweaver-phase27-stub-activity-implementation-design.md",
+        "docs/dev_log/2026-05-09-flowweaver-phase27-stub-activity-implementation-design.md",
+        "docs/runbooks/flowweaver-stub-activity-implementation-design.md",
+        "gateway/flowweaver_stub_activity_implementation_design.py",
+        "tests/gateway/test_flowweaver_stub_activity_implementation_design.py",
     }
     assert sorted(changed_files - allowed_changed_files) == []
 
