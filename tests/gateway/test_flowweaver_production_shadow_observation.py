@@ -585,6 +585,12 @@ def test_phase21_diff_stays_inside_production_shadow_observation_allowlist() -> 
         "docs/runbooks/flowweaver-temporal-stub-activity-orchestration.md",
         "gateway/flowweaver_temporal_stub_activity_orchestration.py",
         "tests/integration/test_flowweaver_phase30_temporal_stub_activity_orchestration.py",
+        "docs/plans/2026-05-09-flowweaver-phase31-agent-execution-activity.md",
+        "docs/dev_log/2026-05-09-flowweaver-phase31-agent-execution-activity.md",
+        "docs/runbooks/flowweaver-agent-execution-activity.md",
+        "gateway/flowweaver_agent_execution_activity.py",
+        "tests/gateway/test_flowweaver_agent_execution_activity.py",
+        "tests/integration/test_flowweaver_phase31_agent_execution_activity.py",
     }
     forbidden_prefixes = ("gateway/platforms/", "tools/", "hermes_cli/")
     forbidden_exact = {"pyproject.toml", "run_agent.py", "model_tools.py", "toolsets.py"}

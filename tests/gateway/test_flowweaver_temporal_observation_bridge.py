@@ -560,6 +560,12 @@ def test_phase19_diff_stays_inside_temporal_observation_bridge_allowlist() -> No
         "docs/runbooks/flowweaver-temporal-stub-activity-orchestration.md",
         "gateway/flowweaver_temporal_stub_activity_orchestration.py",
         "tests/integration/test_flowweaver_phase30_temporal_stub_activity_orchestration.py",
+        "docs/plans/2026-05-09-flowweaver-phase31-agent-execution-activity.md",
+        "docs/dev_log/2026-05-09-flowweaver-phase31-agent-execution-activity.md",
+        "docs/runbooks/flowweaver-agent-execution-activity.md",
+        "gateway/flowweaver_agent_execution_activity.py",
+        "tests/gateway/test_flowweaver_agent_execution_activity.py",
+        "tests/integration/test_flowweaver_phase31_agent_execution_activity.py",
     }
     assert sorted(changed_files - allowed_changed_files) == []
 
