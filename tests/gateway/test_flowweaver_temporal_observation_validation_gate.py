@@ -435,6 +435,12 @@ def test_phase20_diff_stays_inside_guarded_validation_allowlist() -> None:
         "gateway/flowweaver_agent_execution_activity.py",
         "tests/gateway/test_flowweaver_agent_execution_activity.py",
         "tests/integration/test_flowweaver_phase31_agent_execution_activity.py",
+        "gateway/flowweaver_delivery_activity.py",
+        "tests/gateway/test_flowweaver_delivery_activity.py",
+        "tests/integration/test_flowweaver_phase32_delivery_activity_ack_reconciliation.py",
+        "docs/runbooks/flowweaver-delivery-activity-ack-reconciliation.md",
+        "docs/plans/2026-05-09-flowweaver-phase32-delivery-activity-ack-reconciliation.md",
+        "docs/dev_log/2026-05-09-flowweaver-phase32-delivery-activity-ack-reconciliation.md",
     }
     forbidden_prefixes = ("gateway/platforms/", "tools/", "hermes_cli/")
     forbidden_exact = {"pyproject.toml", "run_agent.py", "model_tools.py", "toolsets.py"}

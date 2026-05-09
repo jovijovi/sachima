@@ -712,6 +712,12 @@ def test_phase30_changed_file_guard_allows_only_temporal_stub_orchestration_file
         "docs/runbooks/flowweaver-agent-execution-activity.md",
         "docs/plans/2026-05-09-flowweaver-phase31-agent-execution-activity.md",
         "docs/dev_log/2026-05-09-flowweaver-phase31-agent-execution-activity.md",
+        "gateway/flowweaver_delivery_activity.py",
+        "tests/gateway/test_flowweaver_delivery_activity.py",
+        "tests/integration/test_flowweaver_phase32_delivery_activity_ack_reconciliation.py",
+        "docs/runbooks/flowweaver-delivery-activity-ack-reconciliation.md",
+        "docs/plans/2026-05-09-flowweaver-phase32-delivery-activity-ack-reconciliation.md",
+        "docs/dev_log/2026-05-09-flowweaver-phase32-delivery-activity-ack-reconciliation.md",
     }
     forbidden_exact = {"run_agent.py", "model_tools.py", "toolsets.py", "mcp_serve.py", "gateway/run.py"}
     forbidden_prefixes = ("gateway/platforms/", "tools/", "hermes_cli/", "prototypes/")
