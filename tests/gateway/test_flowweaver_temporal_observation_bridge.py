@@ -513,6 +513,11 @@ def test_phase19_diff_stays_inside_temporal_observation_bridge_allowlist() -> No
         "tests/integration/test_flowweaver_phase5i_start_signature_parity.py",
         "tests/integration/test_flowweaver_phase5j_activity_claim_check_boundary.py",
         "tests/integration/test_flowweaver_phase5k_runtime_control_surface.py",
+        "docs/plans/2026-05-09-flowweaver-phase22-delivery-agent-execution-contract-gate.md",
+        "docs/dev_log/2026-05-09-flowweaver-phase22-delivery-agent-execution-contract-gate.md",
+        "docs/runbooks/flowweaver-delivery-agent-execution-contract.md",
+        "gateway/flowweaver_delivery_agent_execution_contract.py",
+        "tests/gateway/test_flowweaver_delivery_agent_execution_contract.py",
     }
     assert sorted(changed_files - allowed_changed_files) == []
 
