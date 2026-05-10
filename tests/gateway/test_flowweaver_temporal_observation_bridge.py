@@ -578,6 +578,9 @@ def test_phase19_diff_stays_inside_temporal_observation_bridge_allowlist() -> No
         "docs/runbooks/flowweaver-ai-flow-pilot.md",
         "docs/plans/2026-05-09-flowweaver-phase33-ai-flow-pilot.md",
         "docs/dev_log/2026-05-09-flowweaver-phase33-ai-flow-pilot.md",
+        "docs/plans/2026-05-11-flowweaver-production-enablement-decision-packet.md",
+        "docs/runbooks/flowweaver-production-enablement-decision.md",
+        "docs/dev_log/2026-05-11-flowweaver-production-enablement-decision-packet.md",
     }
     assert sorted(changed_files - allowed_changed_files) == []
 

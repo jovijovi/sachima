@@ -603,6 +603,9 @@ def test_phase21_diff_stays_inside_production_shadow_observation_allowlist() -> 
         "docs/runbooks/flowweaver-ai-flow-pilot.md",
         "docs/plans/2026-05-09-flowweaver-phase33-ai-flow-pilot.md",
         "docs/dev_log/2026-05-09-flowweaver-phase33-ai-flow-pilot.md",
+        "docs/plans/2026-05-11-flowweaver-production-enablement-decision-packet.md",
+        "docs/runbooks/flowweaver-production-enablement-decision.md",
+        "docs/dev_log/2026-05-11-flowweaver-production-enablement-decision-packet.md",
     }
     forbidden_prefixes = ("gateway/platforms/", "tools/", "hermes_cli/")
     forbidden_exact = {"pyproject.toml", "run_agent.py", "model_tools.py", "toolsets.py"}
