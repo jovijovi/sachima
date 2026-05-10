@@ -300,6 +300,9 @@ def test_shadow_runtime_publisher_changed_file_guard_allows_only_phase5e_files()
         "docs/runbooks/flowweaver-ai-flow-pilot.md",
         "docs/plans/2026-05-09-flowweaver-phase33-ai-flow-pilot.md",
         "docs/dev_log/2026-05-09-flowweaver-phase33-ai-flow-pilot.md",
+        "docs/plans/2026-05-11-flowweaver-production-enablement-decision-packet.md",
+        "docs/runbooks/flowweaver-production-enablement-decision.md",
+        "docs/dev_log/2026-05-11-flowweaver-production-enablement-decision-packet.md",
     }
     forbidden_prefixes = ("gateway/platforms/", "tools/")
     forbidden_exact = {"run_agent.py", "model_tools.py", "toolsets.py", "mcp_serve.py"}
