@@ -294,6 +294,12 @@ def test_shadow_runtime_publisher_changed_file_guard_allows_only_phase5e_files()
         "docs/runbooks/flowweaver-delivery-activity-ack-reconciliation.md",
         "docs/plans/2026-05-09-flowweaver-phase32-delivery-activity-ack-reconciliation.md",
         "docs/dev_log/2026-05-09-flowweaver-phase32-delivery-activity-ack-reconciliation.md",
+        "gateway/flowweaver_ai_flow_pilot.py",
+        "tests/gateway/test_flowweaver_ai_flow_pilot.py",
+        "tests/integration/test_flowweaver_phase33_ai_flow_pilot.py",
+        "docs/runbooks/flowweaver-ai-flow-pilot.md",
+        "docs/plans/2026-05-09-flowweaver-phase33-ai-flow-pilot.md",
+        "docs/dev_log/2026-05-09-flowweaver-phase33-ai-flow-pilot.md",
     }
     forbidden_prefixes = ("gateway/platforms/", "tools/")
     forbidden_exact = {"run_agent.py", "model_tools.py", "toolsets.py", "mcp_serve.py"}
