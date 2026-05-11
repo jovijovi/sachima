@@ -306,6 +306,9 @@ def test_shadow_runtime_publisher_changed_file_guard_allows_only_phase5e_files()
         "docs/plans/2026-05-11-flowweaver-pe1-controlled-sachima-shadow-observation.md",
         "docs/runbooks/flowweaver-pe1-controlled-sachima-shadow-observation.md",
         "docs/dev_log/2026-05-11-flowweaver-pe1-controlled-sachima-shadow-observation.md",
+        "docs/plans/2026-05-11-flowweaver-pe1d-pe2-readiness-decision-packet.md",
+        "docs/runbooks/flowweaver-pe1d-pe2-readiness-decision.md",
+        "docs/dev_log/2026-05-11-flowweaver-pe1d-pe2-readiness-decision-packet.md",
         "tests/gateway/test_flowweaver_pe1_controlled_sachima_shadow_observation.py",
     }
     forbidden_prefixes = ("gateway/platforms/", "tools/")
