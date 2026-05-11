@@ -587,6 +587,10 @@ def test_phase19_diff_stays_inside_temporal_observation_bridge_allowlist() -> No
         "docs/plans/2026-05-11-flowweaver-pe1d-pe2-readiness-decision-packet.md",
         "docs/runbooks/flowweaver-pe1d-pe2-readiness-decision.md",
         "docs/dev_log/2026-05-11-flowweaver-pe1d-pe2-readiness-decision-packet.md",
+        "AGENTS.md",
+        "GOAL.md",
+        "docs/sachima-final-goal-gap-analysis.md",
+        "docs/dev_log/2026-05-11-sachima-project-goal-gap-analysis.md",
         "tests/gateway/test_flowweaver_pe1_controlled_sachima_shadow_observation.py",
     }
     assert sorted(changed_files - allowed_changed_files) == []
