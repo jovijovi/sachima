@@ -591,6 +591,8 @@ def test_phase19_diff_stays_inside_temporal_observation_bridge_allowlist() -> No
         "GOAL.md",
         "docs/sachima-final-goal-gap-analysis.md",
         "docs/dev_log/2026-05-11-sachima-project-goal-gap-analysis.md",
+        "docs/plans/2026-05-11-sachima-final-goal-phase-development-plan.md",
+        "docs/dev_log/2026-05-11-sachima-final-goal-phase-development-plan.md",
         "tests/gateway/test_flowweaver_pe1_controlled_sachima_shadow_observation.py",
     }
     assert sorted(changed_files - allowed_changed_files) == []
