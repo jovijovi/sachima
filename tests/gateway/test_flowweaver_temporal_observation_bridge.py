@@ -581,6 +581,10 @@ def test_phase19_diff_stays_inside_temporal_observation_bridge_allowlist() -> No
         "docs/plans/2026-05-11-flowweaver-production-enablement-decision-packet.md",
         "docs/runbooks/flowweaver-production-enablement-decision.md",
         "docs/dev_log/2026-05-11-flowweaver-production-enablement-decision-packet.md",
+        "docs/plans/2026-05-11-flowweaver-pe1-controlled-sachima-shadow-observation.md",
+        "docs/runbooks/flowweaver-pe1-controlled-sachima-shadow-observation.md",
+        "docs/dev_log/2026-05-11-flowweaver-pe1-controlled-sachima-shadow-observation.md",
+        "tests/gateway/test_flowweaver_pe1_controlled_sachima_shadow_observation.py",
     }
     assert sorted(changed_files - allowed_changed_files) == []
 

@@ -450,6 +450,10 @@ def test_phase20_diff_stays_inside_guarded_validation_allowlist() -> None:
         "docs/plans/2026-05-11-flowweaver-production-enablement-decision-packet.md",
         "docs/runbooks/flowweaver-production-enablement-decision.md",
         "docs/dev_log/2026-05-11-flowweaver-production-enablement-decision-packet.md",
+        "docs/plans/2026-05-11-flowweaver-pe1-controlled-sachima-shadow-observation.md",
+        "docs/runbooks/flowweaver-pe1-controlled-sachima-shadow-observation.md",
+        "docs/dev_log/2026-05-11-flowweaver-pe1-controlled-sachima-shadow-observation.md",
+        "tests/gateway/test_flowweaver_pe1_controlled_sachima_shadow_observation.py",
     }
     forbidden_prefixes = ("gateway/platforms/", "tools/", "hermes_cli/")
     forbidden_exact = {"pyproject.toml", "run_agent.py", "model_tools.py", "toolsets.py"}

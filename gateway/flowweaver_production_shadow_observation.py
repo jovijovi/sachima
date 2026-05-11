@@ -174,17 +174,38 @@ async def observe_gateway_turn_for_flowweaver_production_shadow(
 
 
 def production_shadow_observation_policy_from_config(config: object, *, platform: object) -> dict[str, object]:
-    """Build the exact default-off Phase 21 policy from a read-only config object."""
+    """Build the current production-shadow policy from a read-only config object.
 
+    After PE-1 approval, Gateway production-shadow observation is narrowed to
+    the exact Sachima-only PE-1 policy. The generic base builder remains private
+    so tests can prove the public production path fails closed for every other
+    platform.
+    """
+
+    return pe1_controlled_sachima_shadow_policy_from_config(config, platform=platform)
+
+
+def pe1_controlled_sachima_shadow_policy_from_config(config: object, *, platform: object) -> dict[str, object]:
+    """Build the PE-1 default-off Sachima-only production-shadow policy.
+
+    PE-1 narrows the existing production-shadow sidecar to the first approved
+    platform candidate: ``sachima``. The config flag remains read-only and
+    operational activation still requires separate config/restart approvals.
+    """
+
+    policy = _base_production_shadow_observation_policy_from_config(config, platform=platform)
+    if policy["enabled"] is not True:
+        return policy
     platform_value = _safe_platform(platform)
-    shadow_config: object = {}
-    if type(config) is dict:
-        flowweaver = config.get("flowweaver")
-        if type(flowweaver) is dict:
-            shadow_config = flowweaver.get("production_shadow_observation", {})
-    if type(shadow_config) is not dict:
-        shadow_config = {}
+    configured_allowlist = _shadow_config_from_config(config).get("platform_allowlist")
+    if platform_value != "sachima" or not _is_exact_pe1_sachima_allowlist(configured_allowlist):
+        return {**policy, "allow_platforms": []}
+    return {**policy, "allow_platforms": ["sachima"]}
 
+
+def _base_production_shadow_observation_policy_from_config(config: object, *, platform: object) -> dict[str, object]:
+    platform_value = _safe_platform(platform)
+    shadow_config = _shadow_config_from_config(config)
     enabled = shadow_config.get("enabled") is True
     allow_platforms = _safe_platform_list(shadow_config.get("platform_allowlist"))
     timeout_ms = _safe_timeout_ms(shadow_config.get("timeout_ms"))
@@ -211,6 +232,17 @@ def production_shadow_observation_policy_from_config(config: object, *, platform
     }
 
 
+def _shadow_config_from_config(config: object) -> dict[str, object]:
+    shadow_config: object = {}
+    if type(config) is dict:
+        flowweaver = config.get("flowweaver")
+        if type(flowweaver) is dict:
+            shadow_config = flowweaver.get("production_shadow_observation", {})
+    if type(shadow_config) is not dict:
+        return {}
+    return shadow_config
+
+
 def _validate_shadow_policy(policy: object) -> dict[str, object]:
     safe = _plain_dict(policy, error="invalid_shadow_policy")
     if set(safe) != {
@@ -227,7 +259,8 @@ def _validate_shadow_policy(policy: object) -> dict[str, object]:
     if safe["type"] != PRODUCTION_SHADOW_OBSERVATION_POLICY_TYPE:
         _raise("invalid_shadow_policy")
     _empty_list(safe["side_effects"], error="invalid_shadow_policy")
-    allow_platforms = _safe_platform_list(safe["allow_platforms"])
+    allow_platforms_value = safe["allow_platforms"]
+    allow_platforms = _safe_platform_list(allow_platforms_value)
     timeout_ms = _safe_timeout_ms(safe["timeout_ms"])
     if safe["enabled"] is False:
         if safe["mode"] != "default_off" or safe["allow_runtime_start"] is not False or safe["allow_runtime_query"] is not False:
@@ -236,6 +269,8 @@ def _validate_shadow_policy(policy: object) -> dict[str, object]:
     if safe["enabled"] is True:
         if safe["mode"] != "production_shadow_observation" or safe["allow_runtime_start"] is not True or safe["allow_runtime_query"] is not True:
             _raise("invalid_shadow_policy")
+        if not _is_exact_pe1_sachima_allowlist(allow_platforms_value):
+            return {**safe, "allow_platforms": [], "timeout_ms": timeout_ms}
         return {**safe, "allow_platforms": allow_platforms, "timeout_ms": timeout_ms}
     _raise("invalid_shadow_policy")
 
@@ -376,6 +411,10 @@ def _safe_platform_list(value: object) -> list[str]:
         if platform not in safe:
             safe.append(platform)
     return safe
+
+
+def _is_exact_pe1_sachima_allowlist(value: object) -> bool:
+    return type(value) is list and len(value) == 1 and type(value[0]) is str and value[0] == "sachima"
 
 
 def _safe_timeout_ms(value: object) -> int:
@@ -526,5 +565,6 @@ __all__ = [
     "PRODUCTION_SHADOW_OBSERVATION_RESULT_TYPE",
     "PRODUCTION_SHADOW_OBSERVATION_SUCCESS_VERDICT",
     "observe_gateway_turn_for_flowweaver_production_shadow",
+    "pe1_controlled_sachima_shadow_policy_from_config",
     "production_shadow_observation_policy_from_config",
 ]
