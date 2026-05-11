@@ -618,6 +618,10 @@ def test_phase21_diff_stays_inside_production_shadow_observation_allowlist() -> 
         "docs/dev_log/2026-05-11-sachima-project-goal-gap-analysis.md",
         "docs/plans/2026-05-11-sachima-final-goal-phase-development-plan.md",
         "docs/dev_log/2026-05-11-sachima-final-goal-phase-development-plan.md",
+        "docs/plans/2026-05-11-flowweaver-pe1d-phase-gate.md",
+        "docs/plans/2026-05-11-flowweaver-pe1d-phase-manifest.yaml",
+        "docs/plans/2026-05-11-flowweaver-pe1d-tail-register.md",
+        "docs/dev_log/2026-05-11-phase-gate-drift-control-sachima-p1-validation.md",
         "tests/gateway/test_flowweaver_pe1_controlled_sachima_shadow_observation.py",
     }
     forbidden_prefixes = ("gateway/platforms/", "tools/", "hermes_cli/")

@@ -18,6 +18,18 @@ Planning references:
 
 Do not treat PE-2 implementation, live/default-on, real external Sachima ingress, production delivery control, production agent/tool execution expansion, production config writes, Gateway restart/reload, platform adapter mutation, or Gateway-owned Temporal lifecycle as approved unless a later document and user approval explicitly name that scope.
 
+### Phase Gate Drift Control
+
+For Sachima multi-phase, production-adjacent, high-risk, or next-phase-readiness work, load the `phase-gate-drift-control` skill before:
+
+- drafting or approving a phase plan;
+- requesting phase implementation;
+- reviewing a phase PR;
+- declaring a phase complete;
+- requesting the next phase.
+
+Do not load it for small one-shot fixes unless the change affects scope, production behavior, user data, delivery, runtime lifecycle, irreversible operations, or the long-lived Sachima/FlowWeaver goal.
+
 ## Development Environment
 
 ```bash

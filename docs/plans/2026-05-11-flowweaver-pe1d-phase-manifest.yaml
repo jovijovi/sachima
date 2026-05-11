@@ -1,0 +1,111 @@
+phase_id: "flowweaver-pe1d-longer-controlled-local-observation"
+level: "level-3"
+owner_dri: "Hermes operator with Dog Brother approval"
+status: "complete"  # docs-only skill validation complete; PE-1D execution still not approved
+
+goal_refs:
+  - "GOAL.md"
+gap_refs:
+  - "docs/sachima-final-goal-gap-analysis.md"
+phase_plan_refs:
+  - "docs/plans/2026-05-11-sachima-final-goal-phase-development-plan.md"
+  - "docs/plans/2026-05-11-flowweaver-pe1d-pe2-readiness-decision-packet.md"
+
+approved_scope:
+  - "docs-only phase-gate-drift-control validation for PE-1D readiness"
+  - "create phase gate artifact"
+  - "create tail register"
+  - "create machine-readable manifest"
+  - "add AGENTS.md trigger guidance"
+  - "maintain exact FlowWeaver changed-file guard allowlist entries for these docs"
+  - "run manifest validator and documentation/guard checks"
+non_goals:
+  - "pe1d_execution"
+  - "pe2_implementation"
+  - "pe2_live_default_on"
+  - "real_external_sachima_ingress"
+  - "production_delivery_control"
+  - "production_agent_tool_execution_expansion"
+  - "production_config_write"
+  - "gateway_restart_or_reload"
+  - "platform_adapter_mutation"
+  - "gateway_owned_temporal_lifecycle"
+  - "real_send_url_configuration"
+  - "Temporal_service_or_Worker_startup"
+risk_axes_changed:
+  - "documentation_phase_governance"
+
+blast_radius:
+  environments:
+    - "docs-only git worktree"
+  max_users: 0
+  max_requests: 0
+  max_runtime_minutes: 0
+  max_delivery_attempts: 0
+  allowed_data_categories:
+    - "sanitized documentation references"
+    - "existing evidence labels"
+  rollback_authority: "Hermes operator"
+
+evidence_paths:
+  - "GOAL.md"
+  - "docs/sachima-final-goal-gap-analysis.md"
+  - "docs/plans/2026-05-11-sachima-final-goal-phase-development-plan.md"
+  - "docs/plans/2026-05-11-flowweaver-pe1d-pe2-readiness-decision-packet.md"
+  - "docs/plans/2026-05-11-flowweaver-pe1d-phase-gate.md"
+  - "docs/plans/2026-05-11-flowweaver-pe1d-tail-register.md"
+rollback_or_recovery_proof: "Docs-only validation; rollback is git revert/PR close. Future PE-1D execution must prove config/runtime rollback separately."
+fresh_reviews:
+  goal_consistency: "PASS after scope/verification patches; blockers resolved"
+  boundary_security: "PASS; blockers none"
+
+score:
+  total: 90
+  threshold: 90
+  critical_boundary_violation: false
+
+tail_items:
+  - id: "P1D-TAIL-001"
+    class: "NEXT_PHASE"
+    description: "Run actual PE-1D longer controlled local observation only after exact approval text."
+    risk: "Without this run, PE-1D remains unproven and P2 should not rely on longer-window evidence."
+    owner_dri: "Hermes operator with Dog Brother approval"
+    blocks_current_phase: false
+    blocks_next_phase: true
+    required_before: "P2 fake-send/simulator request"
+    acceptance_method: "PE-1D evidence packet with positive/negative/duplicate/rollback/no-leak proof"
+    status: "carried"
+  - id: "P1D-TAIL-002"
+    class: "NEXT_PHASE"
+    description: "Produce PE-1D evidence packet and closure score after real observation run."
+    risk: "Without closure score, phase completion can be confused with planning readiness."
+    owner_dri: "Hermes operator"
+    blocks_current_phase: false
+    blocks_next_phase: true
+    required_before: "PE-1D closure or next-phase request"
+    acceptance_method: "Score >= 90, no critical boundary violation, fresh review blockers = 0"
+    status: "carried"
+  - id: "P1D-TAIL-003"
+    class: "WATCH"
+    description: "Check whether validate_phase_gate.py is too strict or too weak under real PE-1D evidence."
+    risk: "Validator false positives or false negatives could create either governance theater or unsafe pass."
+    escalation_trigger: "Escalate to BLOCKER if the validator passes missing review refs, fails valid evidence paths, or cannot run in the project environment."
+    owner_dri: "Hermes operator"
+    blocks_current_phase: false
+    blocks_next_phase: false
+    required_before: "PE-1D closure"
+    acceptance_method: "Record validator findings and patch skill if needed"
+    status: "open"
+  - id: "P1D-TAIL-004"
+    class: "PARKED"
+    description: "PE-2/live/real ingress/real delivery/production agent execution remain parked."
+    risk: "Treating PE-1D readiness as PE-2/live approval would violate GOAL.md boundaries."
+    owner_dri: "Dog Brother approval required to reopen"
+    blocks_current_phase: false
+    blocks_next_phase: false
+    required_before: "separate future phase"
+    acceptance_method: "New explicit approval text plus separate phase gate"
+    status: "open"
+
+next_phase_allowed: false
+next_allowed_request: "approve_pe1d_longer_controlled_sachima_local_observation_window"
