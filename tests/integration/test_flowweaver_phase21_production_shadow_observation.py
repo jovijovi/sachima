@@ -118,8 +118,8 @@ def config(enabled: bool, *, allowlist: list[str] | None = None, timeout_ms: int
 
 def gateway_turn(**overrides: object) -> dict[str, object]:
     turn: dict[str, object] = {
-        "platform": "feishu",
-        "session_key": f"feishu:{PRIVATE_CHAT_ID}:{PRIVATE_USER_ID}",
+        "platform": "sachima",
+        "session_key": f"sachima:{PRIVATE_CHAT_ID}:{PRIVATE_USER_ID}",
         "session_id": "sess_phase21_private_source",
         "message_id": PRIVATE_MESSAGE_ID,
         "turn_started_at_ns": 1_777_777_777_000_001,
@@ -152,8 +152,8 @@ async def test_phase21_observes_real_reduced_gateway_turn_against_local_worker_w
     env, worker, control = await open_real_worker()
     workflow_ids: list[str] = []
     try:
-        enabled = production_shadow_observation_policy_from_config(config(True, allowlist=["feishu"]), platform="feishu")
-        disabled = production_shadow_observation_policy_from_config(config(False, allowlist=["feishu"]), platform="feishu")
+        enabled = production_shadow_observation_policy_from_config(config(True, allowlist=["sachima"]), platform="sachima")
+        disabled = production_shadow_observation_policy_from_config(config(False, allowlist=["sachima"]), platform="sachima")
 
         observed = await observe_gateway_turn_for_flowweaver_production_shadow(
             gateway_turn=gateway_turn(turn_sequence=1),

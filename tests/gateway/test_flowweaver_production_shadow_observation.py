@@ -107,7 +107,7 @@ class RecordingRuntimeControlSurface:
 
 
 class Source:
-    platform = type("PlatformValue", (), {"value": "feishu"})()
+    platform = type("PlatformValue", (), {"value": "sachima"})()
 
 
 def snapshot_for(workflow_id: str, start_payload: dict[str, object]) -> dict[str, object]:
@@ -153,8 +153,8 @@ def config(enabled: bool, *, allowlist: list[str] | None = None, timeout_ms: int
 
 def gateway_turn(**overrides: object) -> dict[str, object]:
     turn: dict[str, object] = {
-        "platform": "feishu",
-        "session_key": f"feishu:{PRIVATE_CHAT_ID}:{PRIVATE_USER_ID}",
+        "platform": "sachima",
+        "session_key": f"sachima:{PRIVATE_CHAT_ID}:{PRIVATE_USER_ID}",
         "session_id": "sess_phase21_private_source",
         "message_id": PRIVATE_MESSAGE_ID,
         "turn_started_at_ns": 1_777_777_777_000_001,
@@ -198,19 +198,19 @@ def test_phase21_exposes_async_keyword_only_production_shadow_entrypoint() -> No
 
 
 def test_phase21_policy_from_config_defaults_disabled_and_requires_allowlisted_platform() -> None:
-    default_policy = production_shadow_observation_policy_from_config({}, platform="feishu")
+    default_policy = production_shadow_observation_policy_from_config({}, platform="sachima")
     assert default_policy["enabled"] is False
     assert default_policy["mode"] == "default_off"
     assert default_policy["allow_platforms"] == []
 
-    policy = production_shadow_observation_policy_from_config(config(True, allowlist=["feishu"], timeout_ms=125), platform="feishu")
+    policy = production_shadow_observation_policy_from_config(config(True, allowlist=["sachima"], timeout_ms=125), platform="sachima")
     assert policy == {
         "type": "flowweaver.gateway.production_shadow_observation_policy.v0",
         "enabled": True,
         "mode": "production_shadow_observation",
         "allow_runtime_start": True,
         "allow_runtime_query": True,
-        "allow_platforms": ["feishu"],
+        "allow_platforms": ["sachima"],
         "timeout_ms": 125,
         "side_effects": [],
     }
@@ -219,7 +219,7 @@ def test_phase21_policy_from_config_defaults_disabled_and_requires_allowlisted_p
 @pytest.mark.asyncio
 async def test_phase21_default_off_returns_disabled_without_touching_runtime_or_raw_turn() -> None:
     control = RecordingRuntimeControlSurface()
-    policy = production_shadow_observation_policy_from_config({}, platform="feishu")
+    policy = production_shadow_observation_policy_from_config({}, platform="sachima")
 
     result = await observe_gateway_turn_for_flowweaver_production_shadow(
         gateway_turn=gateway_turn(raw_prompt=RAW_PROMPT_VALUE, platform_payload={"chat_id": PRIVATE_CHAT_ID}),
@@ -244,7 +244,7 @@ async def test_phase21_default_off_returns_disabled_without_touching_runtime_or_
 @pytest.mark.asyncio
 async def test_phase21_enabled_but_not_allowlisted_skips_without_touching_runtime() -> None:
     control = RecordingRuntimeControlSurface()
-    policy = production_shadow_observation_policy_from_config(config(True, allowlist=["telegram"]), platform="feishu")
+    policy = production_shadow_observation_policy_from_config(config(True, allowlist=["telegram"]), platform="sachima")
 
     result = await observe_gateway_turn_for_flowweaver_production_shadow(
         gateway_turn=gateway_turn(raw_prompt=RAW_PROMPT_VALUE, platform_payload={"chat_id": PRIVATE_CHAT_ID}),
@@ -263,7 +263,7 @@ async def test_phase21_enabled_but_not_allowlisted_skips_without_touching_runtim
 @pytest.mark.asyncio
 async def test_phase21_enabled_path_reduces_real_gateway_turn_to_safe_start_query_only() -> None:
     control = RecordingRuntimeControlSurface()
-    policy = production_shadow_observation_policy_from_config(config(True, allowlist=["feishu"]), platform="feishu")
+    policy = production_shadow_observation_policy_from_config(config(True, allowlist=["sachima"]), platform="sachima")
 
     result = await observe_gateway_turn_for_flowweaver_production_shadow(
         gateway_turn=gateway_turn(
@@ -304,7 +304,7 @@ async def test_phase21_enabled_path_reduces_real_gateway_turn_to_safe_start_quer
 )
 @pytest.mark.asyncio
 async def test_phase21_fail_closed_paths_are_sanitized(case: str, runtime: object, expected_code: str) -> None:
-    policy = production_shadow_observation_policy_from_config(config(True, allowlist=["feishu"]), platform="feishu")
+    policy = production_shadow_observation_policy_from_config(config(True, allowlist=["sachima"]), platform="sachima")
 
     result = await observe_gateway_turn_for_flowweaver_production_shadow(
         gateway_turn=gateway_turn(raw_exception=RAW_EXCEPTION_VALUE),
@@ -322,7 +322,7 @@ async def test_phase21_fail_closed_paths_are_sanitized(case: str, runtime: objec
 @pytest.mark.asyncio
 async def test_phase21_timeout_is_bounded_and_sanitized() -> None:
     control = RecordingRuntimeControlSurface(delay_seconds=0.1)
-    policy = production_shadow_observation_policy_from_config(config(True, allowlist=["feishu"], timeout_ms=1), platform="feishu")
+    policy = production_shadow_observation_policy_from_config(config(True, allowlist=["sachima"], timeout_ms=1), platform="sachima")
     started = time.monotonic()
 
     result = await observe_gateway_turn_for_flowweaver_production_shadow(
@@ -342,8 +342,8 @@ async def test_phase21_timeout_is_bounded_and_sanitized() -> None:
 @pytest.mark.asyncio
 async def test_phase21_operator_kill_switch_stops_new_starts_but_existing_query_remains_safe() -> None:
     control = RecordingRuntimeControlSurface()
-    enabled = production_shadow_observation_policy_from_config(config(True, allowlist=["feishu"]), platform="feishu")
-    disabled = production_shadow_observation_policy_from_config(config(False, allowlist=["feishu"]), platform="feishu")
+    enabled = production_shadow_observation_policy_from_config(config(True, allowlist=["sachima"]), platform="sachima")
+    disabled = production_shadow_observation_policy_from_config(config(False, allowlist=["sachima"]), platform="sachima")
 
     first = await observe_gateway_turn_for_flowweaver_production_shadow(
         gateway_turn=gateway_turn(turn_sequence=1),
@@ -375,7 +375,7 @@ async def test_phase21_gateway_runner_hook_preserves_response_delivery_state_and
     runner._flowweaver_production_shadow_observation_counters = {}
     monkeypatch.setattr(
         "gateway.run._load_gateway_config",
-        lambda: config(True, allowlist=["feishu"], timeout_ms=50),
+        lambda: config(True, allowlist=["sachima"], timeout_ms=50),
     )
     agent_result = {
         "final_response": "phase21 visible reply",
@@ -387,7 +387,7 @@ async def test_phase21_gateway_runner_hook_preserves_response_delivery_state_and
 
     result = await runner._maybe_observe_flowweaver_production_shadow(
         source=Source(),
-        session_key=f"feishu:{PRIVATE_CHAT_ID}:{PRIVATE_USER_ID}",
+        session_key=f"sachima:{PRIVATE_CHAT_ID}:{PRIVATE_USER_ID}",
         session_id="sess_phase21_private_source",
         history_length=5,
         agent_result=agent_result,
@@ -410,7 +410,7 @@ async def test_phase21_gateway_runner_hook_timeout_preserves_delivery_state_and_
     runner._flowweaver_production_shadow_observation_counters = {}
     monkeypatch.setattr(
         "gateway.run._load_gateway_config",
-        lambda: config(True, allowlist=["feishu"], timeout_ms=1),
+        lambda: config(True, allowlist=["sachima"], timeout_ms=1),
     )
     agent_result = {
         "final_response": "phase21 visible reply",
@@ -422,7 +422,7 @@ async def test_phase21_gateway_runner_hook_timeout_preserves_delivery_state_and_
 
     result = await runner._maybe_observe_flowweaver_production_shadow(
         source=Source(),
-        session_key=f"feishu:{PRIVATE_CHAT_ID}:{PRIVATE_USER_ID}",
+        session_key=f"sachima:{PRIVATE_CHAT_ID}:{PRIVATE_USER_ID}",
         session_id="sess_phase21_private_source",
         history_length=5,
         agent_result=agent_result,
@@ -606,6 +606,10 @@ def test_phase21_diff_stays_inside_production_shadow_observation_allowlist() -> 
         "docs/plans/2026-05-11-flowweaver-production-enablement-decision-packet.md",
         "docs/runbooks/flowweaver-production-enablement-decision.md",
         "docs/dev_log/2026-05-11-flowweaver-production-enablement-decision-packet.md",
+        "docs/plans/2026-05-11-flowweaver-pe1-controlled-sachima-shadow-observation.md",
+        "docs/runbooks/flowweaver-pe1-controlled-sachima-shadow-observation.md",
+        "docs/dev_log/2026-05-11-flowweaver-pe1-controlled-sachima-shadow-observation.md",
+        "tests/gateway/test_flowweaver_pe1_controlled_sachima_shadow_observation.py",
     }
     forbidden_prefixes = ("gateway/platforms/", "tools/", "hermes_cli/")
     forbidden_exact = {"pyproject.toml", "run_agent.py", "model_tools.py", "toolsets.py"}

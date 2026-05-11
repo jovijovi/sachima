@@ -605,6 +605,12 @@ def test_phase31_changed_file_guard_allows_only_agent_execution_activity_files_a
         "docs/plans/2026-05-11-flowweaver-production-enablement-decision-packet.md",
         "docs/runbooks/flowweaver-production-enablement-decision.md",
         "docs/dev_log/2026-05-11-flowweaver-production-enablement-decision-packet.md",
+        "docs/plans/2026-05-11-flowweaver-pe1-controlled-sachima-shadow-observation.md",
+        "docs/runbooks/flowweaver-pe1-controlled-sachima-shadow-observation.md",
+        "docs/dev_log/2026-05-11-flowweaver-pe1-controlled-sachima-shadow-observation.md",
+        "gateway/flowweaver_production_shadow_observation.py",
+        "tests/gateway/test_flowweaver_pe1_controlled_sachima_shadow_observation.py",
+        "tests/integration/test_flowweaver_phase21_production_shadow_observation.py",
     }
     forbidden_prefixes = (
         "gateway/platforms/",
