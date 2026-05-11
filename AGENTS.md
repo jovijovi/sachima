@@ -12,6 +12,7 @@ Planning references:
 
 - `GOAL.md` — final goal, target architecture, and non-negotiable principles.
 - `docs/sachima-final-goal-gap-analysis.md` — current gap analysis and phase-planning basis.
+- `docs/plans/2026-05-11-sachima-final-goal-phase-development-plan.md` — detailed phase roadmap with dependencies, tasks, acceptance gates, checklists, and scoring rubrics.
 - `docs/sachima-channel.md` — current Sachima adapter/channel behavior.
 - `docs/plans/2026-05-11-flowweaver-pe1d-pe2-readiness-decision-packet.md` — latest PE-1D / PE-2 readiness boundary.
 
