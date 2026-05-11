@@ -2,6 +2,21 @@
 
 Instructions for AI coding assistants and developers working on the hermes-agent codebase.
 
+## Sachima Project Goal
+
+For Sachima / FlowWeaver work, treat `GOAL.md` as the canonical project compass.
+
+Short version: Sachima should become Dog Brother's own AI workbench inside a custom IM channel: a safe, durable, observable, and recoverable Hermes/FlowWeaver system that can receive real IM requests, orchestrate long AI workflows, deliver results back through the channel, and preserve clear operational control.
+
+Planning references:
+
+- `GOAL.md` — final goal, target architecture, and non-negotiable principles.
+- `docs/sachima-final-goal-gap-analysis.md` — current gap analysis and phase-planning basis.
+- `docs/sachima-channel.md` — current Sachima adapter/channel behavior.
+- `docs/plans/2026-05-11-flowweaver-pe1d-pe2-readiness-decision-packet.md` — latest PE-1D / PE-2 readiness boundary.
+
+Do not treat PE-2 implementation, live/default-on, real external Sachima ingress, production delivery control, production agent/tool execution expansion, production config writes, Gateway restart/reload, platform adapter mutation, or Gateway-owned Temporal lifecycle as approved unless a later document and user approval explicitly name that scope.
+
 ## Development Environment
 
 ```bash
