@@ -135,6 +135,7 @@ Independent review results:
 ```text
 consistency / phase-gate review: PASS, no blockers
 security / low-intrusion review: PASS, no blockers
+independent Codex read-only review: PASS, no blockers
 ```
 
 Non-blocking review suggestions addressed:
@@ -143,6 +144,7 @@ Non-blocking review suggestions addressed:
 - Added a plan note that the manifest is authoritative for full tail metadata.
 - Clarified the future changed-file guard must fail on any changed path outside allowlist.
 - Tightened missing fake-send handling so PE-2A must fail preflight before runtime calls.
+- Added a manifest meaning field so `next_phase_allowed: true` means only “may request the next approval,” not implementation approval.
 
 ## Final local verification
 
@@ -154,7 +156,7 @@ ignored-file check
 PE2_DESIGN_DOC_GATE_PASS
 ```
 
-Fresh gate after review edits and manifest score update:
+Fresh gate after review/Codex edits and manifest score update:
 
 ```text
 git add -N docs/plans/2026-05-12-flowweaver-pe2-design-packet.md docs/plans/2026-05-12-flowweaver-pe2-design-packet-manifest.yaml docs/dev_log/2026-05-12-flowweaver-pe2-design-packet.md

@@ -157,4 +157,5 @@ tail_items:
     status: "open"
 
 next_phase_allowed: true
+next_phase_allowed_meaning: "may request PE-2A implementation approval only; does not authorize implementation, live behavior, external ingress, real delivery, config writes, Gateway restart/reload, platform mutation, or runtime lifecycle ownership"
 next_allowed_request: "approve_pe2a_controlled_runtime_fake_delivery_implementation_no_live_no_real_external_ingress"
