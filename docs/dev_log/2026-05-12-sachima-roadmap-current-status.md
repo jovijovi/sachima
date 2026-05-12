@@ -117,3 +117,25 @@ BLOCKERS:
 ```
 
 Reviewer summary: docs-only scope is preserved, P4 remains design-packet-only next, and explicit non-approvals remain clear for implementation, real ingress/delivery, Gateway restart/reload, production config writes, Temporal lifecycle, and production AI/tool execution.
+
+## Follow-up Wording Fix
+
+After PR #83 merged, the original `current_base_sha` label was found to be self-staling: a status-dashboard PR changes the repository head without changing the behavior-bearing roadmap phase.
+
+Fix:
+
+```text
+current_base_sha -> latest_behavior_phase_sha
+Latest merged PRs -> Latest phase / bridge PRs
+```
+
+Reason: pure roadmap-status maintenance PRs should not force a recursive update to list themselves unless they change the roadmap state.
+
+Follow-up independent review:
+
+```text
+VERDICT: PASS
+BLOCKERS: None
+```
+
+Reviewer summary: the wording fixes the self-staling problem, narrows the PR table to phase/bridge PRs, and does not expand scope or approve P4 implementation, real ingress/delivery, runtime lifecycle changes, production config writes, or other non-approved surfaces.

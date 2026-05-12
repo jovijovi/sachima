@@ -5,7 +5,8 @@
 ```text
 last_updated: 2026-05-12
 base_branch: feature/sachima-channel
-current_base_sha: 1f587a0b0355f7eb18a2cdff64bc1bc93ea109dd
+latest_behavior_phase: PE-2A controlled runtime + fake delivery
+latest_behavior_phase_sha: 1f587a0b0355f7eb18a2cdff64bc1bc93ea109dd
 current_position: P4 next — Controlled external ingress design packet
 ```
 
@@ -42,7 +43,9 @@ If this file is stale or contradicts a requested task, stop and report the drift
 | P7 — Real delivery and ACK closure | Pending | Not started | Blocked until fake/local delivery and AI FLOW gates are production-ready and separately approved |
 | P8 — Product / ops hardening | Pending | Not started | Blocked until limited live pilot readiness |
 
-## Latest merged PRs
+## Latest phase / bridge PRs
+
+This table tracks phase-bearing and bridge-phase PRs. Pure roadmap-status maintenance PRs do not need to be listed here unless they change the roadmap state.
 
 | PR | Purpose | Merge commit | Notes |
 |---|---|---|---|
