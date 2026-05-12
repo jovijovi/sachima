@@ -96,6 +96,16 @@ def test_fake_send_default_initialized_refs_reject_unknown_delivery_ref() -> Non
     assert simulator.transcript() == []
 
 
+def test_fake_send_explicit_empty_initialized_refs_reject_all_delivery_refs() -> None:
+    simulator = FakeSachimaSendSimulator(initialized_delivery_refs=set())
+
+    result = simulator.record_send(_payload(delivery_ref="runtime_delivery_0"))
+
+    assert result["ok"] is False
+    assert result["error_code"] == "uninitialized_delivery_ref"
+    assert simulator.transcript() == []
+
+
 def test_fake_send_rejects_media_path_content() -> None:
     simulator = FakeSachimaSendSimulator()
 

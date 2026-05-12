@@ -42,7 +42,7 @@ ModuleNotFoundError: No module named 'gateway.sachima_fake_send_simulator'
 GREEN focused simulator gate:
 
 ```text
-14 passed
+15 passed
 ```
 
 Command:
@@ -59,6 +59,7 @@ python -m pytest -q tests/gateway/test_sachima_fake_send_simulator.py tests/gate
 - Duplicate `idempotency_key` requests reuse the original fake `message_id` and `ack_ref` without appending a second transcript row.
 - Uninitialized `delivery_ref` values are rejected with no transcript row.
 - The default simulator initializes the Phase B surface refs `runtime_delivery_0` through `runtime_delivery_4`; unknown refs fail closed.
+- An explicit empty `initialized_delivery_refs=set()` means no refs are initialized, so all delivery refs fail closed.
 - Media-path shaped content, card-like structured content, and unsafe marker-shaped material are rejected before transcript recording.
 - Reusing an `idempotency_key` with mismatched surface, delivery ref, artifact ref, or content digest is rejected as an idempotency conflict.
 - `create_fake_sachima_send_app()` exposes a local aiohttp `/send` endpoint.
@@ -132,7 +133,7 @@ Fresh local verification before review:
 
 ```text
 git diff --check: pass
-Phase B focused tests: 14 passed
+Phase B focused tests: 15 passed
 Existing Sachima adapter tests: 39 passed
 Smoke marker: PHASE_B_FAKE_SEND_EVIDENCE_PASS
 Evidence verifier: PHASE_B_FINAL_GATE_PASS
@@ -175,6 +176,15 @@ Initial security blockers fixed:
 Blocker regression evidence:
 
 ```text
-Phase B focused tests after blocker fixes: 14 passed
+Phase B focused tests after blocker fixes: 15 passed
 blocker-only security re-review: PASS
+```
+
+Independent Codex review gate added by user:
+
+```text
+Codex review verdict: BLOCK initially
+Codex blocker: explicit initialized_delivery_refs=set() disabled the initialized-ref gate
+Resolution: added RED regression for explicit empty initialized refs and made membership check unconditional
+Fix gate: PHASE_B_BLOCKER_FIX_GATE_PASS
 ```

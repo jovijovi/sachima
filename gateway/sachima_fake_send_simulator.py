@@ -80,7 +80,7 @@ class FakeSachimaSendSimulator:
         delivery_ref = str(metadata.get("delivery_ref") or "")
         if DELIVERY_REF_RE.fullmatch(delivery_ref) is None:
             return self._error("invalid_delivery_ref")
-        if self.initialized_delivery_refs and delivery_ref not in self.initialized_delivery_refs:
+        if delivery_ref not in self.initialized_delivery_refs:
             return self._error("uninitialized_delivery_ref")
 
         artifact_ref = self._safe_artifact_ref(metadata.get("artifact_ref"))
