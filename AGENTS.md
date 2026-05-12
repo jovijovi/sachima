@@ -963,6 +963,14 @@ scripts/run_tests.sh tests/agent/test_foo.py::test_x  # one test
 scripts/run_tests.sh -v --tb=long                     # pass-through pytest flags
 ```
 
+### GitHub CI docs-only fast path
+
+The Nix matrix keeps the required `nix (ubuntu-latest)` / `nix (macos-latest)` check names, but pull requests whose changed files are only documentation paths take a lightweight fast path instead of running the full Nix flake/build matrix.
+
+Docs-only means root project docs such as `AGENTS.md`, `GOAL.md`, `README.md`, or Markdown/MDX files under `docs/`, `website/`, `skills/`, or `optional-skills/`. Workflow files, source code, tests, lockfiles, generated outputs, runtime config, and non-Markdown docs assets are not docs-only and must run the full matrix.
+
+The Linux fast path still runs changed-file, secret-shaped literal, and critical-marker gates. Do not use workflow-level `paths-ignore` for required Nix checks, because skipped required workflows can leave PRs pending instead of green.
+
 ### Why the wrapper (and why the old "just call pytest" doesn't work)
 
 Five real sources of local-vs-CI drift the script closes:
