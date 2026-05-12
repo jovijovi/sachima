@@ -1,0 +1,161 @@
+phase_id: "flowweaver-pe2-design-packet"
+level: "level-3"
+owner_dri: "Hermes operator with Dog Brother approval"
+status: "design_packet_ready_for_pr"
+
+created_at: "2026-05-12T11:10:03+08:00"
+base_ref: "origin/feature/sachima-channel"
+base_sha: "10486c7c585974dce3f37c74437ada3419d67904"
+worktree: "/home/ubuntu/workspace/hermes/worktrees/sachima/docs-pe2-design-packet"
+branch: "docs/pe2-design-packet"
+
+goal_refs:
+  - "GOAL.md"
+gap_refs:
+  - "docs/sachima-final-goal-gap-analysis.md"
+phase_plan_refs:
+  - "docs/plans/2026-05-11-sachima-final-goal-phase-development-plan.md"
+  - "docs/plans/2026-05-11-flowweaver-pe1d-pe2-readiness-decision-packet.md"
+  - "docs/plans/2026-05-12-sachima-phase-b-fake-send-simulator-ui-loop-plan.md"
+prior_evidence_refs:
+  - "/home/ubuntu/workspace/hermes/outputs/sachima/pe1d-longer-controlled-local-observation/pe1d_controlled_observation_summary.md"
+  - "/home/ubuntu/workspace/hermes/outputs/sachima/phase-b-fake-send-simulator/phase_b_fake_send_simulator_evidence.json"
+
+approved_scope:
+  - "PE-2 design packet only"
+  - "define PE-2A controlled runtime plus fake-delivery implementation slice"
+  - "define contracts for sanitized ingress envelope, caller-supplied runtime control surface, fake-send ACK closure, evidence, rollback, and future tests"
+  - "create docs-only manifest and dev log"
+  - "run docs, changed-file, no-leak, and review gates"
+
+received_approval_text:
+  - "approve_pe2_design_packet"
+approval_interpretation: "narrow design-only approval; implementation wording in the same user sentence is not accepted as PE-2A implementation approval"
+
+non_goals:
+  - "pe2_implementation"
+  - "pe2_live_default_on"
+  - "real_external_sachima_ingress"
+  - "production_delivery_control"
+  - "production_agent_tool_execution_expansion"
+  - "production_config_write"
+  - "gateway_restart_or_reload"
+  - "platform_adapter_mutation"
+  - "gateway_owned_temporal_lifecycle"
+  - "real_send_api_or_external_im_call"
+  - "external_temporal_service_or_worker_startup"
+
+risk_axes_changed:
+  - "documentation_phase_governance"
+  - "future_external_ingress_contract"
+  - "future_runtime_operation_contract"
+  - "future_fake_delivery_ack_contract"
+  - "future_rollback_restore_contract"
+
+blast_radius:
+  environments:
+    - "docs-only git worktree"
+  max_users: 0
+  max_requests: 0
+  max_runtime_minutes: 0
+  max_delivery_attempts: 0
+  allowed_data_categories:
+    - "sanitized documentation references"
+    - "existing evidence counts and stable markers"
+    - "future contract field names"
+  rollback_authority: "Hermes operator"
+  rollback_method: "git revert or PR close; no runtime/config rollback needed for docs-only packet"
+
+future_pe2a_limits:
+  environment: "local test process only"
+  network: "loopback or synthetic only"
+  delivery: "Phase B fake-send simulator only"
+  runtime: "caller-supplied control surface only"
+  gateway_lifecycle: "forbidden"
+  production_config: "forbidden"
+  real_external_ingress: "forbidden"
+  real_delivery: "forbidden"
+  agent_tool_execution_expansion: "forbidden"
+
+future_pe2a_allowed_runtime_operations:
+  - "start_transaction"
+  - "record_operation"
+  - "plan_delivery"
+  - "record_delivery_ack"
+  - "query_transaction"
+  - "cancel_transaction"
+
+future_pe2a_required_approval: "approve_pe2a_controlled_runtime_fake_delivery_implementation_no_live_no_real_external_ingress"
+
+evidence_paths:
+  - "docs/plans/2026-05-12-flowweaver-pe2-design-packet.md"
+  - "docs/plans/2026-05-12-flowweaver-pe2-design-packet-manifest.yaml"
+  - "docs/dev_log/2026-05-12-flowweaver-pe2-design-packet.md"
+
+rollback_or_recovery_proof: "Docs-only packet; rollback is PR close or git revert. Future PE-2A implementation must prove policy disable, allowlist removal, missing runtime surface, missing fake-send surface, duplicate replay, and restore behavior."
+
+fresh_reviews:
+  goal_consistency: "PASS; no blockers; non-blocking tail metadata suggestion addressed"
+  boundary_security: "PASS; no blockers; non-blocking approval wording, changed-file guard, and missing fake-send preflight suggestions addressed"
+
+score:
+  total: 94
+  threshold: 92
+  critical_boundary_violation: false
+  status: "pass_after_docs_gate_and_two_independent_reviews"
+
+tail_items:
+  - id: "PE2-WATCH-8788"
+    class: "WATCH"
+    description: "PE-1D used fallback loopback 18788 because default 8788 was occupied by an existing Gateway."
+    risk: "Exact default-port behavior is not proven for external ingress or live claims."
+    owner_dri: "Hermes operator with Dog Brother approval"
+    blocks_current_phase: false
+    blocks_next_phase: false
+    required_before: "real external ingress or exact-port live claim"
+    acceptance_method: "separate maintenance-window approval and exact-port rerun without opportunistic Gateway restart"
+    status: "open"
+  - id: "PE2-NEXT-IMPL-APPROVAL"
+    class: "NEXT_PHASE"
+    description: "PE-2A implementation is not approved by this design packet."
+    risk: "Treating design readiness as implementation approval would violate GOAL.md boundaries."
+    owner_dri: "Dog Brother approval required"
+    blocks_current_phase: false
+    blocks_next_phase: true
+    required_before: "any PE-2A implementation code changes"
+    acceptance_method: "exact approval approve_pe2a_controlled_runtime_fake_delivery_implementation_no_live_no_real_external_ingress"
+    status: "carried"
+  - id: "PE2-NEXT-EXTERNAL-INGRESS"
+    class: "NEXT_PHASE"
+    description: "Real external Sachima ingress remains outside PE-2A."
+    risk: "Public ingress adds network exposure, replay, rate-limit, TLS, rollback, and operator monitoring risks."
+    owner_dri: "Dog Brother approval required"
+    blocks_current_phase: false
+    blocks_next_phase: false
+    required_before: "public/tunnel/reverse-proxy/TLS exposure"
+    acceptance_method: "separate threat model, approval approve_real_external_sachima_ingress, rollback drill, and fresh security review"
+    status: "carried"
+  - id: "PE2-NEXT-PROD-RUNTIME"
+    class: "NEXT_PHASE"
+    description: "Production Temporal/durable runtime service or Worker remains outside PE-2A."
+    risk: "Gateway-owned lifecycle would violate low-intrusion architecture."
+    owner_dri: "Dog Brother approval required"
+    blocks_current_phase: false
+    blocks_next_phase: false
+    required_before: "any real Temporal service/Worker or Gateway-owned lifecycle"
+    acceptance_method: "separate runtime ownership design and approval; caller-supplied surface only in PE-2A"
+    status: "carried"
+  - id: "PE2-PARKED-REAL-DELIVERY"
+    class: "PARKED"
+    description: "Real send API and production delivery control remain parked."
+    risk: "Fake-send ACK evidence does not prove production delivery semantics."
+    owner_dri: "Dog Brother approval required"
+    blocks_current_phase: false
+    blocks_next_phase: false
+    required_before: "real outbound IM delivery"
+    acceptance_method: "separate delivery approval after PE-2A evidence and external ingress evidence"
+    status: "open"
+
+next_phase_allowed: true
+next_phase_allowed_meaning: "may request PE-2A implementation approval only; does not authorize implementation, live behavior, external ingress, real delivery, config writes, Gateway restart/reload, platform mutation, or runtime lifecycle ownership"
+next_allowed_request: "approve_pe2a_controlled_runtime_fake_delivery_implementation_no_live_no_real_external_ingress"
