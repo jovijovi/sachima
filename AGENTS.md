@@ -11,12 +11,41 @@ Short version: Sachima should become Dog Brother's own AI workbench inside a cus
 Planning references:
 
 - `GOAL.md` — final goal, target architecture, and non-negotiable principles.
+- `docs/roadmap/current-status.md` — living roadmap position, current tails, non-approvals, evidence links, and next allowed request.
+- `docs/roadmap/README.md` — roadmap status tracking rules for agents.
 - `docs/sachima-final-goal-gap-analysis.md` — current gap analysis and phase-planning basis.
 - `docs/plans/2026-05-11-sachima-final-goal-phase-development-plan.md` — detailed phase roadmap with dependencies, tasks, acceptance gates, checklists, and scoring rubrics.
 - `docs/sachima-channel.md` — current Sachima adapter/channel behavior.
 - `docs/plans/2026-05-11-flowweaver-pe1d-pe2-readiness-decision-packet.md` — latest PE-1D / PE-2 readiness boundary.
 
 Do not treat PE-2 implementation, live/default-on, real external Sachima ingress, production delivery control, production agent/tool execution expansion, production config writes, Gateway restart/reload, platform adapter mutation, or Gateway-owned Temporal lifecycle as approved unless a later document and user approval explicitly name that scope.
+
+### Roadmap Current Status Preflight
+
+For any Sachima / FlowWeaver roadmap, phase-gate, PR, CI, review, merge, or next-phase-readiness work, the agent must read:
+
+1. `docs/roadmap/current-status.md`;
+2. the canonical roadmap linked from that file;
+3. the latest relevant dev log and evidence links listed in current status.
+
+Before making changes, the agent must state:
+
+- current phase position;
+- next allowed request;
+- explicit non-approvals;
+- open `BLOCKER`, `NEXT_PHASE`, `WATCH`, or `PARKED` tail items;
+- whether the requested task is allowed by the current status.
+
+If `docs/roadmap/current-status.md` is missing, stale, or contradicts the requested work, stop and report the drift risk before making changes.
+
+### Phase Closure Rule
+
+A roadmap or phase task is not complete until:
+
+- tests, reviews, and evidence pass where applicable;
+- PR / merge / post-merge status is recorded where applicable;
+- `docs/roadmap/current-status.md` reflects the new phase state, or the PR explains why the status update is not applicable;
+- remaining tails are classified as `BLOCKER`, `NEXT_PHASE`, `WATCH`, or `PARKED`.
 
 ### Phase Gate Drift Control
 
