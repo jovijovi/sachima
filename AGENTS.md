@@ -16,6 +16,7 @@ Planning references:
 - `docs/sachima-final-goal-gap-analysis.md` — current gap analysis and phase-planning basis.
 - `docs/plans/2026-05-11-sachima-final-goal-phase-development-plan.md` — detailed phase roadmap with dependencies, tasks, acceptance gates, checklists, and scoring rubrics.
 - `docs/sachima-channel.md` — current Sachima adapter/channel behavior.
+- `docs/protocols/sachima-envelope-v1.md` — canonical external Sachima wire protocol for controlled external ingress and delivery callback design.
 - `docs/plans/2026-05-11-flowweaver-pe1d-pe2-readiness-decision-packet.md` — latest PE-1D / PE-2 readiness boundary.
 
 Do not treat PE-2 implementation, live/default-on, real external Sachima ingress, production delivery control, production agent/tool execution expansion, production config writes, Gateway restart/reload, platform adapter mutation, or Gateway-owned Temporal lifecycle as approved unless a later document and user approval explicitly name that scope.

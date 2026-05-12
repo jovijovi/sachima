@@ -371,22 +371,24 @@ Expose Sachima ingress beyond loopback under a narrow, reversible, observation-o
 - P1 pass.
 - P2 simulator/fake-send pass if simulator responses will be rendered.
 - P3 design approval or a dedicated external ingress design approval that accurately records fake-send evidence status and keeps real delivery blocked unless separately approved.
+- Canonical protocol basis: `docs/protocols/sachima-envelope-v1.md` for external client ingress and delivery callback envelopes.
 - Approved exposure path: reverse proxy/TLS/host/path/rate limits/body limits.
 - Operator/user/group allowlist model.
 
 ### Task List
 
 1. Draft external ingress design and threat model.
-2. Define host/path/TLS/proxy/body-size/rate-limit policy.
-3. Define HMAC timestamp/replay policy under real network conditions.
-4. Define user/group allowlist and deny behavior.
-5. Define media/image URL SSRF and size controls.
-6. Implement external ingress only after explicit approval.
-7. Run positive signed external request probes.
-8. Run negative probes: missing signature, bad signature, stale timestamp, replay, oversized body, disallowed user/group, malformed media.
-9. Verify observation-only or simulator-only behavior.
-10. Verify rollback can stop ingress without touching raw payloads.
-11. Produce evidence packet and review.
+2. Canonicalize the external envelope contract and client conformance target.
+3. Define host/path/TLS/proxy/body-size/rate-limit policy.
+4. Define HMAC timestamp/replay policy under real network conditions.
+5. Define user/group allowlist and deny behavior.
+6. Define media/image URL SSRF and size controls.
+7. Implement external ingress only after explicit approval.
+8. Run positive signed external request probes.
+9. Run negative probes: missing signature, bad signature, stale timestamp, replay, oversized body, disallowed user/group, malformed media.
+10. Verify observation-only or simulator-only behavior.
+11. Verify rollback can stop ingress without touching raw payloads.
+12. Produce evidence packet and review.
 
 ### Constraints
 
@@ -408,6 +410,7 @@ Expose Sachima ingress beyond loopback under a narrow, reversible, observation-o
 
 - [ ] Exposure approval captured.
 - [ ] Threat model complete.
+- [ ] Canonical envelope contract and conformance target documented.
 - [ ] TLS/proxy/path/body/rate controls documented.
 - [ ] HMAC timestamp/replay probes pass.
 - [ ] User/group allowlist probes pass.

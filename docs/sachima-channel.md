@@ -18,31 +18,33 @@ Current first slice:
 
 The adapter now runs an adapter-owned inbound HTTP webhook listener from `connect()`. Embedding code can still call `build_event_from_payload()` / `handle_webhook_payload()` directly for tests or bridge development.
 
+## Protocol status
+
+The current adapter behavior below predates the formal external protocol. For controlled external ingress and delivery callback design, the canonical wire contract is now:
+
+- `docs/protocols/sachima-envelope-v1.md`
+
+This file remains useful as implementation-facing adapter documentation. Do not treat examples here as approval for public exposure, production configuration writes, Gateway restart/reload, live/default-on behavior, or real external delivery.
+
 ## Environment variables
 
-```bash
-SACHIMA_ENABLED=true
-SACHIMA_WEBHOOK_HOST=127.0.0.1
-SACHIMA_WEBHOOK_PORT=8788
-SACHIMA_WEBHOOK_PATH=/webhook/sachima
-SACHIMA_WEBHOOK_SECRET=[REDACTED]
-SACHIMA_SEND_URL=http://127.0.0.1:9000/send
-SACHIMA_ALLOWED_USERS=dog,cat
-# Optional open-access development flag:
-# SACHIMA_ALLOW_ALL_USERS=true
+```text
+SACHIMA_ENABLED=<true-or-false>
+SACHIMA_WEBHOOK_HOST=<listener-host>
+SACHIMA_WEBHOOK_PORT=<listener-port>
+SACHIMA_WEBHOOK_PATH=<listener-path>
+SACHIMA_WEBHOOK_SECRET=<shared-hmac-secret>
+SACHIMA_DELIVERY_URL=<external-client-callback-url>
+SACHIMA_ALLOWED_USERS=<comma-separated-allowlist>
 ```
 
-`SACHIMA_WEBHOOK_HOST` defaults to `127.0.0.1`, `SACHIMA_WEBHOOK_PORT` defaults to `8788`, and `SACHIMA_WEBHOOK_PATH` defaults to `/webhook/sachima`. Keep the listener on loopback by default and expose it through a reverse proxy if an external IM platform must reach it.
+`SACHIMA_WEBHOOK_HOST` defaults to `127.0.0.1`, `SACHIMA_WEBHOOK_PORT` defaults to `8788`, and `SACHIMA_WEBHOOK_PATH` defaults to `/webhook/sachima`. Keep the listener on loopback by default and expose it through a separately approved external ingress design if an external IM platform or BFF must reach it.
 
-`SACHIMA_SEND_URL` is optional. Without it, `SachimaAdapter.send()` stores outbound messages in `adapter.sent_messages`, which is useful for local tests and bridge development.
+`SACHIMA_DELIVERY_URL` is the long-term name for Sachima → external client delivery callbacks. Existing implementation may still use the deprecated `SACHIMA_SEND_URL` alias until a separately approved implementation migrates the adapter. Without a delivery URL, `SachimaAdapter.send()` stores outbound messages in `adapter.sent_messages`, which is useful for local tests and bridge development.
 
 ## Minimal inbound payload shape
 
-POST JSON to the configured webhook path, default:
-
-```text
-POST http://127.0.0.1:8788/webhook/sachima
-```
+POST to the configured webhook path. The default local path is `/webhook/sachima`; do not treat local examples as public exposure approval.
 
 Flat payload:
 
@@ -222,9 +224,9 @@ event = adapter.build_event_from_payload({
 assert event.source.platform.value == "sachima"
 ```
 
-## Outbound send API expectation
+## Legacy outbound delivery behavior
 
-When `SACHIMA_SEND_URL` is configured, the adapter posts JSON like:
+Current adapter implementation may still use the deprecated `SACHIMA_SEND_URL` name and a pre-v1 JSON shape while the protocol-aligned implementation is pending:
 
 ```json
 {
@@ -235,13 +237,9 @@ When `SACHIMA_SEND_URL` is configured, the adapter posts JSON like:
 }
 ```
 
-If `PlatformConfig.api_key` or `extra.api_key` is set, the request includes:
+This is legacy implementation documentation, not the canonical external protocol. New controlled external integrations should follow `docs/protocols/sachima-envelope-v1.md`, use `SACHIMA_DELIVERY_URL`, sign delivery callbacks with v1 HMAC headers, and emit canonical `text` after the separately approved implementation phase.
 
-```text
-Authorization: Bearer <api-key>
-```
-
-A `2xx` response is treated as success. Non-`2xx` responses become failed `SendResult`s; `429` and `5xx` responses are marked retryable.
+A `2xx` response currently means the configured receiver accepted the HTTP callback. It does not prove browser-visible, user-visible, or real IM delivery.
 
 ## Phase B local fake-send simulator
 
