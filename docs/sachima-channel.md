@@ -243,6 +243,28 @@ Authorization: Bearer <api-key>
 
 A `2xx` response is treated as success. Non-`2xx` responses become failed `SendResult`s; `429` and `5xx` responses are marked retryable.
 
+## Phase B local fake-send simulator
+
+Phase B adds a local-only fake `/send` simulator for delivery behavior proof before any PE-2 or live delivery work. It is test tooling, not a production adapter mutation.
+
+Run the smoke evidence writer from a clean checkout:
+
+```bash
+python scripts/sachima_fake_send_simulator_smoke.py
+```
+
+The script starts a dynamic `127.0.0.1` fake `/send` endpoint, configures `SachimaAdapter.send()` directly with that loopback URL, sends synthetic `progress_card`, `rich_card`, `final_text`, `media`, and `artifact` surfaces, verifies duplicate idempotency, rejects an uninitialized delivery ref, and writes sanitized evidence to:
+
+```text
+outputs/sachima/phase-b-fake-send-simulator/phase_b_fake_send_simulator_evidence.json
+```
+
+Simulator transcript rows store safe delivery facts only: sequence, surface, fake message id, delivery ref, optional artifact ref, reply-to presence, content digest, bounded preview, ACK ref, and status. They must not store raw prompts, tool output, full cards, media bytes/paths, real platform IDs, credentials, callback payloads, or raw exceptions.
+
+Boundary: this evidence may support a later PE-2 design packet request only. It does not approve PE-2 implementation, live/default-on behavior, real external Sachima ingress, production delivery control, production config writes, Gateway restart/reload, platform adapter mutation, or Gateway-owned Temporal lifecycle.
+
+See `docs/runbooks/sachima-fake-send-simulator.md` for the full contract.
+
 ## Focused tests
 
 Adapter/unit verification:
