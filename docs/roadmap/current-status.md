@@ -3,13 +3,15 @@
 > Living dashboard. This file tracks the current roadmap position and drift guards for Sachima / FlowWeaver work. It does not replace the canonical roadmap.
 
 ```text
-last_updated: 2026-05-12
+last_updated: 2026-05-13
 base_branch: feature/sachima-channel
 latest_behavior_phase: PE-2A controlled runtime + fake delivery
 latest_behavior_phase_sha: 1f587a0b0355f7eb18a2cdff64bc1bc93ea109dd
 latest_design_packet: P4 Sachima Envelope v1 / agentic-ui controlled external ingress design packet
 latest_design_packet_doc: docs/plans/2026-05-12-sachima-envelope-v1-agentic-ui-p4-design-packet.md
-current_position: P4 design packet delivered — implementation not approved
+latest_protocol_repo: jovijovi/sachima-protocols
+latest_protocol_spec: https://github.com/jovijovi/sachima-protocols/blob/main/protocols/envelope/v1.md
+current_position: P4 design packet delivered — implementation not approved; protocol text promoted to sachima-protocols
 ```
 
 ## Canonical references
@@ -17,7 +19,8 @@ current_position: P4 design packet delivered — implementation not approved
 - North star: `GOAL.md`
 - Gap basis: `docs/sachima-final-goal-gap-analysis.md`
 - Canonical roadmap: `docs/plans/2026-05-11-sachima-final-goal-phase-development-plan.md`
-- Canonical external protocol: `docs/protocols/sachima-envelope-v1.md`
+- Canonical external protocol: `jovijovi/sachima-protocols` → `protocols/envelope/v1.md` (`https://github.com/jovijovi/sachima-protocols/blob/main/protocols/envelope/v1.md`)
+- Local protocol pointer: `docs/protocols/sachima-envelope-v1.md`
 - Latest P4 design packet: `docs/plans/2026-05-12-sachima-envelope-v1-agentic-ui-p4-design-packet.md`
 - Latest P4 design dev log: `docs/dev_log/2026-05-12-sachima-envelope-v1-agentic-ui-p4-design-packet.md`
 - PE-2 design packet: `docs/plans/2026-05-12-flowweaver-pe2-design-packet.md`
@@ -42,7 +45,7 @@ If this file is stale or contradicts a requested task, stop and report the drift
 | P2 — Fake-send / simulator delivery loop | Done | PR #79 design, PR #80 implementation; merge `10486c7c585974dce3f37c74437ada3419d67904` for implementation | Fake delivery and ACK semantics proven locally; does not approve real delivery |
 | P3 — PE-2 design packet only | Done | PR #81, merge `84f6a9010d72fe6ab3a0dac4ecaea3c3fb252ddf` | May request separately approved PE-2A implementation; not live or real ingress |
 | Bridge — PE-2A controlled runtime + fake delivery | Done | PR #82, merge `1f587a0b0355f7eb18a2cdff64bc1bc93ea109dd` | Controlled local runtime-delivery bridge proven with fake delivery; does not approve real external ingress |
-| P4 — Controlled external ingress | Design packet delivered; implementation not started | `docs/protocols/sachima-envelope-v1.md`; `docs/plans/2026-05-12-sachima-envelope-v1-agentic-ui-p4-design-packet.md` | Canonical external envelope and agentic-ui conformance target defined; implementation/live/exposure still require separate approval |
+| P4 — Controlled external ingress | Design packet delivered; implementation not started | `jovijovi/sachima-protocols` → `protocols/envelope/v1.md`; local pointer `docs/protocols/sachima-envelope-v1.md`; `docs/plans/2026-05-12-sachima-envelope-v1-agentic-ui-p4-design-packet.md` | Canonical external envelope and agentic-ui conformance target defined; implementation/live/exposure still require separate approval |
 | P5 — Production durable runtime integration | Pending | Not started | Blocked until P4/P5 approvals and runtime design gates |
 | P6 — Controlled AI FLOW execution | Pending | Not started | Blocked until durable runtime and safety gates |
 | P7 — Real delivery and ACK closure | Pending | Not started | Blocked until fake/local delivery and AI FLOW gates are production-ready and separately approved |
@@ -77,8 +80,8 @@ Runtime evidence stays outside PR payloads unless a phase explicitly approves ve
 | ID | Class | Description | Blocks current phase? | Blocks next phase? | Required before | Acceptance method | Status |
 |---|---|---|---:|---:|---|---|---|
 | ROADMAP-WATCH-8788 | WATCH | PE-1D used fallback loopback `18788` because default `8788` was occupied by an existing Gateway. Exact default-port behavior is not proven for external ingress or live claims. | No | No | Real external ingress, exact-port live claim, or maintenance-window work | Separate maintenance-window approval and exact-port rerun without opportunistic Gateway restart | Open |
-| ROADMAP-NEXT-P4-DESIGN | NEXT_PHASE | Controlled external ingress should start with a design packet before implementation. | No | No | P4 implementation request | `docs/protocols/sachima-envelope-v1.md` and `docs/plans/2026-05-12-sachima-envelope-v1-agentic-ui-p4-design-packet.md` | Closed by design packet |
-| ROADMAP-NEXT-P4-ENV-V1-CONFORMANCE | NEXT_PHASE | Implement Sachima Envelope v1 local conformance across Sachima and agentic-ui without live/public ingress or real delivery. | No | Yes | Any P4 behavior-bearing implementation claim | Separate implementation approval, local-only conformance tests, HMAC/schema/no-leak probes, review blockers zero | Open |
+| ROADMAP-NEXT-P4-DESIGN | NEXT_PHASE | Controlled external ingress should start with a design packet before implementation. | No | No | P4 implementation request | `jovijovi/sachima-protocols` (`protocols/envelope/v1.md`) and `docs/plans/2026-05-12-sachima-envelope-v1-agentic-ui-p4-design-packet.md` | Closed by design packet |
+| ROADMAP-NEXT-P4-ENV-V1-CONFORMANCE | NEXT_PHASE | Implement Sachima Envelope v1 local conformance across Sachima and agentic-ui without live/public ingress or real delivery. | No | Yes | Any P4 behavior-bearing implementation claim | Canonical spec in `jovijovi/sachima-protocols` (`protocols/envelope/v1.md`), separate implementation approval, local-only conformance tests, HMAC/schema/no-leak probes, review blockers zero | Open |
 | ROADMAP-WATCH-STATUS-DASHBOARD | WATCH | This dashboard is the living progress index and must be updated after roadmap/phase closure. | No | No | Any claim of phase closure or next-phase readiness | Update this file or explain N/A in the PR | Open |
 
 ## Explicit non-approvals
