@@ -20,11 +20,12 @@ The adapter now runs an adapter-owned inbound HTTP webhook listener from `connec
 
 ## Protocol status
 
-The current adapter behavior below predates the formal external protocol. For controlled external ingress and delivery callback design, the canonical wire contract is now:
+The adapter now has Sachima-side local conformance for Sachima Envelope v1. For controlled external ingress and delivery callback design, the canonical wire contract is:
 
-- `docs/protocols/sachima-envelope-v1.md`
+- `jovijovi/sachima-protocols` → `protocols/envelope/v1.md`
+- local pointer: `docs/protocols/sachima-envelope-v1.md`
 
-This file remains useful as implementation-facing adapter documentation. Do not treat examples here as approval for public exposure, production configuration writes, Gateway restart/reload, live/default-on behavior, or real external delivery.
+This file remains useful as implementation-facing adapter documentation. The local implementation does not approve public exposure, production configuration writes, Gateway restart/reload, live/default-on behavior, or real external delivery.
 
 ## Environment variables
 
@@ -40,13 +41,33 @@ SACHIMA_ALLOWED_USERS=<comma-separated-allowlist>
 
 `SACHIMA_WEBHOOK_HOST` defaults to `127.0.0.1`, `SACHIMA_WEBHOOK_PORT` defaults to `8788`, and `SACHIMA_WEBHOOK_PATH` defaults to `/webhook/sachima`. Keep the listener on loopback by default and expose it through a separately approved external ingress design if an external IM platform or BFF must reach it.
 
-`SACHIMA_DELIVERY_URL` is the long-term name for Sachima → external client delivery callbacks. Existing implementation may still use the deprecated `SACHIMA_SEND_URL` alias until a separately approved implementation migrates the adapter. Without a delivery URL, `SachimaAdapter.send()` stores outbound messages in `adapter.sent_messages`, which is useful for local tests and bridge development.
+`SACHIMA_DELIVERY_URL` is the long-term name for Sachima → external client delivery callbacks. The adapter prefers `SACHIMA_DELIVERY_URL` and falls back to the deprecated `SACHIMA_SEND_URL` alias during migration. Without a delivery URL, `SachimaAdapter.send()` stores canonical v1 delivery callback envelopes in `adapter.sent_messages`, which is useful for local tests and bridge development.
 
 ## Minimal inbound payload shape
 
 POST to the configured webhook path. The default local path is `/webhook/sachima`; do not treat local examples as public exposure approval.
 
-Flat payload:
+Canonical v1 payload:
+
+```json
+{
+  "schema_version": "sachima.v1",
+  "message_id": "msg-1",
+  "chat_id": "chat-1",
+  "user_id": "user-1",
+  "role": "user",
+  "text": "hello Hermes",
+  "chat_type": "group",
+  "thread_id": "thread-1",
+  "reply_to_message_id": null,
+  "attachments": [],
+  "metadata": {}
+}
+```
+
+Deprecated migration alias: `content` may be accepted only when `text` is absent, and is normalized to canonical `text` before dispatch.
+
+Legacy/pre-v1 local payloads remain accepted for existing loopback tests:
 
 ```json
 {
@@ -73,7 +94,16 @@ Nested payloads are also supported:
 }
 ```
 
-Required fields:
+Required v1 fields:
+
+- `schema_version` — exactly `sachima.v1`
+- `message_id`
+- `chat_id`
+- `user_id`
+- `role` — exactly `user` for ingress
+- `text` unless the payload contains at least one supported image attachment
+
+Legacy local payloads without `schema_version` still use the historical required fields:
 
 - `chat_id`
 - `user_id`
@@ -224,22 +254,26 @@ event = adapter.build_event_from_payload({
 assert event.source.platform.value == "sachima"
 ```
 
-## Legacy outbound delivery behavior
+## Sachima Envelope v1 delivery callback
 
-Current adapter implementation may still use the deprecated `SACHIMA_SEND_URL` name and a pre-v1 JSON shape while the protocol-aligned implementation is pending:
+`SachimaAdapter.send()` now emits canonical v1 delivery callback envelopes for both local fallback and configured callback URLs:
 
 ```json
 {
+  "schema_version": "sachima.v1",
+  "message_id": "sachima-delivery-1",
   "chat_id": "chat-1",
-  "content": "hello from Hermes",
-  "reply_to": "msg-1",
+  "user_id": "sachima-hermes",
+  "role": "assistant",
+  "text": "hello from Hermes",
+  "reply_to_message_id": "msg-1",
   "metadata": {"thread_id": "thread-1"}
 }
 ```
 
-This is legacy implementation documentation, not the canonical external protocol. New controlled external integrations should follow `docs/protocols/sachima-envelope-v1.md`, use `SACHIMA_DELIVERY_URL`, sign delivery callbacks with v1 HMAC headers, and emit canonical `text` after the separately approved implementation phase.
+Configured HTTP callbacks use `SACHIMA_DELIVERY_URL` first and the deprecated `SACHIMA_SEND_URL` fallback only during migration. When `SACHIMA_WEBHOOK_SECRET` is configured, delivery callbacks include v1 HMAC headers over the exact transmitted JSON body.
 
-A `2xx` response currently means the configured receiver accepted the HTTP callback. It does not prove browser-visible, user-visible, or real IM delivery.
+A `2xx` response means the configured receiver accepted the HTTP callback. It does not prove browser-visible, user-visible, or real IM delivery.
 
 ## Phase B local fake-send simulator
 
@@ -268,7 +302,7 @@ See `docs/runbooks/sachima-fake-send-simulator.md` for the full contract.
 Adapter/unit verification:
 
 ```bash
-pytest tests/gateway/test_sachima_platform.py tests/gateway/platforms/test_sachima.py -q
+scripts/run_tests.sh tests/gateway/platforms/test_sachima.py tests/gateway/test_sachima_platform.py tests/gateway/test_sachima_fake_send_simulator.py tests/gateway/test_sachima_fake_send_surface_contract.py -q
 ```
 
 Local adapter-only smoke test, no real LLM:
@@ -293,11 +327,11 @@ Expected successful real-gateway output includes:
     "body": {"ok": true, "message_id": "real-gateway-msg-1"}
   },
   "received_sends": [
-    {"content": "...home channel..."},
-    {"content": "sachima-gateway-ok", "reply_to": "real-gateway-msg-1"}
+    {"text": "...home channel..."},
+    {"text": "sachima-gateway-ok", "reply_to_message_id": "real-gateway-msg-1"}
   ],
   "matched": true
 }
 ```
 
-The optional home-channel notice is normal in the isolated temporary gateway home; the success criterion is the later `sachima-gateway-ok` delivery through `SACHIMA_SEND_URL`.
+The optional home-channel notice is normal in the isolated temporary gateway home; the success criterion is the later `sachima-gateway-ok` delivery through the configured Sachima delivery callback URL.

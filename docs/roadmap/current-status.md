@@ -11,7 +11,9 @@ latest_design_packet: P4 Sachima Envelope v1 / agentic-ui controlled external in
 latest_design_packet_doc: docs/plans/2026-05-12-sachima-envelope-v1-agentic-ui-p4-design-packet.md
 latest_protocol_repo: jovijovi/sachima-protocols
 latest_protocol_spec: https://github.com/jovijovi/sachima-protocols/blob/main/protocols/envelope/v1.md
-current_position: P4 design packet delivered — implementation not approved; protocol text promoted to sachima-protocols
+latest_protocol_implementation: P4 Sachima Envelope v1 local conformance implementation (Sachima-side)
+latest_protocol_implementation_doc: docs/dev_log/2026-05-13-sachima-envelope-v1-local-conformance-implementation.md
+current_position: P4 Sachima-side local conformance implemented; agentic-ui/cross-repo conformance pending; live/public/real delivery not approved
 ```
 
 ## Canonical references
@@ -23,6 +25,7 @@ current_position: P4 design packet delivered — implementation not approved; pr
 - Local protocol pointer: `docs/protocols/sachima-envelope-v1.md`
 - Latest P4 design packet: `docs/plans/2026-05-12-sachima-envelope-v1-agentic-ui-p4-design-packet.md`
 - Latest P4 design dev log: `docs/dev_log/2026-05-12-sachima-envelope-v1-agentic-ui-p4-design-packet.md`
+- Latest Sachima-side v1 implementation dev log: `docs/dev_log/2026-05-13-sachima-envelope-v1-local-conformance-implementation.md`
 - PE-2 design packet: `docs/plans/2026-05-12-flowweaver-pe2-design-packet.md`
 - Latest PE-2A dev log: `docs/dev_log/2026-05-12-flowweaver-pe2a-controlled-runtime-fake-delivery.md`
 
@@ -45,7 +48,7 @@ If this file is stale or contradicts a requested task, stop and report the drift
 | P2 — Fake-send / simulator delivery loop | Done | PR #79 design, PR #80 implementation; merge `10486c7c585974dce3f37c74437ada3419d67904` for implementation | Fake delivery and ACK semantics proven locally; does not approve real delivery |
 | P3 — PE-2 design packet only | Done | PR #81, merge `84f6a9010d72fe6ab3a0dac4ecaea3c3fb252ddf` | May request separately approved PE-2A implementation; not live or real ingress |
 | Bridge — PE-2A controlled runtime + fake delivery | Done | PR #82, merge `1f587a0b0355f7eb18a2cdff64bc1bc93ea109dd` | Controlled local runtime-delivery bridge proven with fake delivery; does not approve real external ingress |
-| P4 — Controlled external ingress | Design packet delivered; implementation not started | `jovijovi/sachima-protocols` → `protocols/envelope/v1.md`; local pointer `docs/protocols/sachima-envelope-v1.md`; `docs/plans/2026-05-12-sachima-envelope-v1-agentic-ui-p4-design-packet.md` | Canonical external envelope and agentic-ui conformance target defined; implementation/live/exposure still require separate approval |
+| P4 — Controlled external ingress | Sachima-side local conformance implemented; agentic-ui/cross-repo pending | `jovijovi/sachima-protocols` → `protocols/envelope/v1.md`; local pointer `docs/protocols/sachima-envelope-v1.md`; design packet `docs/plans/2026-05-12-sachima-envelope-v1-agentic-ui-p4-design-packet.md`; implementation dev log `docs/dev_log/2026-05-13-sachima-envelope-v1-local-conformance-implementation.md` | Canonical external envelope has Sachima-side local implementation; agentic-ui conformance, public exposure, live ingress, and real delivery still require separate approval |
 | P5 — Production durable runtime integration | Pending | Not started | Blocked until P4/P5 approvals and runtime design gates |
 | P6 — Controlled AI FLOW execution | Pending | Not started | Blocked until durable runtime and safety gates |
 | P7 — Real delivery and ACK closure | Pending | Not started | Blocked until fake/local delivery and AI FLOW gates are production-ready and separately approved |
@@ -81,7 +84,7 @@ Runtime evidence stays outside PR payloads unless a phase explicitly approves ve
 |---|---|---|---:|---:|---|---|---|
 | ROADMAP-WATCH-8788 | WATCH | PE-1D used fallback loopback `18788` because default `8788` was occupied by an existing Gateway. Exact default-port behavior is not proven for external ingress or live claims. | No | No | Real external ingress, exact-port live claim, or maintenance-window work | Separate maintenance-window approval and exact-port rerun without opportunistic Gateway restart | Open |
 | ROADMAP-NEXT-P4-DESIGN | NEXT_PHASE | Controlled external ingress should start with a design packet before implementation. | No | No | P4 implementation request | `jovijovi/sachima-protocols` (`protocols/envelope/v1.md`) and `docs/plans/2026-05-12-sachima-envelope-v1-agentic-ui-p4-design-packet.md` | Closed by design packet |
-| ROADMAP-NEXT-P4-ENV-V1-CONFORMANCE | NEXT_PHASE | Implement Sachima Envelope v1 local conformance across Sachima and agentic-ui without live/public ingress or real delivery. | No | Yes | Any P4 behavior-bearing implementation claim | Canonical spec in `jovijovi/sachima-protocols` (`protocols/envelope/v1.md`), separate implementation approval, local-only conformance tests, HMAC/schema/no-leak probes, review blockers zero | Open |
+| ROADMAP-NEXT-P4-ENV-V1-CONFORMANCE | NEXT_PHASE | Implement Sachima Envelope v1 local conformance across Sachima and agentic-ui without live/public ingress or real delivery. | No | Yes | Any P4 behavior-bearing implementation claim | Canonical spec in `jovijovi/sachima-protocols` (`protocols/envelope/v1.md`), separate implementation approval, local-only conformance tests, HMAC/schema/no-leak probes, review blockers zero | Open — Sachima-side local implementation delivered; agentic-ui and cross-repo probes pending |
 | ROADMAP-WATCH-STATUS-DASHBOARD | WATCH | This dashboard is the living progress index and must be updated after roadmap/phase closure. | No | No | Any claim of phase closure or next-phase readiness | Update this file or explain N/A in the PR | Open |
 
 ## Explicit non-approvals
@@ -109,16 +112,18 @@ reverse_proxy_or_tls_config_write
 Recommended next work:
 
 ```text
-Sachima Envelope v1 local conformance implementation only
+agentic-ui Sachima Envelope v1 local conformance and cross-repo probes only
 ```
 
 Suggested approval text:
 
 ```text
-approve_p4_sachima_envelope_v1_local_conformance_implementation_no_live_no_public_ingress_no_real_delivery
+approve_p4_agentic_ui_sachima_envelope_v1_local_conformance_and_cross_repo_probes_no_live_no_public_ingress_no_real_delivery
 ```
 
-This approval would allow local-only implementation and conformance probes for Sachima Envelope v1 across Sachima and agentic-ui. It would not approve public exposure, Gateway restart/reload, production config writes, real external delivery, real AI FLOW execution, Temporal service/Worker lifecycle, or live/default-on behavior.
+This approval would allow agentic-ui-side local conformance implementation and cross-repo probes for Sachima Envelope v1 after the Sachima-side local implementation. It would not approve public exposure, Gateway restart/reload, production config writes, real external delivery, real AI FLOW execution, Temporal service/Worker lifecycle, or live/default-on behavior.
+
+FlowWeaver continuity note: Sachima protocol work is a high-priority insertion, not a cancellation or shelving of the existing FlowWeaver roadmap.
 
 ## Drift guard
 
@@ -127,7 +132,7 @@ Do not infer any of these from the completed phases:
 - PE-2A fake delivery success does not prove real delivery safety.
 - Loopback/synthetic ingress success does not prove public external ingress safety.
 - A design packet does not approve implementation.
-- Sachima Envelope v1 design approval does not approve public external ingress or real delivery.
+- Sachima Envelope v1 Sachima-side local conformance does not approve agentic-ui conformance, cross-repo probes, public external ingress, or real delivery.
 - Callback HTTP 2xx means receiver acceptance only; it does not prove browser-visible or IM-visible delivery.
 - A local runtime bridge does not approve production durable runtime ownership.
 - ACK evidence from fake-send does not approve real IM ACK reconciliation.

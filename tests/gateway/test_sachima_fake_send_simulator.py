@@ -43,6 +43,32 @@ def test_fake_send_records_surfaces_and_returns_ack_from_received_request() -> N
     assert rows[0]["reply_to_present"] is True
 
 
+def test_fake_send_records_v1_delivery_callback_text() -> None:
+    simulator = FakeSachimaSendSimulator()
+
+    response = simulator.record_send(
+        {
+            "schema_version": "sachima.v1",
+            "message_id": "sachima-delivery-0001",
+            "chat_id": "phase-b-local-chat",
+            "user_id": "sachima-hermes",
+            "role": "assistant",
+            "text": "任务：Phase B fake-send proof",
+            "reply_to_message_id": "phase-b-local-message-1",
+            "metadata": {
+                "surface": "final_text",
+                "delivery_ref": "runtime_delivery_0",
+                "idempotency_key": "v1-k1",
+            },
+        }
+    )
+
+    assert response["ok"] is True
+    row = simulator.transcript()[0]
+    assert row["reply_to_present"] is True
+    assert row["content_preview"] == "任务：Phase B fake-send proof"
+
+
 def test_fake_send_duplicate_idempotency_key_reuses_ack_without_new_transcript_row() -> None:
     simulator = FakeSachimaSendSimulator()
     payload = _payload(surface="rich_card", delivery_ref="runtime_delivery_0", key="same-key")

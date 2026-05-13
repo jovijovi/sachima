@@ -19,6 +19,7 @@ def test_sachima_env_override_enables_platform(monkeypatch):
     monkeypatch.setenv("SACHIMA_WEBHOOK_HOST", "127.0.0.1")
     monkeypatch.setenv("SACHIMA_WEBHOOK_PORT", "8788")
     monkeypatch.setenv("SACHIMA_WEBHOOK_PATH", "/webhook/sachima")
+    monkeypatch.setenv("SACHIMA_DELIVERY_URL", "http://127.0.0.1:9000/delivery")
     monkeypatch.setenv("SACHIMA_SEND_URL", "http://127.0.0.1:9000/send")
     monkeypatch.setenv("SACHIMA_ALLOWED_USERS", "dog,cat")
 
@@ -31,6 +32,7 @@ def test_sachima_env_override_enables_platform(monkeypatch):
     assert sachima_config.extra["webhook_host"] == "127.0.0.1"
     assert sachima_config.extra["webhook_port"] == 8788
     assert sachima_config.extra["webhook_path"] == "/webhook/sachima"
+    assert sachima_config.extra["delivery_url"] == "http://127.0.0.1:9000/delivery"
     assert sachima_config.extra["send_url"] == "http://127.0.0.1:9000/send"
     assert sachima_config.extra["allowed_users"] == ["dog", "cat"]
     assert Platform.SACHIMA in config.get_connected_platforms()
