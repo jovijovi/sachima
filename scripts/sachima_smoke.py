@@ -7,10 +7,10 @@ This starts:
 
 It then exercises:
 - unsigned request rejection when a secret is configured
-- signed flat payload dispatch
+- signed v1 payload dispatch
 - message_id dedupe
-- signed nested payload dispatch
-- outbound send_url POST behavior
+- signed legacy nested payload dispatch
+- outbound v1 delivery callback behavior
 """
 
 from __future__ import annotations
@@ -82,7 +82,7 @@ async def main() -> None:
                 "webhook_port": webhook_port,
                 "webhook_path": "/webhook/sachima",
                 "webhook_secret": SECRET,
-                "send_url": f"http://127.0.0.1:{send_port}/send",
+                "delivery_url": f"http://127.0.0.1:{send_port}/send",
             },
         )
     )
@@ -113,8 +113,15 @@ async def main() -> None:
             ) as response:
                 unsigned = {"status": response.status, "body": await response.json()}
 
-            # 2. Signed flat payload should dispatch.
-            flat_payload = {"message_id": "msg-1", "text": "hello flat", "chat_id": "chat-1", "user_id": "user-1"}
+            # 2. Signed v1 payload should dispatch.
+            flat_payload = {
+                "schema_version": "sachima.v1",
+                "message_id": "msg-1",
+                "chat_id": "chat-1",
+                "user_id": "user-1",
+                "role": "user",
+                "text": "hello flat",
+            }
             body, headers = signed_body(flat_payload)
             async with session.post(webhook_url, data=body, headers=headers) as response:
                 flat = {"status": response.status, "body": await response.json()}
@@ -165,9 +172,13 @@ async def main() -> None:
         assert send_result.message_id == "fake-send-1"
         assert received_sends == [
             {
+                "schema_version": "sachima.v1",
+                "message_id": "sachima-delivery-1",
                 "chat_id": "chat-1",
-                "content": "hello from Hermes",
-                "reply_to": "msg-1",
+                "user_id": "sachima-hermes",
+                "role": "assistant",
+                "text": "hello from Hermes",
+                "reply_to_message_id": "msg-1",
                 "metadata": {"thread_id": "thread-1"},
             }
         ]

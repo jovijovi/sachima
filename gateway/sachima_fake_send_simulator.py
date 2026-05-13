@@ -68,7 +68,9 @@ class FakeSachimaSendSimulator:
 
         if not isinstance(payload, dict):
             return self._error("invalid_payload")
-        if self._unsafe(payload) or self._unsafe_content(payload.get("content")):
+        content = payload.get("text") if "text" in payload else payload.get("content")
+        reply_to = payload.get("reply_to_message_id") or payload.get("reply_to")
+        if self._unsafe(payload) or self._unsafe_content(content):
             return self._error("unsafe_material")
 
         raw_metadata = payload.get("metadata")
@@ -92,7 +94,7 @@ class FakeSachimaSendSimulator:
             surface=surface,
             delivery_ref=delivery_ref,
             artifact_ref=artifact_ref,
-            content=payload.get("content"),
+            content=content,
         )
         if key and key in self._by_idempotency:
             if self._idempotency_signatures.get(key) != signature:
@@ -110,9 +112,9 @@ class FakeSachimaSendSimulator:
             "message_id": message_id,
             "delivery_ref": delivery_ref,
             "artifact_ref": artifact_ref,
-            "reply_to_present": bool(payload.get("reply_to")),
-            "content_digest": self._digest(payload.get("content")),
-            "content_preview": self._preview(payload.get("content")),
+            "reply_to_present": bool(reply_to),
+            "content_digest": self._digest(content),
+            "content_preview": self._preview(content),
             "ack_ref": ack_ref,
             "status": "sent",
         }

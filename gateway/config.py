@@ -1238,6 +1238,9 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         webhook_path = os.getenv("SACHIMA_WEBHOOK_PATH", "").strip()
         if webhook_path:
             sachima_config.extra["webhook_path"] = webhook_path if webhook_path.startswith("/") else f"/{webhook_path}"
+        delivery_url = os.getenv("SACHIMA_DELIVERY_URL", "").strip()
+        if delivery_url:
+            sachima_config.extra["delivery_url"] = delivery_url
         send_url = os.getenv("SACHIMA_SEND_URL", "").strip()
         if send_url:
             sachima_config.extra["send_url"] = send_url

@@ -374,9 +374,13 @@ async def test_send_without_send_url_records_local_outbound_message():
     assert result.message_id == "sachima-local-1"
     assert adapter.sent_messages == [
         {
+            "schema_version": "sachima.v1",
+            "message_id": "sachima-local-1",
             "chat_id": "chat-1",
-            "content": "hello from Hermes",
-            "reply_to": "msg-1",
+            "user_id": "sachima-hermes",
+            "role": "assistant",
+            "text": "hello from Hermes",
+            "reply_to_message_id": "msg-1",
             "metadata": {"thread_id": "thread-1"},
         }
     ]
@@ -394,9 +398,12 @@ async def test_send_without_send_url_chunks_long_outbound_message():
     assert result.message_id == f"sachima-local-{len(adapter.sent_messages)}"
     assert len(adapter.sent_messages) > 1
     assert all(message["chat_id"] == "chat-1" for message in adapter.sent_messages)
-    assert all(message["reply_to"] == "msg-1" for message in adapter.sent_messages)
+    assert all(message["schema_version"] == "sachima.v1" for message in adapter.sent_messages)
+    assert all(message["role"] == "assistant" for message in adapter.sent_messages)
+    assert all(message["reply_to_message_id"] == "msg-1" for message in adapter.sent_messages)
     assert all(message["metadata"] == {"thread_id": "thread-1"} for message in adapter.sent_messages)
-    assert all(len(message["content"]) <= adapter.max_message_length for message in adapter.sent_messages)
+    assert all(len(message["text"]) <= adapter.max_message_length for message in adapter.sent_messages)
+    assert all("content" not in message for message in adapter.sent_messages)
 
 
 @pytest.mark.asyncio
@@ -484,17 +491,273 @@ async def test_webhook_listener_rejects_malformed_json(unused_tcp_port):
         await adapter.disconnect()
 
 
-def _signed_sachima_request(payload: dict, secret: str) -> tuple[bytes, dict[str, str]]:
+def _signed_sachima_request(
+    payload: dict,
+    secret: str,
+    *,
+    timestamp: int | None = None,
+) -> tuple[bytes, dict[str, str]]:
     body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
-    timestamp = str(int(time.time()))
+    timestamp_text = str(int(time.time()) if timestamp is None else timestamp)
     signature = hmac.new(
-        secret.encode("utf-8"), f"{timestamp}.".encode("utf-8") + body, hashlib.sha256
+        secret.encode("utf-8"), f"{timestamp_text}.".encode("utf-8") + body, hashlib.sha256
     ).hexdigest()
     return body, {
         "Content-Type": "application/json",
-        "X-Sachima-Timestamp": timestamp,
+        "X-Sachima-Timestamp": timestamp_text,
         "X-Sachima-Signature": signature,
     }
+
+
+def test_build_event_from_v1_ingress_normalizes_content_alias_to_text():
+    """v1 may accept deprecated content only as a migration alias normalized to text."""
+    adapter = SachimaAdapter(PlatformConfig(enabled=True))
+
+    event = adapter.build_event_from_payload(
+        {
+            "schema_version": "sachima.v1",
+            "message_id": "client-msg-1",
+            "chat_id": "chat-1",
+            "user_id": "user-1",
+            "role": "user",
+            "content": "legacy alias text",
+        }
+    )
+
+    assert event.text == "legacy alias text"
+    assert event.raw_message["text"] == "legacy alias text"
+    assert "content" not in event.raw_message
+
+
+@pytest.mark.parametrize(
+    ("override", "match"),
+    [
+        ({"schema_version": "sachima.v2"}, "schema_version"),
+        ({"role": "assistant"}, "role"),
+        ({"message_id": ""}, "message_id"),
+    ],
+)
+def test_build_event_from_v1_ingress_rejects_nonconforming_envelope(override, match):
+    """v1 ingress must fail closed on schema, direction role, and required identity fields."""
+    adapter = SachimaAdapter(PlatformConfig(enabled=True))
+    payload = {
+        "schema_version": "sachima.v1",
+        "message_id": "client-msg-1",
+        "chat_id": "chat-1",
+        "user_id": "user-1",
+        "role": "user",
+        "text": "hello",
+    }
+    payload.update(override)
+
+    with pytest.raises(SachimaPayloadError, match=match):
+        adapter.build_event_from_payload(payload)
+
+
+@pytest.mark.asyncio
+async def test_webhook_listener_rejects_disallowed_v1_user(unused_tcp_port):
+    """Configured v1 user allowlists should fail closed before Hermes dispatch."""
+    aiohttp = pytest.importorskip("aiohttp")
+    payload = {
+        "schema_version": "sachima.v1",
+        "message_id": "client-msg-1",
+        "chat_id": "chat-1",
+        "user_id": "intruder",
+        "role": "user",
+        "text": "blocked",
+    }
+    adapter = SachimaAdapter(
+        PlatformConfig(
+            enabled=True,
+            extra={
+                "webhook_host": "127.0.0.1",
+                "webhook_port": unused_tcp_port,
+                "webhook_path": "/webhook/sachima",
+                "allowed_users": ["dog-brother"],
+            },
+        )
+    )
+    adapter.handle_webhook_payload = AsyncMock()
+
+    assert await adapter.connect() is True
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"http://127.0.0.1:{unused_tcp_port}/webhook/sachima",
+                json=payload,
+            ) as response:
+                response_body = await response.json()
+
+        assert response.status == 403
+        assert response_body == {"ok": False, "error": "forbidden"}
+        adapter.handle_webhook_payload.assert_not_called()
+    finally:
+        await adapter.disconnect()
+
+
+def test_delivery_url_takes_precedence_over_deprecated_send_url():
+    """Canonical SACHIMA_DELIVERY_URL must win over deprecated SACHIMA_SEND_URL."""
+    adapter = SachimaAdapter(
+        PlatformConfig(
+            enabled=True,
+            extra={
+                "delivery_url": "http://127.0.0.1:9000/delivery",
+                "send_url": "http://127.0.0.1:9000/send",
+            },
+        )
+    )
+
+    assert adapter._delivery_url() == "http://127.0.0.1:9000/delivery"
+
+
+@pytest.mark.asyncio
+async def test_send_without_delivery_url_records_v1_delivery_callback_locally():
+    """Local fallback should record canonical v1 delivery callback envelopes, not legacy content."""
+    adapter = SachimaAdapter(PlatformConfig(enabled=True))
+
+    result = await adapter.send(
+        "chat-1",
+        "hello from Hermes",
+        reply_to="msg-1",
+        metadata={"thread_id": "thread-1", "delivery_ref": "runtime_delivery_0"},
+    )
+
+    assert result.success is True
+    assert result.message_id == "sachima-local-1"
+    assert adapter.sent_messages == [
+        {
+            "schema_version": "sachima.v1",
+            "message_id": "sachima-local-1",
+            "chat_id": "chat-1",
+            "user_id": "sachima-hermes",
+            "role": "assistant",
+            "text": "hello from Hermes",
+            "reply_to_message_id": "msg-1",
+            "metadata": {"thread_id": "thread-1", "delivery_ref": "runtime_delivery_0"},
+        }
+    ]
+    assert "content" not in adapter.sent_messages[0]
+
+
+@pytest.mark.asyncio
+async def test_send_with_delivery_url_posts_v1_callback_with_hmac_signature(unused_tcp_port):
+    """Canonical delivery URLs should receive signed Sachima Envelope v1 callbacks."""
+    web = pytest.importorskip("aiohttp.web")
+    secret = "dev-secret"
+    received = []
+
+    async def handle_delivery(request):
+        raw_body = await request.read()
+        timestamp = request.headers["X-Sachima-Timestamp"]
+        expected = hmac.new(
+            secret.encode("utf-8"), f"{timestamp}.".encode("utf-8") + raw_body, hashlib.sha256
+        ).hexdigest()
+        assert request.headers["X-Sachima-Signature"] == expected
+        received.append(json.loads(raw_body.decode("utf-8")))
+        return web.json_response({"ok": True}, headers={"X-Sachima-Message-Id": "accepted-1"})
+
+    app = web.Application()
+    app.router.add_post("/delivery", handle_delivery)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "127.0.0.1", unused_tcp_port)
+    await site.start()
+    try:
+        adapter = SachimaAdapter(
+            PlatformConfig(
+                enabled=True,
+                extra={
+                    "delivery_url": f"http://127.0.0.1:{unused_tcp_port}/delivery",
+                    "webhook_secret": secret,
+                },
+            )
+        )
+
+        result = await adapter.send(
+            "chat-1", "hello from Hermes", reply_to="msg-1", metadata={"delivery_ref": "runtime_delivery_0"}
+        )
+
+        assert result.success is True
+        assert result.message_id == "accepted-1"
+        assert received == [
+            {
+                "schema_version": "sachima.v1",
+                "message_id": "sachima-delivery-1",
+                "chat_id": "chat-1",
+                "user_id": "sachima-hermes",
+                "role": "assistant",
+                "text": "hello from Hermes",
+                "reply_to_message_id": "msg-1",
+                "metadata": {"delivery_ref": "runtime_delivery_0"},
+            }
+        ]
+    finally:
+        await runner.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_webhook_listener_rejects_v1_hmac_replay_and_body_mismatch(unused_tcp_port):
+    """v1 ingress must reject stale/future/millisecond timestamps and raw-body mismatches."""
+    aiohttp = pytest.importorskip("aiohttp")
+    secret = "dev-secret"
+    payload = {
+        "schema_version": "sachima.v1",
+        "message_id": "client-msg-1",
+        "chat_id": "chat-1",
+        "user_id": "user-1",
+        "role": "user",
+        "text": "hello",
+    }
+    now = int(time.time())
+    cases = []
+    for timestamp in (now - 1000, now + 1000, now * 1000):
+        cases.append(_signed_sachima_request(payload, secret, timestamp=timestamp))
+    signed_body, signed_headers = _signed_sachima_request(payload, secret, timestamp=now)
+    cases.append((signed_body.replace(b"hello", b"tampered"), signed_headers))
+    pretty_body = json.dumps(payload, indent=2).encode("utf-8")
+    pretty_signature = hmac.new(
+        secret.encode("utf-8"), f"{now}.".encode("utf-8") + pretty_body, hashlib.sha256
+    ).hexdigest()
+    compact_body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    cases.append(
+        (
+            compact_body,
+            {
+                "Content-Type": "application/json",
+                "X-Sachima-Timestamp": str(now),
+                "X-Sachima-Signature": pretty_signature,
+            },
+        )
+    )
+
+    adapter = SachimaAdapter(
+        PlatformConfig(
+            enabled=True,
+            extra={
+                "webhook_host": "127.0.0.1",
+                "webhook_port": unused_tcp_port,
+                "webhook_path": "/webhook/sachima",
+                "webhook_secret": secret,
+            },
+        )
+    )
+    adapter.handle_webhook_payload = AsyncMock()
+
+    assert await adapter.connect() is True
+    try:
+        async with aiohttp.ClientSession() as session:
+            for body, headers in cases:
+                async with session.post(
+                    f"http://127.0.0.1:{unused_tcp_port}/webhook/sachima",
+                    data=body,
+                    headers=headers,
+                ) as response:
+                    response_body = await response.json()
+                    assert response.status == 401
+                    assert response_body["ok"] is False
+        adapter.handle_webhook_payload.assert_not_called()
+    finally:
+        await adapter.disconnect()
 
 
 @pytest.mark.asyncio
@@ -632,9 +895,13 @@ async def test_send_with_send_url_posts_json_to_external_endpoint(unused_tcp_por
         assert result.message_id == "sent-1"
         assert received == [
             {
+                "schema_version": "sachima.v1",
+                "message_id": "sachima-delivery-1",
                 "chat_id": "chat-1",
-                "content": "hello from Hermes",
-                "reply_to": "msg-1",
+                "user_id": "sachima-hermes",
+                "role": "assistant",
+                "text": "hello from Hermes",
+                "reply_to_message_id": "msg-1",
                 "metadata": {"thread_id": "thread-1"},
             }
         ]
@@ -673,9 +940,12 @@ async def test_send_with_send_url_chunks_long_outbound_message(unused_tcp_port):
         assert result.message_id == f"sent-{len(received)}"
         assert len(received) > 1
         assert all(message["chat_id"] == "chat-1" for message in received)
-        assert all(message["reply_to"] == "msg-1" for message in received)
+        assert all(message["schema_version"] == "sachima.v1" for message in received)
+        assert all(message["role"] == "assistant" for message in received)
+        assert all(message["reply_to_message_id"] == "msg-1" for message in received)
         assert all(message["metadata"] == {"thread_id": "thread-1"} for message in received)
-        assert all(len(message["content"]) <= adapter.max_message_length for message in received)
+        assert all(len(message["text"]) <= adapter.max_message_length for message in received)
+        assert all("content" not in message for message in received)
     finally:
         await runner.cleanup()
 

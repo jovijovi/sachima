@@ -97,7 +97,7 @@ async def main() -> None:
         async def fake_send(request: web.Request) -> web.Response:
             payload = await request.json()
             received_sends.append(payload)
-            if EXPECTED in str(payload.get("content", "")):
+            if EXPECTED in str(payload.get("text", "")):
                 response_event.set()
             return web.json_response(
                 {"ok": True, "received": len(received_sends)},
@@ -120,7 +120,7 @@ async def main() -> None:
                         "webhook_port": webhook_port,
                         "webhook_path": "/webhook/sachima",
                         "webhook_secret": SECRET,
-                        "send_url": f"http://127.0.0.1:{send_port}/send",
+                        "delivery_url": f"http://127.0.0.1:{send_port}/send",
                     },
                 )
             },
@@ -137,12 +137,14 @@ async def main() -> None:
             prompt = f"请只回复：{EXPECTED}"
             body, headers = signed_body(
                 {
+                    "schema_version": "sachima.v1",
                     "message_id": "real-gateway-msg-1",
-                    "text": prompt,
                     "chat_id": "sachima-lab-chat",
+                    "user_id": "dog-bro",
+                    "role": "user",
+                    "text": prompt,
                     "chat_name": "Sachima Lab",
                     "chat_type": "dm",
-                    "user_id": "dog-bro",
                     "user_name": "狗哥",
                 }
             )
@@ -168,7 +170,7 @@ async def main() -> None:
                 "webhook_response": {"status": webhook_status, "body": webhook_body},
                 "received_sends": received_sends,
                 "expected": EXPECTED,
-                "matched": any(EXPECTED in str(msg.get("content", "")) for msg in received_sends),
+                "matched": any(EXPECTED in str(msg.get("text", "")) for msg in received_sends),
             }
             print(json.dumps(report, ensure_ascii=False, indent=2))
 

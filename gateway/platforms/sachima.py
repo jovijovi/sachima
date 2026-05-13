@@ -40,6 +40,9 @@ DEFAULT_MAX_MESSAGE_LENGTH = 4000
 MIN_MAX_MESSAGE_LENGTH = 50
 DEFAULT_MAX_INBOUND_MEDIA_BYTES = 10 * 1024 * 1024
 IMAGE_PLACEHOLDER_TEXT = "[Image]"
+SACHIMA_SCHEMA_VERSION = "sachima.v1"
+SACHIMA_ASSISTANT_USER_ID = "sachima-hermes"
+MAX_ENVELOPE_ID_LENGTH = 256
 SUPPORTED_IMAGE_MIME_EXTENSIONS = {
     "image/png": ".png",
     "image/jpeg": ".jpg",
@@ -158,6 +161,14 @@ class SachimaAdapter(BasePlatformAdapter):
         if not isinstance(payload, dict):
             return web.json_response({"ok": False, "error": "JSON body must be an object"}, status=400)
 
+        try:
+            payload = self._normalize_ingress_payload(payload)
+        except SachimaPayloadError as exc:
+            return web.json_response({"ok": False, "error": str(exc)}, status=400)
+
+        if not self._is_allowed_ingress_user(payload):
+            return web.json_response({"ok": False, "error": "forbidden"}, status=403)
+
         duplicate_key = self._dedupe_key_from_payload(payload)
         if duplicate_key and self._is_duplicate(duplicate_key):
             return web.json_response(
@@ -235,13 +246,70 @@ class SachimaAdapter(BasePlatformAdapter):
         for key in expired:
             self._seen_messages.pop(key, None)
 
+    def _normalize_ingress_payload(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Normalize and validate Sachima Envelope v1 ingress payloads.
+
+        Pre-v1 local/legacy payloads remain accepted for existing loopback tests.
+        Once ``schema_version`` is present, v1 validation is fail-closed.
+        """
+        if payload.get("schema_version") in (None, ""):
+            return payload
+
+        normalized = dict(payload)
+        if normalized.get("schema_version") != SACHIMA_SCHEMA_VERSION:
+            raise SachimaPayloadError("Invalid Sachima v1 schema_version")
+        if normalized.get("role") != "user":
+            raise SachimaPayloadError("Invalid Sachima v1 ingress role")
+
+        for field in ("message_id", "chat_id", "user_id"):
+            value = normalized.get(field)
+            if not isinstance(value, str) or not value or len(value) > MAX_ENVELOPE_ID_LENGTH:
+                raise SachimaPayloadError(f"Invalid Sachima v1 ingress field: {field}")
+
+        text = normalized.get("text")
+        content = normalized.get("content")
+        if text in (None, "") and content not in (None, ""):
+            if not isinstance(content, str):
+                raise SachimaPayloadError("Invalid Sachima v1 deprecated content alias")
+            normalized["text"] = content
+        elif text not in (None, "") and not isinstance(text, str):
+            raise SachimaPayloadError("Invalid Sachima v1 text field")
+        normalized.pop("content", None)
+
+        attachments = normalized.get("attachments") or []
+        if "attachments" in normalized and not isinstance(normalized["attachments"], list):
+            raise SachimaPayloadError("Sachima attachments must be a list")
+        if normalized.get("text") in (None, "") and not attachments:
+            raise SachimaPayloadError("Missing required Sachima v1 ingress field: text")
+        return normalized
+
+    def _is_allowed_ingress_user(self, payload: Dict[str, Any]) -> bool:
+        """Return whether an ingress sender is allowed by local Sachima config."""
+        extra = self.config.extra or {}
+        if extra.get("allow_all_users") is True:
+            return True
+        raw_allowed_users = extra.get("allowed_users") or []
+        if isinstance(raw_allowed_users, str):
+            allowed_users = [user.strip() for user in raw_allowed_users.split(",") if user.strip()]
+        elif isinstance(raw_allowed_users, (list, tuple, set, frozenset)):
+            allowed_users = list(raw_allowed_users)
+        else:
+            allowed_users = []
+        if not allowed_users:
+            return True
+        allowed = {str(user).strip() for user in allowed_users if str(user).strip()}
+        user_id = self._payload_value(payload, "user_id", "user", "id")
+        return str(user_id) in allowed
+
     def build_event_from_payload(self, payload: Dict[str, Any]) -> MessageEvent:
         """Normalize a Sachima webhook payload into a Hermes MessageEvent."""
+        payload = self._normalize_ingress_payload(payload)
         media_urls, media_types = self._extract_base64_image_media(payload, reject_urls=True)
         return self._message_event_from_payload(payload, media_urls, media_types)
 
     async def _build_event_from_payload_async(self, payload: Dict[str, Any]) -> MessageEvent:
         """Normalize payload, including URL-backed images that need async download."""
+        payload = self._normalize_ingress_payload(payload)
         media_urls, media_types = self._extract_base64_image_media(payload, reject_urls=False)
         url_media_urls, url_media_types = await self._extract_url_image_media(payload)
         media_urls.extend(url_media_urls)
@@ -447,6 +515,53 @@ class SachimaAdapter(BasePlatformAdapter):
         await self.handle_message(event)
         return event
 
+    def _delivery_url(self) -> str:
+        """Return the canonical delivery URL, falling back to deprecated send_url."""
+        extra = self.config.extra or {}
+        return str(extra.get("delivery_url") or extra.get("send_url") or "").strip()
+
+    def _delivery_payload(
+        self,
+        *,
+        message_id: str,
+        chat_id: str,
+        text: str,
+        reply_to: Optional[str],
+        metadata: Optional[Dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Build a canonical Sachima Envelope v1 delivery callback payload."""
+        return {
+            "schema_version": SACHIMA_SCHEMA_VERSION,
+            "message_id": message_id,
+            "chat_id": str(chat_id),
+            "user_id": SACHIMA_ASSISTANT_USER_ID,
+            "role": "assistant",
+            "text": text,
+            "reply_to_message_id": reply_to,
+            "metadata": metadata or {},
+        }
+
+    def _json_body(self, payload: dict[str, Any]) -> bytes:
+        """Serialize a v1 envelope once so HMAC signs the exact transmitted body."""
+        return json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+
+    def _signed_delivery_headers(self, raw_body: bytes) -> dict[str, str]:
+        """Return JSON/HMAC headers for a delivery callback body."""
+        headers = {"Content-Type": "application/json"}
+        secret = str((self.config.extra or {}).get("webhook_secret") or "").strip()
+        if secret:
+            timestamp = str(int(time.time()))
+            headers["X-Sachima-Timestamp"] = timestamp
+            headers["X-Sachima-Signature"] = hmac.new(
+                secret.encode("utf-8"),
+                f"{timestamp}.".encode("utf-8") + raw_body,
+                hashlib.sha256,
+            ).hexdigest()
+        api_key = str(self.config.api_key or (self.config.extra or {}).get("api_key") or "").strip()
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+        return headers
+
     async def send(
         self,
         chat_id: str,
@@ -454,19 +569,21 @@ class SachimaAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Send a Sachima message or record it locally when no send URL exists."""
+        """Send a Sachima Envelope v1 delivery callback or record it locally."""
         chunks = self.truncate_message(content, self.max_message_length)
-        send_url = str(self.config.extra.get("send_url") or "").strip()
-        if not send_url:
+        delivery_url = self._delivery_url()
+        if not delivery_url:
             last_outbound: dict[str, Any] | None = None
             for chunk in chunks:
-                outbound = {
-                    "chat_id": str(chat_id),
-                    "content": chunk,
-                    "reply_to": reply_to,
-                    "metadata": metadata or {},
-                }
                 self._local_message_counter += 1
+                message_id = f"sachima-local-{self._local_message_counter}"
+                outbound = self._delivery_payload(
+                    message_id=message_id,
+                    chat_id=chat_id,
+                    text=chunk,
+                    reply_to=reply_to,
+                    metadata=metadata,
+                )
                 self.sent_messages.append(outbound)
                 last_outbound = outbound
             return SendResult(
@@ -478,32 +595,33 @@ class SachimaAdapter(BasePlatformAdapter):
         try:
             import aiohttp
 
-            headers = {}
-            api_key = str(self.config.api_key or self.config.extra.get("api_key") or "").strip()
-            if api_key:
-                headers["Authorization"] = f"Bearer {api_key}"
             last_result: SendResult | None = None
             async with aiohttp.ClientSession() as session:
                 for chunk in chunks:
-                    outbound = {
-                        "chat_id": str(chat_id),
-                        "content": chunk,
-                        "reply_to": reply_to,
-                        "metadata": metadata or {},
-                    }
-                    async with session.post(send_url, json=outbound, headers=headers) as response:
+                    self._local_message_counter += 1
+                    message_id = f"sachima-delivery-{self._local_message_counter}"
+                    outbound = self._delivery_payload(
+                        message_id=message_id,
+                        chat_id=chat_id,
+                        text=chunk,
+                        reply_to=reply_to,
+                        metadata=metadata,
+                    )
+                    raw_body = self._json_body(outbound)
+                    headers = self._signed_delivery_headers(raw_body)
+                    async with session.post(delivery_url, data=raw_body, headers=headers) as response:
                         raw_response = await response.text()
                         if 200 <= response.status < 300:
-                            message_id = response.headers.get("X-Sachima-Message-Id")
+                            accepted_message_id = response.headers.get("X-Sachima-Message-Id") or message_id
                             last_result = SendResult(
                                 success=True,
-                                message_id=message_id,
+                                message_id=accepted_message_id,
                                 raw_response=raw_response,
                             )
                             continue
                         return SendResult(
                             success=False,
-                            error=f"Sachima send API returned HTTP {response.status}: {raw_response}",
+                            error=f"Sachima delivery callback returned HTTP {response.status}: {raw_response}",
                             raw_response=raw_response,
                             retryable=response.status == 429 or response.status >= 500,
                         )
