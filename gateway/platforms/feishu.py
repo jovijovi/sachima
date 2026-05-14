@@ -1832,18 +1832,47 @@ class FeishuAdapter(BasePlatformAdapter):
         if not self._client:
             return SendResult(success=False, error="Not connected")
 
-        try:
-            payload = json.dumps(card, ensure_ascii=False)
-            body = self._build_patch_message_body(content=payload)
-            request = self._build_patch_message_request(message_id=message_id, request_body=body)
-            response = await asyncio.to_thread(self._client.im.v1.message.patch, request)
-            result = self._finalize_send_result(response, "interactive card patch failed")
-            if result.success:
-                result.message_id = message_id
-            return result
-        except Exception as exc:
-            logger.error("[Feishu] Failed to patch interactive card %s: %s", message_id, exc, exc_info=True)
-            return SendResult(success=False, error=str(exc))
+        payload = json.dumps(card, ensure_ascii=False)
+        body = self._build_patch_message_body(content=payload)
+        request = self._build_patch_message_request(message_id=message_id, request_body=body)
+        last_error: Optional[Exception] = None
+        last_result: Optional[SendResult] = None
+        for attempt in range(_FEISHU_SEND_ATTEMPTS):
+            try:
+                response = await asyncio.to_thread(self._client.im.v1.message.patch, request)
+                result = self._finalize_send_result(response, "interactive card patch failed")
+                if result.success:
+                    result.message_id = message_id
+                    return result
+                last_result = result
+                if not self._is_transient_feishu_response(response) or attempt >= _FEISHU_SEND_ATTEMPTS - 1:
+                    return result
+                wait_seconds = 2 ** attempt
+                logger.warning(
+                    "[Feishu] Patch interactive card attempt %d/%d failed transiently; retrying in %ds: %s",
+                    attempt + 1,
+                    _FEISHU_SEND_ATTEMPTS,
+                    wait_seconds,
+                    result.error or "unknown error",
+                )
+                await asyncio.sleep(wait_seconds)
+            except Exception as exc:
+                last_error = exc
+                if not self._is_transient_feishu_exception(exc) or attempt >= _FEISHU_SEND_ATTEMPTS - 1:
+                    logger.error("[Feishu] Failed to patch interactive card %s: %s", message_id, exc, exc_info=True)
+                    return SendResult(success=False, error=str(exc))
+                wait_seconds = 2 ** attempt
+                logger.warning(
+                    "[Feishu] Patch interactive card attempt %d/%d raised transiently; retrying in %ds: %s",
+                    attempt + 1,
+                    _FEISHU_SEND_ATTEMPTS,
+                    wait_seconds,
+                    exc,
+                )
+                await asyncio.sleep(wait_seconds)
+        if last_result is not None:
+            return last_result
+        return SendResult(success=False, error=str(last_error or "interactive card patch failed"))
 
     async def send_exec_approval(
         self, chat_id: str, command: str, session_key: str,
@@ -4147,7 +4176,9 @@ class FeishuAdapter(BasePlatformAdapter):
         payload: str,
         reply_to: Optional[str],
         metadata: Optional[Dict[str, Any]],
+        uuid_value: Optional[str] = None,
     ) -> Any:
+        request_uuid = uuid_value or str(uuid.uuid4())
         effective_reply_to = reply_to
         if not effective_reply_to and metadata and metadata.get("thread_id"):
             effective_reply_to = metadata.get("reply_to_message_id")
@@ -4157,7 +4188,7 @@ class FeishuAdapter(BasePlatformAdapter):
                 content=payload,
                 msg_type=msg_type,
                 reply_in_thread=reply_in_thread,
-                uuid_value=str(uuid.uuid4()),
+                uuid_value=request_uuid,
             )
             request = self._build_reply_message_request(effective_reply_to, body)
             return await asyncio.to_thread(self._client.im.v1.message.reply, request)
@@ -4166,7 +4197,7 @@ class FeishuAdapter(BasePlatformAdapter):
             receive_id=chat_id,
             msg_type=msg_type,
             content=payload,
-            uuid_value=str(uuid.uuid4()),
+            uuid_value=request_uuid,
         )
         # Detect whether chat_id is a user open_id (DM) or a chat_id (group).
         # Feishu API expects receive_id_type="open_id" for user DMs (ou_ prefix)
@@ -4182,6 +4213,55 @@ class FeishuAdapter(BasePlatformAdapter):
     @staticmethod
     def _response_succeeded(response: Any) -> bool:
         return bool(response and getattr(response, "success", lambda: False)())
+
+    @staticmethod
+    def _is_transient_feishu_exception(exc: Exception) -> bool:
+        if isinstance(exc, (ConnectionError, OSError, TimeoutError)):
+            return True
+        text = str(exc).lower()
+        return any(
+            marker in text
+            for marker in (
+                "timeout",
+                "timed out",
+                "temporar",
+                "rate limit",
+                "retry after",
+                "too many requests",
+                "connection reset",
+                "connection aborted",
+                "server error",
+                "internal error",
+                "bad gateway",
+                "service unavailable",
+            )
+        )
+
+    @staticmethod
+    def _is_transient_feishu_response(response: Any) -> bool:
+        code = getattr(response, "code", None)
+        try:
+            code_int = int(code)
+        except (TypeError, ValueError):
+            code_int = None
+        if code_int == 429 or (code_int is not None and 500 <= code_int < 600):
+            return True
+        msg = str(getattr(response, "msg", "") or "").lower()
+        return any(
+            marker in msg
+            for marker in (
+                "timeout",
+                "timed out",
+                "temporar",
+                "rate limit",
+                "retry after",
+                "too many requests",
+                "server error",
+                "internal error",
+                "bad gateway",
+                "service unavailable",
+            )
+        )
 
     @staticmethod
     def _extract_response_field(response: Any, field_name: str) -> Any:
@@ -4303,7 +4383,9 @@ class FeishuAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]],
     ) -> Any:
         last_error: Optional[Exception] = None
+        last_response: Any = None
         active_reply_to = reply_to
+        request_uuid = str(uuid.uuid4())
         for attempt in range(_FEISHU_SEND_ATTEMPTS):
             try:
                 response = await self._send_raw_message(
@@ -4312,6 +4394,7 @@ class FeishuAdapter(BasePlatformAdapter):
                     payload=payload,
                     reply_to=active_reply_to,
                     metadata=metadata,
+                    uuid_value=request_uuid,
                 )
                 # If replying to a message failed because it was withdrawn or not found,
                 # fall back to posting a new message directly to the chat.
@@ -4341,13 +4424,29 @@ class FeishuAdapter(BasePlatformAdapter):
                             payload=payload,
                             reply_to=None,
                             metadata=metadata,
+                            uuid_value=request_uuid,
                         )
-                return response
+                if self._response_succeeded(response):
+                    return response
+                last_response = response
+                if not self._is_transient_feishu_response(response) or attempt >= _FEISHU_SEND_ATTEMPTS - 1:
+                    return response
+                wait_seconds = 2 ** attempt
+                logger.warning(
+                    "[Feishu] Send attempt %d/%d got transient response for chat %s; retrying in %ds: [%s] %s",
+                    attempt + 1,
+                    _FEISHU_SEND_ATTEMPTS,
+                    chat_id,
+                    wait_seconds,
+                    getattr(response, "code", "unknown"),
+                    getattr(response, "msg", "send failed"),
+                )
+                await asyncio.sleep(wait_seconds)
             except Exception as exc:
                 last_error = exc
                 if msg_type == "post" and _POST_CONTENT_INVALID_RE.search(str(exc)):
                     raise
-                if attempt >= _FEISHU_SEND_ATTEMPTS - 1:
+                if not self._is_transient_feishu_exception(exc) or attempt >= _FEISHU_SEND_ATTEMPTS - 1:
                     raise
                 wait_seconds = 2 ** attempt
                 logger.warning(
@@ -4359,6 +4458,8 @@ class FeishuAdapter(BasePlatformAdapter):
                     exc,
                 )
                 await asyncio.sleep(wait_seconds)
+        if last_response is not None:
+            return last_response
         raise last_error or RuntimeError("Feishu send failed")
 
     async def _release_app_lock(self) -> None:

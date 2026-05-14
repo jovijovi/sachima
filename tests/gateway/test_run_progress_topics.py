@@ -155,6 +155,34 @@ class FeishuFinalPatchFailureAdapter(FeishuProgressCardCaptureAdapter):
         return SendResult(success=True, message_id=message_id)
 
 
+class FeishuInitialCardFailureAdapter(FeishuProgressCardCaptureAdapter):
+    async def send_interactive_card(self, chat_id, card, reply_to=None, metadata=None) -> SendResult:
+        self.cards_sent.append({"chat_id": chat_id, "card": card, "reply_to": reply_to, "metadata": metadata})
+        return SendResult(success=False, error="temporary card send failure")
+
+    async def patch_interactive_card(self, chat_id, message_id, card, finalize=False) -> SendResult:
+        raise AssertionError("initial card send failure must not patch a missing card")
+
+
+class FeishuPatchFailureAdapter(FeishuProgressCardCaptureAdapter):
+    async def patch_interactive_card(self, chat_id, message_id, card, finalize=False) -> SendResult:
+        self.cards_patched.append(
+            {"chat_id": chat_id, "message_id": message_id, "card": card, "finalize": finalize}
+        )
+        return SendResult(success=False, error="temporary card patch failure")
+
+
+def _assert_compact_card_failure_notice_only(text: str) -> None:
+    assert "任务卡片更新失败" in text
+    assert "Transaction" not in text
+    assert "Recent operations" not in text
+    assert "Context" not in text
+    assert "read_file" not in text
+    assert "search_files" not in text
+    assert "gateway/run.py" not in text
+    assert "tool_progress" not in text
+
+
 class FakeAgent:
     def __init__(self, **kwargs):
         # Capture anything passed via kwargs (older code path) but don't
@@ -1332,7 +1360,7 @@ async def test_feishu_task_tracker_card_mode_final_card_includes_context_usage(m
 
 
 @pytest.mark.asyncio
-async def test_feishu_task_tracker_card_mode_final_patch_failure_sends_fallback(monkeypatch, tmp_path):
+async def test_feishu_task_tracker_card_mode_final_patch_failure_sends_compact_notice(monkeypatch, tmp_path):
     adapter, result = await _run_with_agent(
         monkeypatch,
         tmp_path,
@@ -1354,9 +1382,61 @@ async def test_feishu_task_tracker_card_mode_final_patch_failure_sends_fallback(
     assert result["final_response"] == "done"
     assert adapter.cards_sent
     assert any(call["finalize"] for call in adapter.cards_patched)
-    assert adapter.sent
-    fallback_text = "\n".join(call["content"] for call in adapter.sent)
-    assert "Completed" in fallback_text or "完成" in fallback_text
+    assert len(adapter.sent) == 1
+    _assert_compact_card_failure_notice_only(adapter.sent[0]["content"])
+
+
+@pytest.mark.asyncio
+async def test_feishu_task_tracker_card_mode_initial_send_failure_sends_only_compact_notice(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        TransactionPanelAgent,
+        session_id="sess-feishu-progress-card-initial-send-fallback",
+        platform=Platform.FEISHU,
+        chat_id="oc_1",
+        chat_type="dm",
+        thread_id=None,
+        adapter_cls=FeishuInitialCardFailureAdapter,
+        config_data={
+            "display": {
+                "tool_progress": "all",
+                "task_tracker": {"enabled": True, "mode": "feishu_card", "max_operations": 8},
+            },
+        },
+    )
+
+    assert result["final_response"] == "done"
+    assert len(adapter.cards_sent) == 1
+    assert len(adapter.sent) == 1
+    _assert_compact_card_failure_notice_only(adapter.sent[0]["content"])
+
+
+@pytest.mark.asyncio
+async def test_feishu_task_tracker_card_mode_patch_failure_does_not_spam_chat(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        TransactionPanelAgent,
+        session_id="sess-feishu-progress-card-patch-fallback-once",
+        platform=Platform.FEISHU,
+        chat_id="oc_1",
+        chat_type="dm",
+        thread_id=None,
+        adapter_cls=FeishuPatchFailureAdapter,
+        config_data={
+            "display": {
+                "tool_progress": "all",
+                "task_tracker": {"enabled": True, "mode": "feishu_card", "max_operations": 8},
+            },
+        },
+    )
+
+    assert result["final_response"] == "done"
+    assert adapter.cards_sent
+    assert adapter.cards_patched
+    assert len(adapter.sent) == 1
+    _assert_compact_card_failure_notice_only(adapter.sent[0]["content"])
 
 
 @pytest.mark.asyncio
