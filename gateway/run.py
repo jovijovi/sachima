@@ -13721,8 +13721,11 @@ class GatewayRunner:
             progress_lines = []      # Accumulated tool lines
             progress_msg_id = None   # ID of the progress message/card to edit
             can_edit = True          # False once an edit fails (platform doesn't support it)
+            card_progress_suppressed = False  # True after Feishu card mode fails closed
+            card_fallback_notice_sent = False
             _last_edit_ts = 0.0      # Throttle edits to avoid Telegram flood control
             _PROGRESS_EDIT_INTERVAL = 1.5  # Minimum seconds between edits
+            _FEISHU_CARD_FALLBACK_NOTICE = "⚠️ 任务卡片更新失败，后台进度仍已记录。"
 
             def _current_progress_text() -> str:
                 if progress_tracker is not None and task_tracker_enabled:
@@ -13745,6 +13748,39 @@ class GatewayRunner:
                     style=str(task_tracker_config.get("style", "lively")),
                     emoji=is_truthy_value(task_tracker_config.get("emoji"), default=True),
                 )
+
+            async def _send_compact_feishu_card_fallback_notice(reason: str, *, final: bool = False) -> None:
+                nonlocal card_fallback_notice_sent
+                if card_fallback_notice_sent:
+                    return
+                card_fallback_notice_sent = True
+                from gateway.progress.redaction import sanitize_for_progress
+                safe_reason = sanitize_for_progress(reason or "unknown error", max_len=240)
+                logger.warning(
+                    "[%s] Feishu progress card update failed; using compact fallback notice (final=%s): %s",
+                    adapter.name,
+                    final,
+                    safe_reason,
+                )
+                try:
+                    fallback = await adapter.send(
+                        chat_id=source.chat_id,
+                        content=_FEISHU_CARD_FALLBACK_NOTICE,
+                        reply_to=_progress_reply_to,
+                        metadata=_progress_metadata,
+                    )
+                    if (
+                        _cleanup_progress
+                        and getattr(fallback, "success", False)
+                        and getattr(fallback, "message_id", None)
+                    ):
+                        _cleanup_msg_ids.append(str(fallback.message_id))
+                except Exception as notice_err:
+                    logger.warning(
+                        "[%s] Compact Feishu progress-card fallback notice failed: %s",
+                        adapter.name,
+                        notice_err,
+                    )
 
             while True:
                 try:
@@ -13826,6 +13862,11 @@ class GatewayRunner:
                     if not _run_still_current():
                         return
 
+                    if using_feishu_card and card_progress_suppressed:
+                        if is_final_tracker_flush:
+                            progress_final_flushed.set()
+                        continue
+
                     if can_edit and progress_msg_id is not None:
                         # Try to edit/patch the existing progress surface.
                         full_text = _current_progress_text()
@@ -13847,6 +13888,16 @@ class GatewayRunner:
                                 progress_final_flushed.set()
                         else:
                             _err = (getattr(result, "error", "") or "").lower()
+                            if using_feishu_card:
+                                can_edit = False
+                                card_progress_suppressed = True
+                                await _send_compact_feishu_card_fallback_notice(
+                                    getattr(result, "error", "") or "interactive card patch failed",
+                                    final=is_final_tracker_flush,
+                                )
+                                if is_final_tracker_flush:
+                                    progress_final_flushed.set()
+                                continue
                             if "flood" in _err or "retry after" in _err:
                                 # Flood control hit — disable further edits,
                                 # switch to sending new messages only for
@@ -13883,12 +13934,14 @@ class GatewayRunner:
                                 )
                                 if not result.success:
                                     can_edit = False
-                                    result = await adapter.send(
-                                        chat_id=source.chat_id,
-                                        content=full_text,
-                                        reply_to=_progress_reply_to,
-                                        metadata=_progress_metadata,
+                                    card_progress_suppressed = True
+                                    await _send_compact_feishu_card_fallback_notice(
+                                        getattr(result, "error", "") or "interactive card send failed",
+                                        final=is_final_tracker_flush,
                                     )
+                                    if is_final_tracker_flush:
+                                        progress_final_flushed.set()
+                                    continue
                             else:
                                 result = await adapter.send(
                                     chat_id=source.chat_id,
@@ -13953,7 +14006,9 @@ class GatewayRunner:
                         except Exception:
                             break
                     # Final edit/patch with all remaining progress (only if editing works)
-                    if can_edit and progress_msg_id and (progress_lines or (progress_tracker is not None and task_tracker_enabled)):
+                    if using_feishu_card and card_progress_suppressed:
+                        progress_final_flushed.set()
+                    elif can_edit and progress_msg_id and (progress_lines or (progress_tracker is not None and task_tracker_enabled)):
                         full_text = _current_progress_text()
                         try:
                             if using_feishu_card:
@@ -13970,30 +14025,57 @@ class GatewayRunner:
                                     content=full_text,
                                 )
                             if not result.success:
-                                logger.warning(
-                                    "[%s] Final progress edit failed; sending fallback progress panel: %s",
-                                    adapter.name,
-                                    result.error or "unknown error",
-                                )
-                                await adapter.send(
-                                    chat_id=source.chat_id,
-                                    content=full_text,
-                                    metadata=_progress_metadata,
-                                )
+                                if using_feishu_card:
+                                    logger.warning(
+                                        "[%s] Final Feishu progress card patch failed; sending compact fallback notice: %s",
+                                        adapter.name,
+                                        result.error or "unknown error",
+                                    )
+                                    await _send_compact_feishu_card_fallback_notice(
+                                        result.error or "interactive card final patch failed",
+                                        final=True,
+                                    )
+                                    progress_final_flushed.set()
+                                else:
+                                    logger.warning(
+                                        "[%s] Final progress edit failed; sending fallback progress panel: %s",
+                                        adapter.name,
+                                        result.error or "unknown error",
+                                    )
+                                    await adapter.send(
+                                        chat_id=source.chat_id,
+                                        content=full_text,
+                                        metadata=_progress_metadata,
+                                    )
                         except Exception as _final_edit_err:
-                            logger.warning(
-                                "[%s] Final progress edit raised; sending fallback progress panel: %s",
-                                adapter.name,
-                                _final_edit_err,
-                            )
-                            try:
-                                await adapter.send(
-                                    chat_id=source.chat_id,
-                                    content=full_text,
-                                    metadata=_progress_metadata,
+                            if using_feishu_card:
+                                logger.warning(
+                                    "[%s] Final Feishu progress card patch raised; sending compact fallback notice: %s",
+                                    adapter.name,
+                                    _final_edit_err,
                                 )
-                            except Exception:
-                                pass
+                                try:
+                                    await _send_compact_feishu_card_fallback_notice(
+                                        "interactive card final patch raised",
+                                        final=True,
+                                    )
+                                    progress_final_flushed.set()
+                                except Exception:
+                                    pass
+                            else:
+                                logger.warning(
+                                    "[%s] Final progress edit raised; sending fallback progress panel: %s",
+                                    adapter.name,
+                                    _final_edit_err,
+                                )
+                                try:
+                                    await adapter.send(
+                                        chat_id=source.chat_id,
+                                        content=full_text,
+                                        metadata=_progress_metadata,
+                                    )
+                                except Exception:
+                                    pass
                     return
                 except Exception as e:
                     logger.error("Progress message error: %s", e)
