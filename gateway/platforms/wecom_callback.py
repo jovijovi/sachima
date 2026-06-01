@@ -26,7 +26,12 @@ try:
 
     DEFUSEDXML_AVAILABLE = True
 except ImportError:
-    ET = None  # type: ignore[assignment]
+    # Keep direct parsing helpers testable when the optional hardening
+    # dependency is absent. Runtime connection still reports requirements as
+    # unmet via DEFUSEDXML_AVAILABLE=False, so untrusted callback serving stays
+    # fail-closed unless defusedxml is installed.
+    import xml.etree.ElementTree as ET  # nosec B405 - guarded runtime fallback
+
     DEFUSEDXML_AVAILABLE = False
 
 try:
