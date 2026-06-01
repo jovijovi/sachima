@@ -1882,7 +1882,7 @@ requires-dist = [
     { name = "slack-sdk", marker = "extra == 'messaging'", specifier = "==3.40.1" },
     { name = "slack-sdk", marker = "extra == 'slack'", specifier = "==3.40.1" },
     { name = "sounddevice", marker = "extra == 'voice'", specifier = "==0.5.5" },
-    { name = "temporalio", marker = "extra == 'flowweaver-temporal'", specifier = "==1.27.0" },
+    { name = "temporalio", marker = "extra == 'flowweaver-temporal'", specifier = ">=1.27.0,<2" },
     { name = "tenacity", specifier = "==9.1.4" },
     { name = "ty", marker = "extra == 'dev'", specifier = "==0.0.21" },
     { name = "tzdata", marker = "sys_platform == 'win32'", specifier = "==2025.3" },

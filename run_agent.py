@@ -239,21 +239,21 @@ def _resolve_context_overflow_context_length(
             reason="provider_delta_only_overflow",
         )
 
-    explicit_ctx = (
-        config_context_length
-        if isinstance(config_context_length, int) and config_context_length > 0
-        else None
-    )
-    if (
-        preserve_explicit_context_length
-        and explicit_ctx is not None
-        and old_ctx == explicit_ctx
-    ):
+    if preserve_explicit_context_length:
+        explicit_ctx = (
+            config_context_length
+            if isinstance(config_context_length, int) and config_context_length > 0
+            else None
+        )
         return SimpleNamespace(
             context_length=old_ctx,
             should_update_context_length=False,
             persistable=False,
-            reason="preserve_explicit_context_length",
+            reason=(
+                "preserve_explicit_context_length"
+                if explicit_ctx is not None and old_ctx == explicit_ctx
+                else "no_provider_limit"
+            ),
         )
 
     probe_ctx = get_next_probe_tier(old_ctx)
