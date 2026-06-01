@@ -34,6 +34,30 @@ def _make_timeout_error() -> httpx.TimeoutException:
     return httpx.TimeoutException("timed out")
 
 
+class _AsyncStreamContext:
+    def __init__(self, response):
+        self.response = response
+
+    async def __aenter__(self):
+        return self.response
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+
+def _stream_response(chunks: list[bytes], headers: dict[str, str] | None = None):
+    response = MagicMock()
+    response.headers = headers or {}
+    response.raise_for_status = MagicMock()
+
+    async def aiter_bytes():
+        for chunk in chunks:
+            yield chunk
+
+    response.aiter_bytes = aiter_bytes
+    return response
+
+
 # ---------------------------------------------------------------------------
 # cache_image_from_bytes (base.py)
 # ---------------------------------------------------------------------------
@@ -209,6 +233,67 @@ class TestCacheImageFromUrl:
         # Only 1 attempt, no sleep
         assert mock_client.get.call_count == 1
         mock_sleep.assert_not_called()
+
+    def test_rejects_oversized_content_length_before_reading_body(self, _mock_safe, tmp_path, monkeypatch):
+        """A max_bytes cap should reject declared oversized images before streaming."""
+        monkeypatch.setattr("gateway.platforms.base.IMAGE_CACHE_DIR", tmp_path / "img")
+
+        fake_response = _stream_response([], {"content-length": "100"})
+        mock_client = AsyncMock()
+        mock_client.stream = MagicMock(return_value=_AsyncStreamContext(fake_response))
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        async def run():
+            with patch("httpx.AsyncClient", return_value=mock_client):
+                from gateway.platforms.base import cache_image_from_url
+                await cache_image_from_url(
+                    "http://example.com/img.jpg", ext=".jpg", retries=0, max_bytes=99
+                )
+
+        with pytest.raises(ValueError, match="exceeds maximum size"):
+            asyncio.run(run())
+
+    def test_rejects_streamed_body_that_exceeds_max_bytes(self, _mock_safe, tmp_path, monkeypatch):
+        """Chunked responses without content-length should still be capped while streaming."""
+        monkeypatch.setattr("gateway.platforms.base.IMAGE_CACHE_DIR", tmp_path / "img")
+
+        fake_response = _stream_response([b"\xff\xd8\xff", b"too-large"])
+        mock_client = AsyncMock()
+        mock_client.stream = MagicMock(return_value=_AsyncStreamContext(fake_response))
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        async def run():
+            with patch("httpx.AsyncClient", return_value=mock_client):
+                from gateway.platforms.base import cache_image_from_url
+                await cache_image_from_url(
+                    "http://example.com/img.jpg", ext=".jpg", retries=0, max_bytes=4
+                )
+
+        with pytest.raises(ValueError, match="exceeds maximum size"):
+            asyncio.run(run())
+
+    def test_caches_streamed_body_within_max_bytes(self, _mock_safe, tmp_path, monkeypatch):
+        """A URL image at or below max_bytes should cache from streamed chunks."""
+        monkeypatch.setattr("gateway.platforms.base.IMAGE_CACHE_DIR", tmp_path / "img")
+
+        fake_response = _stream_response([b"\xff\xd8\xff", b"ok"], {"content-length": "5"})
+        mock_client = AsyncMock()
+        mock_client.stream = MagicMock(return_value=_AsyncStreamContext(fake_response))
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        async def run():
+            with patch("httpx.AsyncClient", return_value=mock_client):
+                from gateway.platforms.base import cache_image_from_url
+                return await cache_image_from_url(
+                    "http://example.com/img.jpg", ext=".jpg", retries=0, max_bytes=5
+                )
+
+        path = asyncio.run(run())
+        assert path.endswith(".jpg")
+        mock_client.stream.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

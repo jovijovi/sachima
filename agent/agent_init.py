@@ -265,6 +265,7 @@ def init_agent(
     agent.quiet_mode = quiet_mode
     agent.ephemeral_system_prompt = ephemeral_system_prompt
     agent.platform = platform  # "cli", "telegram", "discord", "whatsapp", etc.
+    agent._weather_rich_terminal_normalization_enabled = False
     agent._user_id = user_id  # Platform user identifier (gateway sessions)
     agent._user_id_alt = user_id_alt  # Optional stable alternate platform identifier
     agent._user_name = user_name
@@ -1377,6 +1378,27 @@ def init_agent(
     # Persist for reuse on switch_model / fallback activation. Must come
     # AFTER the custom_providers branch so per-model overrides aren't lost.
     agent._config_context_length = _config_context_length
+
+    # Generic context-overflow errors should preserve explicit
+    # model.context_length overrides by default; concrete lower provider
+    # limits still win. Operators can opt back into legacy probe-tier
+    # stepdown via context.preserve_explicit_context_length: false.
+    _ctx_cfg_for_preserve = _agent_cfg.get("context", {}) if isinstance(_agent_cfg, dict) else {}
+    _preserve_explicit_context_length = True
+    if isinstance(_ctx_cfg_for_preserve, dict):
+        _preserve_explicit_context_length = _ctx_cfg_for_preserve.get(
+            "preserve_explicit_context_length", True
+        )
+    if isinstance(_preserve_explicit_context_length, str):
+        _preserve_explicit_context_length = (
+            _preserve_explicit_context_length.strip().lower()
+            not in {"0", "false", "no", "off"}
+        )
+    elif _preserve_explicit_context_length is None:
+        _preserve_explicit_context_length = True
+    else:
+        _preserve_explicit_context_length = bool(_preserve_explicit_context_length)
+    agent._preserve_explicit_context_length = bool(_preserve_explicit_context_length)
 
     agent._ensure_lmstudio_runtime_loaded(_config_context_length)
 

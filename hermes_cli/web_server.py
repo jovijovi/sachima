@@ -819,6 +819,74 @@ async def get_action_status(name: str, lines: int = 200):
     }
 
 
+@app.get("/api/progress/transactions")
+async def get_progress_transactions(limit: int = 50, status: str = "all"):
+    """Return dashboard-ready summaries from the optional progress JSONL store."""
+    try:
+        enabled, event_path = _configured_progress_events_path()
+        if not enabled:
+            return {"enabled": False, "transactions": [], "skipped_lines": 0}
+        from gateway.progress.reader import list_progress_transactions
+
+        payload = list_progress_transactions(event_path, limit=limit, status=status)
+        return {"enabled": True, **payload}
+    except Exception:
+        _log.exception("GET /api/progress/transactions failed")
+        raise HTTPException(status_code=500, detail="Failed to read progress transactions")
+
+
+@app.get("/api/progress/transactions/{transaction_id}/events")
+async def get_progress_transaction_events_endpoint(transaction_id: str, limit: int = 200):
+    """Return a bounded event timeline for one persisted progress transaction."""
+    try:
+        enabled, event_path = _configured_progress_events_path()
+        if not enabled:
+            return {"enabled": False, "transaction": None, "events": [], "skipped_lines": 0}
+        from gateway.progress.reader import get_progress_transaction_events
+
+        payload = get_progress_transaction_events(event_path, transaction_id, limit=limit)
+        return {"enabled": True, **payload}
+    except Exception:
+        _log.exception("GET /api/progress/transactions/%s/events failed", transaction_id)
+        raise HTTPException(status_code=500, detail="Failed to read progress transaction events")
+
+
+def _configured_progress_events_path() -> tuple[bool, Path | None]:
+    """Return whether progress persistence is enabled and the JSONL path to read."""
+    config = load_config()
+    display = config.get("display") if isinstance(config, dict) else None
+    tracker = display.get("task_tracker") if isinstance(display, dict) else None
+    if not isinstance(tracker, dict):
+        return False, None
+    if not _truthy_config_value(tracker.get("persist_events")):
+        return False, None
+    store_type = str(tracker.get("event_store", "jsonl") or "jsonl").strip().lower()
+    if store_type != "jsonl":
+        return False, None
+    configured_path = tracker.get("event_store_path")
+    if configured_path:
+        return True, Path(str(configured_path)).expanduser()
+    from gateway.progress.store import default_progress_events_path
+
+    return True, default_progress_events_path()
+
+
+def _truthy_config_value(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on", "enabled"}:
+            return True
+        if normalized in {"", "0", "false", "no", "off", "disabled"}:
+            return False
+    return bool(value)
+
+
 @app.get("/api/sessions")
 async def get_sessions(limit: int = 20, offset: int = 0):
     try:

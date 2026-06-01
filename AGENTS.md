@@ -2,6 +2,64 @@
 
 Instructions for AI coding assistants and developers working on the hermes-agent codebase.
 
+## Sachima Project Goal
+
+For Sachima / FlowWeaver work, treat `GOAL.md` as the canonical project compass.
+
+Short version: Sachima should become Dog Brother's own AI workbench inside a custom IM channel: a safe, durable, observable, and recoverable Hermes/FlowWeaver system that can receive real IM requests, orchestrate long AI workflows, deliver results back through the channel, and preserve clear operational control.
+
+Planning references:
+
+- `GOAL.md` — final goal, target architecture, and non-negotiable principles.
+- `docs/roadmap/current-status.md` — living roadmap position, current tails, non-approvals, evidence links, and next allowed request.
+- `docs/roadmap/README.md` — roadmap status tracking rules for agents.
+- `docs/sachima-final-goal-gap-analysis.md` — current gap analysis and phase-planning basis.
+- `docs/plans/2026-05-11-sachima-final-goal-phase-development-plan.md` — detailed phase roadmap with dependencies, tasks, acceptance gates, checklists, and scoring rubrics.
+- `docs/sachima-channel.md` — current Sachima adapter/channel behavior.
+- `docs/protocols/sachima-envelope-v1.md` — local pointer to the canonical external Sachima wire protocol in `jovijovi/sachima-protocols` (`protocols/envelope/v1.md`) for controlled external ingress and delivery callback design.
+- `docs/plans/2026-05-11-flowweaver-pe1d-pe2-readiness-decision-packet.md` — latest PE-1D / PE-2 readiness boundary.
+
+Do not treat PE-2 implementation, live/default-on, real external Sachima ingress, production delivery control, production agent/tool execution expansion, production config writes, Gateway restart/reload, platform adapter mutation, or Gateway-owned Temporal lifecycle as approved unless a later document and user approval explicitly name that scope.
+
+### Roadmap Current Status Preflight
+
+For any Sachima / FlowWeaver roadmap, phase-gate, PR, CI, review, merge, or next-phase-readiness work, the agent must read:
+
+1. `docs/roadmap/current-status.md`;
+2. the canonical roadmap linked from that file;
+3. the latest relevant dev log and evidence links listed in current status.
+
+Before making changes, the agent must state:
+
+- current phase position;
+- next allowed request;
+- explicit non-approvals;
+- open `BLOCKER`, `NEXT_PHASE`, `WATCH`, or `PARKED` tail items;
+- whether the requested task is allowed by the current status.
+
+If `docs/roadmap/current-status.md` is missing, stale, or contradicts the requested work, stop and report the drift risk before making changes.
+
+### Phase Closure Rule
+
+A roadmap or phase task is not complete until:
+
+- tests, reviews, and evidence pass where applicable;
+- PR / merge / post-merge status is recorded where applicable;
+- `docs/roadmap/current-status.md` reflects the new phase state, or the PR explains why the status update is not applicable;
+- remaining tails are classified as `BLOCKER`, `NEXT_PHASE`, `WATCH`, or `PARKED`.
+
+### Phase Gate Drift Control
+
+For Sachima multi-phase, production-adjacent, high-risk, or next-phase-readiness work, load the `phase-gate-drift-control` skill before:
+
+- drafting or approving a phase plan;
+- requesting phase implementation;
+- reviewing a phase PR;
+- declaring a phase complete;
+- requesting the next phase.
+
+Do not load it for small one-shot fixes unless the change affects scope, production behavior, user data, delivery, runtime lifecycle, irreversible operations, or the long-lived Sachima/FlowWeaver goal.
+
 ## Development Environment
 
 ```bash
@@ -1045,6 +1103,14 @@ Implementation notes:
   test interactively, or when you specifically want to verify state leakage.
 - The plugin disables itself in child processes (sentinel envvar
   `HERMES_ISOLATE_CHILD=1`), so there's no fork-bomb risk.
+
+### GitHub CI docs-only fast path
+
+The Nix matrix keeps the required `nix (ubuntu-latest)` / `nix (macos-latest)` check names, but pull requests whose changed files are only documentation paths take a lightweight fast path instead of running the full Nix flake/build matrix.
+
+Docs-only means root project docs such as `AGENTS.md`, `GOAL.md`, `README.md`, or Markdown/MDX files under `docs/`, `website/`, `skills/`, or `optional-skills/`. Workflow files, source code, tests, lockfiles, generated outputs, runtime config, and non-Markdown docs assets are not docs-only and must run the full matrix.
+
+The Linux fast path still runs changed-file, secret-shaped literal, and critical-marker gates. Do not use workflow-level `paths-ignore` for required Nix checks, because skipped required workflows can leave PRs pending instead of green.
 
 ### Why the wrapper (and why the old "just call pytest" doesn't work)
 

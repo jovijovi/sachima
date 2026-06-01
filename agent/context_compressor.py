@@ -480,6 +480,7 @@ class ContextCompressor(ContextEngine):
         self._last_compression_savings_pct = 100.0
         self._ineffective_compression_count = 0
         self._summary_failure_cooldown_until = 0.0  # transient errors must not block a fresh session
+        self.peak_prompt_tokens = 0
 
     def update_model(
         self,
@@ -577,6 +578,7 @@ class ContextCompressor(ContextEngine):
 
         self.last_prompt_tokens = 0
         self.last_completion_tokens = 0
+        self.peak_prompt_tokens = 0
 
         self.summary_model = summary_model_override or ""
 
@@ -607,9 +609,24 @@ class ContextCompressor(ContextEngine):
 
     def update_from_response(self, usage: Dict[str, Any]):
         """Update tracked token usage from API response."""
-        self.last_prompt_tokens = usage.get("prompt_tokens", 0)
+        prompt_tokens = self._safe_nonnegative_int(usage.get("prompt_tokens", 0))
+        self.last_prompt_tokens = prompt_tokens
         self.last_completion_tokens = usage.get("completion_tokens", 0)
         self.last_total_tokens = usage.get("total_tokens", self.last_prompt_tokens + self.last_completion_tokens)
+        self.peak_prompt_tokens = max(
+            self._safe_nonnegative_int(getattr(self, "peak_prompt_tokens", 0)),
+            prompt_tokens,
+        )
+
+    @staticmethod
+    def _safe_nonnegative_int(value: Any) -> int:
+        if value is None or isinstance(value, bool):
+            return 0
+        try:
+            number = int(value)
+        except Exception:
+            return 0
+        return max(0, number)
 
     def should_compress(self, prompt_tokens: int = None) -> bool:
         """Check if context exceeds the compression threshold.

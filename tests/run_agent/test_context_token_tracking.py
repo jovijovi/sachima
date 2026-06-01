@@ -115,6 +115,32 @@ def test_openai_prompt_tokens_unchanged(monkeypatch):
     assert agent.context_compressor.last_prompt_tokens == 5000
 
 
+def test_context_compressor_tracks_peak_prompt_tokens(monkeypatch):
+    responses = iter([
+        SimpleNamespace(
+            choices=[SimpleNamespace(index=0, message=SimpleNamespace(
+                role="assistant", content="ok", tool_calls=None, reasoning_content=None,
+            ), finish_reason="stop")],
+            usage=SimpleNamespace(prompt_tokens=5000, completion_tokens=100, total_tokens=5100),
+            model="gpt-4o",
+        ),
+        SimpleNamespace(
+            choices=[SimpleNamespace(index=0, message=SimpleNamespace(
+                role="assistant", content="ok", tool_calls=None, reasoning_content=None,
+            ), finish_reason="stop")],
+            usage=SimpleNamespace(prompt_tokens=3000, completion_tokens=100, total_tokens=3100),
+            model="gpt-4o",
+        ),
+    ])
+    agent = _make_agent(monkeypatch, "chat_completions", "openrouter", lambda: next(responses))
+
+    agent.run_conversation("first")
+    agent.run_conversation("second")
+
+    assert agent.context_compressor.last_prompt_tokens == 3000
+    assert agent.context_compressor.peak_prompt_tokens == 5000
+
+
 # -- Codex: no cache fields, getattr returns 0 --
 
 def test_codex_no_cache_fields(monkeypatch):

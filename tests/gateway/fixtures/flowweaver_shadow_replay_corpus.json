@@ -1,0 +1,29 @@
+[
+  {
+    "case_id": "completed_final_text",
+    "transaction_id": "session_corpus_final_text",
+    "status": "completed",
+    "title": "Corpus final text task",
+    "final_text_sent": true,
+    "rich_card_types": [],
+    "expected_replay_verdict": "replayed"
+  },
+  {
+    "case_id": "rich_card_only",
+    "transaction_id": "session_corpus_rich_card",
+    "status": "completed",
+    "title": "Corpus rich card task",
+    "final_text_sent": false,
+    "rich_card_types": ["weather.v1"],
+    "expected_replay_verdict": "replayed"
+  },
+  {
+    "case_id": "blocked_pending_final_text",
+    "transaction_id": "session_corpus_blocked",
+    "status": "blocked",
+    "title": "Corpus blocked task",
+    "final_text_sent": false,
+    "rich_card_types": [],
+    "expected_replay_verdict": "replayed"
+  }
+]

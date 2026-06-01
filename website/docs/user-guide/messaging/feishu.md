@@ -367,6 +367,50 @@ Plain text messages (no markdown detected) are sent as the simple `text` message
 
 While the agent is working, the bot shows a `Typing` reaction on your message. It's cleared when the reply arrives, or replaced with `CrossMark` if processing failed.
 
+## Task Progress Panels
+
+Feishu supports message editing, so Hermes can keep one in-place progress surface updated while a long task runs.
+
+### Text progress panel
+
+The legacy Markdown progress panel remains available and is the rollback path:
+
+```yaml
+display:
+  tool_progress: all
+  task_tracker:
+    enabled: true
+    mode: text
+    max_operations: 8
+    persist_events: true      # optional, enables dashboard history
+    event_store: jsonl
+    dashboard_url: http://127.0.0.1:9119
+```
+
+### Interactive progress card
+
+For lower-noise Feishu chats, enable the interactive card renderer:
+
+```yaml
+display:
+  tool_progress: all          # use off to hide operation names inside the card
+  task_tracker:
+    enabled: true
+    mode: feishu_card
+    style: lively
+    emoji: true
+    max_operations: 5
+    dashboard_url: http://127.0.0.1:9119
+```
+
+In `feishu_card` mode Hermes sends one Feishu `interactive` card at the start of the task and updates the same card with `im.v1.message.patch`. Feishu interactive cards must not be updated with ordinary `message.update`; that API can reject `msg_type=interactive` with `invalid msg_type`.
+
+The card shows a concise summary: task status, recent sanitized tool names, safe command/script basenames when they can be derived, duration, and an optional dashboard link. Full tool arguments, raw commands, raw output, headers, tokens, URL query strings, and arbitrary metadata stay in backend logs/dashboard and are not rendered into the card.
+
+If card send or patch fails, Hermes falls back to a compact text progress panel so the visible Feishu state does not stay stuck at Running. Set `mode: text` to return to the previous Markdown progress behavior.
+
+With `dashboard_url` set, the Feishu progress panel/card includes a sanitized link to `/progress` in the web dashboard. Hermes strips query strings, fragments, and URL userinfo from that link before sending it to Feishu; keep tokens and reverse-proxy secrets out of this field.
+
 Set `FEISHU_REACTIONS=false` to turn it off.
 
 ## Burst Protection and Batching

@@ -439,6 +439,18 @@ export const api = {
       `/api/actions/${encodeURIComponent(name)}/status?lines=${lines}`,
     ),
 
+  // Progress transactions
+  getProgressTransactions: (params: { limit?: number; status?: string } = {}) => {
+    const qs = new URLSearchParams();
+    qs.set("limit", String(params.limit ?? 50));
+    if (params.status && params.status !== "all") qs.set("status", params.status);
+    return fetchJSON<ProgressTransactionsResponse>(`/api/progress/transactions?${qs.toString()}`);
+  },
+  getProgressTransactionEvents: (id: string, limit = 200) =>
+    fetchJSON<ProgressTransactionEventsResponse>(
+      `/api/progress/transactions/${encodeURIComponent(id)}/events?limit=${limit}`,
+    ),
+
   // Dashboard plugins
   getPlugins: () =>
     fetchJSON<PluginManifestResponse[]>("/api/dashboard/plugins"),
@@ -544,6 +556,65 @@ export interface ActionStatusResponse {
   name: string;
   pid: number | null;
   running: boolean;
+}
+
+export interface ProgressOperationSummary {
+  event_type: string;
+  tool_name: string | null;
+  status: string;
+  preview: string | null;
+  duration: number | null;
+  is_error: boolean;
+}
+
+export interface ProgressTransactionSummary {
+  id: string;
+  title: string;
+  status: string;
+  started_at: number | null;
+  updated_at: number | null;
+  completed_at: number | null;
+  operation_count: number;
+  last_operation: ProgressOperationSummary | null;
+}
+
+export interface ProgressOperationEvent extends ProgressOperationSummary {
+  id: string;
+  args_preview: string | null;
+  started_at: number | null;
+  updated_at: number | null;
+  completed_at: number | null;
+  metadata: Record<string, string>;
+}
+
+export interface ProgressTransactionRecord {
+  id: string;
+  title: string;
+  status: string;
+  started_at: number | null;
+  updated_at: number | null;
+  completed_at: number | null;
+}
+
+export interface ProgressEventRecord {
+  schema_version: number;
+  record_type: "progress.operation" | "progress.snapshot";
+  written_at: number | null;
+  transaction: ProgressTransactionRecord;
+  operation?: ProgressOperationEvent;
+}
+
+export interface ProgressTransactionsResponse {
+  enabled: boolean;
+  transactions: ProgressTransactionSummary[];
+  skipped_lines: number;
+}
+
+export interface ProgressTransactionEventsResponse {
+  enabled: boolean;
+  transaction: ProgressTransactionSummary | null;
+  events: ProgressEventRecord[];
+  skipped_lines: number;
 }
 
 export interface PlatformStatus {

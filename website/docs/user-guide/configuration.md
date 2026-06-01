@@ -1153,7 +1153,28 @@ display:
     fields: ["model", "context_pct", "cwd"]
   file_mutation_verifier: true    # Append an advisory footer when write_file/patch calls failed this turn
   language: en            # UI language for static messages (approval prompts, some gateway replies). en | zh | zh-hant | ja | de | es | fr | tr | uk | af | ko | it | ga | pt | ru | hu
+  task_tracker:
+    enabled: false         # Gateway: replace raw tool progress with a transaction panel
+    mode: text             # text | feishu_card (Feishu/Lark only)
+    max_operations: 8      # Recent operations shown in the panel
+    persist_events: false  # Append sanitized progress events to JSONL for dashboard history
+    event_store: jsonl     # JSONL is the supported store type
+    event_store_path: ~/.hermes/progress/events.jsonl  # Optional path override
+    dashboard_url: ""      # Optional dashboard base URL; IM panels link to /progress
 ```
+
+### Task tracker / transaction panel
+
+When `display.task_tracker.enabled` is true, gateway progress can be rendered as a compact transaction panel instead of raw tool-progress lines. Use `mode: text` for all messaging platforms, or `mode: feishu_card` on Feishu/Lark to send and patch an interactive card. Progress event persistence stores sanitized JSONL for dashboard/history views; it does not change final-answer delivery.
+
+| Mode | What you see |
+|------|-------------|
+| `off` | Silent — just the final response |
+| `new` | Tool indicator only when the tool changes |
+| `all` | Every tool call with a short preview (default) |
+| `verbose` | Full args, results, and debug logs |
+
+In the CLI, cycle through these modes with `/verbose`. To use `/verbose` in messaging platforms (Telegram, Discord, Slack, etc.), set `tool_progress_command: true` in the `display` section above. The command will then cycle the mode and save to config.
 
 ### File-mutation verifier
 
@@ -1183,15 +1204,6 @@ display:
   language: zh   # CLI approval prompts appear in Chinese
 ```
 
-| Mode | What you see |
-|------|-------------|
-| `off` | Silent — just the final response |
-| `new` | Tool indicator only when the tool changes |
-| `all` | Every tool call with a short preview (default) |
-| `verbose` | Full args, results, and debug logs |
-
-In the CLI, cycle through these modes with `/verbose`. To use `/verbose` in messaging platforms (Telegram, Discord, Slack, etc.), set `tool_progress_command: true` in the `display` section above. The command will then cycle the mode and save to config.
-
 ### Runtime-metadata footer (gateway only)
 
 When `display.runtime_footer.enabled: true`, Hermes appends a small runtime-context footer to the **final** message of each gateway turn — same info the CLI shows in its status bar (model, context %, cwd, session duration, tokens, cost). Off by default; opt in per-gateway if your team wants every reply to include the provenance.
@@ -1212,6 +1224,22 @@ Example footer appended to a Telegram/Discord/Slack reply:
 ```
 
 Only the **final** message of a turn gets the footer; interim updates stay clean.
+
+### Task tracker panel and progress history
+
+`display.task_tracker.enabled` turns gateway tool progress into a compact transaction panel. The panel uses `display.tool_progress` for detail level:
+
+- `off` — show transaction status only, without operation details
+- `new` / `all` — show recent operations with short previews
+- `verbose` — show more detailed sanitized previews
+
+Set `persist_events: true` with `event_store: jsonl` to append sanitized progress records for the dashboard Progress page. The writer sanitizes records before disk, and the dashboard reader sanitizes again before returning API responses.
+
+`dashboard_url` is optional. When set, IM progress panels include a link to the dashboard Progress page. Hermes strips query strings, fragments, and userinfo before rendering the link, so do not put session tokens in the URL expecting them to be preserved.
+
+:::warning
+Progress records are meant for status visibility, not full-fidelity debugging. Tool names, previews, metadata, URLs, headers, and JSON-like values are redacted before display/persistence when they look sensitive.
+:::
 
 ### Per-platform progress overrides
 

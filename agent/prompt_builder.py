@@ -565,6 +565,11 @@ PLATFORM_HINTS = {
         "image and is the WRONG path. Bare Unicode emoji in text is also not a substitute "
         "— when a sticker is the right response, use yb_send_sticker."
     ),
+    "sachima": (
+        "You are on Sachima, a custom text IM channel connected to Hermes Agent. "
+        "Keep replies chat-friendly and clear. Markdown support depends on the downstream "
+        "Sachima client, so prefer simple formatting unless the user explicitly asks for rich text."
+    ),
     "api_server": (
         "You're responding through an API server. The rendering layer is unknown — "
         "assume plain text. No markdown formatting (no asterisks, bullets, headers, "

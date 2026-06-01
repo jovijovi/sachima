@@ -12,6 +12,7 @@ We shim the imports at module load so collection doesn't fail.
 """
 
 import asyncio
+import importlib
 import json
 import os
 import sys
@@ -50,23 +51,48 @@ def _ensure_google_mocks():
     ):
         return  # Real libraries installed, use them.
 
-    # --- google.cloud.pubsub_v1 ---
-    google = MagicMock()
-    google_cloud = MagicMock()
-    pubsub_v1 = MagicMock()
+    # Preserve the real ``google`` namespace package when it exists (protobuf
+    # installs one).  Replacing it with a bare MagicMock poisons sys.modules for
+    # unrelated tests that later import ``google.protobuf`` (Temporal does this).
+    try:
+        google = importlib.import_module("google")
+    except ImportError:
+        google = types.ModuleType("google")
+        google.__path__ = []  # mark as package-like for submodule imports
+
+    google_cloud = sys.modules.get("google.cloud")
+    if google_cloud is None:
+        google_cloud = types.ModuleType("google.cloud")
+        google_cloud.__path__ = []
+
+    pubsub_v1 = types.ModuleType("google.cloud.pubsub_v1")
     pubsub_v1.SubscriberClient = MagicMock
-    pubsub_v1.types.FlowControl = MagicMock
+    pubsub_v1.types = types.SimpleNamespace(FlowControl=MagicMock)
+    setattr(google, "cloud", google_cloud)
+    setattr(google_cloud, "pubsub_v1", pubsub_v1)
 
     # --- google.api_core.exceptions ---
-    gax = MagicMock()
+    gax = types.ModuleType("google.api_core.exceptions")
     gax.NotFound = type("NotFound", (Exception,), {})
     gax.PermissionDenied = type("PermissionDenied", (Exception,), {})
     gax.Unauthenticated = type("Unauthenticated", (Exception,), {})
+    google_api_core = sys.modules.get("google.api_core")
+    if google_api_core is None:
+        google_api_core = types.ModuleType("google.api_core")
+        google_api_core.__path__ = []
+    google_api_core.exceptions = gax
 
     # --- google.oauth2.service_account ---
-    oauth2 = MagicMock()
-    oauth2.Credentials.from_service_account_info = MagicMock(return_value=MagicMock())
-    oauth2.Credentials.from_service_account_file = MagicMock(return_value=MagicMock())
+    oauth2 = types.ModuleType("google.oauth2.service_account")
+    oauth2.Credentials = types.SimpleNamespace(
+        from_service_account_info=MagicMock(return_value=MagicMock()),
+        from_service_account_file=MagicMock(return_value=MagicMock()),
+    )
+    google_oauth2 = sys.modules.get("google.oauth2")
+    if google_oauth2 is None:
+        google_oauth2 = types.ModuleType("google.oauth2")
+        google_oauth2.__path__ = []
+    google_oauth2.service_account = oauth2
 
     # --- google_auth_httplib2 + httplib2 ---
     httplib2 = MagicMock()
@@ -87,9 +113,9 @@ def _ensure_google_mocks():
         "google": google,
         "google.cloud": google_cloud,
         "google.cloud.pubsub_v1": pubsub_v1,
-        "google.api_core": MagicMock(exceptions=gax),
+        "google.api_core": google_api_core,
         "google.api_core.exceptions": gax,
-        "google.oauth2": MagicMock(service_account=oauth2),
+        "google.oauth2": google_oauth2,
         "google.oauth2.service_account": oauth2,
         "google_auth_httplib2": google_auth_httplib2,
         "httplib2": httplib2,
@@ -128,6 +154,33 @@ _ensure_google_mocks()
 import plugins.platforms.google_chat.adapter as _gc_mod  # noqa: E402
 
 _gc_mod.GOOGLE_CHAT_AVAILABLE = True
+
+# Full-suite workers may discover bundled plugins before this test module has
+# installed its Google dependency shims, leaving the registry with a stale
+# google_chat entry whose check_fn closes over GOOGLE_CHAT_AVAILABLE=False.
+# Re-register from the package import used by this test so env-config tests are
+# deterministic regardless of collection order.
+from gateway.platform_registry import PlatformEntry, platform_registry  # noqa: E402
+
+
+class _TestPluginContext:
+    def register_platform(self, **kwargs):
+        platform_registry.register(PlatformEntry(source="plugin", **kwargs))
+
+
+_gc_mod.register(_TestPluginContext())
+
+
+@pytest.fixture(autouse=True)
+def _pin_google_chat_test_registry(monkeypatch):
+    """Keep env-config tests independent from full-suite plugin discovery order."""
+
+    def _discover_plugins_for_test(*args, **kwargs):
+        _gc_mod.register(_TestPluginContext())
+        return []
+
+    monkeypatch.setattr("hermes_cli.plugins.discover_plugins", _discover_plugins_for_test)
+
 
 from gateway.platforms.base import MessageEvent, MessageType, ProcessingOutcome  # noqa: E402
 from plugins.platforms.google_chat.adapter import (  # noqa: E402

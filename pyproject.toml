@@ -109,6 +109,7 @@ pty = [
 ]
 honcho = ["honcho-ai==2.0.1"]
 mcp = ["mcp==1.26.0"]
+flowweaver-temporal = ["temporalio==1.27.0"]
 homeassistant = ["aiohttp==3.13.3"]
 sms = ["aiohttp==3.13.3"]
 # Computer use — macOS background desktop control via cua-driver (MCP stdio).
@@ -203,6 +204,7 @@ all = [
   "hermes-agent[dev]",
   "hermes-agent[pty]",
   "hermes-agent[mcp]",
+  "hermes-agent[flowweaver-temporal]",
   "hermes-agent[homeassistant]",
   "hermes-agent[sms]",
   "hermes-agent[acp]",
@@ -279,3 +281,7 @@ select = ["PLW1514"]
 "skills/**" = ["PLW1514"]
 "optional-skills/**" = ["PLW1514"]
 "plugins/**" = ["PLW1514"]
+
+[tool.uv]
+exclude-newer = "7 days"
+exclude-newer-package = { temporalio = "2026-05-01T00:00:00Z" }

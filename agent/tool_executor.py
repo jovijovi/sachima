@@ -99,6 +99,15 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             function_args = {}
         if not isinstance(function_args, dict):
             function_args = {}
+        try:
+            function_args = _ra()._normalize_weather_rich_terminal_args(
+                getattr(agent, "platform", None),
+                function_name,
+                function_args,
+                enabled=bool(getattr(agent, "_weather_rich_terminal_normalization_enabled", False)),
+            )
+        except Exception:
+            pass
 
         # Checkpoint for file-mutating tools
         if function_name in {"write_file", "patch"} and agent._checkpoint_mgr.enabled:
@@ -496,6 +505,15 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             function_args = {}
         if not isinstance(function_args, dict):
             function_args = {}
+        try:
+            function_args = _ra()._normalize_weather_rich_terminal_args(
+                getattr(agent, "platform", None),
+                function_name,
+                function_args,
+                enabled=bool(getattr(agent, "_weather_rich_terminal_normalization_enabled", False)),
+            )
+        except Exception:
+            pass
 
         # Check plugin hooks for a block directive before executing.
         _block_msg: Optional[str] = None
