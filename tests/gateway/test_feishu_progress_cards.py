@@ -28,7 +28,8 @@ def test_feishu_progress_card_running_shape_uses_safe_operation_labels():
 
     assert card["config"]["wide_screen_mode"] is True
     assert card["header"]["template"] == "blue"
-    assert "小沙" in card["header"]["title"]["content"]
+    assert "任务工作台" in card["header"]["title"]["content"]
+    assert "小沙" not in rendered
     assert "查一下三亚天气" in rendered
     assert "terminal" in rendered
     assert "weather_query.py" in rendered
@@ -39,6 +40,114 @@ def test_feishu_progress_card_running_shape_uses_safe_operation_labels():
     assert "super-secret" not in rendered
     assert "Authorization" not in rendered
     assert "abc123" not in rendered
+
+
+def test_feishu_progress_card_uses_task_workbench_copy_and_operation_timing():
+    from gateway.progress.events import ContextUsageSnapshot, ProgressOperation, TransactionSnapshot
+    from gateway.progress.renderers import render_feishu_progress_card
+
+    snapshot = TransactionSnapshot(
+        transaction_id="tx-workbench",
+        title="评估飞书任务工作台卡片实现方案",
+        status="running",
+        started_at=10.0,
+        updated_at=30.0,
+        recent_operations=(
+            ProgressOperation(
+                id="op-read",
+                event_type="tool.completed",
+                tool_name="read_file",
+                status="completed",
+                started_at=10.0,
+                updated_at=12.5,
+                completed_at=12.5,
+                duration=2.5,
+            ),
+            ProgressOperation(
+                id="op-render",
+                event_type="tool.started",
+                tool_name="browser_vision",
+                status="running",
+                started_at=20.0,
+                updated_at=30.0,
+            ),
+        ),
+        context_usage=ContextUsageSnapshot(
+            current_tokens=200_796,
+            context_window=400_000,
+            peak_tokens=271_345,
+            compression_count=4,
+        ),
+    )
+
+    card = render_feishu_progress_card(snapshot, tool_progress_mode="all")
+    rendered = _rendered(card)
+
+    assert "任务工作台" in card["header"]["title"]["content"]
+    assert "任务：" in rendered
+    assert "状态：" in rendered
+    assert "耗时：" in rendered
+    assert "上下文：" in rendered
+    assert "自动压缩 4 次" in rendered
+    assert "最近操作：" in rendered
+    assert "最近动作" not in rendered
+    assert "开始" in rendered
+    assert "结束" in rendered
+    assert "2.50s" in rendered
+    assert "进行中" in rendered
+    assert "完整调用链" not in rendered
+    assert "飞书只显示摘要" not in rendered
+
+
+def test_feishu_progress_card_supports_english_labels():
+    from gateway.progress.renderers import detect_feishu_progress_card_language, render_feishu_progress_card
+
+    tracker = ProgressTracker(transaction_id="tx-en", title="Review Feishu card layout")
+    tracker.record_tool_started("read_file", "gateway/progress/renderers.py")
+
+    assert detect_feishu_progress_card_language("Review Feishu card layout", configured="auto") == "en"
+    assert detect_feishu_progress_card_language("评估飞书卡片", configured="auto") == "zh"
+    assert detect_feishu_progress_card_language("评估飞书卡片", configured="en") == "en"
+
+    card = render_feishu_progress_card(tracker.snapshot(), language="en")
+    rendered = _rendered(card)
+
+    assert "Task Workbench" in card["header"]["title"]["content"]
+    assert "Task:" in rendered
+    assert "Status:" in rendered
+    assert "Recent operations:" in rendered
+    assert "任务工作台" not in rendered
+    assert "最近操作" not in rendered
+
+
+def test_feishu_progress_card_replaces_unsafe_command_shaped_task_title():
+    from gateway.progress.renderers import render_feishu_progress_card
+
+    unsafe_titles = [
+        'please review curl -H "Authorization: Bearer abc123" https://example.test/path?token=x',
+        '-H "X-Api-Key: x" https://example.test/path?token=x',
+        '--header "Cookie: session=abc123" https://example.test/path?token=x',
+    ]
+    for title in unsafe_titles:
+        snapshot = TransactionSnapshot(
+            transaction_id="tx-unsafe-title",
+            title=title,
+            status="running",
+            started_at=1.0,
+            updated_at=2.0,
+        )
+
+        card = render_feishu_progress_card(snapshot, language="en", tool_progress_mode="off")
+        rendered = _rendered(card)
+
+        assert "Handle user request safely" in rendered
+        assert "curl" not in rendered
+        assert "Authorization" not in rendered
+        assert "X-Api-Key" not in rendered
+        assert "Cookie" not in rendered
+        assert "Bearer" not in rendered
+        assert "example.test" not in rendered
+        assert "token" not in rendered
 
 
 @pytest.mark.parametrize(
@@ -82,7 +191,7 @@ def test_feishu_progress_card_completed_uses_lively_copy_and_duration():
 
     assert card["header"]["template"] == "green"
     assert "✅" in card["header"]["title"]["content"]
-    assert "小沙" in card["header"]["title"]["content"]
+    assert "任务工作台" in card["header"]["title"]["content"]
     assert "完成" in rendered
     assert "1.23s" in rendered
 
@@ -105,8 +214,8 @@ def test_feishu_progress_card_failed_uses_warning_copy_without_raw_output():
     rendered = _rendered(card)
 
     assert card["header"]["template"] in {"red", "orange"}
-    assert "小沙" in card["header"]["title"]["content"]
-    assert "详情已记录" in rendered
+    assert "任务工作台" in card["header"]["title"]["content"]
+    assert "原始输出不在飞书展示" in rendered
     assert "weather_query.py" in rendered
     assert "Traceback" not in rendered
     assert "super-secret" not in rendered
@@ -132,7 +241,7 @@ def test_feishu_progress_card_includes_compact_context_usage_summary():
     assert "40,960 / 128,000" in rendered
     assert "32.0%" in rendered
     assert "峰值 65,536" in rendered
-    assert "压缩 2 次" in rendered
+    assert "自动压缩 2 次" in rendered
 
 
 def test_feishu_progress_card_hides_context_usage_until_tokens_are_known():

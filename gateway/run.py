@@ -16207,6 +16207,7 @@ class GatewayRunner:
         except Exception:
             task_tracker_max_length = 3500
         task_tracker_dashboard_url = task_tracker_config.get("dashboard_url")
+        task_tracker_language = task_tracker_config.get("language", "auto")
 
         # Disable progress for webhooks - they don't support message editing,
         # so each progress line would be sent as a separate message.  A task
@@ -16537,7 +16538,7 @@ class GatewayRunner:
                 return "\n".join(progress_lines)
 
             def _current_progress_card() -> dict:
-                from gateway.progress.renderers import render_feishu_progress_card
+                from gateway.progress.renderers import detect_feishu_progress_card_language, render_feishu_progress_card
                 return render_feishu_progress_card(
                     progress_tracker.snapshot(),
                     tool_progress_mode=progress_mode,
@@ -16545,6 +16546,7 @@ class GatewayRunner:
                     dashboard_url=task_tracker_dashboard_url,
                     style=str(task_tracker_config.get("style", "lively")),
                     emoji=is_truthy_value(task_tracker_config.get("emoji"), default=True),
+                    language=detect_feishu_progress_card_language(message, configured=task_tracker_language),
                 )
 
             async def _send_compact_feishu_card_fallback_notice(reason: str, *, final: bool = False) -> None:
