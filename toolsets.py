@@ -216,6 +216,15 @@ TOOLSETS = {
         "includes": []
     },
 
+    "memory_palace": {
+        "description": "Profile-scoped markdown memory palace notes under the active HERMES_HOME",
+        "tools": [
+            "palace_list", "palace_read", "palace_search",
+            "palace_write", "palace_patch",
+        ],
+        "includes": []
+    },
+
     "context_engine": {
         "description": "Runtime tools exposed by the active context engine",
         "tools": [],
