@@ -322,6 +322,38 @@ def test_bug_report_about_raw_task_field_becomes_fix_intent_summary():
     assert not title.startswith("处理请求：")
 
 
+def test_current_time_question_becomes_query_current_time():
+    title = summarize_task_intent("现在几点了？")
+
+    assert title == "查询当前时间"
+    assert title != "现在几点了？"
+
+
+def test_current_date_question_becomes_query_current_date():
+    title = summarize_task_intent("今天几号？")
+
+    assert title == "查询当前日期"
+    assert title != "今天几号？"
+
+
+def test_meeting_time_question_is_not_collapsed_to_query_current_time():
+    # "几点" appears inside a scheduling question, not a time-of-day utility query.
+    # The datetime rewrite must not swallow the meeting/scheduling intent.
+    title = summarize_task_intent("今天几点开会？")
+
+    assert title != "查询当前时间"
+    assert "开会" in title
+
+
+def test_date_parsing_bugfix_is_not_collapsed_to_query_current_date():
+    # "当前日期" appears inside a bugfix request, not a date utility query.
+    # The datetime rewrite must not swallow the fix/parse intent.
+    title = summarize_task_intent("修复当前日期解析问题")
+
+    assert title != "查询当前日期"
+    assert "当前日期解析问题" in title
+
+
 def test_ok_noise_stripping_does_not_corrupt_okta_or_okr_names():
     okta_title = summarize_task_intent("Okta SSO login fails, investigate without changing billing code")
     okr_title = summarize_task_intent("OKR progress summary for Q2")

@@ -194,15 +194,15 @@ def render_feishu_progress_card(
     title = _feishu_safe_task_title(snapshot.title, language=lang)
     status_label = sanitize_for_progress(_feishu_status_label(status, language=lang), max_len=80)
     labels = _feishu_labels(lang)
+    status_icon = _feishu_status_icon(status, language=lang)
 
     details = [
-        f"**{labels['task']}：** {_feishu_escape_markdown_text(title)}" if lang == "zh" else f"**{labels['task']}:** {_feishu_escape_markdown_text(title)}",
-        f"**{labels['status']}：** {_feishu_escape_markdown_text(status_label)}" if lang == "zh" else f"**{labels['status']}:** {_feishu_escape_markdown_text(status_label)}",
+        f"{_feishu_metric_label('📌', labels['task'], lang)} {_feishu_escape_markdown_text(title)}",
+        f"{_feishu_metric_label(status_icon, labels['status'], lang)} {_feishu_escape_markdown_text(status_label)}",
     ]
     total_duration = _snapshot_elapsed_duration(snapshot)
     if total_duration:
-        duration_label = f"**{labels['duration']}：**" if lang == "zh" else f"**{labels['duration']}:**"
-        details.append(f"{duration_label} {total_duration}")
+        details.append(f"{_feishu_metric_label('⏱️', labels['duration'], lang)} {total_duration}")
     context_detail = _context_usage_feishu_line(snapshot.context_usage, language=lang)
     if context_detail:
         details.append(context_detail)
@@ -227,8 +227,6 @@ def render_feishu_progress_card(
                 "content": operation_label + "\n" + ("\n".join(operation_lines) if operation_lines else empty_copy),
             }
         )
-
-    elements.append({"tag": "markdown", "content": _feishu_footer_copy(status, style=style, language=lang)})
 
     progress_link = _safe_progress_dashboard_url(dashboard_url)
     if progress_link:
@@ -358,8 +356,6 @@ def _feishu_labels(language: str) -> dict[str, str]:
             "duration": "Duration",
             "context": "Context",
             "recent_operations": "Recent operations",
-            "start": "start",
-            "end": "end",
             "running": "running",
             "tool": "Tool",
             "command": "Command",
@@ -371,8 +367,6 @@ def _feishu_labels(language: str) -> dict[str, str]:
         "duration": "耗时",
         "context": "上下文",
         "recent_operations": "最近操作",
-        "start": "开始",
-        "end": "结束",
         "running": "进行中",
         "tool": "工具",
         "command": "命令",
@@ -401,26 +395,15 @@ def _feishu_header_title(status: str, *, style: object, emoji: bool, language: s
     return sanitize_for_progress(content, max_len=80)
 
 
-def _feishu_footer_copy(status: str, *, style: object, language: str) -> str:
-    # ``style`` is kept for backwards-compatible function calls/config, but the
-    # copy is intentionally product-neutral and avoids mentioning raw/full call
-    # chains in the user-visible card.
-    del style
-    lang = _normalize_feishu_language(language)
-    if lang == "en":
-        if status == "failed":
-            text = "Safe summary only; raw output is not shown here."
-        elif status == "cancelled":
-            text = "Task stopped; safe summary only."
-        else:
-            text = "Safe summary only."
-    elif status == "failed":
-        text = "仅展示安全摘要；原始输出不在飞书展示。"
-    elif status == "cancelled":
-        text = "任务已停止；仅展示安全摘要。"
-    else:
-        text = "仅展示安全摘要。"
-    return sanitize_for_progress(text, max_len=160)
+def _feishu_status_icon(status: str, *, language: str) -> str:
+    titles = _FEISHU_TITLES.get(_normalize_feishu_language(language), _FEISHU_TITLES["zh"])
+    icon, _ = titles.get(status or "running", titles["running"])
+    return icon
+
+
+def _feishu_metric_label(icon: str, label: str, language: str) -> str:
+    separator = "：" if _normalize_feishu_language(language) == "zh" else ":"
+    return f"**{icon} {label}{separator}**"
 
 
 def _context_usage_text_line(usage: ContextUsageSnapshot | None) -> str:
@@ -440,7 +423,7 @@ def _context_usage_feishu_line(usage: ContextUsageSnapshot | None, *, language: 
     if not body:
         return ""
     label = _feishu_labels(lang)["context"]
-    prefix = f"**{label}：**" if lang == "zh" else f"**{label}:**"
+    prefix = _feishu_metric_label("🧠", label, lang)
     return sanitize_for_progress(f"{prefix} {body}", max_len=240)
 
 
@@ -594,23 +577,28 @@ def _feishu_operation_timing_parts(
     duration: str,
     language: str,
 ) -> list[str]:
+    # Render timing as a compact start-end interval (e.g. ``22:26:31 - 22:26:33``)
+    # instead of separate start/end labels. Running operations use the localized
+    # "in progress" marker as the interval's open end.
     labels = _feishu_labels(language)
-    parts: list[str] = []
     started_at = _format_timestamp(getattr(operation, "started_at", 0.0))
-    if started_at:
-        parts.append(f"{labels['start']} {started_at}")
-
     completed_at = getattr(operation, "completed_at", None)
-    if completed_at is not None:
-        ended_at = _format_timestamp(completed_at)
-        if ended_at:
-            parts.append(f"{labels['end']} {ended_at}")
-    elif operation.status == "running":
-        parts.append(f"{labels['end']} --")
+    ended_at = _format_timestamp(completed_at) if completed_at is not None else ""
+    is_running = operation.status == "running"
+
+    parts: list[str] = []
+    if started_at and ended_at:
+        parts.append(f"{started_at} - {ended_at}")
+    elif started_at and is_running:
+        parts.append(f"{started_at} - {labels['running']}")
+    elif started_at:
+        parts.append(started_at)
+    elif ended_at:
+        parts.append(ended_at)
 
     if duration:
         parts.append(f"{labels['duration']} {duration}")
-    elif operation.status == "running":
+    elif is_running and not started_at:
         parts.append(labels["running"])
     return parts
 

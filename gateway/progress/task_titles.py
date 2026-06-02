@@ -37,6 +37,28 @@ _WEATHER_TIME_TERMS = (
     "today",
     "now",
 )
+# A bare time-of-day question (the whole message is the query), e.g.
+# "现在几点了？", "几点了？", "现在时间？". Anchored full-match so that
+# scheduling/action requests that merely mention "几点" do not collapse here.
+_TIME_QUERY_RE = re.compile(
+    r"^(?:现在|目前|此刻|这会儿|当前|今天|今儿)?(?:是|的)?\s*"
+    r"(?:几点(?:钟)?了?|时间(?:是?多少)?|报时|什么时间)"
+    r"(?:了|呢|啊|呀)?$"
+)
+# A bare date question (the whole message is the query), e.g.
+# "今天几号？", "今天日期？", "现在星期几？".
+_DATE_QUERY_RE = re.compile(
+    r"^(?:今天|现在|目前|当前|今儿)?(?:是|的)?\s*"
+    r"(?:几[号日]|日期(?:是?多少)?|(?:星期|周|礼拜)几)"
+    r"(?:了|呢|啊|呀)?$"
+)
+# A scheduling question that asks the time of some action, e.g.
+# "今天几点开会？" -> keep the "开会" action instead of collapsing to a query.
+_SCHEDULE_TIME_RE = re.compile(
+    r"^(今天|明天|后天|大后天|今晚|明晚|本周|下周|这周"
+    r"|周[一二三四五六日天]|星期[一二三四五六日天]|礼拜[一二三四五六日天])?"
+    r"(?:是|的)?(?:大概|大约|大致|具体)?\s*几点(?:钟)?\s*(.+)$"
+)
 
 
 def summarize_task_intent(message: Any, *, max_len: int = _DEFAULT_MAX_TITLE_LEN) -> str:
@@ -118,6 +140,9 @@ def _rewrite_high_confidence_intent(text: str) -> str:
     weather = _rewrite_weather_intent(text)
     if weather:
         return weather
+    datetime_query = _rewrite_datetime_query_intent(text)
+    if datetime_query:
+        return datetime_query
     optimization = _rewrite_progress_summary_intent(text)
     if optimization:
         return optimization
@@ -136,6 +161,40 @@ def _rewrite_unsafe_command_or_header_intent(text: str) -> str:
     if re.search(r"[\u4e00-\u9fff]", text or ""):
         return "安全处理命令或鉴权相关请求"
     return "Handle command or authorization-related request safely"
+
+
+def _rewrite_datetime_query_intent(text: str) -> str:
+    """Rewrite bare current time/date questions into compact, low-entropy intents.
+
+    Only fires when the whole message is a time-of-day or date utility question
+    (e.g. "现在几点了？", "今天几号？"). Scheduling, bug-fix or other action
+    requests that merely mention "几点" or "当前日期" keep their action/object
+    intent and fall through to the generic rewrites.
+    """
+    core = text.strip().strip("？?。.！!　 ")
+    if not core:
+        return ""
+    if _TIME_QUERY_RE.fullmatch(core):
+        return "查询当前时间"
+    if _DATE_QUERY_RE.fullmatch(core):
+        return "查询当前日期"
+    return _rewrite_scheduling_time_question(core)
+
+
+def _rewrite_scheduling_time_question(core: str) -> str:
+    """Preserve scheduling questions like "今天几点开会？" instead of collapsing.
+
+    Returns a compact intent that keeps the action (e.g. "查询今天开会时间"), or
+    an empty string when the text is not a "几点 + action" scheduling question.
+    """
+    match = _SCHEDULE_TIME_RE.match(core)
+    if not match:
+        return ""
+    prefix = match.group(1) or ""
+    action = re.sub(r"[了呢啊吗呀吧的\s]+$", "", (match.group(2) or "").strip())
+    if not action:
+        return ""
+    return f"查询{prefix}{action}时间"
 
 
 def _rewrite_weather_intent(text: str) -> str:
