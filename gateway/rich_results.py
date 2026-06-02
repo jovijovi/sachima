@@ -122,6 +122,9 @@ def _trusted_weather_tool_call_ids(messages: list[dict[str, Any]]) -> set[str]:
                 continue
             fn = call.get("function") if isinstance(call.get("function"), dict) else {}
             name = str(fn.get("name") or call.get("name") or "").strip().lower()
+            if name == "weather_query":
+                trusted.add(call_id)
+                continue
             if name != "terminal":
                 continue
             args = _parse_tool_arguments(fn.get("arguments") if "arguments" in fn else call.get("arguments"))

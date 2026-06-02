@@ -225,6 +225,30 @@ TOOLSETS = {
         "includes": []
     },
 
+    "clock": {
+        "description": "Narrow read-only current time/date lookup for companion profiles",
+        "tools": ["clock_now"],
+        "includes": []
+    },
+
+    "calendar": {
+        "description": "Narrow holiday/calendar lookup including Chinese lunar and common Western holidays",
+        "tools": ["calendar_lookup"],
+        "includes": []
+    },
+
+    "weather": {
+        "description": "Narrow weather lookup that emits weather rich results for platform cards",
+        "tools": ["weather_query"],
+        "includes": []
+    },
+
+    "journal": {
+        "description": "Profile-scoped journal append tool backed by the memory palace",
+        "tools": ["journal_write"],
+        "includes": []
+    },
+
     "context_engine": {
         "description": "Runtime tools exposed by the active context engine",
         "tools": [],

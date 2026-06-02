@@ -50,6 +50,28 @@ def _trusted_tool_messages():
     ]
 
 
+def _trusted_native_weather_tool_messages():
+    return [
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "id": "call-weather-native-1",
+                    "function": {
+                        "name": "weather_query",
+                        "arguments": json.dumps({"location": "成都", "period": "today"}),
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call-weather-native-1",
+            "content": json.dumps({"success": True, "output": _marked_response()}, ensure_ascii=False),
+        },
+    ]
+
+
 class CardAdapter:
     def __init__(self, success=True):
         self.success = success
@@ -88,6 +110,27 @@ async def test_feishu_weather_result_sends_card_and_suppresses_duplicate_text():
     rendered = json.dumps(adapter.cards[0]["card"], ensure_ascii=False)
     assert "成都今天天气" in rendered
     assert RICH_RESULT_BEGIN not in result.response_text
+
+
+@pytest.mark.asyncio
+async def test_feishu_native_weather_tool_result_sends_card():
+    adapter = CardAdapter(success=True)
+
+    result = await maybe_deliver_weather_result(
+        adapter=adapter,
+        platform=Platform.FEISHU,
+        chat_id="chat-1",
+        response_text="狗哥，天气见卡片。",
+        messages=_trusted_native_weather_tool_messages(),
+        mode="auto",
+        metadata={"thread_id": "topic-1"},
+    )
+
+    assert result.card_sent is True
+    assert result.response_text == "狗哥，天气见卡片。"
+    assert len(adapter.cards) == 1
+    rendered = json.dumps(adapter.cards[0]["card"], ensure_ascii=False)
+    assert "成都今天天气" in rendered
 
 
 @pytest.mark.asyncio
