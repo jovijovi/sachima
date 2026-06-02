@@ -37,10 +37,11 @@ _DEFAULT_CONFIG = {
 }
 
 _SECRET_SHAPED_RE = re.compile(
-    r"(?i)\b("
-    r"api[_-]?key|token|secret|password|authorization|bearer|oauth|"
-    r"webhook[_-]?secret|app[_-]?secret|client[_-]?secret"
-    r")\b\s*[:=]\s*\S+"
+    r"(?im)(?:^|[^A-Za-z0-9])"
+    r"(?:[A-Z0-9]+[_-])*"
+    r"(api[_-]?key|token|secret|password|authorization|bearer|oauth|"
+    r"webhook[_-]?secret|app[_-]?secret|client[_-]?secret)"
+    r"\b\s*[:=]\s*\S+"
 )
 
 
@@ -96,12 +97,14 @@ def _palace_root(cfg: dict[str, Any] | None = None) -> Path:
         if not bool(cfg.get("allow_absolute_root", False)):
             raise ValueError("memory_palace.root must be relative to HERMES_HOME unless allow_absolute_root is true")
         root = root_path.resolve()
-        try:
-            root.relative_to(home)
-        except ValueError as exc:
-            raise ValueError("absolute memory_palace.root must remain inside HERMES_HOME") from exc
-        return root
-    return (home / root_path).resolve()
+    else:
+        root = (home / root_path).resolve()
+
+    try:
+        root.relative_to(home)
+    except ValueError as exc:
+        raise ValueError("memory_palace.root must remain inside HERMES_HOME") from exc
+    return root
 
 
 def _safe_relative_path(path: str) -> Path:
