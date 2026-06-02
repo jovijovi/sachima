@@ -1,6 +1,7 @@
 """Tests for pure Feishu progress card rendering."""
 
 import json
+from datetime import datetime
 
 import pytest
 
@@ -91,8 +92,13 @@ def test_feishu_progress_card_uses_task_workbench_copy_and_operation_timing():
     assert "自动压缩 4 次" in rendered
     assert "最近操作：" in rendered
     assert "最近动作" not in rendered
-    assert "开始" in rendered
-    assert "结束" in rendered
+    read_start = datetime.fromtimestamp(10.0).strftime("%H:%M:%S")
+    read_end = datetime.fromtimestamp(12.5).strftime("%H:%M:%S")
+    render_start = datetime.fromtimestamp(20.0).strftime("%H:%M:%S")
+    assert f"{read_start} - {read_end}" in rendered
+    assert f"{render_start} - 进行中" in rendered
+    assert "开始" not in rendered
+    assert "结束" not in rendered
     assert "2.50s" in rendered
     assert "进行中" in rendered
     assert "完整调用链" not in rendered
@@ -215,7 +221,7 @@ def test_feishu_progress_card_failed_uses_warning_copy_without_raw_output():
 
     assert card["header"]["template"] in {"red", "orange"}
     assert "任务工作台" in card["header"]["title"]["content"]
-    assert "原始输出不在飞书展示" in rendered
+    assert "原始输出不在飞书展示" not in rendered
     assert "weather_query.py" in rendered
     assert "Traceback" not in rendered
     assert "super-secret" not in rendered
@@ -571,3 +577,176 @@ def test_feishu_progress_card_does_not_treat_interpreter_option_values_as_script
     assert "customer_secret_hook.js" not in rendered
     assert "app.js" not in rendered
     assert "node" in rendered
+
+
+def test_feishu_progress_card_omits_footer_safety_copy():
+    from gateway.progress.renderers import render_feishu_progress_card
+
+    for language in ("zh", "en"):
+        for status in ("running", "completed", "failed"):
+            snapshot = TransactionSnapshot(
+                transaction_id=f"tx-footer-{language}-{status}",
+                title="检查事务卡底部安全文案",
+                status=status,
+                started_at=10.0,
+                updated_at=12.0,
+                completed_at=12.0 if status in {"completed", "failed"} else None,
+            )
+
+            card = render_feishu_progress_card(snapshot, language=language, tool_progress_mode="off")
+            rendered = _rendered(card)
+
+            assert "仅展示安全摘要" not in rendered
+            assert "Safe summary only" not in rendered
+            assert "原始输出不在飞书展示" not in rendered
+
+
+def test_feishu_progress_card_uses_emoji_prefixed_metric_labels():
+    from gateway.progress.events import ContextUsageSnapshot
+    from gateway.progress.renderers import render_feishu_progress_card
+
+    snapshot = TransactionSnapshot(
+        transaction_id="tx-emoji-labels",
+        title="评估事务卡指标标签",
+        status="running",
+        started_at=10.0,
+        updated_at=30.0,
+        context_usage=ContextUsageSnapshot(
+            current_tokens=200_796,
+            context_window=400_000,
+            peak_tokens=271_345,
+            compression_count=4,
+        ),
+    )
+
+    card = render_feishu_progress_card(snapshot, tool_progress_mode="off")
+    rendered = _rendered(card)
+
+    assert "📌 任务" in rendered
+    assert "🔄 状态" in rendered
+    assert "⏱️ 耗时" in rendered
+    assert "🧠 上下文" in rendered
+
+
+@pytest.mark.parametrize(
+    ("status", "expected_status_label"),
+    [
+        ("running", "🔄 状态"),
+        ("completed", "✅ 状态"),
+        ("failed", "⚠️ 状态"),
+    ],
+)
+def test_feishu_progress_card_status_label_uses_state_icon(status, expected_status_label):
+    from gateway.progress.renderers import render_feishu_progress_card
+
+    snapshot = TransactionSnapshot(
+        transaction_id=f"tx-status-icon-{status}",
+        title="状态图标标签",
+        status=status,
+        started_at=10.0,
+        updated_at=12.0,
+        completed_at=12.0 if status in {"completed", "failed"} else None,
+    )
+
+    card = render_feishu_progress_card(snapshot, tool_progress_mode="off")
+    rendered = _rendered(card)
+
+    assert expected_status_label in rendered
+
+
+def test_feishu_progress_card_supports_english_emoji_metric_labels():
+    from gateway.progress.events import ContextUsageSnapshot
+    from gateway.progress.renderers import render_feishu_progress_card
+
+    snapshot = TransactionSnapshot(
+        transaction_id="tx-emoji-labels-en",
+        title="Review task workbench metric labels",
+        status="running",
+        started_at=10.0,
+        updated_at=30.0,
+        context_usage=ContextUsageSnapshot(
+            current_tokens=200_796,
+            context_window=400_000,
+            peak_tokens=271_345,
+            compression_count=4,
+        ),
+    )
+
+    card = render_feishu_progress_card(snapshot, language="en", tool_progress_mode="off")
+    rendered = _rendered(card)
+
+    assert "📌 Task" in rendered
+    assert "🔄 Status" in rendered
+    assert "⏱️ Duration" in rendered
+    assert "🧠 Context" in rendered
+
+
+def test_feishu_recent_operation_timing_uses_interval_for_completed_operation():
+    from gateway.progress.events import ProgressOperation
+    from gateway.progress.renderers import render_feishu_progress_card
+
+    started_at = 1_700_000_791.0
+    completed_at = 1_700_000_793.06
+    snapshot = TransactionSnapshot(
+        transaction_id="tx-op-interval",
+        title="排查会话检索耗时",
+        status="running",
+        started_at=started_at,
+        updated_at=completed_at,
+        recent_operations=(
+            ProgressOperation(
+                id="op-search",
+                event_type="tool.completed",
+                tool_name="session_search",
+                status="completed",
+                started_at=started_at,
+                updated_at=completed_at,
+                completed_at=completed_at,
+                duration=2.06,
+            ),
+        ),
+    )
+
+    card = render_feishu_progress_card(snapshot, tool_progress_mode="all")
+    rendered = _rendered(card)
+
+    start_str = datetime.fromtimestamp(started_at).strftime("%H:%M:%S")
+    end_str = datetime.fromtimestamp(completed_at).strftime("%H:%M:%S")
+
+    assert f"{start_str} - {end_str}" in rendered
+    assert "耗时 2.06s" in rendered
+    assert "开始" not in rendered
+    assert "结束" not in rendered
+
+
+def test_feishu_recent_operation_timing_uses_interval_for_running_operation():
+    from gateway.progress.events import ProgressOperation
+    from gateway.progress.renderers import render_feishu_progress_card
+
+    started_at = 1_700_000_791.0
+    snapshot = TransactionSnapshot(
+        transaction_id="tx-op-running-interval",
+        title="排查会话检索进度",
+        status="running",
+        started_at=started_at,
+        updated_at=started_at,
+        recent_operations=(
+            ProgressOperation(
+                id="op-running",
+                event_type="tool.started",
+                tool_name="session_search",
+                status="running",
+                started_at=started_at,
+                updated_at=started_at,
+            ),
+        ),
+    )
+
+    card = render_feishu_progress_card(snapshot, tool_progress_mode="all")
+    rendered = _rendered(card)
+
+    start_str = datetime.fromtimestamp(started_at).strftime("%H:%M:%S")
+
+    assert f"{start_str} - 进行中" in rendered
+    assert "开始" not in rendered
+    assert "结束" not in rendered
