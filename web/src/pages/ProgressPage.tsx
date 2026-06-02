@@ -10,7 +10,7 @@ import {
   Terminal,
   XCircle,
 } from "lucide-react";
-import { H2 } from "@/components/NouiTypography";
+import { H2 } from "@nous-research/ui/ui/components/typography/h2";
 import { api } from "@/lib/api";
 import type {
   ProgressEventRecord,
@@ -19,7 +19,7 @@ import type {
 import { cn, timeAgo } from "@/lib/utils";
 import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Button } from "@nous-research/ui/ui/components/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@nous-research/ui/ui/components/card";
 
 const STATUS_OPTIONS = ["all", "running", "completed", "failed"] as const;
 type StatusFilter = (typeof STATUS_OPTIONS)[number];
