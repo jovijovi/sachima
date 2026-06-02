@@ -238,6 +238,21 @@ plugins = [
   "**/plugin.yml",
 ]
 
+# NOTE on bundled skills (skills/ and optional-skills/):
+# These top-level data trees are NOT shipped in the wheel. They can't be
+# package-data (they have no __init__.py, and `optional-skills` has a hyphen
+# so it isn't a valid package name), and `data_files` is the only setuptools
+# mechanism that handles them — but the structure-preserving form requires a
+# dynamic root setup.py, which the Supply Chain Audit (.github/workflows/
+# supply-chain-audit.yml) fails closed on as an install-hook surface. The
+# declarative `[tool.setuptools.data-files]` table only supports flat globs
+# that collapse the directory tree (verified), so it can't replace it.
+# Instead the sdist ships both trees with structure intact via MANIFEST.in
+# (`graft skills` / `graft optional-skills`), which covers source-build
+# packagers (Homebrew, Nix, AUR). At runtime hermes_constants.
+# get_bundled_skills_dir() resolves them via HERMES_BUNDLED_SKILLS / the
+# source checkout / HERMES_HOME, so wheel installs degrade gracefully.
+# Do NOT re-add a root setup.py — it will re-break the audit.
 [tool.setuptools.packages.find]
 include = ["agent", "agent.*", "tools", "tools.*", "hermes_cli", "gateway", "gateway.*", "tui_gateway", "tui_gateway.*", "cron", "acp_adapter", "plugins", "plugins.*", "providers", "providers.*"]
 
