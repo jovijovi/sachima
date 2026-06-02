@@ -9,6 +9,9 @@ from gateway.progress.redaction import sanitize_for_progress
 
 _DEFAULT_MAX_TITLE_LEN = 320
 _WHITESPACE_RE = re.compile(r"\s+")
+_UNSAFE_COMMAND_TITLE_RE = re.compile(
+    r"(?i)(\bcurl\s+|(?:^|\s)(?:-H|--header)\s+|(?:authorization|x-api-key|api-key|cookie|set-cookie)\s*:|bearer\s+\S+)"
+)
 _LEADING_NOISE_PATTERNS = (
     r"^(?:好的?|嗯+|呃+|额+)(?=\s|[，,。.!！：:]|$)\s*[，,。.!！：:]*\s*",
     r"^(?:ok(?:ay)?|please)\b\s*[，,。.!！：:]*\s*",
@@ -109,6 +112,9 @@ def _strip_conversational_noise(text: str) -> str:
 def _rewrite_high_confidence_intent(text: str) -> str:
     if not text:
         return "Task"
+    unsafe_command = _rewrite_unsafe_command_or_header_intent(text)
+    if unsafe_command:
+        return unsafe_command
     weather = _rewrite_weather_intent(text)
     if weather:
         return weather
@@ -122,6 +128,14 @@ def _rewrite_high_confidence_intent(text: str) -> str:
     if generic:
         return generic
     return _fallback_non_raw_intent(text)
+
+
+def _rewrite_unsafe_command_or_header_intent(text: str) -> str:
+    if not _UNSAFE_COMMAND_TITLE_RE.search(text or ""):
+        return ""
+    if re.search(r"[\u4e00-\u9fff]", text or ""):
+        return "安全处理命令或鉴权相关请求"
+    return "Handle command or authorization-related request safely"
 
 
 def _rewrite_weather_intent(text: str) -> str:

@@ -1531,8 +1531,8 @@ async def test_feishu_task_tracker_card_mode_sends_and_patches_one_card(monkeypa
     final_card = adapter.cards_patched[-1]["card"]
     rendered = json.dumps(final_card, ensure_ascii=False)
     assert adapter.cards_patched[-1]["finalize"] is True
-    assert "小沙" in rendered or "收工" in rendered
-    assert "完成" in rendered
+    assert "Task Workbench" in rendered
+    assert "Completed" in rendered
     assert "read_file" in rendered
     assert "search_files" in rendered
     assert adapter.edits == []
@@ -1561,10 +1561,10 @@ async def test_feishu_task_tracker_card_mode_final_card_includes_context_usage(m
     assert result["final_response"] == "done"
     final_card = adapter.cards_patched[-1]["card"]
     rendered = json.dumps(final_card, ensure_ascii=False)
-    assert "上下文" in rendered
+    assert "Context" in rendered
     assert "40,960 / 128,000" in rendered
-    assert "峰值 65,536" in rendered
-    assert "压缩 2 次" in rendered
+    assert "peak 65,536" in rendered
+    assert "compressions 2" in rendered
 
 
 @pytest.mark.asyncio

@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import ast
+from datetime import datetime
 import json
 import re
 import shlex
-from typing import Iterable
+from typing import Any, Iterable
 from urllib.parse import urlsplit, urlunsplit
 
 from gateway.progress.events import ContextUsageSnapshot, ProgressOperation, TransactionSnapshot
@@ -50,30 +51,41 @@ _FEISHU_HEADER_TEMPLATES = {
 }
 
 _FEISHU_STATUS_LABELS = {
-    "running": "⏳ 正在处理",
-    "pending": "⏳ 等待中",
-    "completed": "完成",
-    "failed": "失败",
-    "blocked": "等待确认",
-    "cancelled": "已取消",
+    "zh": {
+        "running": "⏳ 正在处理",
+        "pending": "⏳ 等待中",
+        "completed": "完成",
+        "failed": "失败",
+        "blocked": "等待确认",
+        "cancelled": "已取消",
+    },
+    "en": {
+        "running": "Running",
+        "pending": "Pending",
+        "completed": "Completed",
+        "failed": "Failed",
+        "blocked": "Blocked",
+        "cancelled": "Cancelled",
+    },
 }
 
-_FEISHU_LIVELY_TITLES = {
-    "running": ("🐾", "小沙工作台 · 运行中"),
-    "pending": ("🐾", "小沙准备中"),
-    "completed": ("✅", "小沙收工"),
-    "failed": ("⚠️", "小沙卡了一下"),
-    "blocked": ("⛔", "小沙等你确认"),
-    "cancelled": ("⚪", "小沙已停止"),
-}
-
-_FEISHU_NEUTRAL_TITLES = {
-    "running": ("🔄", "Progress · Running"),
-    "pending": ("⏳", "Progress · Pending"),
-    "completed": ("✅", "Progress · Completed"),
-    "failed": ("⚠️", "Progress · Failed"),
-    "blocked": ("⛔", "Progress · Blocked"),
-    "cancelled": ("⚪", "Progress · Cancelled"),
+_FEISHU_TITLES = {
+    "zh": {
+        "running": ("🔄", "任务工作台 · 运行中"),
+        "pending": ("⏳", "任务工作台 · 等待中"),
+        "completed": ("✅", "任务工作台 · 已完成"),
+        "failed": ("⚠️", "任务工作台 · 失败"),
+        "blocked": ("⛔", "任务工作台 · 等待确认"),
+        "cancelled": ("⚪", "任务工作台 · 已取消"),
+    },
+    "en": {
+        "running": ("🔄", "Task Workbench · Running"),
+        "pending": ("⏳", "Task Workbench · Pending"),
+        "completed": ("✅", "Task Workbench · Completed"),
+        "failed": ("⚠️", "Task Workbench · Failed"),
+        "blocked": ("⛔", "Task Workbench · Blocked"),
+        "cancelled": ("⚪", "Task Workbench · Cancelled"),
+    },
 }
 
 _SCRIPT_TOKEN_RE = re.compile(
@@ -108,6 +120,10 @@ _PATH_LIKE_SKILL_PREFIXES = {
 }
 _TOKEN_LIKE_SKILL_PREFIXES = ("sk-", "sk_", "ghp_", "gho_", "github_pat_", "xox", "hf_", "hf-", "pat_")
 _ENV_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+_CJK_RE = re.compile(r"[\u4e00-\u9fff]")
+_UNSAFE_FEISHU_TASK_TITLE_RE = re.compile(
+    r"(?i)(\bcurl\s+|(?:^|\s)(?:-H|--header)\s+|(?:authorization|x-api-key|api-key|cookie|set-cookie)\s*:|bearer\s+\S+)"
+)
 
 
 def render_text_panel(
@@ -163,6 +179,7 @@ def render_feishu_progress_card(
     dashboard_url: str | None = None,
     style: str = "lively",
     emoji: bool = True,
+    language: str = "zh",
 ) -> dict:
     """Render a sanitized Feishu interactive-card payload for task progress.
 
@@ -172,18 +189,21 @@ def render_feishu_progress_card(
     """
 
     mode = _normalize_progress_mode(tool_progress_mode)
+    lang = _normalize_feishu_language(language)
     status = snapshot.status or "running"
-    title = sanitize_for_progress(snapshot.title or "Task", max_len=320)
-    status_label = sanitize_for_progress(_FEISHU_STATUS_LABELS.get(status, status.title()), max_len=80)
+    title = _feishu_safe_task_title(snapshot.title, language=lang)
+    status_label = sanitize_for_progress(_feishu_status_label(status, language=lang), max_len=80)
+    labels = _feishu_labels(lang)
 
     details = [
-        f"**任务：** {_feishu_escape_markdown_text(title)}",
-        f"**状态：** {_feishu_escape_markdown_text(status_label)}",
+        f"**{labels['task']}：** {_feishu_escape_markdown_text(title)}" if lang == "zh" else f"**{labels['task']}:** {_feishu_escape_markdown_text(title)}",
+        f"**{labels['status']}：** {_feishu_escape_markdown_text(status_label)}" if lang == "zh" else f"**{labels['status']}:** {_feishu_escape_markdown_text(status_label)}",
     ]
-    total_duration = _snapshot_duration(snapshot)
+    total_duration = _snapshot_elapsed_duration(snapshot)
     if total_duration:
-        details.append(f"**耗时：** {total_duration}")
-    context_detail = _context_usage_feishu_line(snapshot.context_usage)
+        duration_label = f"**{labels['duration']}：**" if lang == "zh" else f"**{labels['duration']}:**"
+        details.append(f"{duration_label} {total_duration}")
+    context_detail = _context_usage_feishu_line(snapshot.context_usage, language=lang)
     if context_detail:
         details.append(context_detail)
 
@@ -196,23 +216,27 @@ def render_feishu_progress_card(
                 mode=mode,
                 max_operations=max_operations,
                 emoji=emoji,
+                language=lang,
             )
         )
+        operation_label = f"**{labels['recent_operations']}：**" if lang == "zh" else f"**{labels['recent_operations']}:**"
+        empty_copy = "暂无操作" if lang == "zh" else "No operations yet"
         elements.append(
             {
                 "tag": "markdown",
-                "content": "**最近动作：**\n" + ("\n".join(operation_lines) if operation_lines else "暂无动作"),
+                "content": operation_label + "\n" + ("\n".join(operation_lines) if operation_lines else empty_copy),
             }
         )
 
-    elements.append({"tag": "markdown", "content": _feishu_footer_copy(status, style=style)})
+    elements.append({"tag": "markdown", "content": _feishu_footer_copy(status, style=style, language=lang)})
 
     progress_link = _safe_progress_dashboard_url(dashboard_url)
     if progress_link:
+        link_label = "打开进度面板" if lang == "zh" else "Open progress dashboard"
         elements.append(
             {
                 "tag": "markdown",
-                "content": f"[打开进度面板]({_feishu_escape_url(progress_link)})",
+                "content": f"[{link_label}]({_feishu_escape_url(progress_link)})",
             }
         )
 
@@ -221,7 +245,7 @@ def render_feishu_progress_card(
         "header": {
             "title": {
                 "tag": "plain_text",
-                "content": _feishu_header_title(status, style=style, emoji=emoji),
+                "content": _feishu_header_title(status, style=style, emoji=emoji, language=lang),
             },
             "template": _feishu_header_template(status),
         },
@@ -290,27 +314,112 @@ def _normalize_feishu_style(style: object | None) -> str:
     return normalized if normalized in {"lively", "neutral", "compact"} else "lively"
 
 
+def _normalize_feishu_language(language: object | None) -> str:
+    normalized = str(language or "zh").strip().lower()
+    if normalized in {"zh", "zh-cn", "zh_cn", "cn", "chinese"}:
+        return "zh"
+    if normalized in {"en", "en-us", "en_us", "english"}:
+        return "en"
+    return "zh"
+
+
+def _feishu_safe_task_title(title: object, *, language: str) -> str:
+    lang = _normalize_feishu_language(language)
+    fallback = "Handle user request safely" if lang == "en" else "安全处理用户请求"
+    default = "Task" if lang == "en" else "任务"
+    raw = str(title or "")
+    if _UNSAFE_FEISHU_TASK_TITLE_RE.search(raw):
+        return fallback
+    safe = sanitize_for_progress(raw or default, max_len=320)
+    if _UNSAFE_FEISHU_TASK_TITLE_RE.search(safe):
+        return fallback
+    return safe or default
+
+
+def detect_feishu_progress_card_language(message: object, configured: object | None = "auto") -> str:
+    """Resolve Feishu progress-card language from config and user text.
+
+    ``configured`` accepts explicit zh/en values. ``auto`` chooses Chinese when
+    the current user message contains CJK text and English otherwise.
+    """
+
+    configured_text = str(configured or "auto").strip().lower()
+    if configured_text not in {"", "auto", "detect"}:
+        return _normalize_feishu_language(configured_text)
+    text = str(message or "")
+    return "zh" if _CJK_RE.search(text) else "en"
+
+
+def _feishu_labels(language: str) -> dict[str, str]:
+    if _normalize_feishu_language(language) == "en":
+        return {
+            "task": "Task",
+            "status": "Status",
+            "duration": "Duration",
+            "context": "Context",
+            "recent_operations": "Recent operations",
+            "start": "start",
+            "end": "end",
+            "running": "running",
+            "tool": "Tool",
+            "command": "Command",
+            "skill": "Skill",
+        }
+    return {
+        "task": "任务",
+        "status": "状态",
+        "duration": "耗时",
+        "context": "上下文",
+        "recent_operations": "最近操作",
+        "start": "开始",
+        "end": "结束",
+        "running": "进行中",
+        "tool": "工具",
+        "command": "命令",
+        "skill": "技能",
+    }
+
+
+def _feishu_status_label(status: str, *, language: str) -> str:
+    labels = _FEISHU_STATUS_LABELS.get(_normalize_feishu_language(language), _FEISHU_STATUS_LABELS["zh"])
+    return labels.get(status or "running", str(status or "running").title())
+
+
 def _feishu_header_template(status: str) -> str:
     return _FEISHU_HEADER_TEMPLATES.get(status or "running", "blue")
 
 
-def _feishu_header_title(status: str, *, style: object, emoji: bool) -> str:
-    titles = _FEISHU_LIVELY_TITLES if _normalize_feishu_style(style) == "lively" else _FEISHU_NEUTRAL_TITLES
+def _feishu_header_title(status: str, *, style: object, emoji: bool, language: str) -> str:
+    # ``style`` is kept for config compatibility; Feishu progress cards now use
+    # neutral workbench copy in every style so the default work profile cannot be
+    # confused with the separate Samiya companion bot.
+    del style
+    lang = _normalize_feishu_language(language)
+    titles = _FEISHU_TITLES.get(lang, _FEISHU_TITLES["zh"])
     icon, text = titles.get(status or "running", titles["running"])
     content = f"{icon} {text}" if emoji else text
     return sanitize_for_progress(content, max_len=80)
 
 
-def _feishu_footer_copy(status: str, *, style: object) -> str:
-    lively = _normalize_feishu_style(style) == "lively"
-    if status == "failed":
-        text = "详情已记录，不刷屏。" if lively else "Details are recorded without showing raw output here."
-    elif status == "completed":
-        text = "完整调用链已记录，飞书只显示摘要。" if lively else "Full trace recorded; this card shows a summary only."
+def _feishu_footer_copy(status: str, *, style: object, language: str) -> str:
+    # ``style`` is kept for backwards-compatible function calls/config, but the
+    # copy is intentionally product-neutral and avoids mentioning raw/full call
+    # chains in the user-visible card.
+    del style
+    lang = _normalize_feishu_language(language)
+    if lang == "en":
+        if status == "failed":
+            text = "Safe summary only; raw output is not shown here."
+        elif status == "cancelled":
+            text = "Task stopped; safe summary only."
+        else:
+            text = "Safe summary only."
+    elif status == "failed":
+        text = "仅展示安全摘要；原始输出不在飞书展示。"
     elif status == "cancelled":
-        text = "任务已停止，详情已记录。" if lively else "Task stopped; details are recorded."
+        text = "任务已停止；仅展示安全摘要。"
     else:
-        text = "完整调用链已记录，飞书只显示摘要。" if lively else "Full trace is recorded; this card shows a summary only."
+        text = "仅展示安全摘要。"
     return sanitize_for_progress(text, max_len=160)
 
 
@@ -323,13 +432,16 @@ def _context_usage_text_line(usage: ContextUsageSnapshot | None) -> str:
     return sanitize_for_progress(f"🧠 **Context:** {body}", max_len=240)
 
 
-def _context_usage_feishu_line(usage: ContextUsageSnapshot | None) -> str:
+def _context_usage_feishu_line(usage: ContextUsageSnapshot | None, *, language: str = "zh") -> str:
     if usage is None:
         return ""
-    body = _context_usage_body(usage, language="zh")
+    lang = _normalize_feishu_language(language)
+    body = _context_usage_body(usage, language=lang)
     if not body:
         return ""
-    return sanitize_for_progress(f"**上下文：** {body}", max_len=240)
+    label = _feishu_labels(lang)["context"]
+    prefix = f"**{label}：**" if lang == "zh" else f"**{label}:**"
+    return sanitize_for_progress(f"{prefix} {body}", max_len=240)
 
 
 def _context_usage_body(usage: ContextUsageSnapshot, *, language: str) -> str:
@@ -358,7 +470,7 @@ def _context_usage_body(usage: ContextUsageSnapshot, *, language: str) -> str:
         if peak > 0:
             parts.append(f"峰值 {_format_count(peak)}")
         if compressions > 0 or current > 0:
-            parts.append(f"压缩 {compressions} 次")
+            parts.append(f"自动压缩 {compressions} 次")
     else:
         if peak > 0:
             parts.append(f"peak {_format_count(peak)}")
@@ -381,16 +493,21 @@ def _safe_nonnegative_int(value: object) -> int:
     return max(0, number)
 
 
-def _snapshot_duration(snapshot: TransactionSnapshot) -> str:
-    if snapshot.completed_at is None or not snapshot.started_at:
+def _snapshot_elapsed_duration(snapshot: TransactionSnapshot) -> str:
+    end = snapshot.completed_at if snapshot.completed_at is not None else getattr(snapshot, "updated_at", None)
+    if end is None or not snapshot.started_at:
         return ""
     try:
-        elapsed = float(snapshot.completed_at) - float(snapshot.started_at)
+        elapsed = float(end) - float(snapshot.started_at)
     except Exception:
         return ""
     if elapsed < 0:
         return ""
     return _format_duration(elapsed)
+
+
+def _snapshot_duration(snapshot: TransactionSnapshot) -> str:
+    return _snapshot_elapsed_duration(snapshot)
 
 
 def _iter_feishu_operation_lines(
@@ -399,6 +516,7 @@ def _iter_feishu_operation_lines(
     mode: str,
     max_operations: int,
     emoji: bool,
+    language: str = "zh",
 ) -> Iterable[str]:
     try:
         limit = max(0, int(max_operations))
@@ -409,12 +527,13 @@ def _iter_feishu_operation_lines(
 
     rendered: list[str] = []
     previous_tool = object()
+    lang = _normalize_feishu_language(language)
     for operation in operations:
         tool_key = operation.tool_name or operation.event_type
         if mode == "new" and tool_key == previous_tool:
             continue
         previous_tool = tool_key
-        line = _feishu_operation_line(operation, emoji=emoji)
+        line = _feishu_operation_line(operation, emoji=emoji, language=lang)
         if line:
             rendered.append(line)
 
@@ -422,7 +541,9 @@ def _iter_feishu_operation_lines(
         yield line
 
 
-def _feishu_operation_line(operation: ProgressOperation, *, emoji: bool) -> str:
+def _feishu_operation_line(operation: ProgressOperation, *, emoji: bool, language: str = "zh") -> str:
+    lang = _normalize_feishu_language(language)
+    labels = _feishu_labels(lang)
     skill_name = _safe_skill_identifier_from_operation(operation)
     command_name = _safe_command_name(operation)
     tool_name = _safe_display_label(operation.tool_name, max_len=80)
@@ -430,22 +551,26 @@ def _feishu_operation_line(operation: ProgressOperation, *, emoji: bool) -> str:
 
     if skill_name:
         icon = "📚 " if emoji else ""
-        line = f"{icon}技能：{skill_name}"
+        label = labels["skill"]
+        line = f"{icon}{label}：{skill_name}" if lang == "zh" else f"{icon}{label}: {skill_name}"
     elif command_name:
         icon = "🖥️ " if emoji else ""
+        label = labels["command"]
         if tool_name:
-            line = f"{icon}命令：{command_name}（{tool_name}）"
+            line = f"{icon}{label}：{command_name}（{tool_name}）" if lang == "zh" else f"{icon}{label}: {command_name} ({tool_name})"
         else:
-            line = f"{icon}命令：{command_name}"
+            line = f"{icon}{label}：{command_name}" if lang == "zh" else f"{icon}{label}: {command_name}"
     else:
         name = tool_name or _safe_display_label(_operation_name(operation), max_len=100) or "operation"
         icon = _operation_icon(operation, emoji=emoji)
-        prefix = _operation_prefix(operation)
-        line = f"{icon}{prefix}：{name}"
+        prefix = _operation_prefix(operation, language=lang)
+        line = f"{icon}{prefix}：{name}" if lang == "zh" else f"{icon}{prefix}: {name}"
 
-    if duration:
-        line = f"{line}（{duration}）"
-    return sanitize_for_progress(line, max_len=180)
+    timing_parts = _feishu_operation_timing_parts(operation, duration=duration, language=lang)
+    if timing_parts:
+        separator = " · "
+        line = f"{line}{separator}{separator.join(timing_parts)}"
+    return sanitize_for_progress(line, max_len=260)
 
 
 def _operation_icon(operation: ProgressOperation, *, emoji: bool) -> str:
@@ -456,10 +581,53 @@ def _operation_icon(operation: ProgressOperation, *, emoji: bool) -> str:
     return "🛠️ "
 
 
-def _operation_prefix(operation: ProgressOperation) -> str:
+def _operation_prefix(operation: ProgressOperation, *, language: str = "zh") -> str:
+    labels = _feishu_labels(language)
     if operation.event_type.startswith("subagent"):
-        return "技能"
-    return "工具"
+        return labels["skill"]
+    return labels["tool"]
+
+
+def _feishu_operation_timing_parts(
+    operation: ProgressOperation,
+    *,
+    duration: str,
+    language: str,
+) -> list[str]:
+    labels = _feishu_labels(language)
+    parts: list[str] = []
+    started_at = _format_timestamp(getattr(operation, "started_at", 0.0))
+    if started_at:
+        parts.append(f"{labels['start']} {started_at}")
+
+    completed_at = getattr(operation, "completed_at", None)
+    if completed_at is not None:
+        ended_at = _format_timestamp(completed_at)
+        if ended_at:
+            parts.append(f"{labels['end']} {ended_at}")
+    elif operation.status == "running":
+        parts.append(f"{labels['end']} --")
+
+    if duration:
+        parts.append(f"{labels['duration']} {duration}")
+    elif operation.status == "running":
+        parts.append(labels["running"])
+    return parts
+
+
+def _format_timestamp(value: Any) -> str:
+    if value is None or isinstance(value, bool):
+        return ""
+    try:
+        timestamp = float(value)
+    except Exception:
+        return ""
+    if timestamp < 0:
+        return ""
+    try:
+        return datetime.fromtimestamp(timestamp).strftime("%H:%M:%S")
+    except Exception:
+        return ""
 
 
 def _safe_skill_identifier_from_operation(operation: ProgressOperation) -> str | None:

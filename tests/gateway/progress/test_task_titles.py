@@ -72,6 +72,27 @@ def test_title_redacts_secrets_and_preserves_safe_context():
     assert "api.example.test" in title
 
 
+def test_command_or_authorization_shaped_request_becomes_safe_summary():
+    messages = [
+        'Please review curl -H "Authorization: Bearer *** https://example.test/path?token=x',
+        '-H "X-Api-Key: x" https://example.test/path?token=x',
+        '--header "Cookie: session=abc123" https://example.test/path?token=x',
+    ]
+
+    for message in messages:
+        title = summarize_task_intent(message)
+
+        assert title == "Handle command or authorization-related request safely"
+        assert "curl" not in title
+        assert "Authorization" not in title
+        assert "X-Api-Key" not in title
+        assert "Cookie" not in title
+        assert "Bearer" not in title
+        assert "example.test" not in title
+        assert "token" not in title
+        assert "super-secret" not in title
+
+
 def test_weather_intent_preserves_explicit_location_and_avoids_unrequested_advice():
     title = summarize_task_intent("上海明天会下雨吗？")
 
