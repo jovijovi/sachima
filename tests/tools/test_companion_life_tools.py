@@ -102,6 +102,40 @@ def test_journal_write_appends_to_profile_palace_journal_and_blocks_sensitive_co
     assert "sk-test-secret" not in target.read_text(encoding="utf-8")
 
 
+def test_journal_write_preserves_existing_content_beyond_read_pagination(monkeypatch, tmp_path):
+    profile_home = tmp_path / "profiles" / "samiya"
+    target = profile_home / "memories" / "palace" / "journal" / "2026" / "2026-06.md"
+    target.parent.mkdir(parents=True)
+    original_tail = "line-2105-preserve-me"
+    target.write_text("# Journal 2026-06\n\n" + "\n".join(f"line-{i}" for i in range(1, 2105)) + f"\n{original_tail}\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(profile_home))
+
+    from tools.companion_life_tools import journal_write
+
+    result = _parse(journal_write(entry="追加一条，不许截断旧内容。", date="2026-06-03"))
+
+    content = target.read_text(encoding="utf-8")
+    assert result["success"] is True
+    assert original_tail in content
+    assert "追加一条，不许截断旧内容。" in content
+
+
+def test_companion_life_tools_work_through_registry_dispatch(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profile"))
+
+    from tools.registry import discover_builtin_tools, registry
+
+    discover_builtin_tools()
+
+    clock = _parse(registry.dispatch("clock_now", {"timezone": "Asia/Shanghai"}))
+    holiday = _parse(registry.dispatch("calendar_lookup", {"date": "2026-12-25", "region": "all"}))
+    journal = _parse(registry.dispatch("journal_write", {"entry": "registry dispatch smoke", "date": "2026-06-02"}))
+
+    assert clock["success"] is True
+    assert any(item["name"] == "圣诞节" for item in holiday["holidays"])
+    assert journal["success"] is True
+
+
 def test_companion_life_toolsets_are_registered_but_not_core(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profile"))
 

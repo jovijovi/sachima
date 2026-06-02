@@ -483,15 +483,6 @@ def weather_query(location: str = "成都", period: str = "today", task_id: str 
         return _error(str(exc))
 
 
-def _line_number_content(content: str) -> str:
-    lines = []
-    for line in str(content or "").splitlines():
-        if "|" in line and line.split("|", 1)[0].isdigit():
-            lines.append(line.split("|", 1)[1])
-        else:
-            lines.append(line)
-    return "\n".join(lines)
-
 
 def journal_write(
     entry: str,
@@ -502,18 +493,32 @@ def journal_write(
 ) -> str:
     """Append a diary entry to the active profile's memory palace journal."""
     try:
-        from tools.memory_palace_tool import palace_read, palace_write
+        from tools.memory_palace_tool import (
+            _atomic_text_write,
+            _check_write_mode,
+            _make_backup,
+            _resolve_target,
+            _scan_content,
+        )
 
         text = _safe_text(entry, max_len=4000)
         if not text:
             return _error("entry is required")
         day = _parse_date(date or None)
         path = f"journal/{day.year}/{day.strftime('%Y-%m')}.md"
-        existing_result = json.loads(palace_read(path, offset=1, limit=2000))
-        if existing_result.get("success"):
-            content = _line_number_content(existing_result.get("content", ""))
+        root, target, cfg = _resolve_target(path, must_exist=False)
+        _check_write_mode(cfg)
+
+        max_bytes = int(cfg.get("max_file_bytes") or 32_768)
+        if target.exists():
+            existing_bytes = target.stat().st_size
+            if existing_bytes > max_bytes:
+                return _error("journal file exceeds configured max_file_bytes", size=existing_bytes)
+            content = target.read_text(encoding="utf-8", errors="replace")
             if content.strip():
                 content = content.rstrip() + "\n\n"
+            else:
+                content = f"# Journal {day.strftime('%Y-%m')}\n\n"
         else:
             content = f"# Journal {day.strftime('%Y-%m')}\n\n"
 
@@ -531,10 +536,15 @@ def journal_write(
         if tag_items:
             block.append(f"标签：{', '.join(tag_items[:8])}")
         new_content = content + "\n".join(block).rstrip() + "\n"
-        written = json.loads(palace_write(path, new_content))
-        if not written.get("success"):
-            return _json(written)
-        return _json({"success": True, "path": path})
+        scan_error = _scan_content(new_content, cfg)
+        if scan_error:
+            return _error(scan_error)
+        new_size = len(new_content.encode("utf-8"))
+        if new_size > max_bytes:
+            return _error("journal write exceeds configured max_file_bytes", size=new_size, max_file_bytes=max_bytes)
+        _make_backup(target, bool(cfg.get("backups", True)))
+        _atomic_text_write(target, new_content)
+        return _json({"success": True, "path": target.relative_to(root).as_posix()})
     except Exception as exc:
         return _error(str(exc))
 
@@ -549,7 +559,7 @@ registry.register(
             "properties": {"timezone": {"type": "string", "description": "IANA timezone, default Asia/Shanghai"}},
         },
     },
-    handler=clock_now,
+    handler=lambda args, **kw: clock_now(timezone=(args or {}).get("timezone", "Asia/Shanghai")),
     description="Current date/time lookup",
     emoji="🕒",
 )
@@ -568,7 +578,11 @@ registry.register(
             },
         },
     },
-    handler=calendar_lookup,
+    handler=lambda args, **kw: calendar_lookup(
+        date=(args or {}).get("date", ""),
+        region=(args or {}).get("region", "all"),
+        timezone=(args or {}).get("timezone", "Asia/Shanghai"),
+    ),
     description="Holiday and calendar lookup",
     emoji="📅",
 )
@@ -586,7 +600,10 @@ registry.register(
             },
         },
     },
-    handler=weather_query,
+    handler=lambda args, **kw: weather_query(
+        location=(args or {}).get("location", "成都"),
+        period=(args or {}).get("period", "today"),
+    ),
     description="Narrow weather lookup with rich result output",
     emoji="🌦️",
 )
@@ -607,7 +624,12 @@ registry.register(
             },
         },
     },
-    handler=journal_write,
+    handler=lambda args, **kw: journal_write(
+        entry=(args or {}).get("entry", ""),
+        mood=(args or {}).get("mood", ""),
+        tags=(args or {}).get("tags"),
+        date=(args or {}).get("date", ""),
+    ),
     description="Profile palace journal appender",
     emoji="📓",
 )
