@@ -5,6 +5,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 
 SCRIPT_PATH = (
     Path(__file__).resolve().parents[2]
@@ -690,6 +692,48 @@ def test_shared_skills_migrated(tmp_path: Path):
     report = migrator.migrate()
     imported = target / "skills" / mod.SKILL_CATEGORY_DIRNAME / "my-shared-skill" / "SKILL.md"
     assert imported.exists()
+
+
+def test_workspace_skill_migration_preserves_symlink(tmp_path: Path):
+    """Regression: workspace/skills migration must copy a symlink as a symlink
+    (copytree(symlinks=True)) instead of dereferencing it into a regular file.
+
+    Mirrors the shared-skills path which already preserves symlinks. Skips on
+    platforms that cannot create symlinks (e.g. Windows without privilege)."""
+    mod = load_module()
+    source = tmp_path / ".openclaw"
+    target = tmp_path / ".hermes"
+    target.mkdir()
+
+    skill_dir = source / "workspace" / "skills" / "demo-skill"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: demo-skill\ndescription: demo\n---\n\nbody\n",
+        encoding="utf-8",
+    )
+    (skill_dir / "real.txt").write_text("real content\n", encoding="utf-8")
+    link_path = skill_dir / "link.txt"
+    try:
+        link_path.symlink_to("real.txt")
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"Platform cannot create symlinks: {exc}")
+
+    migrator = mod.Migrator(
+        source_root=source,
+        target_root=target,
+        execute=True,
+        workspace_target=None,
+        overwrite=False,
+        migrate_secrets=False,
+        output_dir=target / "migration-report",
+        selected_options={"skills"},
+    )
+    migrator.migrate()
+
+    dest_link = target / "skills" / mod.SKILL_CATEGORY_DIRNAME / "demo-skill" / "link.txt"
+    assert dest_link.is_symlink(), (
+        "workspace skill symlink was dereferenced instead of being preserved"
+    )
 
 
 def test_daily_memory_merged(tmp_path: Path):
