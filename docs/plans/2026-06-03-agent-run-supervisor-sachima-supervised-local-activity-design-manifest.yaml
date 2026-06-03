@@ -1,0 +1,89 @@
+phase_id: "agent-run-supervisor-sachima-supervised-local-activity-design"
+level: "level-3"
+design_only: true
+implementation_approved: false
+live_approved: false
+gateway_approved: false
+real_delivery_approved: false
+controlled_ai_flow_execution_approved: false
+owner_dri: "Hermes operator with Dog Brother approval"
+status: "design_packet_candidate"
+created_at: "2026-06-03T22:07:42+08:00"
+repo: "jovijovi/sachima"
+base_branch: "release/sachima"
+base_sha: "5affc2fbb68d483683cd61c0871cec528127388e"
+branch: "docs/supervised-local-activity-design"
+worktree: "/home/ecs-user/workspace/hermes/worktrees/sachima/docs-supervised-local-activity-design"
+
+received_approval_text:
+  - "清理 PR #97 分支/worktree，并批准开启 agent-run-supervisor × Sachima supervised local Activity design packet：no live, no Gateway, no real delivery"
+approval_interpretation: "docs-only supervised local Activity design packet after PR #97 local/offline seam; no runtime implementation, no live behavior, no Gateway, no real delivery"
+
+prior_evidence:
+  pr_96:
+    title: "agent-run-supervisor local/offline integration design"
+    merge_commit: "9305dd29b407cc2b8ddb1ba7ad6508abf5d619da"
+  pr_97:
+    title: "local offline supervisor seam"
+    merge_commit: "5affc2fbb68d483683cd61c0871cec528127388e"
+  cleanup_97:
+    audit_log: "/home/ecs-user/workspace/hermes/logs/sachima-pr97-cleanup-20260603-220742"
+
+approved_scope:
+  - "docs-only supervised local Activity design"
+  - "Activity request/response contract"
+  - "role/permission mapping design"
+  - "start/query/update/retry/close/cancel semantics design"
+  - "durable state shape and no-leak rules"
+  - "current-status update"
+
+allowed_changed_paths:
+  - "docs/plans/2026-06-03-agent-run-supervisor-sachima-supervised-local-activity-design.md"
+  - "docs/plans/2026-06-03-agent-run-supervisor-sachima-supervised-local-activity-design-manifest.yaml"
+  - "docs/dev_log/2026-06-03-agent-run-supervisor-sachima-supervised-local-activity-design.md"
+  - "docs/roadmap/current-status.md"
+
+explicit_non_approvals:
+  - "runtime_code_implementation"
+  - "real_external_sachima_ingress"
+  - "real_external_delivery"
+  - "production_delivery_control"
+  - "production_agent_tool_execution_expansion"
+  - "production_config_write"
+  - "gateway_restart_or_reload"
+  - "platform_adapter_mutation"
+  - "gateway_owned_temporal_lifecycle"
+  - "real_send_api_or_external_im_call"
+  - "external_temporal_service_or_worker_startup"
+  - "live_or_default_on_behavior"
+  - "public_webhook_exposure"
+  - "automatic_replies"
+  - "worker_auto_routing"
+  - "agent_to_agent_auto_routing"
+  - "@all_fanout"
+  - "trusted_markdown_html_rendering"
+  - "controlled_ai_flow_execution"
+
+activity_modes_designed:
+  - "exec_dry_run"
+  - "exec"
+  - "session_create"
+  - "session_send"
+  - "session_status"
+  - "session_close"
+
+first_future_slice_recommendation:
+  approval_text: "approve_agent_run_supervisor_sachima_supervised_local_activity_implementation_no_live_no_gateway_no_real_delivery"
+  scope: "local/offline Activity wrapper implementation, starting with exec_dry_run and injected/fake supervisor calls; no real AGENT execution, no live/Gateway/real delivery"
+
+strongest_allowed_outcome: "agent_run_supervisor_sachima_supervised_local_activity_design_ready_for_separate_local_offline_implementation_request"
+strongest_allowed_outcome_meaning: "a later implementation request may be asked for; this design does not approve runtime code, live behavior, Gateway, real ingress, real delivery, production config, or controlled AI FLOW execution"
+
+verification_gates:
+  - "changed-file allowlist: docs/plans target, manifest, dev_log, current-status only"
+  - "manifest YAML parse"
+  - "required marker gate"
+  - "secret-shaped scan"
+  - "forbidden approval scan"
+  - "git diff --check"
+  - "Codex primary review"
