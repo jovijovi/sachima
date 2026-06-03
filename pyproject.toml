@@ -254,7 +254,7 @@ plugins = [
 # source checkout / HERMES_HOME, so wheel installs degrade gracefully.
 # Do NOT re-add a root setup.py — it will re-break the audit.
 [tool.setuptools.packages.find]
-include = ["agent", "agent.*", "tools", "tools.*", "hermes_cli", "gateway", "gateway.*", "tui_gateway", "tui_gateway.*", "cron", "acp_adapter", "plugins", "plugins.*", "providers", "providers.*"]
+include = ["agent", "agent.*", "tools", "tools.*", "hermes_cli", "gateway", "gateway.*", "tui_gateway", "tui_gateway.*", "cron", "acp_adapter", "plugins", "plugins.*", "providers", "providers.*", "sachima_supervisor", "sachima_supervisor.*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
