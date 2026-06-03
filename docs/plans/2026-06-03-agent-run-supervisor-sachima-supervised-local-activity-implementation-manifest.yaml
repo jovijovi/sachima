@@ -1,0 +1,95 @@
+phase_id: "agent-run-supervisor-sachima-supervised-local-activity-implementation"
+level: "level-3"
+design_only: false
+implementation_approved: true
+live_approved: false
+gateway_approved: false
+real_delivery_approved: false
+controlled_ai_flow_execution_approved: false
+real_agent_execution_approved: false
+owner_dri: "Hermes operator with Dog Brother approval"
+status: "implementation_candidate"
+created_at: "2026-06-03T23:13:05+08:00"
+repo: "jovijovi/sachima"
+base_branch: "release/sachima"
+base_sha: "675853fd2db2b8f9df781ea46803fd0747ea78cb"
+branch: "feat/supervised-local-activity"
+worktree: "/home/ecs-user/workspace/hermes/worktrees/sachima/feat-supervised-local-activity"
+
+received_approval_text:
+  - "approve_agent_run_supervisor_sachima_supervised_local_activity_implementation_no_live_no_gateway_no_real_delivery"
+approval_interpretation: "local/offline supervised local Activity implementation first slice only; exec_dry_run with injected supervisor calls; no live behavior, no Gateway, no real delivery, no real AGENT execution, no controlled AI FLOW execution"
+
+prior_evidence:
+  pr_97:
+    title: "agent-run-supervisor local/offline supervisor seam"
+    merge_commit: "5affc2fbb68d483683cd61c0871cec528127388e"
+  pr_98:
+    title: "supervised local Activity design"
+    merge_commit: "675853fd2db2b8f9df781ea46803fd0747ea78cb"
+
+approved_scope:
+  - "sachima_supervisor Activity wrapper implementation"
+  - "exec_dry_run first slice only"
+  - "injected/fake supervisor calls only"
+  - "role-map allowlist validation"
+  - "claim-check ref validation"
+  - "sanitized durable state/result mapping"
+  - "no-leak and forbidden-surface tests"
+  - "roadmap/current-status update"
+
+allowed_changed_paths:
+  - "sachima_supervisor/activity.py"
+  - "sachima_supervisor/__init__.py"
+  - "tests/sachima_supervisor/test_activity.py"
+  - "docs/plans/2026-06-03-agent-run-supervisor-sachima-supervised-local-activity-implementation.md"
+  - "docs/plans/2026-06-03-agent-run-supervisor-sachima-supervised-local-activity-implementation-manifest.yaml"
+  - "docs/dev_log/2026-06-03-agent-run-supervisor-sachima-supervised-local-activity-implementation.md"
+  - "docs/roadmap/current-status.md"
+
+implemented_modes:
+  - "exec_dry_run"
+
+blocked_modes:
+  - "exec"
+  - "session_create"
+  - "session_send"
+  - "session_status"
+  - "session_close"
+  - "cancel"
+  - "rollback"
+
+explicit_non_approvals:
+  - "real_external_sachima_ingress"
+  - "real_external_delivery"
+  - "production_delivery_control"
+  - "production_agent_tool_execution_expansion"
+  - "production_config_write"
+  - "gateway_restart_or_reload"
+  - "platform_adapter_mutation"
+  - "gateway_owned_temporal_lifecycle"
+  - "real_send_api_or_external_im_call"
+  - "external_temporal_service_or_worker_startup"
+  - "live_or_default_on_behavior"
+  - "public_webhook_exposure"
+  - "automatic_replies"
+  - "worker_auto_routing"
+  - "agent_to_agent_auto_routing"
+  - "@all_fanout"
+  - "trusted_markdown_html_rendering"
+  - "real_agent_execution"
+  - "controlled_ai_flow_execution"
+
+strongest_allowed_outcome: "agent_run_supervisor_sachima_supervised_local_activity_exec_dry_run_wrapper_implemented_with_injected_supervisor_only"
+strongest_allowed_outcome_meaning: "Sachima has a local/offline Activity wrapper with tests for injected exec_dry_run behavior and sanitized durable state; live/Gateway/real-delivery/real-agent/control-flow execution remain blocked"
+
+verification_gates:
+  - "RED: tests/sachima_supervisor/test_activity.py fails before activity module exists"
+  - "GREEN: focused Activity + local_offline tests"
+  - "py_compile"
+  - "git diff --check"
+  - "changed-file allowlist"
+  - "secret-shaped scan"
+  - "forbidden surface scan"
+  - "Codex primary review"
+  - "GitHub PR CI"
