@@ -19,6 +19,11 @@ from sachima_supervisor.activity import (
     query_supervised_local_activity,
     start_supervised_local_activity,
 )
+from sachima_supervisor.activity_evidence import (
+    CONTROLLED_DRY_RUN_EVIDENCE_APPROVAL_MARKER,
+    build_controlled_local_dry_run_evidence,
+    write_controlled_local_dry_run_evidence,
+)
 from sachima_supervisor.local_offline import (
     FORBIDDEN_METADATA_KEYS,
     IMPLEMENTATION_APPROVAL_TOKEN,
@@ -52,4 +57,8 @@ __all__ = [
     "SupervisedLocalActivityResult",
     "query_supervised_local_activity",
     "start_supervised_local_activity",
+    # controlled local Activity dry-run evidence (this PR)
+    "CONTROLLED_DRY_RUN_EVIDENCE_APPROVAL_MARKER",
+    "build_controlled_local_dry_run_evidence",
+    "write_controlled_local_dry_run_evidence",
 ]
