@@ -129,4 +129,4 @@ Reviewer notes: inspected requested status, diffs, untracked files, roadmap pref
 
 ## Pending Gates
 
-- GitHub PR creation, CI, and PR-number recording (PR number unknown until Hermes opens it).
+- GitHub PR #100 CI and final merge-status recording.

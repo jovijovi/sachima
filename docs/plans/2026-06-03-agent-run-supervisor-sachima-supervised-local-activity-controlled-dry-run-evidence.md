@@ -88,7 +88,7 @@ unsafe_supervisor_outcome unsafe/malformed injected outcome collapses to activit
 - [ ] Changed-file allowlist (Hermes verification).
 - [ ] Secret/no-leak/static forbidden-surface scan (Hermes verification).
 - [ ] Codex primary review after implementation candidate is ready.
-- [ ] PR CI green before merge; record PR number.
+- [ ] PR CI green before merge; record final merge status.
 
 ## Still Not Approved
 
