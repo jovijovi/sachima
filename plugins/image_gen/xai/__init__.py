@@ -187,6 +187,9 @@ class XAIImageGenProvider(ImageGenProvider):
             "prompt": prompt,
             "aspect_ratio": xai_ar,
             "resolution": xai_res,
+            # Prefer inline bytes over xAI's temporary imgen.x.ai URL: the URL
+            # path can be blocked by CDN/IP policy before Hermes can cache it.
+            "response_format": "b64_json",
         }
 
         headers = {
