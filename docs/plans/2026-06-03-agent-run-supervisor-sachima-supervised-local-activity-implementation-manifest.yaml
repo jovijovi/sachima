@@ -9,6 +9,7 @@ controlled_ai_flow_execution_approved: false
 real_agent_execution_approved: false
 owner_dri: "Hermes operator with Dog Brother approval"
 status: "implementation_candidate"
+pr_number: 99
 created_at: "2026-06-03T23:13:05+08:00"
 repo: "jovijovi/sachima"
 base_branch: "release/sachima"

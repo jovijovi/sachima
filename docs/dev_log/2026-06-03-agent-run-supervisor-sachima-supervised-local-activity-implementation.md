@@ -101,4 +101,4 @@ Reviewer notes: inspected git status/diffs/tracked changes/all listed untracked 
 
 ## Pending Gates
 
-- GitHub PR CI and mergeability after PR creation.
+- GitHub PR #99 CI and mergeability after PR creation.
