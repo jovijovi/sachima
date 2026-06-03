@@ -11,11 +11,13 @@ latest_design_packet: P4 Sachima Envelope v1 / agentic-ui controlled external in
 latest_design_packet_doc: docs/plans/2026-05-12-sachima-envelope-v1-agentic-ui-p4-design-packet.md
 latest_supervisor_integration_design_packet: agent-run-supervisor × Sachima local/offline integration design (docs-only; design only)
 latest_supervisor_integration_design_packet_doc: docs/plans/2026-06-03-agent-run-supervisor-sachima-local-offline-integration-design.md
+latest_supervisor_integration_implementation: agent-run-supervisor × Sachima local/offline integration implementation (default-off; local/offline only)
+latest_supervisor_integration_implementation_doc: docs/plans/2026-06-03-agent-run-supervisor-sachima-local-offline-integration-implementation.md
 latest_protocol_repo: jovijovi/sachima-protocols
 latest_protocol_spec: https://github.com/jovijovi/sachima-protocols/blob/main/protocols/envelope/v1.md
 latest_protocol_implementation: P4 Sachima Envelope v1 local conformance implementation (Sachima-side)
 latest_protocol_implementation_doc: docs/dev_log/2026-05-13-sachima-envelope-v1-local-conformance-implementation.md
-current_position: P4 Sachima-side local conformance implemented; agentic-ui/cross-repo conformance pending; agent-run-supervisor Sachima local/offline integration design packet added (docs-only, design only); implementation, live/public, Gateway involvement, and real delivery not approved
+current_position: P4 Sachima-side local conformance implemented; agentic-ui/cross-repo conformance pending; agent-run-supervisor Sachima local/offline integration implementation added as a default-off, non-Gateway local/offline seam; live/public, Gateway involvement, controlled AI FLOW execution, and real delivery not approved
 ```
 
 ## Canonical references
@@ -30,6 +32,8 @@ current_position: P4 Sachima-side local conformance implemented; agentic-ui/cros
 - Latest Sachima-side v1 implementation dev log: `docs/dev_log/2026-05-13-sachima-envelope-v1-local-conformance-implementation.md`
 - agent-run-supervisor Sachima local/offline integration design packet: `docs/plans/2026-06-03-agent-run-supervisor-sachima-local-offline-integration-design.md`
 - agent-run-supervisor Sachima local/offline integration design dev log: `docs/dev_log/2026-06-03-agent-run-supervisor-sachima-local-offline-integration-design.md`
+- agent-run-supervisor Sachima local/offline integration implementation: `docs/plans/2026-06-03-agent-run-supervisor-sachima-local-offline-integration-implementation.md`
+- agent-run-supervisor Sachima local/offline integration implementation dev log: `docs/dev_log/2026-06-03-agent-run-supervisor-sachima-local-offline-integration-implementation.md`
 - PE-2 design packet: `docs/plans/2026-05-12-flowweaver-pe2-design-packet.md`
 - Latest PE-2A dev log: `docs/dev_log/2026-05-12-flowweaver-pe2a-controlled-runtime-fake-delivery.md`
 
@@ -53,7 +57,8 @@ If this file is stale or contradicts a requested task, stop and report the drift
 | P3 — PE-2 design packet only | Done | PR #81, merge `84f6a9010d72fe6ab3a0dac4ecaea3c3fb252ddf` | May request separately approved PE-2A implementation; not live or real ingress |
 | Bridge — PE-2A controlled runtime + fake delivery | Done | PR #82, merge `1f587a0b0355f7eb18a2cdff64bc1bc93ea109dd` | Controlled local runtime-delivery bridge proven with fake delivery; does not approve real external ingress |
 | P4 — Controlled external ingress | Sachima-side local conformance implemented; agentic-ui/cross-repo pending | `jovijovi/sachima-protocols` → `protocols/envelope/v1.md`; local pointer `docs/protocols/sachima-envelope-v1.md`; design packet `docs/plans/2026-05-12-sachima-envelope-v1-agentic-ui-p4-design-packet.md`; implementation dev log `docs/dev_log/2026-05-13-sachima-envelope-v1-local-conformance-implementation.md` | Canonical external envelope has Sachima-side local implementation; agentic-ui conformance, public exposure, live ingress, and real delivery still require separate approval |
-| Design — agent-run-supervisor local/offline supervisor integration | Design packet only (docs-only) | Design packet `docs/plans/2026-06-03-agent-run-supervisor-sachima-local-offline-integration-design.md` + manifest + dev log | Defines a caller-owned local supervisor library seam (caller is a Sachima/FlowWeaver/Hermes controller, not Gateway); does not approve implementation, live behavior, Gateway involvement, or real delivery |
+| Design — agent-run-supervisor local/offline supervisor integration | Done (docs-only) | Design packet `docs/plans/2026-06-03-agent-run-supervisor-sachima-local-offline-integration-design.md` + manifest + dev log | Defines a caller-owned local supervisor library seam (caller is a Sachima/FlowWeaver/Hermes controller, not Gateway); does not approve live behavior, Gateway involvement, or real delivery |
+| Implementation — agent-run-supervisor local/offline supervisor integration | Local/offline implementation added (default-off, non-Gateway) | Implementation doc `docs/plans/2026-06-03-agent-run-supervisor-sachima-local-offline-integration-implementation.md`; code under `sachima_supervisor/`; tests under `tests/sachima_supervisor/` | Provides a caller-owned local/offline seam and sanitized offline evidence/view model; does not approve controlled AI FLOW execution, live/default-on behavior, Gateway involvement, real ingress, or real delivery |
 | P5 — Production durable runtime integration | Pending | Not started | Blocked until P4/P5 approvals and runtime design gates |
 | P6 — Controlled AI FLOW execution | Pending | Not started | Blocked until durable runtime and safety gates |
 | P7 — Real delivery and ACK closure | Pending | Not started | Blocked until fake/local delivery and AI FLOW gates are production-ready and separately approved |
@@ -70,6 +75,7 @@ This table tracks phase-bearing and bridge-phase PRs. Pure roadmap-status mainte
 | #80 | Phase B fake-send simulator implementation | `10486c7c585974dce3f37c74437ada3419d67904` | Fake-send / simulator implementation |
 | #81 | PE-2 design packet | `84f6a9010d72fe6ab3a0dac4ecaea3c3fb252ddf` | Design-only packet |
 | #82 | PE-2A controlled runtime fake delivery bridge | `1f587a0b0355f7eb18a2cdff64bc1bc93ea109dd` | Controlled local runtime + fake delivery implementation |
+| #96 | agent-run-supervisor local/offline integration design | `9305dd29b407cc2b8ddb1ba7ad6508abf5d619da` | Docs-only design; no implementation/live/Gateway/real delivery approval |
 
 ## Evidence index
 
@@ -91,7 +97,8 @@ Runtime evidence stays outside PR payloads unless a phase explicitly approves ve
 | ROADMAP-NEXT-P4-DESIGN | NEXT_PHASE | Controlled external ingress should start with a design packet before implementation. | No | No | P4 implementation request | `jovijovi/sachima-protocols` (`protocols/envelope/v1.md`) and `docs/plans/2026-05-12-sachima-envelope-v1-agentic-ui-p4-design-packet.md` | Closed by design packet |
 | ROADMAP-NEXT-P4-ENV-V1-CONFORMANCE | NEXT_PHASE | Implement Sachima Envelope v1 local conformance across Sachima and agentic-ui without live/public ingress or real delivery. | No | Yes | Any P4 behavior-bearing implementation claim | Canonical spec in `jovijovi/sachima-protocols` (`protocols/envelope/v1.md`), separate implementation approval, local-only conformance tests, HMAC/schema/no-leak probes, review blockers zero | Open — Sachima-side local implementation delivered; agentic-ui and cross-repo probes pending |
 | ROADMAP-WATCH-STATUS-DASHBOARD | WATCH | This dashboard is the living progress index and must be updated after roadmap/phase closure. | No | No | Any claim of phase closure or next-phase readiness | Update this file or explain N/A in the PR | Open |
-| ROADMAP-NEXT-ARS-LOCAL-OFFLINE-IMPL | NEXT_PHASE | agent-run-supervisor Sachima local/offline integration is a docs-only design packet, not an implementation approval. | No | No | Any local/offline supervisor integration implementation code | Exact approval `approve_agent_run_supervisor_sachima_local_offline_integration_implementation_no_live_no_gateway_no_real_delivery`; caller stays a Sachima/FlowWeaver/Hermes controller, never the Gateway | Open |
+| ROADMAP-NEXT-ARS-LOCAL-OFFLINE-IMPL | NEXT_PHASE | agent-run-supervisor Sachima local/offline integration implementation required a separate approval after the design packet. | No | No | Any local/offline supervisor integration implementation code | Exact approval `approve_agent_run_supervisor_sachima_local_offline_integration_implementation_no_live_no_gateway_no_real_delivery`; caller stays a Sachima/FlowWeaver/Hermes controller, never the Gateway | Closed by this local/offline implementation PR |
+| ROADMAP-NEXT-ARS-CONTROLLED-AI-FLOW | NEXT_PHASE | Controlled AI FLOW execution via the local supervisor seam remains a separate future phase. | No | Yes | Any real controlled AI FLOW execution claim, real AGENT launch from Sachima, or production agent/tool execution expansion | Separate design/approval after local/offline evidence and durable-runtime ownership gates; no live/Gateway/real delivery by default | Open |
 
 ## Explicit non-approvals
 
@@ -127,17 +134,17 @@ approve_p4_agentic_ui_sachima_envelope_v1_local_conformance_and_cross_repo_probe
 
 This approval would allow agentic-ui-side local conformance implementation and cross-repo probes for Sachima Envelope v1 after the Sachima-side local implementation. It would not approve public exposure, Gateway restart/reload, production config writes, real external delivery, real AI FLOW execution, Temporal service/Worker lifecycle, or live/default-on behavior.
 
-Option B — agent-run-supervisor Sachima local/offline integration implementation only:
+Option B — controlled AI FLOW supervised local agent execution design/evidence only:
 
 ```text
-approve_agent_run_supervisor_sachima_local_offline_integration_implementation_no_live_no_gateway_no_real_delivery
+approve_sachima_controlled_ai_flow_supervised_local_agent_execution_no_live_no_real_delivery
 ```
 
-This approval would allow a default-off, local/offline caller seam (owned by a Sachima/FlowWeaver/Hermes controller, not the Gateway) that builds a `CallerInvocationSpec`, calls `invoke_caller` starting with dry-run/config-preview, maps `CallerResult` into a caller-owned offline view model, and writes sanitized local evidence. It would not approve live behavior, Gateway involvement, real external ingress, real IM/Feishu delivery, or controlled AI FLOW execution. See `docs/plans/2026-06-03-agent-run-supervisor-sachima-local-offline-integration-design.md`.
+This would be a later, separate packet after the local/offline supervisor seam evidence. It would still not approve live behavior, Gateway involvement, real external ingress, real IM/Feishu delivery, production config writes, or default-on behavior.
 
 The agentic-ui Sachima Envelope v1 conformance work (Option A) remains open regardless of which option is chosen first.
 
-FlowWeaver continuity note: Sachima protocol work and the supervisor integration design are high-priority insertions, not a cancellation or shelving of the existing FlowWeaver roadmap.
+FlowWeaver continuity note: Sachima protocol work and the supervisor integration are high-priority insertions, not a cancellation or shelving of the existing FlowWeaver roadmap.
 
 ## Drift guard
 
@@ -146,6 +153,7 @@ Do not infer any of these from the completed phases:
 - PE-2A fake delivery success does not prove real delivery safety.
 - Loopback/synthetic ingress success does not prove public external ingress safety.
 - A design packet does not approve implementation.
+- The local/offline supervisor seam does not approve controlled AI FLOW execution, live/default-on behavior, Gateway involvement, real ingress, or real delivery.
 - Sachima Envelope v1 Sachima-side local conformance does not approve agentic-ui conformance, cross-repo probes, public external ingress, or real delivery.
 - Callback HTTP 2xx means receiver acceptance only; it does not prove browser-visible or IM-visible delivery.
 - A local runtime bridge does not approve production durable runtime ownership.
