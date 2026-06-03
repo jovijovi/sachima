@@ -8,6 +8,17 @@ for the design boundaries.
 
 from __future__ import annotations
 
+from sachima_supervisor.activity import (
+    ACTIVITY_IMPLEMENTATION_APPROVAL_TOKEN,
+    FIRST_SLICE_MODES,
+    ROLE_KEY_ALLOWLIST,
+    ActivityStateStore,
+    SupervisedLocalActivityError,
+    SupervisedLocalActivityRequest,
+    SupervisedLocalActivityResult,
+    query_supervised_local_activity,
+    start_supervised_local_activity,
+)
 from sachima_supervisor.local_offline import (
     FORBIDDEN_METADATA_KEYS,
     IMPLEMENTATION_APPROVAL_TOKEN,
@@ -21,6 +32,7 @@ from sachima_supervisor.local_offline import (
 )
 
 __all__ = [
+    # local/offline seam (PR #97)
     "FORBIDDEN_METADATA_KEYS",
     "IMPLEMENTATION_APPROVAL_TOKEN",
     "SUPPORTED_MODES",
@@ -30,4 +42,14 @@ __all__ = [
     "build_caller_invocation_spec",
     "build_offline_view_model",
     "invoke_local_offline_supervisor",
+    # supervised local Activity wrapper (first slice)
+    "ACTIVITY_IMPLEMENTATION_APPROVAL_TOKEN",
+    "FIRST_SLICE_MODES",
+    "ROLE_KEY_ALLOWLIST",
+    "ActivityStateStore",
+    "SupervisedLocalActivityError",
+    "SupervisedLocalActivityRequest",
+    "SupervisedLocalActivityResult",
+    "query_supervised_local_activity",
+    "start_supervised_local_activity",
 ]
