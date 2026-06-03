@@ -225,6 +225,21 @@ TOOLSETS = {
         "includes": []
     },
 
+    "workspace_file": {
+        "description": "Restricted profile-scoped file tools rooted under the active HERMES_HOME/workspace",
+        "tools": [
+            "workspace_list", "workspace_read", "workspace_search",
+            "workspace_write", "workspace_patch",
+        ],
+        "includes": []
+    },
+
+    "media_fetch": {
+        "description": "Restricted profile-scoped HTTPS media download/cache tools for images and videos",
+        "tools": ["media_fetch_url", "media_list", "media_delete"],
+        "includes": []
+    },
+
     "clock": {
         "description": "Narrow read-only current time/date lookup for companion profiles",
         "tools": ["clock_now"],

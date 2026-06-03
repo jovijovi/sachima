@@ -319,6 +319,23 @@ class TestGenerate:
             f"resolution must be the literal '1k' or '2k', got {payload['resolution']!r}"
         )
 
+    def test_payload_requests_base64_response(self):
+        """xAI image gen should request b64_json so Hermes never depends on imgen.x.ai temp URLs."""
+        from plugins.image_gen.xai import XAIImageGenProvider
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = {"data": [{"b64_json": "dGVzdC1pbWFnZS1kYXRh"}]}
+
+        with patch("plugins.image_gen.xai.requests.post", return_value=mock_resp) as mock_post, \
+             patch("plugins.image_gen.xai.save_b64_image", return_value="/tmp/test.png"):
+            provider = XAIImageGenProvider()
+            provider.generate(prompt="test")
+
+        payload = mock_post.call_args.kwargs.get("json") or mock_post.call_args[1].get("json")
+        assert payload["response_format"] == "b64_json"
+
 
 # ---------------------------------------------------------------------------
 # Registration test

@@ -254,3 +254,16 @@ class TestDefaultPlatformWebSearchCoverage:
 
     def test_hermes_api_server_toolset_includes_web_search(self):
         assert "web_search" in resolve_toolset("hermes-api-server")
+
+
+class TestProfileScopedOptInToolsets:
+    def test_workspace_and_media_tools_are_absent_from_default_platforms(self):
+        for name in ("hermes-cli", "hermes-feishu", "hermes-sachima", "hermes-gateway"):
+            resolved = set(resolve_toolset(name))
+            assert "workspace_read" not in resolved
+            assert "workspace_write" not in resolved
+            assert "media_fetch_url" not in resolved
+
+    def test_workspace_and_media_tools_appear_only_when_explicitly_enabled(self):
+        resolved = set(resolve_multiple_toolsets(["hermes-feishu", "workspace_file", "media_fetch"]))
+        assert {"workspace_read", "workspace_write", "media_fetch_url"}.issubset(resolved)
