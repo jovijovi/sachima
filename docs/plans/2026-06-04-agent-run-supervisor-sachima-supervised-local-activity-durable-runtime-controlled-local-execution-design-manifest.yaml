@@ -9,10 +9,11 @@ live_approved: false
 gateway_approved: false
 real_delivery_approved: false
 owner_dri: "Hermes operator with Dog Brother approval"
-status: "design_packet_pr_open"
+status: "design_packet_merged"
 pr_number: 102
 pr_url: "https://github.com/jovijovi/sachima/pull/102"
-pr_number_note: "PR opened by Hermes after local docs gates and Codex primary review"
+merge_commit: "e49709d6e960b8e11f8e220fa087488132f64f93"
+pr_number_note: "PR #102 merged after local docs gates, Codex primary review, and GitHub CI"
 created_at: "2026-06-04T00:00:00+08:00"
 repo: "jovijovi/sachima"
 base_branch: "release/sachima"
@@ -64,6 +65,9 @@ prior_evidence:
   pr_101:
     title: "supervised local Activity dry-run evidence status closure"
     merge_commit: "3b917eeff1c782cea2075909061037816c4eff93"
+  pr_102:
+    title: "supervised local Activity durable runtime ownership & controlled local execution design"
+    merge_commit: "e49709d6e960b8e11f8e220fa087488132f64f93"
   code_reference_only:
     - "sachima_supervisor/activity.py"
     - "sachima_supervisor/activity_evidence.py"

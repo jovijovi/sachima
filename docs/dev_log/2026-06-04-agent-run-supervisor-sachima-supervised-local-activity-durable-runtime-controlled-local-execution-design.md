@@ -4,6 +4,7 @@ Date: 2026-06-04
 Branch: `docs/supervised-local-activity-durable-runtime-design`
 PR: #102 — https://github.com/jovijovi/sachima/pull/102
 Base: `release/sachima` @ `3b917eeff1c782cea2075909061037816c4eff93` (PR #101 status closure)
+Merge: PR #102 merged at `e49709d6e960b8e11f8e220fa087488132f64f93`; post-merge status cleanup updates live in a separate docs-only PR.
 Approval: `approve_agent_run_supervisor_sachima_supervised_local_activity_durable_runtime_ownership_controlled_local_execution_design_no_live_no_gateway_no_real_delivery_no_real_agent_execution_no_controlled_ai_flow_execution`
 
 ## Scope
@@ -72,8 +73,8 @@ No code, tests, fixtures, or `.hermes` files were created or modified.
 This is a docs/status-only PR; gates are documentation and governance gates, run by Hermes:
 
 - docs marker gate (status markers present and unambiguous);
-- manifest YAML parse + required keys (`design_only: true`, `implementation_approved: false`, `local_execution_approved: false`, `real_agent_execution_approved: false`, `controlled_ai_flow_execution_approved: false`, `live_approved: false`, `gateway_approved: false`, `real_delivery_approved: false`, `status: design_packet_candidate`, `created_at: 2026-06-04T00:00:00+08:00`, `pr_number: null`, `pr_url: null`);
-- changed-file allowlist (docs/status only, 4 paths);
+- manifest YAML parse + required keys (`design_only: true`, `implementation_approved: false`, `local_execution_approved: false`, `real_agent_execution_approved: false`, `controlled_ai_flow_execution_approved: false`, `live_approved: false`, `gateway_approved: false`, `real_delivery_approved: false`, `status: design_packet_merged`, `created_at: 2026-06-04T00:00:00+08:00`, `pr_number: 102`, `pr_url: https://github.com/jovijovi/sachima/pull/102`, `merge_commit: e49709d6e960b8e11f8e220fa087488132f64f93`);
+- changed-file allowlist (docs/status only);
 - secret-shaped scan / no-leak scan;
 - forbidden-surface scan;
 - Codex primary review (no blockers);
@@ -135,9 +136,9 @@ real_agent_execution
 controlled_ai_flow_execution
 ```
 
-## Next Decision After This PR
+## Next Decision After PR #102
 
-While this PR is open, the next action is to review/merge this docs-only design PR. After merge, the next request should be a separate **local/offline durable-state preflight implementation** — still no real AGENT execution and no controlled AI FLOW execution:
+PR #102 is merged. The next request should be a separate **local/offline durable-state preflight implementation** — still no real AGENT execution and no controlled AI FLOW execution:
 
 ```text
 approve_agent_run_supervisor_sachima_supervised_local_activity_durable_state_preflight_implementation_no_live_no_gateway_no_real_delivery_no_real_agent_execution_no_controlled_ai_flow_execution
