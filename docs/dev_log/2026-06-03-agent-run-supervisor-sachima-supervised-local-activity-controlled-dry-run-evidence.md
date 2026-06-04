@@ -127,6 +127,27 @@ BLOCKERS:
 
 Reviewer notes: inspected requested status, diffs, untracked files, roadmap preflight, canonical roadmap, docs, code, tests, and fixture; confirmed fresh evidence equals the fixture, with 0 real supervisor invocations and 5 injected supervisor invocations.
 
+## PR / Merge Status
+
+```text
+PR: #100
+state: MERGED
+merge_commit: 3fea6e2e8ee836e924c3e0eef1b3ff3a2b930c59
+merged_at: 2026-06-03T17:28:33Z
+```
+
+Post-merge local verification on `release/sachima`:
+
+```text
+python3 -m pytest tests/sachima_supervisor/test_activity_controlled_dry_run_evidence.py tests/sachima_supervisor/test_activity.py tests/sachima_supervisor/test_local_offline.py -q
+68 passed
+py_compile: pass
+ruff: pass
+fixture == fresh build: pass
+manifest non-approval flags: pass
+git diff --check: pass
+```
+
 ## Pending Gates
 
-- GitHub PR #100 CI and final merge-status recording.
+None for this evidence slice. Further durable-runtime ownership or controlled local execution work requires a separate design approval and must remain no-live/no-Gateway/no-real-delivery/no-real-AGENT/no-controlled-AI-FLOW unless separately approved.

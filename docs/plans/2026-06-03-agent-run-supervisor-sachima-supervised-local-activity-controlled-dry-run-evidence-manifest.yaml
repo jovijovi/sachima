@@ -8,9 +8,11 @@ real_delivery_approved: false
 controlled_ai_flow_execution_approved: false
 real_agent_execution_approved: false
 owner_dri: "Hermes operator with Dog Brother approval"
-status: "implementation_candidate"
+status: "merged"
 pr_number: 100
-pr_number_note: "opened as PR #100; final closure still requires merge/CI"
+pr_number_note: "merged in PR #100"
+merge_commit: "3fea6e2e8ee836e924c3e0eef1b3ff3a2b930c59"
+merged_at: "2026-06-03T17:28:33Z"
 created_at: "2026-06-03"
 repo: "jovijovi/sachima"
 base_branch: "release/sachima"
