@@ -2909,9 +2909,9 @@ def _resolve_single_provider(
     # Reuse resolve_provider_client which handles provider→client mapping
     client, resolved_model = resolve_provider_client(
         provider=provider,
-        model=model,
-        base_url=base_url,
-        api_key=api_key,
+        model=model or "",
+        explicit_base_url=base_url or "",
+        explicit_api_key=api_key or "",
     )
     return client
 
