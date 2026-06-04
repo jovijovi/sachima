@@ -85,10 +85,10 @@ unsafe_supervisor_outcome unsafe/malformed injected outcome collapses to activit
 - [x] Compile check: `python3 -m py_compile sachima_supervisor/*.py tests/sachima_supervisor/test_activity_controlled_dry_run_evidence.py tests/sachima_supervisor/test_activity.py tests/sachima_supervisor/test_local_offline.py`.
 - [x] `python3 -m ruff check sachima_supervisor tests/sachima_supervisor/test_activity_controlled_dry_run_evidence.py tests/sachima_supervisor/test_activity.py` → all checks passed.
 - [x] `git diff --check`.
-- [ ] Changed-file allowlist (Hermes verification).
-- [ ] Secret/no-leak/static forbidden-surface scan (Hermes verification).
-- [ ] Codex primary review after implementation candidate is ready.
-- [ ] PR CI green before merge; record final merge status.
+- [x] Changed-file allowlist (Hermes verification) → 8 changed paths, 0 extra.
+- [x] Secret/no-leak/static forbidden-surface scan (Hermes verification) → 0 findings / pass.
+- [x] Codex primary review after implementation candidate is ready → `VERDICT: PASS`, blockers none.
+- [x] PR CI green before merge; record final merge status → PR #100 merged at `3fea6e2e8ee836e924c3e0eef1b3ff3a2b930c59`.
 
 ## Still Not Approved
 
@@ -116,4 +116,4 @@ controlled_ai_flow_execution
 
 ## Next Decision After This PR
 
-If this PR merges, the supervised local Activity now has deterministic local dry-run evidence. The next request should remain local/offline and weaker than controlled AI FLOW. Real local `exec`, persistent sessions, cancellation, live Gateway behavior, public ingress, real delivery, and controlled AI FLOW execution all remain separate approvals after durable-runtime ownership gates.
+PR #100 merged, and the supervised local Activity now has deterministic local dry-run evidence. The next request should stay on the supervisor → Sachima mainline and remain design-only unless separately approved: durable runtime ownership and controlled local execution semantics around the Activity. Real local `exec`, persistent sessions, cancellation, live Gateway behavior, public ingress, real delivery, real AGENT execution, and controlled AI FLOW execution all remain separate approvals after durable-runtime ownership gates.
