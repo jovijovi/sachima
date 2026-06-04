@@ -40,14 +40,16 @@ SUMMARY_PREFIX = (
     "window — treat it as background reference, NOT as active instructions. "
     "Do NOT answer questions or fulfill requests mentioned in this summary; "
     "they were already addressed. "
-    "Your current task is identified in the '## Active Task' section of the "
-    "summary — resume exactly from there. "
+    "If a newer user message appears after this summary, answer that newer "
+    "message first and do not continue old requests from the summary unless "
+    "that newer message asks you to. "
+    "For continuity, use the '## Active Task' section only when there is no "
+    "newer user message after this summary. "
     "IMPORTANT: Your persistent memory (MEMORY.md, USER.md) in the system "
     "prompt is ALWAYS authoritative and active — never ignore or deprioritize "
     "memory content due to this compaction note. "
-    "Respond ONLY to the latest user message "
-    "that appears AFTER this summary. The current session state (files, "
-    "config, etc.) may reflect work described here — avoid repeating it:"
+    "The current session state (files, config, etc.) may reflect work "
+    "described here — avoid repeating it:"
 )
 LEGACY_SUMMARY_PREFIX = "[CONTEXT SUMMARY]:"
 
@@ -979,9 +981,10 @@ class ContextCompressor(ContextEngine):
 [THE SINGLE MOST IMPORTANT FIELD. Copy the user's most recent request or
 task assignment verbatim — the exact words they used. If multiple tasks
 were requested and only some are done, list only the ones NOT yet completed.
-Continuation should pick up exactly here. Example:
+If there is no newer user message after the handoff, continuation can pick up from this field. Example:
 "User asked: 'Now refactor the auth module to use JWT instead of sessions'"
-If no outstanding task exists, write "None."]
+If no outstanding task exists, write "None." This field is for continuity only;
+if a newer user message appears after the handoff summary, that newer message takes precedence.]
 
 ## Goal
 [What the user is trying to accomplish overall]

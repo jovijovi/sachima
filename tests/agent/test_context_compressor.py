@@ -6,6 +6,14 @@ from unittest.mock import patch, MagicMock
 from agent.context_compressor import ContextCompressor, SUMMARY_PREFIX
 
 
+def test_summary_prefix_prioritizes_new_user_message_after_handoff():
+    """The handoff header must not make old Active Task text outrank new input."""
+
+    assert "If a newer user message appears after this summary" in SUMMARY_PREFIX
+    assert "use the '## Active Task' section only when there is no newer user message" in SUMMARY_PREFIX
+    assert "resume exactly from there" not in SUMMARY_PREFIX
+
+
 @pytest.fixture()
 def compressor():
     """Create a ContextCompressor with mocked dependencies."""
