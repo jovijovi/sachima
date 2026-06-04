@@ -9,10 +9,10 @@ live_approved: false
 gateway_approved: false
 real_delivery_approved: false
 owner_dri: "Hermes operator with Dog Brother approval"
-status: "design_packet_candidate"
-pr_number: null
-pr_url: null
-pr_number_note: "Hermes will patch pr_number and pr_url after PR creation"
+status: "design_packet_pr_open"
+pr_number: 102
+pr_url: "https://github.com/jovijovi/sachima/pull/102"
+pr_number_note: "PR opened by Hermes after local docs gates and Codex primary review"
 created_at: "2026-06-04T00:00:00+08:00"
 repo: "jovijovi/sachima"
 base_branch: "release/sachima"

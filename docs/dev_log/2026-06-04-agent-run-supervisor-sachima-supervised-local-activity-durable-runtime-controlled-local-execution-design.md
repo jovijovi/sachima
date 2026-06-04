@@ -2,6 +2,7 @@
 
 Date: 2026-06-04
 Branch: `docs/supervised-local-activity-durable-runtime-design`
+PR: #102 — https://github.com/jovijovi/sachima/pull/102
 Base: `release/sachima` @ `3b917eeff1c782cea2075909061037816c4eff93` (PR #101 status closure)
 Approval: `approve_agent_run_supervisor_sachima_supervised_local_activity_durable_runtime_ownership_controlled_local_execution_design_no_live_no_gateway_no_real_delivery_no_real_agent_execution_no_controlled_ai_flow_execution`
 
