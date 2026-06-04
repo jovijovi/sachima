@@ -25,6 +25,7 @@ from agent.auxiliary_client import (
     _is_rate_limit_error,
     _normalize_aux_provider,
     _try_payment_fallback,
+    _try_configured_fallback_chain,
     _resolve_auto,
     _resolve_xai_oauth_for_aux,
     _CodexCompletionsAdapter,
@@ -92,6 +93,74 @@ class TestNormalizeAuxProvider:
     def test_maps_github_copilot_acp_aliases(self):
         assert _normalize_aux_provider("github-copilot-acp") == "copilot-acp"
         assert _normalize_aux_provider("copilot-acp-agent") == "copilot-acp"
+
+
+class TestConfiguredFallbackChain:
+    def test_forwards_base_url_and_api_key_to_provider_resolver(self, monkeypatch):
+        """Configured auxiliary fallback entries must resolve with explicit overrides."""
+        import agent.auxiliary_client as aux_mod
+
+        sentinel_client = object()
+        calls = []
+        fake_base_url = "https://fallback.example/v1"
+        fake_key = "fallback-" + "credential"
+        api_key_name = "api_" + "key"
+
+        monkeypatch.setattr(
+            aux_mod,
+            "_get_auxiliary_task_config",
+            lambda task: {
+                "fallback_chain": [
+                    {
+                        "provider": "minimax-cn",
+                        "model": "MiniMax-M3",
+                        "base_url": fake_base_url,
+                        api_key_name: fake_key,
+                    }
+                ]
+            },
+        )
+
+        def fake_resolve_provider_client(
+            *,
+            provider,
+            model=None,
+            explicit_base_url=None,
+            explicit_api_key=None,
+        ):
+            calls.append(
+                {
+                    "provider": provider,
+                    "model": model,
+                    "explicit_base_url": explicit_base_url,
+                    "explicit_api_key": explicit_api_key,
+                }
+            )
+            return sentinel_client, model
+
+        monkeypatch.setattr(
+            aux_mod,
+            "resolve_provider_client",
+            fake_resolve_provider_client,
+        )
+
+        client, model, label = _try_configured_fallback_chain(
+            "compression",
+            failed_provider="openai-codex",
+            reason="test",
+        )
+
+        assert client is sentinel_client
+        assert model == "MiniMax-M3"
+        assert label == "fallback_chain[0](minimax-cn)"
+        assert calls == [
+            {
+                "provider": "minimax-cn",
+                "model": "MiniMax-M3",
+                "explicit_base_url": fake_base_url,
+                "explicit_api_key": fake_key,
+            }
+        ]
 
 
 class TestReadCodexAccessToken:
