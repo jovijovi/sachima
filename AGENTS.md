@@ -60,6 +60,42 @@ For Sachima multi-phase, production-adjacent, high-risk, or next-phase-readiness
 
 Do not load it for small one-shot fixes unless the change affects scope, production behavior, user data, delivery, runtime lifecycle, irreversible operations, or the long-lived Sachima/FlowWeaver goal.
 
+## Worktree + CodeGraph Rule
+
+For non-trivial code work, agents must work in a dedicated git worktree under:
+
+```text
+/home/ecs-user/workspace/hermes/worktrees/<project>/<branch-slug>
+```
+
+Do not edit feature code directly in `repo/<project>` unless explicitly instructed. For Sachima, the canonical checkout is also the Gateway runtime checkout, so treat direct edits there as production-adjacent unless the user has approved that scope.
+
+If the worktree will use structural code intelligence, initialize CodeGraph in that exact worktree before relying on it:
+
+```bash
+codegraph init
+codegraph status
+```
+
+For CodeGraph MCP calls, `projectPath` must equal the concrete checkout being analyzed, normally the output of:
+
+```bash
+git rev-parse --show-toplevel
+```
+
+Never use `repo/<project>/.codegraph` to reason about a feature worktree whose files may differ.
+
+Before removing a worktree, run the cleanup explicitly unless the whole directory is already being removed cleanly:
+
+```bash
+codegraph uninit --force /abs/worktree
+git -C /abs/worktree status --porcelain
+git worktree remove /abs/worktree
+git worktree prune
+```
+
+Skip CodeGraph for tiny throwaway or docs-only worktrees if structural code intelligence is not needed.
+
 ## Development Environment
 
 ```bash
