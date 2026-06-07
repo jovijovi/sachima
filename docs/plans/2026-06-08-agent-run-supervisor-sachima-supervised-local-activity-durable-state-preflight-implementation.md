@@ -123,7 +123,7 @@ Gateway / delivery / webhook data
 - [ ] Secret/no-leak/static forbidden-surface scan.
 - [ ] CodeGraph sync/status in the feature worktree.
 - [ ] Codex primary review from a fresh context. Because Codex temporarily substituted for Claude Code after Claude Code timeouts, this final review must be a separate review-only pass.
-- [ ] GitHub PR CI green before merge.
+- [ ] GitHub PR #107 CI green before merge.
 
 ## Role / Process Caveat
 

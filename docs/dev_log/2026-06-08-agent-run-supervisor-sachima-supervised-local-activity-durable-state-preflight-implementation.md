@@ -146,4 +146,4 @@ controlled_ai_flow_execution
 
 ## Pending Gates
 
-- GitHub PR creation, CI, and mergeability.
+- GitHub PR #107 CI and mergeability.
