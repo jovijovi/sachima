@@ -7,6 +7,7 @@ Built-in TTS providers:
 - ElevenLabs (premium): High-quality voices, needs ELEVENLABS_API_KEY
 - OpenAI TTS: Good quality, needs OPENAI_API_KEY
 - MiniMax TTS: High-quality with voice cloning, needs MINIMAX_API_KEY
+- MiniMax-CN TTS: MiniMax China service (api.minimaxi.com), needs MINIMAX_CN_API_KEY
 - Mistral (Voxtral TTS): Multilingual, native Opus, needs MISTRAL_API_KEY
 - Google Gemini TTS: Controllable, 30 prebuilt voices, needs GEMINI_API_KEY
 - xAI TTS: Grok voices, uses xAI Grok OAuth credentials or XAI_API_KEY
@@ -166,6 +167,10 @@ DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_MINIMAX_MODEL = "speech-02-hd"
 DEFAULT_MINIMAX_VOICE_ID = "English_expressive_narrator"
 DEFAULT_MINIMAX_BASE_URL = "https://api.minimax.io/v1/t2a_v2"
+# MiniMax operates a separate China service (api.minimaxi.com) with its own
+# account, API key, and GroupId. The ``minimax-cn`` provider is fully isolated
+# from the global ``minimax`` provider — see _generate_minimax_cn_tts.
+DEFAULT_MINIMAX_CN_BASE_URL = "https://api.minimaxi.com/v1/t2a_v2"
 DEFAULT_MISTRAL_TTS_MODEL = "voxtral-mini-tts-2603"
 DEFAULT_MISTRAL_TTS_VOICE_ID = "c69964a6-ab8b-4f8a-9465-ec0925096ec8"  # Paul - Neutral
 DEFAULT_XAI_VOICE_ID = "eve"
@@ -200,6 +205,7 @@ PROVIDER_MAX_TEXT_LENGTH: Dict[str, int] = {
     "openai": 4096,       # https://platform.openai.com/docs/guides/text-to-speech
     "xai": 15000,         # https://docs.x.ai/developers/model-capabilities/audio/text-to-speech
     "minimax": 10000,     # https://platform.minimax.io/docs/api-reference/speech-t2a-http (sync)
+    "minimax-cn": 10000,  # MiniMax China (api.minimaxi.com) — same 10k sync cap as global
     "mistral": 4000,      # conservative; no published per-request cap
     "gemini": 5000,       # Gemini TTS caps at ~8k input tokens / ~655s audio
     "elevenlabs": 10000,  # fallback when model-aware lookup can't resolve (multilingual_v2)
@@ -346,6 +352,7 @@ BUILTIN_TTS_PROVIDERS = frozenset({
     "elevenlabs",
     "openai",
     "minimax",
+    "minimax-cn",
     "xai",
     "mistral",
     "gemini",
@@ -1166,7 +1173,73 @@ def _generate_xai_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -
 # ===========================================================================
 def _generate_minimax_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
     """
-    Generate audio using MiniMax TTS API.
+    Generate audio using the global MiniMax TTS API (api.minimax.io).
+
+    Reads MINIMAX_API_KEY / MINIMAX_GROUP_ID and the ``tts.minimax.*`` config
+    block. See :func:`_synthesize_minimax` for the shared request logic and
+    :func:`_generate_minimax_cn_tts` for the fully isolated China provider.
+
+    Returns:
+        Path to the saved audio file.
+    """
+    return _synthesize_minimax(
+        text,
+        output_path,
+        tts_config,
+        config_key="minimax",
+        api_key_env="MINIMAX_API_KEY",
+        group_id_env="MINIMAX_GROUP_ID",
+        default_base_url=DEFAULT_MINIMAX_BASE_URL,
+        missing_key_error=(
+            "MINIMAX_API_KEY not set. Get one at https://platform.minimax.io/"
+        ),
+    )
+
+
+def _generate_minimax_cn_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
+    """
+    Generate audio using the MiniMax China TTS API (api.minimaxi.com).
+
+    Fully isolated from the global ``minimax`` provider: it authenticates with
+    MINIMAX_CN_API_KEY, scopes with MINIMAX_CN_GROUP_ID, and reads the
+    ``tts.minimax-cn.*`` config block only. It never borrows the global key,
+    GroupId, endpoint, or config — there is no fallback between the two.
+
+    Returns:
+        Path to the saved audio file.
+    """
+    return _synthesize_minimax(
+        text,
+        output_path,
+        tts_config,
+        config_key="minimax-cn",
+        api_key_env="MINIMAX_CN_API_KEY",
+        group_id_env="MINIMAX_CN_GROUP_ID",
+        default_base_url=DEFAULT_MINIMAX_CN_BASE_URL,
+        missing_key_error=(
+            "MINIMAX_CN_API_KEY not set. Get one at https://platform.minimaxi.com/"
+        ),
+    )
+
+
+def _synthesize_minimax(
+    text: str,
+    output_path: str,
+    tts_config: Dict[str, Any],
+    *,
+    config_key: str,
+    api_key_env: str,
+    group_id_env: str,
+    default_base_url: str,
+    missing_key_error: str,
+) -> str:
+    """
+    Shared MiniMax TTS request logic for the global and China providers.
+
+    The two MiniMax services (``api.minimax.io`` and ``api.minimaxi.com``) are
+    separate accounts with their own keys and GroupIds, so every account-scoped
+    input is passed in explicitly (``api_key_env`` / ``group_id_env`` /
+    ``config_key`` / ``default_base_url``) and nothing is shared across them.
 
     Supports two endpoints:
     - v1/text_to_speech: simple payload, returns raw audio (Content-Type: audio/mpeg)
@@ -1176,20 +1249,25 @@ def _generate_minimax_tts(text: str, output_path: str, tts_config: Dict[str, Any
         text: Text to convert (max 10,000 characters).
         output_path: Where to save the audio file.
         tts_config: TTS config dict.
+        config_key: Provider config block name (``minimax`` or ``minimax-cn``).
+        api_key_env: Env var holding the API key for this service.
+        group_id_env: Env var holding the GroupId for this service.
+        default_base_url: Default t2a_v2 endpoint for this service.
+        missing_key_error: ValueError message when the API key is absent.
 
     Returns:
         Path to the saved audio file.
     """
     import requests
 
-    api_key = (get_env_value("MINIMAX_API_KEY") or "")
+    api_key = (get_env_value(api_key_env) or "")
     if not api_key:
-        raise ValueError("MINIMAX_API_KEY not set. Get one at https://platform.minimax.io/")
+        raise ValueError(missing_key_error)
 
-    mm_config = tts_config.get("minimax", {})
+    mm_config = tts_config.get(config_key, {})
     model = mm_config.get("model", DEFAULT_MINIMAX_MODEL)
     voice_id = mm_config.get("voice_id", DEFAULT_MINIMAX_VOICE_ID)
-    base_url = mm_config.get("base_url", DEFAULT_MINIMAX_BASE_URL)
+    base_url = mm_config.get("base_url", default_base_url)
     speed = mm_config.get("speed", 1.0)
     vol = mm_config.get("vol", 1.0)
     pitch = mm_config.get("pitch", 0)
@@ -1199,11 +1277,11 @@ def _generate_minimax_tts(text: str, output_path: str, tts_config: Dict[str, Any
 
     # MiniMax accounts scope TTS requests by GroupId.  When present, the docs
     # show it as a ?GroupId=<id> query param on the t2a_v2 URL.  Accept it
-    # from config or from the MINIMAX_GROUP_ID env var; only attach when the
+    # from config or from the per-service GroupId env var; only attach when the
     # URL doesn't already carry one.
     group_id = (
         str(mm_config.get("group_id") or "").strip()
-        or (get_env_value("MINIMAX_GROUP_ID") or "").strip()
+        or (get_env_value(group_id_env) or "").strip()
     )
     if group_id and "GroupId=" not in base_url:
         sep = "&" if "?" in base_url else "?"
@@ -1969,6 +2047,10 @@ def text_to_speech_tool(
             logger.info("Generating speech with MiniMax TTS...")
             _generate_minimax_tts(text, file_str, tts_config)
 
+        elif provider == "minimax-cn":
+            logger.info("Generating speech with MiniMax-CN TTS...")
+            _generate_minimax_cn_tts(text, file_str, tts_config)
+
         elif provider == "xai":
             logger.info("Generating speech with xAI TTS...")
             _generate_xai_tts(text, file_str, tts_config)
@@ -2095,7 +2177,7 @@ def text_to_speech_tool(
                 voice_compatible = file_str.endswith(".ogg")
         elif (
             want_opus
-            and provider in {"edge", "neutts", "minimax", "xai", "kittentts", "piper"}
+            and provider in {"edge", "neutts", "minimax", "minimax-cn", "xai", "kittentts", "piper"}
             and not file_str.endswith(".ogg")
         ):
             opus_path = _convert_to_opus(file_str)
@@ -2173,6 +2255,8 @@ def check_tts_requirements() -> bool:
     except ImportError:
         pass
     if get_env_value("MINIMAX_API_KEY"):
+        return True
+    if get_env_value("MINIMAX_CN_API_KEY"):
         return True
     try:
         from tools.xai_http import resolve_xai_http_credentials
@@ -2497,6 +2581,7 @@ if __name__ == "__main__":
         f"{'set' if resolve_openai_audio_api_key() else 'not set (VOICE_TOOLS_OPENAI_KEY or OPENAI_API_KEY)'}"
     )
     print(f"  MiniMax:    {'API key set' if get_env_value('MINIMAX_API_KEY') else 'not set (MINIMAX_API_KEY)'}")
+    print(f"  MiniMax-CN: {'API key set' if get_env_value('MINIMAX_CN_API_KEY') else 'not set (MINIMAX_CN_API_KEY)'}")
     print(f"  Piper:      {'installed' if _check_piper_available() else 'not installed (pip install piper-tts)'}")
     print(f"  ffmpeg:     {'✅ found' if _has_ffmpeg() else '❌ not found (needed for Telegram Opus)'}")
     print(f"\n  Output dir: {DEFAULT_OUTPUT_DIR}")
@@ -2519,7 +2604,7 @@ TTS_SCHEMA = {
         "properties": {
             "text": {
                 "type": "string",
-                "description": "The text to convert to speech. Provider-specific character caps apply and are enforced automatically (OpenAI 4096, xAI 15000, MiniMax 10000, ElevenLabs 5k-40k depending on model); over-long input is truncated."
+                "description": "The text to convert to speech. Provider-specific character caps apply and are enforced automatically (OpenAI 4096, xAI 15000, MiniMax/MiniMax-CN 10000, ElevenLabs 5k-40k depending on model); over-long input is truncated."
             },
             "output_path": {
                 "type": "string",
