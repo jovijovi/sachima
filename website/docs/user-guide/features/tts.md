@@ -14,7 +14,7 @@ If you have a paid [Nous Portal](https://portal.nousresearch.com) subscription, 
 
 ## Text-to-Speech
 
-Convert text to speech with ten providers:
+Convert text to speech with eleven providers:
 
 | Provider | Quality | Cost | API Key |
 |----------|---------|------|---------|
@@ -22,6 +22,7 @@ Convert text to speech with ten providers:
 | **ElevenLabs** | Excellent | Paid | `ELEVENLABS_API_KEY` |
 | **OpenAI TTS** | Good | Paid | `VOICE_TOOLS_OPENAI_KEY` |
 | **MiniMax TTS** | Excellent | Paid | `MINIMAX_API_KEY` |
+| **MiniMax-CN TTS** | Excellent | Paid | `MINIMAX_CN_API_KEY` |
 | **Mistral (Voxtral TTS)** | Excellent | Paid | `MISTRAL_API_KEY` |
 | **Google Gemini TTS** | Excellent | Free tier | `GEMINI_API_KEY` |
 | **xAI TTS** | Excellent | Paid | `XAI_API_KEY` |
@@ -43,7 +44,7 @@ Convert text to speech with ten providers:
 ```yaml
 # In ~/.hermes/config.yaml
 tts:
-  provider: "edge"              # "edge" | "elevenlabs" | "openai" | "minimax" | "mistral" | "gemini" | "xai" | "neutts" | "kittentts" | "piper"
+  provider: "edge"              # "edge" | "elevenlabs" | "openai" | "minimax" | "minimax-cn" | "mistral" | "gemini" | "xai" | "neutts" | "kittentts" | "piper"
   speed: 1.0                    # Global speed multiplier (provider-specific settings override this)
   edge:
     voice: "en-US-AriaNeural"   # 322 voices, 74 languages
@@ -62,6 +63,14 @@ tts:
     speed: 1                    # 0.5 - 2.0
     vol: 1                      # 0 - 10
     pitch: 0                    # -12 - 12
+  minimax-cn:                   # MiniMax China service — separate account from global minimax
+    # Auth: MINIMAX_CN_API_KEY + MINIMAX_CN_GROUP_ID (never borrows the global MINIMAX_* values)
+    model: "speech-2.8-hd"
+    voice_id: "English_Graceful_Lady"  # See https://platform.minimaxi.com
+    speed: 1                    # 0.5 - 2.0
+    vol: 1                      # 0 - 10
+    pitch: 0                    # -12 - 12
+    # base_url: "https://api.minimaxi.com/v1/t2a_v2"   # default CN endpoint
   mistral:
     model: "voxtral-mini-tts-2603"
     voice_id: "c69964a6-ab8b-4f8a-9465-ec0925096ec8"  # Paul - Neutral (default)
@@ -108,6 +117,7 @@ Each provider has a documented per-request input-character cap. Hermes truncates
 | OpenAI | 4096 |
 | xAI | 15000 |
 | MiniMax | 10000 |
+| MiniMax-CN | 10000 |
 | Mistral | 4000 |
 | Google Gemini | 5000 |
 | ElevenLabs | Model-aware (see below) |
@@ -141,7 +151,7 @@ Telegram voice bubbles require Opus/OGG audio format:
 
 - **OpenAI, ElevenLabs, and Mistral** produce Opus natively — no extra setup
 - **Edge TTS** (default) outputs MP3 and needs **ffmpeg** to convert:
-- **MiniMax TTS** outputs MP3 and needs **ffmpeg** to convert for Telegram voice bubbles
+- **MiniMax TTS** and **MiniMax-CN TTS** output MP3 and need **ffmpeg** to convert for Telegram voice bubbles
 - **Google Gemini TTS** outputs raw PCM and uses **ffmpeg** to encode Opus directly for Telegram voice bubbles
 - **xAI TTS** outputs MP3 and needs **ffmpeg** to convert for Telegram voice bubbles
 - **NeuTTS** outputs WAV and also needs **ffmpeg** to convert for Telegram voice bubbles
@@ -159,7 +169,7 @@ brew install ffmpeg
 sudo dnf install ffmpeg
 ```
 
-Without ffmpeg, Edge TTS, MiniMax TTS, NeuTTS, KittenTTS, and Piper audio are sent as regular audio files (playable, but shown as a rectangular player instead of a voice bubble).
+Without ffmpeg, Edge TTS, MiniMax TTS, MiniMax-CN TTS, NeuTTS, KittenTTS, and Piper audio are sent as regular audio files (playable, but shown as a rectangular player instead of a voice bubble).
 
 :::tip
 If you want voice bubbles without installing ffmpeg, switch to the OpenAI, ElevenLabs, or Mistral provider.
