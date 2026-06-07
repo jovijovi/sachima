@@ -338,6 +338,230 @@ class TestGenerate:
 
 
 # ---------------------------------------------------------------------------
+# Edit / image-to-image tests
+# ---------------------------------------------------------------------------
+
+
+# Smallest byte sequence that passes the PNG magic-byte sniff.
+_PNG_BYTES = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
+
+
+class TestEdit:
+    def test_supports_edit_is_true(self):
+        from plugins.image_gen.xai import XAIImageGenProvider
+
+        assert XAIImageGenProvider().supports_edit() is True
+
+    def test_edit_missing_api_key(self, monkeypatch):
+        monkeypatch.delenv("XAI_API_KEY", raising=False)
+        from plugins.image_gen.xai import XAIImageGenProvider
+
+        provider = XAIImageGenProvider()
+        result = provider.edit(prompt="make it blue", image="https://x/a.png")
+        assert result["success"] is False
+        assert result["error_type"] == "missing_api_key"
+
+    def test_edit_requires_prompt(self):
+        from plugins.image_gen.xai import XAIImageGenProvider
+
+        provider = XAIImageGenProvider()
+        result = provider.edit(prompt="   ", image="https://x/a.png")
+        assert result["success"] is False
+        assert result["error_type"] == "invalid_input"
+
+    def test_edit_requires_image(self):
+        from plugins.image_gen.xai import XAIImageGenProvider
+
+        provider = XAIImageGenProvider()
+        result = provider.edit(prompt="make it blue", image="")
+        assert result["success"] is False
+        assert result["error_type"] == "invalid_input"
+
+    def test_edit_calls_images_edits_endpoint(self):
+        from plugins.image_gen.xai import XAIImageGenProvider
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = {"data": [{"b64_json": "dGVzdA=="}]}
+
+        with patch("plugins.image_gen.xai.requests.post", return_value=mock_resp) as mock_post, \
+             patch("plugins.image_gen.xai.save_b64_image", return_value="/tmp/edited.png"):
+            provider = XAIImageGenProvider()
+            provider.edit(prompt="make it blue", image="https://x/a.png")
+
+        url = mock_post.call_args.args[0] if mock_post.call_args.args else mock_post.call_args[0][0]
+        assert url.endswith("/images/edits"), f"edit must POST /v1/images/edits, got {url!r}"
+
+    def test_edit_url_input_uses_image_object(self):
+        """http(s) URLs go in the official ``image`` object shape.
+
+        xAI's ``/v1/images/edits`` request JSON wraps the source image in an
+        object: ``"image": {"url": "<url-or-data-uri>", "type": "image_url"}``
+        (https://docs.x.ai/developers/model-capabilities/images/editing). The
+        earlier top-level ``image_url`` / raw-string ``image`` shapes were
+        wrong and are rejected by the endpoint.
+        """
+        from plugins.image_gen.xai import XAIImageGenProvider
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = {"data": [{"b64_json": "dGVzdA=="}]}
+
+        with patch("plugins.image_gen.xai.requests.post", return_value=mock_resp) as mock_post, \
+             patch("plugins.image_gen.xai.save_b64_image", return_value="/tmp/edited.png"):
+            provider = XAIImageGenProvider()
+            result = provider.edit(prompt="make it blue", image="https://imgen.x.ai/a.png")
+
+        payload = mock_post.call_args.kwargs.get("json") or mock_post.call_args[1].get("json")
+        assert payload["model"] == "grok-imagine-image"
+        assert payload["prompt"] == "make it blue"
+        assert payload["response_format"] == "b64_json"
+        assert payload["image"] == {
+            "url": "https://imgen.x.ai/a.png",
+            "type": "image_url",
+        }, "http URLs must be wrapped in the {url, type:image_url} object"
+        assert "image_url" not in payload, "no top-level image_url field — use image.url"
+        assert result["success"] is True
+        assert result["image"] == "/tmp/edited.png"
+        assert result["provider"] == "xai"
+
+    def test_edit_local_path_becomes_data_uri(self, tmp_path):
+        """Local files are inlined as a base64 data URI inside the image object.
+
+        Per the docs the ``url`` field accepts a public URL *or* a
+        base64-encoded data URI, so a validated local file rides the same
+        ``{"url": ..., "type": "image_url"}`` object shape.
+        """
+        from plugins.image_gen.xai import XAIImageGenProvider
+
+        src = tmp_path / "input.png"
+        src.write_bytes(_PNG_BYTES)
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = {"data": [{"b64_json": "dGVzdA=="}]}
+
+        with patch("plugins.image_gen.xai.requests.post", return_value=mock_resp) as mock_post, \
+             patch("plugins.image_gen.xai.save_b64_image", return_value="/tmp/edited.png"):
+            provider = XAIImageGenProvider()
+            result = provider.edit(prompt="make it blue", image=str(src))
+
+        payload = mock_post.call_args.kwargs.get("json") or mock_post.call_args[1].get("json")
+        assert isinstance(payload["image"], dict)
+        assert payload["image"]["type"] == "image_url"
+        assert payload["image"]["url"].startswith("data:image/png;base64,")
+        assert "image_url" not in payload, "local files must be inlined as a data URI in image.url"
+        assert result["success"] is True
+
+    def test_edit_data_uri_passthrough(self):
+        """A data URI is passed verbatim as the image object's ``url``."""
+        from plugins.image_gen.xai import XAIImageGenProvider
+
+        data_uri = "data:image/png;base64,dGVzdA=="
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = {"data": [{"b64_json": "dGVzdA=="}]}
+
+        with patch("plugins.image_gen.xai.requests.post", return_value=mock_resp) as mock_post, \
+             patch("plugins.image_gen.xai.save_b64_image", return_value="/tmp/edited.png"):
+            provider = XAIImageGenProvider()
+            provider.edit(prompt="make it blue", image=data_uri)
+
+        payload = mock_post.call_args.kwargs.get("json") or mock_post.call_args[1].get("json")
+        assert payload["image"] == {"url": data_uri, "type": "image_url"}
+
+    def test_edit_local_path_missing_is_invalid_input(self, tmp_path):
+        from plugins.image_gen.xai import XAIImageGenProvider
+
+        provider = XAIImageGenProvider()
+        result = provider.edit(prompt="x", image=str(tmp_path / "nope.png"))
+        assert result["success"] is False
+        assert result["error_type"] == "invalid_input"
+
+    def test_edit_local_path_non_image_is_invalid_input(self, tmp_path):
+        from plugins.image_gen.xai import XAIImageGenProvider
+
+        bad = tmp_path / "fake.png"
+        bad.write_bytes(b"definitely not an image")
+        provider = XAIImageGenProvider()
+        result = provider.edit(prompt="x", image=str(bad))
+        assert result["success"] is False
+        assert result["error_type"] == "invalid_input"
+
+    def test_edit_url_response_is_cached(self):
+        from plugins.image_gen.xai import XAIImageGenProvider
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = {
+            "data": [{"url": "https://imgen.x.ai/xai-tmp-edit.jpeg"}],
+        }
+
+        with patch("plugins.image_gen.xai.requests.post", return_value=mock_resp), \
+             patch(
+                 "plugins.image_gen.xai.save_url_image",
+                 return_value=Path("/tmp/xai_edit_20260607_000000_deadbeef.jpg"),
+             ) as mock_save_url:
+            provider = XAIImageGenProvider()
+            result = provider.edit(prompt="x", image="https://x/a.png")
+
+        assert result["success"] is True
+        assert result["image"].startswith("/")
+        assert "imgen.x.ai" not in result["image"]
+        mock_save_url.assert_called_once()
+
+    def test_edit_api_error(self):
+        import requests as req_lib
+        from plugins.image_gen.xai import XAIImageGenProvider
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 422
+        mock_resp.text = "Unprocessable"
+        mock_resp.json.return_value = {"error": {"message": "bad image"}}
+        mock_resp.raise_for_status.side_effect = req_lib.HTTPError(response=mock_resp)
+
+        with patch("plugins.image_gen.xai.requests.post", return_value=mock_resp):
+            provider = XAIImageGenProvider()
+            result = provider.edit(prompt="x", image="https://x/a.png")
+
+        assert result["success"] is False
+        assert result["error_type"] == "api_error"
+        assert "edit" in result["error"].lower()
+
+    def test_edit_timeout(self):
+        import requests as req_lib
+        from plugins.image_gen.xai import XAIImageGenProvider
+
+        with patch("plugins.image_gen.xai.requests.post", side_effect=req_lib.Timeout()):
+            provider = XAIImageGenProvider()
+            result = provider.edit(prompt="x", image="https://x/a.png")
+
+        assert result["success"] is False
+        assert result["error_type"] == "timeout"
+
+    def test_edit_requests_base64_response(self):
+        from plugins.image_gen.xai import XAIImageGenProvider
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = {"data": [{"b64_json": "dGVzdA=="}]}
+
+        with patch("plugins.image_gen.xai.requests.post", return_value=mock_resp) as mock_post, \
+             patch("plugins.image_gen.xai.save_b64_image", return_value="/tmp/edited.png"):
+            provider = XAIImageGenProvider()
+            provider.edit(prompt="x", image="https://x/a.png")
+
+        payload = mock_post.call_args.kwargs.get("json") or mock_post.call_args[1].get("json")
+        assert payload["response_format"] == "b64_json"
+
+
+# ---------------------------------------------------------------------------
 # Registration test
 # ---------------------------------------------------------------------------
 
