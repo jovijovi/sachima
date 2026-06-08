@@ -24,6 +24,15 @@ from sachima_supervisor.activity_evidence import (
     build_controlled_local_dry_run_evidence,
     write_controlled_local_dry_run_evidence,
 )
+from sachima_supervisor.activity_preflight import (
+    DURABLE_STATE_PREFLIGHT_APPROVAL_TOKEN,
+    DurableStatePreflightError,
+    DurableStatePreflightRequest,
+    DurableStatePreflightResult,
+    DurableStatePreflightStore,
+    query_durable_state_preflight,
+    run_durable_state_preflight,
+)
 from sachima_supervisor.local_offline import (
     FORBIDDEN_METADATA_KEYS,
     IMPLEMENTATION_APPROVAL_TOKEN,
@@ -57,8 +66,16 @@ __all__ = [
     "SupervisedLocalActivityResult",
     "query_supervised_local_activity",
     "start_supervised_local_activity",
-    # controlled local Activity dry-run evidence (this PR)
+    # controlled local Activity dry-run evidence (PR #100)
     "CONTROLLED_DRY_RUN_EVIDENCE_APPROVAL_MARKER",
     "build_controlled_local_dry_run_evidence",
     "write_controlled_local_dry_run_evidence",
+    # durable-state preflight (local/offline)
+    "DURABLE_STATE_PREFLIGHT_APPROVAL_TOKEN",
+    "DurableStatePreflightError",
+    "DurableStatePreflightRequest",
+    "DurableStatePreflightResult",
+    "DurableStatePreflightStore",
+    "query_durable_state_preflight",
+    "run_durable_state_preflight",
 ]
