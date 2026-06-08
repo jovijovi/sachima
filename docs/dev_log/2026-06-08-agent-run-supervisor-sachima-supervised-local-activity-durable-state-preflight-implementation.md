@@ -3,6 +3,8 @@
 Date: 2026-06-08
 Branch: `feature/ars-durable-state-preflight`
 Base: `release/sachima` @ `db84704da896eb7b42ee66fc0ef60d9ba0025f6a`
+PR: `#107` (`https://github.com/jovijovi/sachima/pull/107`)
+Merge: `6795da2930324cde1448586e71ff8d80bc6e9ae1`
 Approval: `approve_agent_run_supervisor_sachima_supervised_local_activity_durable_state_preflight_implementation_no_live_no_gateway_no_real_delivery_no_real_agent_execution_no_controlled_ai_flow_execution`
 
 ## Scope
@@ -24,7 +26,7 @@ Implemented a local/offline durable-state preflight gate after the supervised lo
 
 ## Process Note
 
-Default AGENT split was preserved as the target workflow: Hermes controls/verifies, Claude Code is main programmer, Codex is primary reviewer. Claude Code timed out twice without a usable implementation artifact. Codex temporarily acted as a substitute worker to produce the implementation candidate, which is a role deviation under the documented fallback rule. That authoring pass is not counted as independent review; a separate fresh Codex review-only pass remains required before PR completion.
+Default AGENT split was preserved as the target workflow: Hermes controls/verifies, Claude Code is main programmer, Codex is primary reviewer. Claude Code timed out twice without a usable implementation artifact. Codex temporarily acted as a substitute worker to produce the implementation, which is a role deviation under the documented fallback rule. That authoring pass was not counted as independent review; a separate fresh Codex review-only pass was completed before PR completion.
 
 ## Implementation Notes
 
@@ -144,6 +146,12 @@ real_agent_execution
 controlled_ai_flow_execution
 ```
 
-## Pending Gates
+## PR / Merge Evidence
 
-- GitHub PR #107 CI and mergeability.
+```text
+PR #107: MERGED
+merge_commit: 6795da2930324cde1448586e71ff8d80bc6e9ae1
+base_branch: release/sachima
+pre_merge_checks: 4/4 SUCCESS
+post_merge_local_gate: tests/sachima_supervisor => 117 passed, 0 failed
+```

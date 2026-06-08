@@ -9,10 +9,10 @@ live_approved: false
 gateway_approved: false
 real_delivery_approved: false
 owner_dri: "Hermes operator with Dog Brother approval"
-status: "pr_open"
+status: "merged"
 pr_number: 107
 pr_url: "https://github.com/jovijovi/sachima/pull/107"
-merge_commit: null
+merge_commit: "6795da2930324cde1448586e71ff8d80bc6e9ae1"
 created_at: "2026-06-08T03:21:10+08:00"
 repo: "jovijovi/sachima"
 base_branch: "release/sachima"

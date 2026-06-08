@@ -116,18 +116,18 @@ Gateway / delivery / webhook data
 
 ## Acceptance Gates
 
-- [ ] GREEN focused tests: `scripts/run_tests.sh tests/sachima_supervisor/test_activity.py tests/sachima_supervisor/test_activity_controlled_dry_run_evidence.py tests/sachima_supervisor/test_activity_durable_state_preflight.py`.
-- [ ] Compile check: `python -m compileall -q sachima_supervisor tests/sachima_supervisor`.
-- [ ] `git diff --check`.
-- [ ] Changed-file allowlist.
-- [ ] Secret/no-leak/static forbidden-surface scan.
-- [ ] CodeGraph sync/status in the feature worktree.
-- [ ] Codex primary review from a fresh context. Because Codex temporarily substituted for Claude Code after Claude Code timeouts, this final review must be a separate review-only pass.
-- [ ] GitHub PR #107 CI green before merge.
+- [x] GREEN focused tests: `scripts/run_tests.sh tests/sachima_supervisor/test_activity.py tests/sachima_supervisor/test_activity_controlled_dry_run_evidence.py tests/sachima_supervisor/test_activity_durable_state_preflight.py`.
+- [x] Compile check: `python -m compileall -q sachima_supervisor tests/sachima_supervisor`.
+- [x] `git diff --check`.
+- [x] Changed-file allowlist.
+- [x] Secret/no-leak/static forbidden-surface scan.
+- [x] CodeGraph sync/status in the feature worktree.
+- [x] Codex primary review from a fresh context. Because Codex temporarily substituted for Claude Code after Claude Code timeouts, this final review was a separate review-only pass.
+- [x] GitHub PR #107 CI green before merge; merged as `6795da2930324cde1448586e71ff8d80bc6e9ae1`.
 
 ## Role / Process Caveat
 
-The default split is Claude Code as main programmer and Codex as primary reviewer. Claude Code timed out twice without a usable implementation artifact, so Codex temporarily acted as a substitute worker under the fallback rule. That authoring pass does not count as the independent review gate; a later fresh Codex blocker-only review remains required before commit / PR completion.
+The default split is Claude Code as main programmer and Codex as primary reviewer. Claude Code timed out twice without a usable implementation artifact, so Codex temporarily acted as a substitute worker under the fallback rule. That authoring pass did not count as the independent review gate; a later fresh Codex blocker-only review was completed before commit / PR completion.
 
 ## Still Not Approved
 
@@ -159,4 +159,4 @@ controlled_ai_flow_execution
 
 ## Next Decision After This PR
 
-If this PR merges, the next request may discuss a later controlled local execution design/implementation gate, but only after fresh approval. This PR by itself only establishes a local/offline durable-state preflight and sanitized query path; it does not start a runtime or execute an AGENT.
+After PR #107, the next request may discuss a later controlled local execution design/implementation gate, but only after fresh approval. PR #107 by itself only establishes a local/offline durable-state preflight and sanitized query path; it does not start a runtime or execute an AGENT.
