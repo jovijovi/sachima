@@ -64,7 +64,7 @@ export function App(props: AppProps) {
   }
 
   return (
-    <box style={{ flexDirection: 'column', flexGrow: 1, padding: 1 }}>
+    <box style={{ flexDirection: 'column', flexGrow: 1, paddingTop: 1, paddingLeft: 1, paddingRight: 1 }}>
       <Header store={props.store} />
       {/* content zone: a full-screen overlay (pager / agents dashboard) OR the transcript + input zone */}
       <Switch
