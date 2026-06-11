@@ -5155,3 +5155,85 @@ class TestChatLockEviction(unittest.TestCase):
                 held.release()
 
         asyncio.run(_run())
+
+
+@unittest.skipUnless(_HAS_LARK_OAPI, "lark_oapi not installed")
+class TestFeishuLazyRebindPatchClasses(unittest.TestCase):
+    """Regression: the lazy-install rebind in check_feishu_requirements() must
+    include PatchMessageRequest/PatchMessageRequestBody.
+
+    When lark_oapi is absent at module import and installed lazily, a missing
+    rebind leaves the Patch globals unset, so _build_patch_message_request()
+    silently falls back to SimpleNamespace. The real SDK's message.patch()
+    runs verify(), which reads request.token_types — absent on SimpleNamespace
+    — so every interactive-card patch (task/progress cards) fails.
+    """
+
+    _PATCH_GLOBALS = ("PatchMessageRequest", "PatchMessageRequestBody")
+
+    def _lazy_rebind_context(self):
+        """Simulate startup without lark_oapi followed by lazy install+rebind.
+
+        Pops the Patch globals (as if the top-level import never ran) and
+        forces FEISHU_AVAILABLE=False, then lets check_feishu_requirements()
+        run its real _import()/bind step with ensure() stubbed out (lark_oapi
+        is already installed in the test env, so no install should happen).
+        """
+        import contextlib
+
+        import gateway.platforms.feishu as feishu_mod
+
+        @contextlib.contextmanager
+        def _ctx():
+            sentinel = object()
+            saved = {
+                name: feishu_mod.__dict__.pop(name, sentinel)
+                for name in self._PATCH_GLOBALS
+            }
+            try:
+                with patch.object(feishu_mod, "FEISHU_AVAILABLE", False), \
+                        patch("tools.lazy_deps.ensure", return_value=None):
+                    self.assertTrue(feishu_mod.check_feishu_requirements())
+                    yield feishu_mod
+            finally:
+                for name, value in saved.items():
+                    if value is sentinel:
+                        feishu_mod.__dict__.pop(name, None)
+                    else:
+                        feishu_mod.__dict__[name] = value
+
+        return _ctx()
+
+    def test_lazy_rebind_binds_patch_message_classes(self):
+        from lark_oapi.api.im.v1 import PatchMessageRequest, PatchMessageRequestBody
+
+        with self._lazy_rebind_context() as feishu_mod:
+            self.assertIs(
+                getattr(feishu_mod, "PatchMessageRequest", None),
+                PatchMessageRequest,
+                "check_feishu_requirements() must rebind PatchMessageRequest",
+            )
+            self.assertIs(
+                getattr(feishu_mod, "PatchMessageRequestBody", None),
+                PatchMessageRequestBody,
+                "check_feishu_requirements() must rebind PatchMessageRequestBody",
+            )
+
+    def test_patch_request_uses_sdk_builder_after_lazy_rebind(self):
+        from gateway.platforms.feishu import FeishuAdapter
+
+        with self._lazy_rebind_context():
+            body = FeishuAdapter._build_patch_message_body(content='{"key": "v"}')
+            request = FeishuAdapter._build_patch_message_request(
+                message_id="om_test", request_body=body
+            )
+            self.assertNotIsInstance(
+                request,
+                SimpleNamespace,
+                "patch request must come from the SDK builder, not the "
+                "SimpleNamespace fallback",
+            )
+            # The real SDK's message.patch() calls verify(), which reads
+            # request.token_types before anything else.
+            self.assertTrue(getattr(request, "token_types", None))
+            self.assertEqual(request.body.content, '{"key": "v"}')

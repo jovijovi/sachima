@@ -311,27 +311,47 @@ def _http_json(url: str, timeout: float = 10.0) -> dict[str, Any]:
     return data
 
 
+def _location_candidates(value: str) -> list[str]:
+    """Full value first, then comma-prefixes dropping trailing components.
+
+    "Chengdu, Sichuan, China" -> ["Chengdu, Sichuan, China", "Chengdu, Sichuan", "Chengdu"].
+    Open-Meteo geocoding matches bare place names only, so comma-qualified
+    queries return empty and must degrade; specificity order keeps e.g.
+    "Paris, Texas" from short-circuiting to the "paris" (France) alias.
+    """
+    parts = [part.strip() for part in re.split(r"[,，]", value) if part.strip()]
+    candidates = [value]
+    for end in range(len(parts) - 1, 0, -1):
+        candidates.append(", ".join(parts[:end]))
+    seen: set[str] = set()
+    unique: list[str] = []
+    for candidate in candidates:
+        key = candidate.lower()
+        if key not in seen:
+            seen.add(key)
+            unique.append(candidate)
+    return unique
+
+
 def _resolve_location(location: str) -> dict[str, Any]:
     value = _safe_text(location or "成都", max_len=120) or "成都"
-    key = value.lower()
-    if key in _LOCATION_ALIASES:
-        return dict(_LOCATION_ALIASES[key])
-    if value in _LOCATION_ALIASES:
-        return dict(_LOCATION_ALIASES[value])
-
-    query = urllib.parse.urlencode({"name": value, "count": 1, "language": "zh", "format": "json"})
-    data = _http_json(f"https://geocoding-api.open-meteo.com/v1/search?{query}", timeout=8.0)
-    results = data.get("results") if isinstance(data.get("results"), list) else []
-    if not results:
-        raise ValueError(f"location not found: {value}")
-    first = results[0]
-    return {
-        "label": _safe_text(first.get("name") or value, max_len=80),
-        "country": _safe_text(first.get("country") or "", max_len=80),
-        "lat": float(first["latitude"]),
-        "lon": float(first["longitude"]),
-        "timezone": _safe_text(first.get("timezone") or "auto", max_len=80) or "auto",
-    }
+    for candidate in _location_candidates(value):
+        alias = _LOCATION_ALIASES.get(candidate.lower()) or _LOCATION_ALIASES.get(candidate)
+        if alias:
+            return dict(alias)
+        query = urllib.parse.urlencode({"name": candidate, "count": 1, "language": "zh", "format": "json"})
+        data = _http_json(f"https://geocoding-api.open-meteo.com/v1/search?{query}", timeout=8.0)
+        results = data.get("results") if isinstance(data.get("results"), list) else []
+        if results:
+            first = results[0]
+            return {
+                "label": _safe_text(first.get("name") or candidate, max_len=80),
+                "country": _safe_text(first.get("country") or "", max_len=80),
+                "lat": float(first["latitude"]),
+                "lon": float(first["longitude"]),
+                "timezone": _safe_text(first.get("timezone") or "auto", max_len=80) or "auto",
+            }
+    raise ValueError(f"location not found: {value}")
 
 
 def _num(value: Any) -> float | int | None:
@@ -347,6 +367,121 @@ def _weather_condition(code: Any) -> str:
         return _WMO_ZH.get(int(code), "天气变化")
     except Exception:
         return "天气变化"
+
+
+def _weather_number(value: Any) -> float | int | None:
+    number = _num(value)
+    if number is not None:
+        return number
+    if isinstance(value, str):
+        text = value.strip().rstrip("%")
+        if not text:
+            return None
+        try:
+            parsed = float(text)
+        except ValueError:
+            return None
+        if parsed.is_integer():
+            return int(parsed)
+        return parsed
+    return None
+
+
+def _weather_description(row: dict[str, Any]) -> str:
+    for key in ("lang_zh", "weatherDesc"):
+        values = row.get(key)
+        if isinstance(values, list) and values:
+            first = values[0]
+            if isinstance(first, dict):
+                text = _safe_text(first.get("value") or "", max_len=80)
+                if text:
+                    return text
+    return "天气变化"
+
+
+def _wttr_hourly_highlights(data: dict[str, Any], *, period: str, count: int = 6) -> list[dict[str, Any]]:
+    weather_days_raw = data.get("weather")
+    weather_days: list[Any] = weather_days_raw if isinstance(weather_days_raw, list) else []
+    index = min(_period_index(period), max(len(weather_days) - 1, 0))
+    day = weather_days[index] if weather_days else {}
+    hourly_raw = day.get("hourly") if isinstance(day, dict) else None
+    hourly: list[Any] = hourly_raw if isinstance(hourly_raw, list) else []
+    rows: list[dict[str, Any]] = []
+    selected_hours = {18, 21, 23} if str(period or "today").lower() == "tonight" else {9, 12, 15, 18, 21}
+    for item in hourly:
+        if not isinstance(item, dict):
+            continue
+        raw_time = str(item.get("time") or "").zfill(4)
+        try:
+            hour = int(raw_time[:-2] or "0")
+        except ValueError:
+            hour = -1
+        if hour not in selected_hours and len(rows) >= 1:
+            continue
+        label = f"{raw_time[:-2].zfill(2)}:{raw_time[-2:]}" if raw_time.isdigit() else raw_time
+        row: dict[str, Any] = {"time": label, "condition": _weather_description(item)}
+        temp = _weather_number(item.get("tempC"))
+        pop = _weather_number(item.get("chanceofrain"))
+        if temp is not None:
+            row["temp_c"] = temp
+        if pop is not None:
+            row["precip_probability_pct"] = pop
+        rows.append(row)
+        if len(rows) >= count:
+            break
+    return rows
+
+
+def _weather_report_from_wttr(data: dict[str, Any], loc: dict[str, Any], *, period: str, requested_location: str) -> dict[str, Any]:
+    current_list_raw = data.get("current_condition")
+    current_list: list[Any] = current_list_raw if isinstance(current_list_raw, list) else []
+    current = current_list[0] if current_list and isinstance(current_list[0], dict) else {}
+    weather_days_raw = data.get("weather")
+    weather_days: list[Any] = weather_days_raw if isinstance(weather_days_raw, list) else []
+    index = min(_period_index(period), max(len(weather_days) - 1, 0))
+    day = weather_days[index] if weather_days and isinstance(weather_days[index], dict) else {}
+    hourly_raw = day.get("hourly") if isinstance(day, dict) else None
+    hourly: list[Any] = hourly_raw if isinstance(hourly_raw, list) else []
+    condition = _weather_description(current) if current else (_weather_description(hourly[0]) if hourly and isinstance(hourly[0], dict) else "天气变化")
+    min_c = _weather_number(day.get("mintempC"))
+    max_c = _weather_number(day.get("maxtempC"))
+    current_c = _weather_number(current.get("temp_C"))
+    feels_like_c = _weather_number(current.get("FeelsLikeC"))
+    wind_kmh = _weather_number(current.get("windspeedKmph"))
+    humidity_pct = _weather_number(current.get("humidity"))
+    if not any(value is not None for value in (current_c, feels_like_c, min_c, max_c, wind_kmh, humidity_pct)) and not hourly:
+        raise ValueError("fallback weather endpoint returned no usable weather data")
+    hourly_pops = [_weather_number(item.get("chanceofrain")) for item in hourly if isinstance(item, dict)]
+    pops = [pop for pop in hourly_pops if pop is not None]
+    hourly_amounts = [_weather_number(item.get("precipMM")) for item in hourly if isinstance(item, dict)]
+    amounts = [amount for amount in hourly_amounts if amount is not None]
+    amount = sum(float(amount) for amount in amounts) if amounts else _weather_number(current.get("precipMM"))
+    report: dict[str, Any] = {
+        "type": "weather.v1",
+        "location": {
+            "label": loc.get("label") or _safe_text(requested_location, max_len=80),
+            "country": loc.get("country") or "",
+            "timezone": loc.get("timezone") or "",
+        },
+        "period": period,
+        "generated_at": datetime.now(ZoneInfo("UTC")).isoformat(timespec="seconds"),
+        "summary": f"{condition}" + (f"，{min_c:.0f}–{max_c:.0f}°C" if isinstance(min_c, (int, float)) and isinstance(max_c, (int, float)) else ""),
+        "temperature": {
+            "current_c": current_c,
+            "feels_like_c": feels_like_c,
+            "min_c": min_c,
+            "max_c": max_c,
+        },
+        "precipitation": {
+            "max_probability_pct": max(pops) if pops else None,
+            "amount_mm": amount,
+        },
+        "wind": {"speed_kmh": wind_kmh},
+        "humidity_pct": humidity_pct,
+        "hourly_highlights": _wttr_hourly_highlights(data, period=period),
+    }
+    report["advice"] = _weather_advice(report)
+    return report
 
 
 def _period_index(period: str) -> int:
@@ -440,7 +575,15 @@ def weather_query(location: str = "成都", period: str = "today", task_id: str 
             "timezone": loc.get("timezone") or "auto",
             "forecast_days": 2,
         })
-        data = _http_json(f"https://api.open-meteo.com/v1/forecast?{query}", timeout=10.0)
+        forecast_url = f"https://api.open-meteo.com/v1/forecast?{query}"
+        try:
+            data = _http_json(forecast_url, timeout=10.0)
+        except Exception:
+            wttr_location = urllib.parse.quote(str(loc.get("label") or _safe_text(location, max_len=80) or "成都"), safe="")
+            wttr_data = _http_json(f"https://wttr.in/{wttr_location}?format=j1", timeout=10.0)
+            report = _weather_report_from_wttr(wttr_data, loc, period=period_value, requested_location=location)
+            marker = f"{RICH_RESULT_BEGIN}\n{json.dumps(report, ensure_ascii=False)}\n{RICH_RESULT_END}\n"
+            return _json({"success": True, "weather": report, "output": marker})
         raw_current = data.get("current")
         raw_daily = data.get("daily")
         current: dict[str, Any] = raw_current if isinstance(raw_current, dict) else {}

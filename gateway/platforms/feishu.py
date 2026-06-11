@@ -1370,6 +1370,13 @@ def check_feishu_requirements() -> bool:
             ReplyMessageRequest, ReplyMessageRequestBody,
             UpdateMessageRequest, UpdateMessageRequestBody,
         )
+        # Mirror the guarded top-level import: older lark-oapi releases do not
+        # export the Patch message classes.
+        try:
+            from lark_oapi.api.im.v1 import PatchMessageRequest, PatchMessageRequestBody
+        except ImportError:
+            PatchMessageRequest = None
+            PatchMessageRequestBody = None
         from lark_oapi.core import AccessTokenType, HttpMethod
         from lark_oapi.core.const import FEISHU_DOMAIN, LARK_DOMAIN
         from lark_oapi.core.model import BaseRequest
@@ -1395,6 +1402,8 @@ def check_feishu_requirements() -> bool:
             "ReplyMessageRequestBody": ReplyMessageRequestBody,
             "UpdateMessageRequest": UpdateMessageRequest,
             "UpdateMessageRequestBody": UpdateMessageRequestBody,
+            "PatchMessageRequest": PatchMessageRequest,
+            "PatchMessageRequestBody": PatchMessageRequestBody,
             "AccessTokenType": AccessTokenType,
             "HttpMethod": HttpMethod,
             "FEISHU_DOMAIN": FEISHU_DOMAIN,

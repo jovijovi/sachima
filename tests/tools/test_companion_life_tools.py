@@ -1,9 +1,43 @@
 import json
+import urllib.parse
 from pathlib import Path
 
 
 def _parse(result: str) -> dict:
     return json.loads(result)
+
+
+def _forecast_payload() -> dict:
+    return {
+        "timezone": "Asia/Shanghai",
+        "current": {
+            "time": "2026-06-11T15:00",
+            "temperature_2m": 24.2,
+            "apparent_temperature": 25.1,
+            "relative_humidity_2m": 67,
+            "weather_code": 3,
+            "wind_speed_10m": 9.5,
+        },
+        "hourly": {
+            "time": ["2026-06-11T15:00", "2026-06-11T18:00", "2026-06-11T21:00"],
+            "temperature_2m": [24.2, 23.1, 21.8],
+            "precipitation_probability": [20, 45, 60],
+            "precipitation": [0.0, 0.3, 1.2],
+            "weather_code": [3, 61, 61],
+            "wind_speed_10m": [9.5, 8.0, 6.0],
+        },
+        "daily": {
+            "time": ["2026-06-11"],
+            "temperature_2m_min": [19.0],
+            "temperature_2m_max": [25.0],
+            "precipitation_sum": [1.5],
+            "precipitation_probability_max": [60],
+        },
+    }
+
+
+def _geocode_name(url: str) -> str:
+    return urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)["name"][0]
 
 
 def test_clock_now_returns_profile_safe_china_time_shape():
@@ -78,6 +112,180 @@ def test_weather_query_emits_weather_v1_rich_result_without_generic_web(monkeypa
     assert "HERMES_RICH_RESULT_JSON_BEGIN" in result["output"]
     assert "HERMES_RICH_RESULT_JSON_END" in result["output"]
     assert "api.open-meteo.com" not in result["output"]
+
+
+def test_weather_query_resolves_combined_location_via_leading_city_fallback(monkeypatch):
+    from tools.companion_life_tools import weather_query
+
+    geocoded_names = []
+
+    def fake_http_json(url: str, timeout: float = 10.0):
+        if "geocoding-api.open-meteo.com" in url:
+            name = _geocode_name(url)
+            geocoded_names.append(name)
+            if name == "Chengdu":
+                return {
+                    "results": [{
+                        "name": "成都",
+                        "country": "中国",
+                        "latitude": 30.66667,
+                        "longitude": 104.06667,
+                        "timezone": "Asia/Shanghai",
+                    }]
+                }
+            return {"generationtime_ms": 0.4}
+        assert "api.open-meteo.com" in url
+        return _forecast_payload()
+
+    monkeypatch.setattr("tools.companion_life_tools._http_json", fake_http_json)
+
+    result = _parse(weather_query(location="Chengdu, Sichuan, China", period="today"))
+
+    assert result["success"] is True
+    assert result["weather"]["type"] == "weather.v1"
+    assert result["weather"]["location"]["label"] == "成都"
+    assert "HERMES_RICH_RESULT_JSON_BEGIN" in result["output"]
+    assert "weather.v1" in result["output"]
+    assert "HERMES_RICH_RESULT_JSON_END" in result["output"]
+
+
+def test_weather_query_geocodes_leading_component_when_full_combo_unknown(monkeypatch):
+    from tools.companion_life_tools import weather_query
+
+    geocoded_names = []
+
+    def fake_http_json(url: str, timeout: float = 10.0):
+        if "geocoding-api.open-meteo.com" in url:
+            name = _geocode_name(url)
+            geocoded_names.append(name)
+            if name == "Mianyang":
+                return {
+                    "results": [{
+                        "name": "绵阳",
+                        "country": "中国",
+                        "latitude": 31.46784,
+                        "longitude": 104.68168,
+                        "timezone": "Asia/Shanghai",
+                    }]
+                }
+            return {"generationtime_ms": 0.4}
+        assert "api.open-meteo.com" in url
+        return _forecast_payload()
+
+    monkeypatch.setattr("tools.companion_life_tools._http_json", fake_http_json)
+
+    result = _parse(weather_query(location="Mianyang, Sichuan, China", period="today"))
+
+    assert result["success"] is True
+    assert result["weather"]["location"]["label"] == "绵阳"
+    assert "HERMES_RICH_RESULT_JSON_BEGIN" in result["output"]
+    assert "weather.v1" in result["output"]
+    assert geocoded_names[0] == "Mianyang, Sichuan, China"
+    assert geocoded_names[-1] == "Mianyang"
+
+
+def test_weather_query_reports_original_location_when_all_fallbacks_fail(monkeypatch):
+    from tools.companion_life_tools import weather_query
+
+    def fake_http_json(url: str, timeout: float = 10.0):
+        assert "geocoding-api.open-meteo.com" in url
+        return {"generationtime_ms": 0.4}
+
+    monkeypatch.setattr("tools.companion_life_tools._http_json", fake_http_json)
+
+    result = _parse(weather_query(location="Atlantis, Nowhere", period="today"))
+
+    assert result["success"] is False
+    assert "location not found" in result["error"]
+    assert "Atlantis, Nowhere" in result["error"]
+
+
+def test_weather_query_uses_wttr_fallback_when_open_meteo_forecast_fails(monkeypatch):
+    from tools.companion_life_tools import weather_query
+
+    calls = []
+
+    def fake_http_json(url: str, timeout: float = 10.0):
+        calls.append(url)
+        if "geocoding-api.open-meteo.com" in url:
+            name = _geocode_name(url)
+            if name == "Chengdu":
+                return {
+                    "results": [{
+                        "name": "成都",
+                        "country": "中国",
+                        "latitude": 30.66667,
+                        "longitude": 104.06667,
+                        "timezone": "Asia/Shanghai",
+                    }]
+                }
+            return {"generationtime_ms": 0.4}
+        if "api.open-meteo.com" in url:
+            raise TimeoutError("forecast timeout")
+        if "wttr.in" in url:
+            return {
+                "current_condition": [{
+                    "temp_C": "25",
+                    "FeelsLikeC": "26",
+                    "humidity": "44",
+                    "weatherDesc": [{"value": "Sunny"}],
+                    "windspeedKmph": "18",
+                    "precipMM": "0.0",
+                }],
+                "weather": [{
+                    "mintempC": "20",
+                    "maxtempC": "27",
+                    "hourly": [
+                        {"time": "900", "tempC": "24", "chanceofrain": "10", "weatherDesc": [{"value": "Sunny"}]},
+                        {"time": "1200", "tempC": "26", "chanceofrain": "30", "weatherDesc": [{"value": "Sunny"}]},
+                        {"time": "1800", "tempC": "23", "chanceofrain": "45", "weatherDesc": [{"value": "Patchy rain"}], "precipMM": "0.4"},
+                    ],
+                }],
+            }
+        raise AssertionError(url)
+
+    monkeypatch.setattr("tools.companion_life_tools._http_json", fake_http_json)
+
+    result = _parse(weather_query(location="Chengdu, Sichuan, China", period="today"))
+
+    assert result["success"] is True
+    assert result["weather"]["type"] == "weather.v1"
+    assert result["weather"]["location"]["label"] == "成都"
+    assert result["weather"]["summary"] == "Sunny，20–27°C"
+    assert result["weather"]["precipitation"]["max_probability_pct"] == 45
+    assert "HERMES_RICH_RESULT_JSON_BEGIN" in result["output"]
+    assert "weather.v1" in result["output"]
+    assert any("api.open-meteo.com" in call for call in calls)
+    assert any("wttr.in" in call for call in calls)
+
+
+def test_weather_query_fails_closed_when_wttr_fallback_has_no_weather(monkeypatch):
+    from tools.companion_life_tools import weather_query
+
+    def fake_http_json(url: str, timeout: float = 10.0):
+        if "geocoding-api.open-meteo.com" in url:
+            return {
+                "results": [{
+                    "name": "成都",
+                    "country": "中国",
+                    "latitude": 30.66667,
+                    "longitude": 104.06667,
+                    "timezone": "Asia/Shanghai",
+                }]
+            }
+        if "api.open-meteo.com" in url:
+            raise TimeoutError("forecast timeout")
+        if "wttr.in" in url:
+            return {}
+        raise AssertionError(url)
+
+    monkeypatch.setattr("tools.companion_life_tools._http_json", fake_http_json)
+
+    result = _parse(weather_query(location="Chengdu", period="today"))
+
+    assert result["success"] is False
+    assert "fallback weather endpoint returned no usable weather data" in result["error"]
+    assert "HERMES_RICH_RESULT_JSON_BEGIN" not in json.dumps(result, ensure_ascii=False)
 
 
 def test_journal_write_appends_to_profile_palace_journal_and_blocks_sensitive_content(monkeypatch, tmp_path):

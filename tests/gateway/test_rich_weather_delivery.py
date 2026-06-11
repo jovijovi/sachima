@@ -189,6 +189,33 @@ async def test_non_feishu_weather_result_uses_text_fallback_only():
 
 
 @pytest.mark.asyncio
+async def test_long_diagnostic_mentioning_marker_is_not_truncated_to_prefix():
+    """Regression for the live Feishu truncation: a ~1.6k-char final answer
+    that merely mentions the BEGIN sentinel in prose must reach the platform
+    in full, not as the ~500-char prefix before the mention."""
+    adapter = CardAdapter(success=True)
+    head = "诊断前缀。" * 100
+    mention = f"日志里 `{RICH_RESULT_BEGIN}` 计数为 0。\n"
+    tail = "诊断尾部。" * 220
+    response_text = head + "\n" + mention + tail
+    assert len(response_text) > 1500
+
+    result = await maybe_deliver_weather_result(
+        adapter=adapter,
+        platform=Platform.FEISHU,
+        chat_id="chat-1",
+        response_text=response_text,
+        messages=[],
+        mode="auto",
+    )
+
+    assert result.card_sent is False
+    assert adapter.cards == []
+    assert "诊断尾部。" in result.response_text
+    assert len(result.response_text) >= len(head) + len(tail)
+
+
+@pytest.mark.asyncio
 async def test_weather_result_mode_off_only_strips_marker_blocks():
     adapter = CardAdapter(success=True)
 
