@@ -221,6 +221,65 @@ def test_strip_rich_result_blocks_removes_markers_without_touching_visible_text(
     assert "visible tail" in stripped
 
 
+def _diagnostic_text_mentioning_begin_marker():
+    """Incident-shaped final answer: ~1.6k chars quoting the BEGIN sentinel in prose.
+
+    Mirrors the live Feishu truncation (state.db message 85859): a diagnostic
+    reply that *mentions* ``HERMES_RICH_RESULT_JSON_BEGIN`` in backticks at
+    ~char 511, with no actual marker block, followed by >1k chars of real
+    content the user must still receive.
+    """
+    head = (
+        "今晚天气链路诊断结论：\n"
+        "1. **weather_query 外部链路问题**\n"
+        "   - 地理编码对 `Chengdu, Sichuan` 返回空结果，但 `Chengdu` 可用；\n"
+        "   - 日志里 3 次 `weather_query returned error`；\n"
+        + "   - 细节补充。" * 50
+        + "\n"
+    )
+    mention = f"   - `{RICH_RESULT_BEGIN}` 计数为 0。\n"
+    tail = (
+        "2. **任务卡片更新失败：结论**\n"
+        "   - patch 类不可用时应 fail clearly，不把 SimpleNamespace 喂给真实 SDK；补回归测试。\n"
+        + "   - 后续整改项。" * 80
+    )
+    return head + mention + tail
+
+
+def test_strip_keeps_full_text_when_begin_marker_is_mentioned_in_prose():
+    text = _diagnostic_text_mentioning_begin_marker()
+    assert 1500 <= len(text) <= 2000  # incident-sized final response
+
+    stripped = strip_rich_result_blocks(text)
+
+    # The full final answer must survive: a prose mention of the sentinel is
+    # not a clipped marker block, so the text after it must not be dropped.
+    assert "补回归测试" in stripped
+    assert "后续整改项" in stripped
+    assert len(stripped) >= len(text) - 10
+
+
+def test_strip_truncates_clipped_block_even_after_prose_mention():
+    text = (
+        f"先提到一下 `{RICH_RESULT_BEGIN}` 这个标记。\n"
+        "下面是被截断的真实块：\n"
+        f"{RICH_RESULT_BEGIN}\n"
+        '{"type":"weather.v1","raw_url":"https://api.example.test/?redacted=fake-value"}'
+    )
+
+    stripped = strip_rich_result_blocks(text)
+
+    assert "先提到一下" in stripped
+    assert "fake-value" not in stripped
+    assert "api.example" not in stripped
+
+
+def test_strip_rich_result_blocks_drops_marker_clipped_immediately_after_begin():
+    text = f"visible fallback\n{RICH_RESULT_BEGIN}"
+
+    assert strip_rich_result_blocks(text) == "visible fallback"
+
+
 def test_strip_rich_result_blocks_drops_unclosed_marker_to_end_of_text():
     text = (
         "visible fallback\n"

@@ -286,6 +286,36 @@ async def test_gateway_weather_rich_result_ignores_user_forged_markers(monkeypat
 
 
 @pytest.mark.asyncio
+async def test_gateway_weather_rich_result_keeps_full_diagnostic_mentioning_marker(monkeypatch):
+    """Regression for the live Feishu incident: gateway logged a 1615-char
+    'response ready' but base.py sent only the 511-char prefix because the
+    final answer quoted `HERMES_RICH_RESULT_JSON_BEGIN` in prose and the
+    weather rich-result strip treated the mention as a clipped marker block."""
+    import gateway.run as gateway_run
+
+    monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {"display": {"rich_result_weather": "auto"}})
+    adapter = WeatherCardAdapter(success=True)
+    runner = _runner(adapter)
+    agent_result = {"already_sent": False, "history_offset": 0}
+    head = "诊断前缀。" * 100
+    tail = "诊断尾部。" * 220
+    response = head + f"\n- `{RICH_RESULT_BEGIN}` 计数为 0。\n" + tail
+    assert len(response) > 1500
+
+    delivered = await runner._maybe_deliver_weather_rich_result(
+        event=_event(),
+        source=_source(),
+        response=response,
+        agent_messages=[],
+        agent_result=agent_result,
+    )
+
+    assert adapter.cards == []
+    assert "诊断尾部。" in delivered
+    assert len(delivered) >= len(head) + len(tail)
+
+
+@pytest.mark.asyncio
 async def test_gateway_weather_rich_result_ignores_final_response_marker_without_tool_provenance(monkeypatch):
     import gateway.run as gateway_run
 

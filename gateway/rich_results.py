@@ -163,14 +163,36 @@ def _is_direct_weather_helper_command(command: Any) -> bool:
     return True
 
 
+def _clipped_marker_block_index(text: str) -> int:
+    """Index of a BEGIN sentinel that opens a clipped marker block, or -1.
+
+    A real marker block is the sentinel followed by a JSON object, so a bare
+    BEGIN only signals a clipped block when a ``{`` (or nothing at all)
+    follows it. A final answer may instead *mention* the sentinel name in
+    prose — e.g. a diagnostic reply quoting `HERMES_RICH_RESULT_JSON_BEGIN`
+    in backticks — and truncating there silently drops the rest of the
+    answer (live Feishu incident: 1615 chars cut to the 511-char prefix).
+    """
+    search_from = 0
+    while True:
+        idx = text.find(RICH_RESULT_BEGIN, search_from)
+        if idx < 0:
+            return -1
+        tail = text[idx + len(RICH_RESULT_BEGIN):]
+        if not tail.strip() or tail.lstrip().startswith("{"):
+            return idx
+        search_from = idx + 1
+
+
 def strip_rich_result_blocks(text: str | None) -> str:
     if not text:
         return ""
     stripped = _MARKER_RE.sub("", str(text))
-    # If a marker was truncated before its END sentinel, drop everything from
-    # BEGIN onward. Better to lose a little fallback prose than expose raw JSON,
-    # URLs, or marker syntax to a chat surface.
-    begin_idx = stripped.find(RICH_RESULT_BEGIN)
+    # If a marker block was clipped before its END sentinel, drop everything
+    # from BEGIN onward. Better to lose a little fallback prose than expose
+    # raw JSON or URLs to a chat surface. Prose mentions of the sentinel name
+    # are kept — see _clipped_marker_block_index.
+    begin_idx = _clipped_marker_block_index(stripped)
     if begin_idx >= 0:
         stripped = stripped[:begin_idx]
     stripped = re.sub(r"\n?" + re.escape(RICH_RESULT_END) + r"\n?", "\n", stripped)
