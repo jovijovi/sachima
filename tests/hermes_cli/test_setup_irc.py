@@ -6,7 +6,6 @@ interactive setup menus.
 """
 
 import os
-import pytest
 
 from gateway.platform_registry import PlatformEntry, platform_registry
 
@@ -230,8 +229,13 @@ class TestIRCGatewaySetupFreshInstall:
             monkeypatch.setenv("IRC_CHANNEL", "#hermes")
             monkeypatch.setenv("IRC_NICKNAME", "hermes-bot")
 
+            def select_irc_platform(question, choices, pre_selected=None):
+                platforms = gateway_mod._all_platforms()
+                return [next(i for i, p in enumerate(platforms) if p["key"] == "irc")]
+
             monkeypatch.setattr(setup_mod, "prompt_yes_no", lambda *a, **kw: False)
             monkeypatch.setattr(setup_mod, "prompt_choice", lambda *a, **kw: 0)
+            monkeypatch.setattr(setup_mod, "prompt_checklist", select_irc_platform)
             monkeypatch.setattr(gateway_mod, "supports_systemd_services", lambda: False)
             monkeypatch.setattr(gateway_mod, "is_macos", lambda: False)
             monkeypatch.setattr(gateway_mod, "_is_service_installed", lambda: False)

@@ -108,6 +108,93 @@ from gateway.platforms.helpers import ThreadParticipationTracker
 logger = logging.getLogger(__name__)
 
 
+def _matrix_enum_member(type_name: str, member: str, fallback: Any) -> Any:
+    current = globals().get(type_name)
+    if current is not None and hasattr(current, member):
+        return getattr(current, member)
+    try:
+        import mautrix.types as runtime_types
+        current = getattr(runtime_types, type_name)
+    except Exception:
+        return fallback
+    return getattr(current, member, fallback)
+
+
+def _matrix_event_type(name: str, fallback: str) -> Any:
+    """Return a Matrix EventType member even if module globals were imported before mautrix was patched in."""
+    return _matrix_enum_member("EventType", name, fallback)
+
+
+_MATRIX_BANG_COMMAND_RE = re.compile(
+    r"^!([A-Za-z][A-Za-z0-9_-]*)(?=$|\s)(.*)$",
+    re.DOTALL,
+)
+
+
+def _resolve_matrix_bang_command(name: str) -> str | None:
+    """Resolve a ``!command`` token to a dispatchable Hermes command token.
+
+    Matrix clients often reserve leading ``/`` for local client commands.
+    Hermes accepts ``!command`` as a Matrix-friendly alias, but only for
+    commands that the gateway can actually dispatch so ordinary exclamations
+    remain normal chat text.
+
+    Returns the token form that actually resolves (which may differ from
+    *name* only by underscore→hyphen normalization, e.g. ``reload_skills`` →
+    ``reload-skills``) so the emitted ``/command`` always resolves downstream,
+    or ``None`` when *name* is not a known command. Aliases are intentionally
+    left as-is — the gateway dispatcher resolves them to their canonical name.
+    """
+    if not name:
+        return None
+    # Try the raw lowercased token first, then its hyphenated variant, so
+    # forms like ``!reload_skills`` resolve against ``reload-skills``. We emit
+    # whichever candidate resolved (not a forced canonical form) to preserve
+    # alias passthrough — the gateway dispatcher canonicalizes aliases itself.
+    candidates = [name.lower()]
+    hyphenated = name.lower().replace("_", "-")
+    if hyphenated != candidates[0]:
+        candidates.append(hyphenated)
+
+    try:
+        from hermes_cli.commands import is_gateway_known_command
+
+        for candidate in candidates:
+            if is_gateway_known_command(candidate):
+                return candidate
+    except Exception:
+        logger.debug(
+            "Matrix: is_gateway_known_command failed for %r", name, exc_info=True
+        )
+
+    try:
+        from agent.skill_commands import get_skill_commands
+
+        skill_commands = get_skill_commands() or {}
+        # Skill command keys are stored slash-prefixed (e.g. "/arxiv"), so
+        # compare against the "/candidate" form, not the bare token.
+        for candidate in candidates:
+            if f"/{candidate}" in skill_commands:
+                return candidate
+    except Exception:
+        logger.debug("Matrix: get_skill_commands failed for %r", name, exc_info=True)
+
+    return None
+
+
+def _normalize_matrix_bang_command(text: str) -> str:
+    """Convert Matrix ``!command`` aliases to normal Hermes ``/command`` text."""
+    if not text or not text.startswith("!"):
+        return text
+    match = _MATRIX_BANG_COMMAND_RE.match(text)
+    if not match:
+        return text
+    resolved = _resolve_matrix_bang_command(match.group(1))
+    if resolved is None:
+        return text
+    return f"/{resolved}{match.group(2) or ''}"
+
+
 @dataclass
 class _MatrixApprovalPrompt:
     """Tracks a pending Matrix reaction-based exec approval prompt."""
@@ -643,6 +730,7 @@ class MatrixAdapter(BasePlatformAdapter):
         from mautrix.api import HTTPAPI
         from mautrix.client import Client
         from mautrix.client.state_store import MemoryStateStore, MemorySyncStore
+        from mautrix.types import TrustState as RuntimeTrustState, UserID as RuntimeUserID
 
         if not self._homeserver:
             logger.error("Matrix: homeserver URL not configured")
@@ -663,7 +751,7 @@ class MatrixAdapter(BasePlatformAdapter):
         state_store = MemoryStateStore()
         sync_store = MemorySyncStore()
         client = Client(
-            mxid=UserID(self._user_id) if self._user_id else UserID(""),
+            mxid=RuntimeUserID(self._user_id) if self._user_id else RuntimeUserID(""),
             device_id=self._device_id or None,
             api=api,
             state_store=state_store,
@@ -683,7 +771,7 @@ class MatrixAdapter(BasePlatformAdapter):
                 resolved_device_id = getattr(resp, "device_id", "")
                 if resolved_user_id:
                     self._user_id = str(resolved_user_id)
-                    client.mxid = UserID(self._user_id)
+                    client.mxid = RuntimeUserID(self._user_id)
 
                 # Prefer user-configured device_id for stable E2EE identity.
                 effective_device_id = self._device_id or resolved_device_id
@@ -785,9 +873,13 @@ class MatrixAdapter(BasePlatformAdapter):
                 olm = OlmMachine(client, crypto_store, crypto_state)
 
                 # Accept unverified devices so senders share Megolm
-                # session keys with us automatically.
-                olm.share_keys_min_trust = TrustState.UNVERIFIED
-                olm.send_keys_min_trust = TrustState.UNVERIFIED
+                # session keys with us automatically. Some mautrix releases
+                # expose TrustState as a plain str/NewType-like alias rather
+                # than an enum object, so fall back to the numeric value used
+                # by mautrix.crypto.TrustState.UNVERIFIED.
+                unverified_trust = getattr(RuntimeTrustState, "UNVERIFIED", 0)
+                olm.share_keys_min_trust = unverified_trust
+                olm.send_keys_min_trust = unverified_trust
 
                 await olm.load()
 
@@ -903,8 +995,8 @@ class MatrixAdapter(BasePlatformAdapter):
         # Without this the INVITE handler below never fires.
         client.add_dispatcher(MembershipEventDispatcher)
 
-        client.add_event_handler(EventType.ROOM_MESSAGE, self._on_room_message)
-        client.add_event_handler(EventType.REACTION, self._on_reaction)
+        client.add_event_handler(_matrix_event_type("ROOM_MESSAGE", "m.room.message"), self._on_room_message)
+        client.add_event_handler(_matrix_event_type("REACTION", "m.reaction"), self._on_reaction)
         client.add_event_handler(IntEvt.INVITE, self._on_invite)
 
         # Initial sync to catch up, then start background sync.
@@ -1036,7 +1128,7 @@ class MatrixAdapter(BasePlatformAdapter):
                 event_id = await asyncio.wait_for(
                     self._client.send_message_event(
                         RoomID(chat_id),
-                        EventType.ROOM_MESSAGE,
+                        _matrix_event_type("ROOM_MESSAGE", "m.room.message"),
                         msg_content,
                     ),
                     timeout=45,
@@ -1051,7 +1143,7 @@ class MatrixAdapter(BasePlatformAdapter):
                         event_id = await asyncio.wait_for(
                             self._client.send_message_event(
                                 RoomID(chat_id),
-                                EventType.ROOM_MESSAGE,
+                                _matrix_event_type("ROOM_MESSAGE", "m.room.message"),
                                 msg_content,
                             ),
                             timeout=45,
@@ -1084,7 +1176,7 @@ class MatrixAdapter(BasePlatformAdapter):
             try:
                 name_evt = await self._client.get_state_event(
                     RoomID(chat_id),
-                    EventType.ROOM_NAME,
+                    _matrix_event_type("ROOM_NAME", "m.room.name"),
                 )
                 if name_evt and hasattr(name_evt, "name") and name_evt.name:
                     name = name_evt.name
@@ -1141,7 +1233,7 @@ class MatrixAdapter(BasePlatformAdapter):
         try:
             event_id = await self._client.send_message_event(
                 RoomID(chat_id),
-                EventType.ROOM_MESSAGE,
+                _matrix_event_type("ROOM_MESSAGE", "m.room.message"),
                 msg_content,
             )
             return SendResult(success=True, message_id=str(event_id))
@@ -1399,7 +1491,7 @@ class MatrixAdapter(BasePlatformAdapter):
         try:
             event_id = await self._client.send_message_event(
                 RoomID(room_id),
-                EventType.ROOM_MESSAGE,
+                _matrix_event_type("ROOM_MESSAGE", "m.room.message"),
                 msg_content,
             )
             return SendResult(success=True, message_id=str(event_id))
@@ -1747,8 +1839,9 @@ class MatrixAdapter(BasePlatformAdapter):
 
             is_free_room = room_id in self._free_rooms
             in_bot_thread = bool(thread_id and thread_id in self._threads)
+            is_command = body.startswith("/")
             if self._require_mention and not is_free_room and not in_bot_thread:
-                if not is_mentioned:
+                if not is_mentioned and not is_command:
                     logger.debug(
                         "Matrix: ignoring message %s in %s — no @mention "
                         "(set MATRIX_REQUIRE_MENTION=false to disable)",
@@ -1815,6 +1908,7 @@ class MatrixAdapter(BasePlatformAdapter):
         body = source_content.get("body", "") or ""
         if not body:
             return
+        body = _normalize_matrix_bang_command(body)
 
         ctx = await self._resolve_message_context(
             room_id,
@@ -1850,8 +1944,13 @@ class MatrixAdapter(BasePlatformAdapter):
                 stripped.append(line)
             body = "\n".join(stripped) if stripped else body
 
+        # Re-run bang normalization after reply-fallback stripping so a quoted
+        # reply whose actual content is a bang command (e.g. ``> quoted\n\n!model``)
+        # is treated as a command, matching how ``/command`` is recognized below.
+        body = _normalize_matrix_bang_command(body)
+
         msg_type = MessageType.TEXT
-        if body.startswith(("!", "/")):
+        if body.startswith("/"):
             msg_type = MessageType.COMMAND
 
         msg_event = MessageEvent(
@@ -2112,7 +2211,7 @@ class MatrixAdapter(BasePlatformAdapter):
         try:
             resp_event_id = await self._client.send_message_event(
                 RoomID(room_id),
-                EventType.REACTION,
+                _matrix_event_type("REACTION", "m.reaction"),
                 content,
             )
             logger.debug("Matrix: sent reaction %s to %s", emoji, event_id)
@@ -2236,7 +2335,8 @@ class MatrixAdapter(BasePlatformAdapter):
             if prompt and not prompt.resolved:
                 if room_id != prompt.chat_id:
                     return
-                if self._allowed_user_ids and sender not in self._allowed_user_ids:
+                _allow_all = os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}
+                if not _allow_all and not (self._allowed_user_ids and sender in self._allowed_user_ids):
                     logger.info(
                         "Matrix: ignoring approval reaction from unauthorized user %s on %s",
                         sender, reacts_to,
@@ -2423,10 +2523,12 @@ class MatrixAdapter(BasePlatformAdapter):
             return None
         try:
             preset_enum = {
-                "private_chat": RoomCreatePreset.PRIVATE,
-                "public_chat": RoomCreatePreset.PUBLIC,
-                "trusted_private_chat": RoomCreatePreset.TRUSTED_PRIVATE,
-            }.get(preset, RoomCreatePreset.PRIVATE)
+                "private_chat": _matrix_enum_member("RoomCreatePreset", "PRIVATE", "private_chat"),
+                "public_chat": _matrix_enum_member("RoomCreatePreset", "PUBLIC", "public_chat"),
+                "trusted_private_chat": _matrix_enum_member(
+                    "RoomCreatePreset", "TRUSTED_PRIVATE", "trusted_private_chat"
+                ),
+            }.get(preset, _matrix_enum_member("RoomCreatePreset", "PRIVATE", "private_chat"))
             invitees = [UserID(u) for u in (invite or [])]
             room_id = await self._client.create_room(
                 name=name or None,
@@ -2470,9 +2572,9 @@ class MatrixAdapter(BasePlatformAdapter):
             return False
         try:
             presence_map = {
-                "online": PresenceState.ONLINE,
-                "offline": PresenceState.OFFLINE,
-                "unavailable": PresenceState.UNAVAILABLE,
+                "online": _matrix_enum_member("PresenceState", "ONLINE", "online"),
+                "offline": _matrix_enum_member("PresenceState", "OFFLINE", "offline"),
+                "unavailable": _matrix_enum_member("PresenceState", "UNAVAILABLE", "unavailable"),
             }
             await self._client.set_presence(
                 presence=presence_map[state],
@@ -2503,7 +2605,7 @@ class MatrixAdapter(BasePlatformAdapter):
         try:
             event_id = await self._client.send_message_event(
                 RoomID(chat_id),
-                EventType.ROOM_MESSAGE,
+                _matrix_event_type("ROOM_MESSAGE", "m.room.message"),
                 msg_content,
             )
             return SendResult(success=True, message_id=str(event_id))
@@ -2722,11 +2824,11 @@ class MatrixAdapter(BasePlatformAdapter):
     def _markdown_to_html(self, text: str) -> str:
         """Convert Markdown to Matrix-compatible HTML (org.matrix.custom.html).
 
-        Uses the ``markdown`` library when available (installed with the
-        ``matrix`` extra).  Falls back to a comprehensive regex converter
-        that handles fenced code blocks, inline code, headers, bold,
-        italic, strikethrough, links, blockquotes, lists, and horizontal
-        rules — everything the Matrix HTML spec allows.
+        Uses the ``markdown`` library (a core dependency) when available.
+        Falls back to a comprehensive regex converter that handles fenced
+        code blocks, inline code, headers, bold, italic, strikethrough,
+        links, blockquotes, lists, and horizontal rules — everything the
+        Matrix HTML spec allows.
         """
         try:
             import markdown as _md
