@@ -290,6 +290,9 @@ def test_feishu_progress_card_includes_sanitized_model_and_account_limits_in_ord
     assert details.index("上下文") < details.index("账户限额")
     assert "Provider: openrouter" in rendered
     assert "Session: 74% remaining" in rendered
+    assert "**💳 账户限额：**\n- Provider: openrouter\n- Session: 74% remaining" in details
+    assert "账户限额：** Provider" not in details
+    assert "Provider: openrouter · Session" not in details
 
 
 def test_feishu_progress_card_omits_absent_model_and_account_limits():
