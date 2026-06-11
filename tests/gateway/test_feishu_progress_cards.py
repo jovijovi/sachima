@@ -1,6 +1,7 @@
 """Tests for pure Feishu progress card rendering."""
 
 import json
+import re
 from datetime import datetime
 
 import pytest
@@ -99,7 +100,8 @@ def test_feishu_progress_card_uses_task_workbench_copy_and_operation_timing():
     assert f"{render_start} - 进行中" in rendered
     assert "开始" not in rendered
     assert "结束" not in rendered
-    assert "2.50s" in rendered
+    assert "2秒" in rendered
+    assert "2.50s" not in rendered
     assert "进行中" in rendered
     assert "完整调用链" not in rendered
     assert "飞书只显示摘要" not in rendered
@@ -199,7 +201,8 @@ def test_feishu_progress_card_completed_uses_lively_copy_and_duration():
     assert "✅" in card["header"]["title"]["content"]
     assert "任务工作台" in card["header"]["title"]["content"]
     assert "完成" in rendered
-    assert "1.23s" in rendered
+    assert "1秒" in rendered
+    assert "1.23s" not in rendered
 
 
 def test_feishu_progress_card_failed_uses_warning_copy_without_raw_output():
@@ -248,6 +251,85 @@ def test_feishu_progress_card_includes_compact_context_usage_summary():
     assert "32.0%" in rendered
     assert "峰值 65,536" in rendered
     assert "自动压缩 2 次" in rendered
+
+
+def test_feishu_progress_card_includes_sanitized_model_and_account_limits_in_order():
+    from gateway.progress.events import ContextUsageSnapshot, TransactionSnapshot
+    from gateway.progress.renderers import render_feishu_progress_card
+
+    snapshot = TransactionSnapshot(
+        transaction_id="tx-metadata",
+        title="展示任务元数据",
+        status="running",
+        started_at=10.0,
+        updated_at=75.0,
+        model_display="openrouter/anthropic/claude-sonnet-4.6",
+        context_usage=ContextUsageSnapshot(
+            current_tokens=40_960,
+            context_window=128_000,
+            peak_tokens=65_536,
+            compression_count=2,
+        ),
+        account_limit_lines=(
+            "Provider: openrouter",
+            "Session: 74% remaining (26% used)",
+        ),
+    )
+
+    card = render_feishu_progress_card(snapshot, tool_progress_mode="off")
+    details = card["elements"][0]["content"]
+    rendered = _rendered(card)
+
+    assert "模型：" in rendered
+    assert "账户限额：" in rendered
+    assert "(Account limits)" not in rendered
+    assert details.index("任务") < details.index("状态")
+    assert details.index("状态") < details.index("耗时")
+    assert details.index("耗时") < details.index("模型")
+    assert details.index("模型") < details.index("上下文")
+    assert details.index("上下文") < details.index("账户限额")
+    assert "Provider: openrouter" in rendered
+    assert "Session: 74% remaining" in rendered
+
+
+def test_feishu_progress_card_omits_absent_model_and_account_limits():
+    from gateway.progress.renderers import render_feishu_progress_card
+
+    tracker = ProgressTracker(transaction_id="tx-no-metadata", title="无可用元数据")
+
+    card = render_feishu_progress_card(tracker.snapshot(), tool_progress_mode="off")
+    rendered = _rendered(card)
+
+    assert "模型" not in rendered
+    assert "账户限额" not in rendered
+
+
+@pytest.mark.parametrize(
+    ("elapsed", "expected"),
+    [
+        (1, "1秒"),
+        (75, "1分15秒"),
+        (3661, "1小时1分1秒"),
+        (90_061, "1日1小时1分1秒"),
+        ((365 + 30 + 5) * 24 * 60 * 60, "1年1月5日"),
+    ],
+)
+def test_feishu_progress_card_detail_duration_uses_chinese_units(elapsed, expected):
+    from gateway.progress.renderers import render_feishu_progress_card
+
+    snapshot = TransactionSnapshot(
+        transaction_id="tx-duration",
+        title="展示中文耗时",
+        status="running",
+        started_at=10.0,
+        updated_at=10.0 + elapsed,
+    )
+
+    card = render_feishu_progress_card(snapshot, tool_progress_mode="off")
+    rendered = _rendered(card)
+
+    assert expected in rendered
+    assert not re.search(r"\d+\.\d+s", rendered)
 
 
 def test_feishu_progress_card_hides_context_usage_until_tokens_are_known():
@@ -714,7 +796,9 @@ def test_feishu_recent_operation_timing_uses_interval_for_completed_operation():
     end_str = datetime.fromtimestamp(completed_at).strftime("%H:%M:%S")
 
     assert f"{start_str} - {end_str}" in rendered
-    assert "耗时 2.06s" in rendered
+    assert "耗时 2秒" in rendered
+    assert "耗时 2.06s" not in rendered
+    assert not re.search(r"\d+\.\d+s", rendered)
     assert "开始" not in rendered
     assert "结束" not in rendered
 

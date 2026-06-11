@@ -124,6 +124,10 @@ _CJK_RE = re.compile(r"[\u4e00-\u9fff]")
 _UNSAFE_FEISHU_TASK_TITLE_RE = re.compile(
     r"(?i)(\bcurl\s+|(?:^|\s)(?:-H|--header)\s+|(?:authorization|x-api-key|api-key|cookie|set-cookie)\s*:|bearer\s+\S+)"
 )
+_FEISHU_UNSAFE_METADATA_LINE_RE = re.compile(
+    r"(?i)(https?://|\b(?:api[-_]?key|token|secret|password|authorization|bearer|base[_-]?url)\b)"
+)
+_FEISHU_ACCOUNT_LIMIT_HEADER_RE = re.compile(r"(?i)^\s*(?:📈\s*)?\*{0,2}account limits\*{0,2}\s*$")
 
 
 def render_text_panel(
@@ -200,12 +204,18 @@ def render_feishu_progress_card(
         f"{_feishu_metric_label('📌', labels['task'], lang)} {_feishu_escape_markdown_text(title)}",
         f"{_feishu_metric_label(status_icon, labels['status'], lang)} {_feishu_escape_markdown_text(status_label)}",
     ]
-    total_duration = _snapshot_elapsed_duration(snapshot)
+    total_duration = _snapshot_elapsed_duration(snapshot, feishu=True)
     if total_duration:
         details.append(f"{_feishu_metric_label('⏱️', labels['duration'], lang)} {total_duration}")
+    model_detail = _feishu_model_detail(snapshot.model_display, labels=labels, language=lang)
+    if model_detail:
+        details.append(model_detail)
     context_detail = _context_usage_feishu_line(snapshot.context_usage, language=lang)
     if context_detail:
         details.append(context_detail)
+    account_detail = _feishu_account_limit_detail(snapshot.account_limit_lines, labels=labels, language=lang)
+    if account_detail:
+        details.append(account_detail)
 
     elements: list[dict] = [{"tag": "markdown", "content": "\n".join(details)}]
 
@@ -354,7 +364,9 @@ def _feishu_labels(language: str) -> dict[str, str]:
             "task": "Task",
             "status": "Status",
             "duration": "Duration",
+            "model": "Model",
             "context": "Context",
+            "account_limits": "Account limits",
             "recent_operations": "Recent operations",
             "running": "running",
             "tool": "Tool",
@@ -365,7 +377,9 @@ def _feishu_labels(language: str) -> dict[str, str]:
         "task": "任务",
         "status": "状态",
         "duration": "耗时",
+        "model": "模型",
         "context": "上下文",
+        "account_limits": "账户限额",
         "recent_operations": "最近操作",
         "running": "进行中",
         "tool": "工具",
@@ -404,6 +418,42 @@ def _feishu_status_icon(status: str, *, language: str) -> str:
 def _feishu_metric_label(icon: str, label: str, language: str) -> str:
     separator = "：" if _normalize_feishu_language(language) == "zh" else ":"
     return f"**{icon} {label}{separator}**"
+
+
+def _feishu_model_detail(model_display: object, *, labels: dict[str, str], language: str) -> str:
+    model = str(model_display or "").strip()
+    if not model or "[REDACTED]" in model or _FEISHU_UNSAFE_METADATA_LINE_RE.search(model):
+        return ""
+    safe_model = _feishu_escape_markdown_text(model)
+    if not safe_model or "[REDACTED]" in safe_model:
+        return ""
+    return f"{_feishu_metric_label('🤖', labels['model'], language)} {safe_model}"
+
+
+def _feishu_account_limit_detail(
+    account_limit_lines: Iterable[object],
+    *,
+    labels: dict[str, str],
+    language: str,
+) -> str:
+    lines: list[str] = []
+    for raw in account_limit_lines or ():
+        text = str(raw or "").strip()
+        if not text or _FEISHU_ACCOUNT_LIMIT_HEADER_RE.match(text):
+            continue
+        if "[REDACTED]" in text or _FEISHU_UNSAFE_METADATA_LINE_RE.search(text):
+            continue
+        safe = sanitize_for_progress(text, max_len=180).replace("\n", " ").strip()
+        if not safe or "[REDACTED]" in safe or _FEISHU_UNSAFE_METADATA_LINE_RE.search(safe):
+            continue
+        escaped = _feishu_escape_markdown_text(safe)
+        if escaped:
+            lines.append(escaped)
+        if len(lines) >= 4:
+            break
+    if not lines:
+        return ""
+    return f"{_feishu_metric_label('💳', labels['account_limits'], language)} {' · '.join(lines)}"
 
 
 def _context_usage_text_line(usage: ContextUsageSnapshot | None) -> str:
@@ -476,7 +526,7 @@ def _safe_nonnegative_int(value: object) -> int:
     return max(0, number)
 
 
-def _snapshot_elapsed_duration(snapshot: TransactionSnapshot) -> str:
+def _snapshot_elapsed_duration(snapshot: TransactionSnapshot, *, feishu: bool = False) -> str:
     end = snapshot.completed_at if snapshot.completed_at is not None else getattr(snapshot, "updated_at", None)
     if end is None or not snapshot.started_at:
         return ""
@@ -486,7 +536,7 @@ def _snapshot_elapsed_duration(snapshot: TransactionSnapshot) -> str:
         return ""
     if elapsed < 0:
         return ""
-    return _format_duration(elapsed)
+    return _format_feishu_duration(elapsed) if feishu else _format_duration(elapsed)
 
 
 def _snapshot_duration(snapshot: TransactionSnapshot) -> str:
@@ -530,7 +580,7 @@ def _feishu_operation_line(operation: ProgressOperation, *, emoji: bool, languag
     skill_name = _safe_skill_identifier_from_operation(operation)
     command_name = _safe_command_name(operation)
     tool_name = _safe_display_label(operation.tool_name, max_len=80)
-    duration = _format_duration(operation.duration)
+    duration = _format_feishu_duration(operation.duration)
 
     if skill_name:
         icon = "📚 " if emoji else ""
@@ -803,6 +853,39 @@ def _format_duration(duration: float | None) -> str:
         return f"{float(duration):.2f}s"
     except Exception:
         return ""
+
+
+def _format_feishu_duration(duration: float | None) -> str:
+    if duration is None or isinstance(duration, bool):
+        return ""
+    try:
+        seconds_float = float(duration)
+    except Exception:
+        return ""
+    if seconds_float < 0:
+        return ""
+    total_seconds = int(seconds_float)
+    if seconds_float > 0 and total_seconds == 0:
+        total_seconds = 1
+
+    years, remainder = divmod(total_seconds, 365 * 24 * 60 * 60)
+    months, remainder = divmod(remainder, 30 * 24 * 60 * 60)
+    days, remainder = divmod(remainder, 24 * 60 * 60)
+    hours, remainder = divmod(remainder, 60 * 60)
+    minutes, seconds = divmod(remainder, 60)
+
+    parts: list[str] = []
+    for value, suffix in (
+        (years, "年"),
+        (months, "月"),
+        (days, "日"),
+        (hours, "小时"),
+        (minutes, "分"),
+        (seconds, "秒"),
+    ):
+        if value:
+            parts.append(f"{value}{suffix}")
+    return "".join(parts) if parts else "0秒"
 
 
 def _safe_progress_dashboard_url(url: str | None) -> str | None:
