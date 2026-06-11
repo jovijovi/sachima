@@ -453,7 +453,9 @@ def _feishu_account_limit_detail(
             break
     if not lines:
         return ""
-    return f"{_feishu_metric_label('💳', labels['account_limits'], language)} {' · '.join(lines)}"
+    label = _feishu_metric_label("💳", labels["account_limits"], language)
+    account_rows = "\n".join(f"- {line}" for line in lines)
+    return f"{label}\n{account_rows}"
 
 
 def _context_usage_text_line(usage: ContextUsageSnapshot | None) -> str:
