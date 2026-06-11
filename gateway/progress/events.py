@@ -47,3 +47,5 @@ class TransactionSnapshot:
     completed_at: float | None = None
     recent_operations: tuple[ProgressOperation, ...] = ()
     context_usage: ContextUsageSnapshot | None = None
+    model_display: str | None = None
+    account_limit_lines: tuple[str, ...] = ()

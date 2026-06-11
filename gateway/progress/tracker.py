@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import threading
 import time
 from dataclasses import replace
@@ -28,6 +29,22 @@ _EVENT_TYPES = {
     "subagent.complete",
 }
 
+_MODEL_METADATA_SUFFIX_RE = re.compile(
+    r"(?i)\s+(?:knowledge\s+cutoff|cutoff|release(?:d)?(?:\s+date)?|"
+    r"api[-_]?key|token|secret|password|authorization|bearer|base[_-]?url|https?://).*$"
+)
+_MODEL_PAREN_METADATA_RE = re.compile(
+    r"(?i)\s*\([^)]*(?:knowledge\s+cutoff|cutoff|release(?:d)?(?:\s+date)?|"
+    r"20\d{2}[-_]?\d{2}[-_]?\d{2}|20\d{6}|\d{8})[^)]*\)\s*$"
+)
+_MODEL_DATE_SUFFIX_RE = re.compile(
+    r"(?:[-_/ ](?:20\d{2}[-_]?\d{2}[-_]?\d{2}|20\d{6}|\d{8}))+$"
+)
+_DISPLAY_UNSAFE_LINE_RE = re.compile(
+    r"(?i)(https?://|\b(?:api[-_]?key|token|secret|password|authorization|bearer|base[_-]?url)\b)"
+)
+_ACCOUNT_LIMIT_HEADER_RE = re.compile(r"(?i)^\s*(?:📈\s*)?\*{0,2}account limits\*{0,2}\s*$")
+
 
 class ProgressTracker:
     """Maintain recent sanitized progress operations for one transaction.
@@ -48,6 +65,8 @@ class ProgressTracker:
         self._status = TRANSACTION_RUNNING
         self._operations: list[ProgressOperation] = []
         self._context_usage: ContextUsageSnapshot | None = None
+        self._model_display: str | None = None
+        self._account_limit_lines: tuple[str, ...] = ()
         self._next_operation_id = 1
         self._lock = threading.Lock()
 
@@ -180,7 +199,24 @@ class ProgressTracker:
                 completed_at=self._completed_at,
                 recent_operations=operations,
                 context_usage=context_usage,
+                model_display=self._model_display,
+                account_limit_lines=self._account_limit_lines,
             )
+
+    def update_display_metadata(
+        self,
+        *,
+        model_display: Any = None,
+        account_limit_lines: Any = None,
+    ) -> None:
+        """Update optional, sanitized display-only metadata for this transaction."""
+
+        with self._lock:
+            if model_display is not None:
+                self._model_display = _sanitize_model_display(model_display)
+            if account_limit_lines is not None:
+                self._account_limit_lines = _sanitize_account_limit_lines(account_limit_lines)
+            self._touch()
 
     def update_context_usage(
         self,
@@ -292,6 +328,51 @@ class ProgressTracker:
 
 def _sanitize_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
     return {str(key): sanitize_value_for_progress(value, key=key) for key, value in metadata.items()}
+
+
+def _sanitize_model_display(value: Any) -> str | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    text = _MODEL_METADATA_SUFFIX_RE.sub("", text)
+    previous = None
+    while previous != text:
+        previous = text
+        text = _MODEL_PAREN_METADATA_RE.sub("", text)
+        text = _MODEL_DATE_SUFFIX_RE.sub("", text).strip(" -_/")
+    if not text or _DISPLAY_UNSAFE_LINE_RE.search(text):
+        return None
+    safe = sanitize_for_progress(text, max_len=160).replace("\n", " ").strip()
+    if not safe or "[REDACTED]" in safe or _DISPLAY_UNSAFE_LINE_RE.search(safe):
+        return None
+    return safe
+
+
+def _sanitize_account_limit_lines(value: Any) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        raw_lines = value.splitlines()
+    else:
+        try:
+            raw_lines = list(value)
+        except Exception:
+            raw_lines = [value]
+
+    lines: list[str] = []
+    for raw in raw_lines:
+        text = str(raw or "").strip()
+        if not text or _ACCOUNT_LIMIT_HEADER_RE.match(text):
+            continue
+        if _DISPLAY_UNSAFE_LINE_RE.search(text):
+            continue
+        safe = sanitize_for_progress(text, max_len=180).replace("\n", " ").strip()
+        if not safe or "[REDACTED]" in safe or _DISPLAY_UNSAFE_LINE_RE.search(safe):
+            continue
+        lines.append(safe)
+        if len(lines) >= 4:
+            break
+    return tuple(lines)
 
 
 def _safe_nonnegative_int(value: Any) -> int:

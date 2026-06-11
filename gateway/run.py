@@ -17414,6 +17414,57 @@ class GatewayRunner:
             if usage is not None:
                 progress_tracker.update_context_usage(**usage)
 
+        progress_account_limits_scheduled = [False]
+        progress_account_limits_future = [None]
+
+        async def _fetch_progress_account_limit_lines(provider: Any, base_url: Any, api_key: Any) -> None:
+            if progress_tracker is None:
+                return
+            try:
+                account_snapshot = await asyncio.to_thread(
+                    fetch_account_usage,
+                    provider,
+                    base_url=base_url,
+                    api_key=api_key,
+                )
+            except Exception as account_err:
+                logger.debug("Task tracker account-limit fetch failed: %s", account_err)
+                return
+            if not account_snapshot:
+                return
+            try:
+                account_lines = render_account_usage_lines(account_snapshot, markdown=False)
+                progress_tracker.update_display_metadata(account_limit_lines=account_lines)
+                if progress_queue is not None and task_tracker_enabled:
+                    progress_queue.put(("__render_task_tracker__",))
+            except Exception as account_render_err:
+                logger.debug("Task tracker account-limit rendering failed: %s", account_render_err)
+
+        def _refresh_progress_display_metadata(agent_obj: Any) -> None:
+            if progress_tracker is None or agent_obj is None or agent_obj is _AGENT_PENDING_SENTINEL:
+                return
+            try:
+                progress_tracker.update_display_metadata(model_display=getattr(agent_obj, "model", None))
+            except Exception as model_err:
+                logger.debug("Task tracker model display update failed: %s", model_err)
+
+            if progress_account_limits_scheduled[0]:
+                return
+            provider = getattr(agent_obj, "provider", None)
+            if not provider:
+                return
+            progress_account_limits_scheduled[0] = True
+            progress_account_limits_future[0] = safe_schedule_threadsafe(
+                _fetch_progress_account_limit_lines(
+                    provider,
+                    getattr(agent_obj, "base_url", None),
+                    getattr(agent_obj, "api_key", None),
+                ),
+                _loop_for_step,
+                logger=logger,
+                log_message="Task tracker account-limit scheduling error",
+            )
+
         def progress_callback(event_type: str, tool_name: str = None, preview: str = None, args: dict = None, **kwargs):
             """Callback invoked by agent on tool lifecycle events."""
             if not _run_still_current():
@@ -17421,10 +17472,12 @@ class GatewayRunner:
 
             if progress_tracker is not None:
                 try:
+                    _agent_for_progress = agent_holder[0] if agent_holder else None
                     try:
-                        _refresh_progress_context_usage(agent_holder[0] if agent_holder else None)
+                        _refresh_progress_display_metadata(_agent_for_progress)
+                        _refresh_progress_context_usage(_agent_for_progress)
                     except Exception as usage_err:
-                        logger.debug("Task tracker context usage update failed: %s", usage_err)
+                        logger.debug("Task tracker metadata update failed: %s", usage_err)
                     recorded = progress_tracker.record_callback_event(
                         event_type,
                         tool_name=tool_name,
@@ -18563,6 +18616,10 @@ class GatewayRunner:
 
             # Store agent reference for interrupt support
             agent_holder[0] = agent
+            try:
+                _refresh_progress_display_metadata(agent)
+            except Exception as _progress_metadata_err:
+                logger.debug("Task tracker initial metadata update failed: %s", _progress_metadata_err)
             # Capture the full tool definitions for transcript logging
             tools_holder[0] = agent.tools if hasattr(agent, 'tools') else None
             
@@ -19648,9 +19705,22 @@ class GatewayRunner:
                     if isinstance(_result_for_progress, dict):
                         _progress_failed = _progress_failed or bool(_result_for_progress.get("failed"))
                     try:
-                        _refresh_progress_context_usage(agent_holder[0] if agent_holder else None)
+                        _agent_for_progress = agent_holder[0] if agent_holder else None
+                        _refresh_progress_display_metadata(_agent_for_progress)
+                        _refresh_progress_context_usage(_agent_for_progress)
                     except Exception as usage_err:
-                        logger.debug("Task tracker final context usage update failed: %s", usage_err)
+                        logger.debug("Task tracker final metadata update failed: %s", usage_err)
+                    account_future = progress_account_limits_future[0]
+                    if account_future is not None and not account_future.done():
+                        try:
+                            await asyncio.wait_for(
+                                asyncio.shield(asyncio.wrap_future(account_future)),
+                                timeout=0.75,
+                            )
+                        except asyncio.TimeoutError:
+                            pass
+                        except Exception as account_wait_err:
+                            logger.debug("Task tracker account-limit final wait failed: %s", account_wait_err)
                     progress_tracker.mark_completed(is_error=_progress_failed)
                     if progress_event_store is not None:
                         try:
