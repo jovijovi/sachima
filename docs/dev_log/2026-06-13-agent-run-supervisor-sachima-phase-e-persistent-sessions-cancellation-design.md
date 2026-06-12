@@ -2,7 +2,7 @@
 
 Date: 2026-06-13
 Branch: `docs/phase-e-persistent-sessions-cancellation-design`
-PR: #123 — https://github.com/jovijovi/sachima/pull/123 (open; pending merge decision)
+PR: #123 — https://github.com/jovijovi/sachima/pull/123 (merged; merge commit `9e435eb443de67a923c43787f5ef7cb8ae8ad981`)
 Base: `release/sachima` @ `10102f595983727e7f569f58e9beadf9554fdfae` (Phase D real smoke status closure)
 
 ## Approval Phrase and Boundary
@@ -76,8 +76,8 @@ No code, tests, fixtures, roles, configs, or `.hermes` files were created or mod
 
 ```text
 docs marker gate (11 status markers, incl. NO_FEISHU and NO_PRODUCTION_CONFIG)
-manifest YAML parse + required keys (status: design_pr_open_pending_merge_decision; docs_only: true; all execution/live/production/delivery booleans false)
-status sync check against docs/roadmap/current-status.md (PR #123 open / pending-merge wording; no merge commit invented)
+manifest YAML parse + required keys (status: design_merged; docs_only: true; all execution/live/production/delivery booleans false)
+post-merge status sync check against docs/roadmap/current-status.md (PR #123 merged; merge commit recorded)
 changed-file allowlist (exactly the 4 paths above)
 no source diff (nothing under sachima_supervisor/, tests/, roles, configs, runtime/service files)
 secret-shaped / no-leak scan
@@ -91,7 +91,7 @@ Author-run safe checks during drafting (docs-only): manifest YAML parse via Pyth
 
 ## Next Decision After This Gate
 
-If/once PR #123 merges, the next safe request is the **Option A** implementation gate only:
+After PR #123 merged, the next safe request is still the **Option A** implementation gate only:
 
 ```text
 approve_agent_run_supervisor_sachima_phase_e_persistent_session_lifecycle_preflight_state_machine_local_offline_implementation_no_real_session_launch_no_cancellation_execution_no_real_agent_execution_no_live_no_gateway_no_feishu_no_production_config_no_real_delivery
