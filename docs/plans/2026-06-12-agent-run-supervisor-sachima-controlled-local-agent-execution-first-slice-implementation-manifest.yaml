@@ -1,0 +1,190 @@
+phase_id: "agent-run-supervisor-sachima-controlled-local-agent-execution-first-slice-implementation"
+level: "level-3"
+design_only: false
+implementation_approved: true
+local_execution_approved: true
+real_local_smoke_run: false
+real_agent_execution_approved: false
+controlled_ai_flow_execution_approved: false
+live_approved: false
+gateway_approved: false
+real_delivery_approved: false
+satine_profile_agent_approved: false
+write_capable_roles_approved: false
+persistent_sessions_approved: false
+owner_dri: "Hermes operator with Dog Brother approval"
+status: "implemented_codex_rereview_pass_awaiting_pr"
+pr_number: null
+pr_url: null
+merge_commit: null
+created_at: "2026-06-12T15:57:00+08:00"
+repo: "jovijovi/sachima"
+base_branch: "release/sachima"
+base_sha: "a02c00008960fbaabdeb378ca4c85ea58aef9898"
+branch: "feature/ars-controlled-local-exec"
+worktree: "<local Phase C worktree path>"
+
+received_approval_text:
+  - "user approval of the controlled local agent execution first implementation slice per the 2026-06-12 user review packet: local/offline, default-off, one-shot exec, pinned local acpx_binary, read-only Codex primary reviewer, pre-launch claim/CAS, forbidden-surface scans; no Gateway, no real Feishu delivery, no live/default-on, no Satine, no write-capable roles, no persistent sessions"
+code_level_approval_token: "approve_agent_run_supervisor_sachima_controlled_local_agent_execution_first_slice_one_shot_exec_pinned_local_acpx_read_only_codex_primary_reviewer_no_live_no_gateway_no_real_delivery_no_satine_no_write_roles_no_persistent_sessions"
+approval_interpretation: "implement the Phase C caller-owned controlled local one-shot exec wrapper over the public local/offline supervisor boundary only; pinned local acpx provenance and atomic pre-launch claim are mandatory fail-closed gates; real local smoke is not run and not claimed; everything live/Gateway/delivery/Satine/write/session-shaped remains blocked"
+
+prd_gate:
+  prd_doc: "ars-controlled-local-agent-execution-prd worktree: docs/plans/2026-06-12-agent-run-supervisor-sachima-controlled-local-agent-execution-prd.md"
+  user_review_packet: "ars-controlled-local-agent-execution-prd worktree: docs/plans/2026-06-12-agent-run-supervisor-sachima-controlled-local-agent-execution-user-review-packet.md"
+  codex_design_review: "two blockers (npx not strict offline; missing atomic pre-launch claim) resolved; re-review VERDICT: PASS"
+
+prior_evidence:
+  pr_99:
+    title: "supervised local Activity wrapper (exec_dry_run, injected supervisor)"
+    merge_commit: "8152d09ee0f847d335a76e2ef90459642fb72e9d"
+  pr_100:
+    title: "supervised local Activity controlled dry-run evidence"
+    merge_commit: "3fea6e2e8ee836e924c3e0eef1b3ff3a2b930c59"
+  pr_102:
+    title: "supervised local Activity durable runtime ownership & controlled local execution design"
+    merge_commit: "e49709d6e960b8e11f8e220fa087488132f64f93"
+  pr_107:
+    title: "supervised local Activity durable-state preflight implementation"
+    merge_commit: "6795da2930324cde1448586e71ff8d80bc6e9ae1"
+
+approved_scope:
+  - "sachima_supervisor controlled local one-shot exec API (exec_controlled)"
+  - "exact Phase C approval token gate (default-off)"
+  - "read-only Codex primary reviewer role allowlist (single runnable role)"
+  - "documented-not-runnable future role keys (Claude architect/main-programmer/docs, Codex blocker-only)"
+  - "pinned local acpx_binary no-fetch runner provenance gate with role-file sha256 digest binding"
+  - "committed truthful null-binary Codex reviewer role config (not runnable by construction)"
+  - "atomic pre-launch claim/CAS with claimed_in_progress -> completed | failed_retryable | failed_terminal (lock-guarded in-process store: single mutex serializes every claim/finalize/read check-and-set; cross-process transactional durable store adapter is a later gate)"
+  - "idempotent replay of in-progress/terminal claims without relaunch"
+  - "fail-closed conflicting replay and same-activity/different-key rejection before launch, proven under true concurrency (exactly one supervisor invocation across concurrent identical starts; concurrent conflicts fail closed pre-launch)"
+  - "durable-state preflight record binding (transaction/operation/lease/state-version)"
+  - "prior controlled dry-run evidence digest precondition"
+  - "exact operator gate"
+  - "sanitized claim state and read-only query projection with validate-on-read"
+  - "stable sanitized error collapse for supervisor exceptions and unsafe outcomes"
+  - "business_verdict permanently null and caller-owned"
+  - "no-leak and forbidden-surface tests"
+  - "roadmap/current-status update"
+
+allowed_changed_paths:
+  - "sachima_supervisor/activity_controlled_exec.py"
+  - "sachima_supervisor/roles/codex_primary_reviewer_exec_controlled_v1.json"
+  - "sachima_supervisor/__init__.py"
+  - "tests/sachima_supervisor/test_activity_controlled_exec.py"
+  - "docs/plans/2026-06-12-agent-run-supervisor-sachima-controlled-local-agent-execution-first-slice-implementation.md"
+  - "docs/plans/2026-06-12-agent-run-supervisor-sachima-controlled-local-agent-execution-first-slice-implementation-manifest.yaml"
+  - "docs/dev_log/2026-06-12-agent-run-supervisor-sachima-controlled-local-agent-execution-first-slice-implementation.md"
+  - "docs/roadmap/current-status.md"
+
+implemented_modes:
+  - "exec_controlled"
+
+blocked_modes:
+  - "exec_dry_run (existing separate path, untouched)"
+  - "exec (seam-level mode, not caller-facing here)"
+  - "session_create"
+  - "session_send"
+  - "session_status"
+  - "session_close"
+  - "cancel"
+  - "rollback"
+  - "live"
+  - "deliver"
+
+runnable_roles:
+  - "sachima.codex.primary_reviewer"
+
+documented_future_roles_not_runnable:
+  - "sachima.claude.architect"
+  - "sachima.claude.main_programmer"
+  - "sachima.claude.docs_engineer"
+  - "sachima.codex.blocker_only_reviewer"
+
+controlled_exec_preconditions:
+  - "exact approval token"
+  - "enabled true"
+  - "mode exec_controlled"
+  - "role allowlist (read-only Codex primary reviewer only)"
+  - "sanitized claim-check refs"
+  - "required prompt ref and preflight record ref"
+  - "exact operator gate"
+  - "prior controlled dry-run evidence digest"
+  - "durable-state preflight record binding (transaction/operation/lease/state-version)"
+  - "pinned local acpx_binary provenance + role-file sha256 digest"
+  - "read-only one-shot role capability"
+  - "atomic pre-launch claim acquired before any supervisor call"
+
+failure_taxonomy:
+  - "activity_disabled"
+  - "activity_approval_mismatch"
+  - "activity_unsupported_mode"
+  - "activity_unknown_role"
+  - "activity_unsafe_material"
+  - "activity_precondition_unmet"
+  - "activity_lease_lost"
+  - "activity_stale_state"
+  - "activity_toctou_conflict"
+  - "activity_runner_provenance_unverified"
+  - "activity_role_capability_rejected"
+  - "activity_idempotency_conflict"
+  - "activity_claim_conflict"
+  - "activity_supervisor_failed"
+  - "activity_not_found"
+
+explicit_non_approvals:
+  - "real_external_sachima_ingress"
+  - "production_durable_runtime_code_implementation"
+  - "real_external_delivery"
+  - "production_delivery_control"
+  - "production_agent_tool_execution_expansion"
+  - "production_config_write"
+  - "gateway_restart_or_reload"
+  - "gateway_code_path_mutation"
+  - "platform_adapter_mutation"
+  - "gateway_owned_temporal_lifecycle"
+  - "real_send_api_or_external_im_call"
+  - "external_temporal_service_or_worker_startup"
+  - "live_or_default_on_behavior"
+  - "public_webhook_exposure"
+  - "automatic_replies"
+  - "worker_auto_routing"
+  - "agent_to_agent_auto_routing"
+  - "@all_fanout"
+  - "trusted_markdown_html_rendering"
+  - "satine_or_hermes_profile_acp_execution"
+  - "write_capable_claude_or_codex_roles"
+  - "persistent_session_execution"
+  - "cancellation_execution"
+  - "controlled_ai_flow_execution"
+
+strongest_allowed_outcome: "agent_run_supervisor_sachima_controlled_local_one_shot_exec_first_slice_implemented_local_offline_only_real_smoke_blocked_pending_pinned_acpx_and_prompt_materialization_gate"
+strongest_allowed_outcome_meaning: "Sachima has a default-off, caller-owned controlled local one-shot exec wrapper with pinned-local-acpx provenance, atomic pre-launch claim/CAS, preflight/lease/state-version binding, read-only Codex reviewer role, sanitized claim state and query; no real local smoke ran (no pinned local acpx binary exists on this host and prompt materialization is deferred), and live/Gateway/delivery/Satine/write-capable/persistent-session/controlled-AI-FLOW surfaces remain blocked"
+
+blocked_tails:
+  - id: "TAIL-ARS-CTRL-EXEC-REAL-SMOKE"
+    class: "NEXT_PHASE"
+    blocked: true
+    reason: "no pinned local acpx binary exists on this host; npx fetch path forbidden; prompt materialization deliberately unimplemented in this slice"
+
+verification_gates:
+  - "RED-first new test file (module missing) before implementation"
+  - "focused sachima_supervisor suite: 229 passed, 0 failed (112 new, including 4 true-concurrency claim/CAS tests)"
+  - "compileall sachima_supervisor tests/sachima_supervisor"
+  - "git diff --check"
+  - "changed-file allowlist"
+  - "in-test forbidden-surface scan of the new module source"
+  - "lock-removal mutation check: concurrent store test fails without the claim-store mutex (lock restored, suite green)"
+  - "CodeGraph sync/status in this worktree"
+  - "Codex CLI primary re-review from a fresh review-only context: VERDICT PASS / BLOCKERS None (read-only sandbox failed with known bwrap loopback issue; danger-full-access was review-only and worktree status remained unchanged)"
+  - "GitHub PR CI (not started; author does not commit/push)"
+
+codex_primary_review:
+  first_pass: "VERDICT: BLOCK — ControlledLocalExecClaimStore.claim() did separate read/check/write with no lock/transaction/durable CAS, so the approved atomic pre-launch claim/CAS boundary was not satisfied"
+  blocker_fix: "single in-process threading.RLock serializes every claim/finalize/read check-and-set (real atomic CAS for the local in-process slice); 4 true-concurrency duplicate/conflict tests prove exactly one supervisor invocation for identical concurrent starts and pre-launch fail-closed conflicts; validate-on-read and sanitized projection unchanged; cross-process transactional durable store adapter deferred to a later gate"
+  low_risk_note_fix: "committed role JSON and test fixture workspace.default_cwd/allowed_roots neutralized from a host-specific home-directory path to portable placeholder /workspace/sachima (caller-documentation fields; no gate validates them in this slice)"
+  rereview: "VERDICT: PASS / BLOCKERS: None — original atomic claim/CAS blocker fixed for the approved local/offline first slice"
+
+environment_notes:
+  - "shared ~/.hermes/hermes-agent/venv lacks pytest (pre-existing gap); worktree-local .venv created with pinned dev test deps (pytest==9.0.2, pytest-asyncio==1.3.0, pytest-timeout==2.4.0)"
+  - "tools/build_docs_index.py and tools/docs_drift_signal.py do not exist in this repository; those generator gates are N/A"
