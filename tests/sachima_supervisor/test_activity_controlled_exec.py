@@ -16,11 +16,14 @@ from sachima_supervisor.activity_controlled_exec import (
     CONTROLLED_EXEC_MODES,
     CONTROLLED_EXEC_ROLE_ALLOWLIST,
     CONTROLLED_LOCAL_EXEC_APPROVAL_TOKEN,
+    FORBIDDEN_RUNNER_BASENAMES,
     ControlledLocalExecClaimStore,
     ControlledLocalExecError,
     ControlledLocalExecRequest,
+    PinnedLocalAcpxProvenance,
     query_controlled_local_exec,
     start_controlled_local_exec,
+    verify_pinned_local_acpx_binary,
 )
 from sachima_supervisor.activity_evidence import build_controlled_local_dry_run_evidence
 from sachima_supervisor.activity_preflight import (
@@ -389,6 +392,7 @@ def test_happy_path_completed_claim_is_sanitized_and_seam_request_is_ref_only(
         "preflight_store",
         "invoke_supervisor",
         "role_root",
+        "prompt_materializer",
     )
 
 
@@ -662,6 +666,15 @@ def test_committed_role_config_is_null_binary_read_only_and_fails_closed_on_prov
         {"acpx_binary": "relative/path/acpx"},
         {"acpx_binary": "/opt/acpx with spaces/acpx -y"},
         {"acpx_binary": "/usr/local/bin/npx"},
+        {"acpx_binary": "/usr/bin/node"},
+        {"acpx_binary": "/usr/local/bin/npm"},
+        {"acpx_binary": "/usr/local/bin/pnpm"},
+        {"acpx_binary": "/usr/bin/yarn"},
+        {"acpx_binary": "/usr/local/bin/bunx"},
+        {"acpx_binary": "/bin/sh"},
+        {"acpx_binary": "/bin/bash"},
+        {"acpx_binary": "/usr/bin/env"},
+        {"acpx_binary": "/usr/local/bin/NPM"},
         {"type": "shell"},
         {"acpx_version": "0.9.0"},
     ],
@@ -1290,6 +1303,479 @@ def test_get_idempotent_rejects_malicious_resident_fingerprint(tmp_path: Path) -
         poisoned.get_idempotent(request.idempotency_key)
 
     assert exc.value.error_code == "activity_unsafe_material"
+
+
+# --------------------------------------------------------------------------- #
+# Pinned local acpx binary provenance helper (Phase D smoke prerequisite)
+# --------------------------------------------------------------------------- #
+def _fake_pinned_binary(
+    tmp_path: Path, *, name: str = "acpx", executable: bool = True
+) -> Path:
+    binary = tmp_path / "runners" / name
+    binary.parent.mkdir(parents=True, exist_ok=True)
+    binary.write_bytes(b"#!/bin/false\nfake pinned local acpx placeholder bytes\n")
+    binary.chmod(0o755 if executable else 0o644)
+    return binary
+
+
+def _counting_probe(
+    calls: list[str], text: Any = "acpx 0.10.0 (pinned local build)"
+) -> Callable[[str], Any]:
+    def _probe(binary_path: str) -> Any:
+        calls.append(binary_path)
+        if isinstance(text, Exception):
+            raise text
+        return text
+
+    return _probe
+
+
+def test_verify_pinned_local_acpx_binary_happy_path_with_injected_probe(
+    tmp_path: Path,
+) -> None:
+    binary = _fake_pinned_binary(tmp_path)
+    calls: list[str] = []
+
+    provenance = verify_pinned_local_acpx_binary(
+        str(binary), version_probe=_counting_probe(calls)
+    )
+
+    assert isinstance(provenance, PinnedLocalAcpxProvenance)
+    assert provenance.binary_path == str(binary)
+    assert provenance.binary_sha256 == (
+        "sha256:" + hashlib.sha256(binary.read_bytes()).hexdigest()
+    )
+    assert provenance.acpx_version == "0.10.0"
+    assert provenance.probe_text == "acpx 0.10.0 (pinned local build)"
+    assert calls == [str(binary)]
+
+
+@pytest.mark.parametrize(
+    "binary_path",
+    [None, 7, "", "relative/path/acpx", "./acpx", "/opt/acpx dir/acpx", "/opt/\tacpx"],
+)
+def test_acpx_provenance_invalid_path_shape_fails_closed_before_probe(
+    binary_path: Any,
+) -> None:
+    calls: list[str] = []
+
+    with pytest.raises(ControlledLocalExecError) as exc:
+        verify_pinned_local_acpx_binary(binary_path, version_probe=_counting_probe(calls))
+
+    assert exc.value.error_code == "activity_runner_provenance_unverified"
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["npx", "npx-wrapper", "npm", "pnpm", "yarn", "bunx", "bun", "corepack",
+     "sh", "bash", "zsh", "dash", "fish", "env", "node"],
+)
+def test_acpx_provenance_fetch_or_shell_runner_basenames_fail_closed(
+    tmp_path: Path, name: str
+) -> None:
+    binary = _fake_pinned_binary(tmp_path, name=name)
+    calls: list[str] = []
+
+    with pytest.raises(ControlledLocalExecError) as exc:
+        verify_pinned_local_acpx_binary(
+            str(binary), version_probe=_counting_probe(calls)
+        )
+
+    assert exc.value.error_code == "activity_runner_provenance_unverified"
+    assert calls == []
+
+
+def test_acpx_provenance_forbidden_basename_set_is_explicit() -> None:
+    assert {
+        "npx", "npm", "pnpm", "yarn", "bunx", "bun", "corepack",
+        "sh", "bash", "zsh", "dash", "ksh", "fish", "env", "node",
+    } <= set(FORBIDDEN_RUNNER_BASENAMES)
+
+
+def test_acpx_provenance_missing_or_non_executable_file_fails_closed(
+    tmp_path: Path,
+) -> None:
+    calls: list[str] = []
+
+    with pytest.raises(ControlledLocalExecError) as exc:
+        verify_pinned_local_acpx_binary(
+            str(tmp_path / "runners" / "acpx"), version_probe=_counting_probe(calls)
+        )
+    assert exc.value.error_code == "activity_runner_provenance_unverified"
+
+    non_executable = _fake_pinned_binary(tmp_path, executable=False)
+    with pytest.raises(ControlledLocalExecError) as exc:
+        verify_pinned_local_acpx_binary(
+            str(non_executable), version_probe=_counting_probe(calls)
+        )
+    assert exc.value.error_code == "activity_runner_provenance_unverified"
+    assert calls == []
+
+
+def test_acpx_provenance_directory_path_fails_closed(tmp_path: Path) -> None:
+    directory = tmp_path / "runners" / "acpx"
+    directory.mkdir(parents=True)
+    calls: list[str] = []
+
+    with pytest.raises(ControlledLocalExecError) as exc:
+        verify_pinned_local_acpx_binary(
+            str(directory), version_probe=_counting_probe(calls)
+        )
+
+    assert exc.value.error_code == "activity_runner_provenance_unverified"
+    assert calls == []
+
+
+def test_acpx_provenance_probe_exception_is_collapsed_without_raw_leak(
+    tmp_path: Path,
+) -> None:
+    binary = _fake_pinned_binary(tmp_path)
+    boom = RuntimeError("se" + "cret to" + "ken at /private/leak with traceback detail")
+
+    with pytest.raises(ControlledLocalExecError) as exc:
+        verify_pinned_local_acpx_binary(
+            str(binary), version_probe=_counting_probe([], boom)
+        )
+
+    assert exc.value.error_code == "activity_runner_provenance_unverified"
+    rendered = str(exc.value).lower()
+    assert "se" + "cret" not in rendered
+    assert "/private/leak" not in rendered
+    assert "traceback" not in rendered
+
+
+@pytest.mark.parametrize(
+    "probe_text",
+    [
+        None,
+        7,
+        "",
+        "acpx 0.9.9",
+        "acpx 0.10.0\nsecond line",
+        "acpx 0.10.0 unsafe to" + "ken text",
+        "acpx 0.10.0 " + "x" * 300,
+    ],
+)
+def test_acpx_provenance_unsafe_or_mismatched_probe_text_fails_closed(
+    tmp_path: Path, probe_text: Any
+) -> None:
+    binary = _fake_pinned_binary(tmp_path)
+
+    with pytest.raises(ControlledLocalExecError) as exc:
+        verify_pinned_local_acpx_binary(
+            str(binary), version_probe=_counting_probe([], probe_text)
+        )
+
+    assert exc.value.error_code == "activity_runner_provenance_unverified"
+
+
+@pytest.mark.parametrize(
+    "probe_text",
+    [
+        "acpx 10.10.0",
+        "acpx 00.10.0",
+        "acpx 0.10.01",
+        "acpx 0.10.0.1",
+        "acpx 0.10.0-dev",
+        "acpx 0.10.0-rc.1",
+        "acpx 0.10.0rc1",
+        "acpx 0.10.0+build.5",
+    ],
+)
+def test_acpx_provenance_version_substring_or_prerelease_lookalikes_fail_closed(
+    tmp_path: Path, probe_text: str
+) -> None:
+    """The pinned version must match as an exact token, never as a substring.
+
+    ``0.10.0`` is a substring of ``10.10.0`` and a prefix of pre-release /
+    build-metadata variants like ``0.10.0-dev``; none of these are the pinned
+    release and all must fail closed.
+    """
+
+    binary = _fake_pinned_binary(tmp_path)
+
+    with pytest.raises(ControlledLocalExecError) as exc:
+        verify_pinned_local_acpx_binary(
+            str(binary), version_probe=_counting_probe([], probe_text)
+        )
+
+    assert exc.value.error_code == "activity_runner_provenance_unverified"
+
+
+@pytest.mark.parametrize(
+    "probe_text",
+    [
+        "acpx 0.10.0",
+        "acpx 0.10.0 (pinned local build)",
+        "acpx/0.10.0",
+        "0.10.0",
+    ],
+)
+def test_acpx_provenance_exact_version_token_probe_text_is_accepted(
+    tmp_path: Path, probe_text: str
+) -> None:
+    binary = _fake_pinned_binary(tmp_path)
+
+    provenance = verify_pinned_local_acpx_binary(
+        str(binary), version_probe=_counting_probe([], probe_text)
+    )
+
+    assert provenance.probe_text == probe_text
+    assert provenance.acpx_version == "0.10.0"
+
+
+@pytest.mark.parametrize("expected_version", ["0.9.0", "", None, "0.10.1"])
+def test_acpx_provenance_expected_version_must_match_required_pin(
+    tmp_path: Path, expected_version: Any
+) -> None:
+    binary = _fake_pinned_binary(tmp_path)
+    calls: list[str] = []
+
+    with pytest.raises(ControlledLocalExecError) as exc:
+        verify_pinned_local_acpx_binary(
+            str(binary),
+            version_probe=_counting_probe(calls),
+            expected_version=expected_version,
+        )
+
+    assert exc.value.error_code == "activity_runner_provenance_unverified"
+    assert calls == []
+
+
+def test_acpx_provenance_explicit_required_version_is_accepted(tmp_path: Path) -> None:
+    binary = _fake_pinned_binary(tmp_path)
+
+    provenance = verify_pinned_local_acpx_binary(
+        str(binary),
+        version_probe=_counting_probe([]),
+        expected_version="0.10.0",
+    )
+
+    assert provenance.acpx_version == "0.10.0"
+
+
+# --------------------------------------------------------------------------- #
+# Prompt materializer seam (Phase D smoke prerequisite)
+# --------------------------------------------------------------------------- #
+_SAFE_MATERIALIZED_PROMPT = (
+    "Phase D deterministic read-only check material v1. Reply with plain "
+    "text starting with VERDICT: PASS or VERDICT: BLOCKERS."
+)
+
+
+def test_default_path_without_materializer_keeps_seam_prompt_none(
+    tmp_path: Path,
+) -> None:
+    request, store, preflight_store, role_root = _env(tmp_path)
+    counter: dict[str, Any] = {"calls": 0}
+
+    result = _start(
+        request, store, preflight_store, role_root, _counting_fake(counter, _success_outcome)
+    )
+
+    assert result.status == "completed"
+    assert counter["last_request"].prompt is None
+    assert counter["last_request"].context is None
+
+
+def test_materializer_runs_after_acquired_claim_and_injects_seam_prompt(
+    tmp_path: Path,
+) -> None:
+    request, store, preflight_store, role_root = _env(tmp_path)
+    counter: dict[str, Any] = {"calls": 0}
+    materializer_calls: dict[str, Any] = {"count": 0, "status_during": "missing"}
+
+    def _materializer(seen_request: ControlledLocalExecRequest) -> str:
+        materializer_calls["count"] += 1
+        resident = store.get_by_activity(request.activity_id)
+        materializer_calls["status_during"] = (
+            None if resident is None else resident["status"]
+        )
+        assert seen_request is request
+        return _SAFE_MATERIALIZED_PROMPT
+
+    result = start_controlled_local_exec(
+        request,
+        store=store,
+        preflight_store=preflight_store,
+        invoke_supervisor=_counting_fake(counter, _success_outcome),
+        role_root=role_root,
+        prompt_materializer=_materializer,
+    )
+    state = result.to_durable_state()
+
+    assert result.status == "completed"
+    assert counter["calls"] == 1
+    assert materializer_calls["count"] == 1
+    # The raw prompt is materialized only after the atomic pre-launch claim
+    # is already resident, and only into the seam request.
+    assert materializer_calls["status_during"] == "claimed_in_progress"
+    assert counter["last_request"].prompt == _SAFE_MATERIALIZED_PROMPT
+    assert counter["last_request"].context is None
+    # Durable claim state stays sanitized: same key set, no prompt text.
+    assert set(state) == EXPECTED_CLAIM_STATE_KEYS
+    assert "deterministic read-only check material" not in repr(state).lower()
+    _assert_no_leaks(state)
+
+
+def test_phase_d_smoke_prompt_builder_is_accepted_by_the_materializer_seam(
+    tmp_path: Path,
+) -> None:
+    from sachima_supervisor.smoke_prompt import (
+        build_phase_d_smoke_prompt,
+        materialize_phase_d_smoke_prompt,
+    )
+
+    request, store, preflight_store, role_root = _env(tmp_path)
+    counter: dict[str, Any] = {"calls": 0}
+
+    result = start_controlled_local_exec(
+        request,
+        store=store,
+        preflight_store=preflight_store,
+        invoke_supervisor=_counting_fake(counter, _success_outcome),
+        role_root=role_root,
+        prompt_materializer=materialize_phase_d_smoke_prompt,
+    )
+
+    assert result.status == "completed"
+    assert counter["calls"] == 1
+    assert counter["last_request"].prompt == build_phase_d_smoke_prompt()["prompt"]
+    _assert_no_leaks(result.to_durable_state())
+
+
+def test_materializer_exception_fails_closed_terminal_without_supervisor_call(
+    tmp_path: Path,
+) -> None:
+    request, store, preflight_store, role_root = _env(tmp_path)
+    counter: dict[str, Any] = {"calls": 0}
+
+    def _raising_materializer(_request: ControlledLocalExecRequest) -> str:
+        raise RuntimeError(
+            "se" + "cret to" + "ken at /private/prompt-leak with traceback detail"
+        )
+
+    result = start_controlled_local_exec(
+        request,
+        store=store,
+        preflight_store=preflight_store,
+        invoke_supervisor=_counting_fake(counter, _success_outcome),
+        role_root=role_root,
+        prompt_materializer=_raising_materializer,
+    )
+    state = result.to_durable_state()
+
+    assert counter["calls"] == 0
+    assert result.ok is False
+    assert result.status == "failed_terminal"
+    assert result.error_code == "activity_prompt_materialization_failed"
+    assert result.retryable is False
+    assert state["supervisor_status"] is None
+    assert state["artifact_ref_count"] == 0
+    assert state["evidence_ref"] is None
+    assert state["evidence_digest"] is None
+    assert state["business_verdict"] is None
+    assert "se" + "cret" not in repr(state).lower()
+    assert "/private/prompt-leak" not in repr(state)
+    _assert_no_leaks(state)
+    assert query_controlled_local_exec(
+        store, activity_id=request.activity_id
+    ).to_durable_state() == state
+
+
+@pytest.mark.parametrize(
+    "materialized",
+    [
+        None,
+        7,
+        b"bytes-not-str",
+        "",
+        "prompt with se" + "cret to" + "ken material",
+        "prompt with raw_" + "prompt marker",
+        "p" * 5000,
+    ],
+)
+def test_materializer_unsafe_output_fails_closed_terminal_without_supervisor_call(
+    tmp_path: Path, materialized: Any
+) -> None:
+    request, store, preflight_store, role_root = _env(tmp_path)
+    counter: dict[str, Any] = {"calls": 0}
+
+    result = start_controlled_local_exec(
+        request,
+        store=store,
+        preflight_store=preflight_store,
+        invoke_supervisor=_counting_fake(counter, _success_outcome),
+        role_root=role_root,
+        prompt_materializer=lambda _request: materialized,
+    )
+
+    assert counter["calls"] == 0
+    assert result.status == "failed_terminal"
+    assert result.error_code == "activity_prompt_materialization_failed"
+    _assert_no_leaks(result.to_durable_state())
+
+
+def test_replay_of_completed_claim_never_rematerializes_or_relaunches(
+    tmp_path: Path,
+) -> None:
+    request, store, preflight_store, role_root = _env(tmp_path)
+    counter: dict[str, Any] = {"calls": 0}
+    materializer_calls = {"count": 0}
+
+    def _materializer(_request: ControlledLocalExecRequest) -> str:
+        materializer_calls["count"] += 1
+        return _SAFE_MATERIALIZED_PROMPT
+
+    def _start_with_materializer():
+        return start_controlled_local_exec(
+            request,
+            store=store,
+            preflight_store=preflight_store,
+            invoke_supervisor=_counting_fake(counter, _success_outcome),
+            role_root=role_root,
+            prompt_materializer=_materializer,
+        )
+
+    first = _start_with_materializer()
+    second = _start_with_materializer()
+
+    assert first.status == "completed"
+    assert counter["calls"] == 1
+    assert materializer_calls["count"] == 1
+    assert second.to_durable_state() == first.to_durable_state()
+
+
+def test_replay_after_materialization_failure_returns_resident_terminal_state(
+    tmp_path: Path,
+) -> None:
+    request, store, preflight_store, role_root = _env(tmp_path)
+    counter: dict[str, Any] = {"calls": 0}
+    materializer_calls = {"count": 0}
+
+    def _failing_materializer(_request: ControlledLocalExecRequest) -> str:
+        materializer_calls["count"] += 1
+        raise RuntimeError("materialization failure")
+
+    def _start_with_materializer():
+        return start_controlled_local_exec(
+            request,
+            store=store,
+            preflight_store=preflight_store,
+            invoke_supervisor=_counting_fake(counter, _success_outcome),
+            role_root=role_root,
+            prompt_materializer=_failing_materializer,
+        )
+
+    first = _start_with_materializer()
+    second = _start_with_materializer()
+
+    assert first.status == "failed_terminal"
+    assert first.error_code == "activity_prompt_materialization_failed"
+    assert materializer_calls["count"] == 1
+    assert counter["calls"] == 0
+    assert second.to_durable_state() == first.to_durable_state()
 
 
 # --------------------------------------------------------------------------- #

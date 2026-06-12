@@ -123,3 +123,9 @@ scripts/out/
 # stores the published notes. They are not a build artifact and must never be
 # committed to the repo root. See the hermes-release skill.
 RELEASE_v*.md
+
+# Sachima Phase D: untracked local-only role overlays carrying an operator's
+# host-private pinned acpx binary path. Generated out of band for a separately
+# approved smoke and deleted after evidence capture; the committed role config
+# stays acpx_binary:null and portable. Host-local paths must never enter git.
+sachima_supervisor/roles/local/
