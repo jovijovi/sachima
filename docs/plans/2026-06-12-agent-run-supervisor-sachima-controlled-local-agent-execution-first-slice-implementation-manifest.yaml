@@ -13,9 +13,9 @@ satine_profile_agent_approved: false
 write_capable_roles_approved: false
 persistent_sessions_approved: false
 owner_dri: "Hermes operator with Dog Brother approval"
-status: "implemented_codex_rereview_pass_awaiting_pr"
-pr_number: null
-pr_url: null
+status: "pr_open_awaiting_ci"
+pr_number: 114
+pr_url: "https://github.com/jovijovi/sachima/pull/114"
 merge_commit: null
 created_at: "2026-06-12T15:57:00+08:00"
 repo: "jovijovi/sachima"

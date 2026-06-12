@@ -83,7 +83,7 @@ Codex CLI primary re-review — PASS (Hermes-owned fresh review-only context; Co
   First review returned VERDICT: BLOCK on the unlocked claim store check-and-set; the blocker is
   fixed in this worktree (locked in-process CAS + true concurrent tests, see the blocker-fix
   section above) and Codex confirmed it is fixed for the approved local/offline first slice.
-PR / CI / merge — not started yet.
+PR — open: https://github.com/jovijovi/sachima/pull/114. CI / merge — awaiting checks and explicit merge decision.
 ```
 
 ## Non-Approvals Preserved

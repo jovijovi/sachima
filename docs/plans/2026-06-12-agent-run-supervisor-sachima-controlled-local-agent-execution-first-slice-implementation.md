@@ -129,7 +129,8 @@ On top of the PR #102 taxonomy (`activity_disabled`, `activity_approval_mismatch
 - [x] Codex primary review blocker (unlocked in-memory claim check-and-set) fixed: single in-process mutex serializes every claim/finalize/read critical section; true concurrent tests prove exactly one supervisor invocation for identical concurrent starts and pre-launch fail-closed for concurrent conflicts; a lock-removal mutation check confirmed the concurrent store test fails without the mutex.
 - [x] CodeGraph sync/status in this worktree.
 - [x] Codex CLI primary re-review from a fresh context: `VERDICT: PASS`, `BLOCKERS: None` (Hermes-owned review-only retry after the known read-only sandbox `bwrap` failure).
-- [ ] PR / CI / merge (not started; author does not commit or push).
+- [x] PR opened: https://github.com/jovijovi/sachima/pull/114.
+- [ ] CI / merge (awaiting checks and explicit merge decision).
 
 Environment note: the shared `~/.hermes/hermes-agent/venv` lacked `pytest` (pre-existing environment gap), so a worktree-local `.venv` was created with the pinned dev test deps (`pytest==9.0.2`, `pytest-asyncio==1.3.0`, `pytest-timeout==2.4.0`); `scripts/run_tests.sh` picks it up first by design. The repo has no `tools/build_docs_index.py` or `tools/docs_drift_signal.py`, so those generator gates are N/A for this repository.
 
