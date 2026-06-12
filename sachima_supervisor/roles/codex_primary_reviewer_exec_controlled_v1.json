@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "role_id": "sachima.codex.primary_reviewer",
+  "display_name": "Sachima Codex primary reviewer (read-only one-shot exec)",
+  "description": "Read-only Codex CLI primary reviewer role for the Sachima controlled local one-shot exec first slice. acpx_binary stays null until an operator pins a verified local acpx executable on this host; the controlled exec provenance gate fails closed on a null binary, so this committed config is not runnable by construction and no network fetch path can satisfy it.",
+  "runner": {
+    "type": "acpx",
+    "acpx_version": "0.10.0",
+    "acpx_binary": null,
+    "adapter_agent": "codex",
+    "model": null
+  },
+  "workspace": {
+    "default_cwd": "/workspace/sachima",
+    "allowed_roots": ["/workspace/sachima"],
+    "allowed_roots_security_boundary": false
+  },
+  "permissions": {
+    "read": true,
+    "search": true,
+    "write": false,
+    "execute": false,
+    "terminal": false,
+    "delete": false,
+    "move": false,
+    "fetch": false,
+    "switch_mode": false,
+    "other": false
+  },
+  "session": {"strategy": "exec"},
+  "limits": {
+    "timeout_seconds": 900,
+    "max_turns": 8,
+    "max_output_bytes": 2000000
+  },
+  "prompt": {
+    "role_instruction": "You are the Sachima primary reviewer. Review only the sanitized material referenced by the caller, read-only. Do not modify files, run commands, fetch resources, or approve your own prior work.",
+    "output_contract": "Return plain text starting with 'VERDICT: PASS' or 'VERDICT: BLOCKERS' followed by concrete findings."
+  },
+  "redaction": {
+    "suppress_reads": true,
+    "redact_prompt": true,
+    "redact_stderr": true,
+    "redact_metadata": true,
+    "redact_env": true
+  }
+}

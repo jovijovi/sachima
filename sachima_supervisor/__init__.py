@@ -8,6 +8,19 @@ for the design boundaries.
 
 from __future__ import annotations
 
+from sachima_supervisor.activity_controlled_exec import (
+    CONTROLLED_EXEC_FUTURE_ROLE_KEYS,
+    CONTROLLED_EXEC_MODE,
+    CONTROLLED_EXEC_MODES,
+    CONTROLLED_EXEC_ROLE_ALLOWLIST,
+    CONTROLLED_LOCAL_EXEC_APPROVAL_TOKEN,
+    ControlledLocalExecClaimStore,
+    ControlledLocalExecError,
+    ControlledLocalExecRequest,
+    ControlledLocalExecResult,
+    query_controlled_local_exec,
+    start_controlled_local_exec,
+)
 from sachima_supervisor.activity import (
     ACTIVITY_IMPLEMENTATION_APPROVAL_TOKEN,
     FIRST_SLICE_MODES,
@@ -78,4 +91,17 @@ __all__ = [
     "DurableStatePreflightStore",
     "query_durable_state_preflight",
     "run_durable_state_preflight",
+    # controlled local one-shot exec (Phase C first slice; local/offline,
+    # default-off, pinned local acpx provenance required, Codex read-only role)
+    "CONTROLLED_EXEC_FUTURE_ROLE_KEYS",
+    "CONTROLLED_EXEC_MODE",
+    "CONTROLLED_EXEC_MODES",
+    "CONTROLLED_EXEC_ROLE_ALLOWLIST",
+    "CONTROLLED_LOCAL_EXEC_APPROVAL_TOKEN",
+    "ControlledLocalExecClaimStore",
+    "ControlledLocalExecError",
+    "ControlledLocalExecRequest",
+    "ControlledLocalExecResult",
+    "query_controlled_local_exec",
+    "start_controlled_local_exec",
 ]
