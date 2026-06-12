@@ -13,14 +13,15 @@ gateway_approved: false
 real_delivery_approved: false
 production_config_write_approved: false
 owner_dri: "Hermes operator with Dog Brother approval"
-status: "pr_open_awaiting_ci_user_review"
+status: "merged_pr_117_readiness_gate_docs_only"
 repo: "jovijovi/sachima"
 base_branch: "release/sachima"
 base_pr_merge: "#116 (790fe8596)"
 branch: "docs/phase-d-real-local-smoke-readiness"
 pr_number: 117
 pr_url: "https://github.com/jovijovi/sachima/pull/117"
-commit: "ce9e040605535493e285e4cc9ef8518fc87d3d8f"
+head_commit: "d65f425c469c7e0c3b76b39dcc685f28149bf6cc"
+merge_commit: "eb7227301d715b40d4eb6628bf32fb800017bd42"
 created_at: "2026-06-12"
 
 received_approval_text:
@@ -124,8 +125,8 @@ review_gates:
     review_result_path: "/tmp/sachima_phase_d_readiness_codex_blocker_rereview_result.md"
   user_approval:
     role: "Dog Brother"
-    status: "pending_pr_117_ci_and_user_review"
-    gated_on: "codex_primary_review PASS (satisfied); PR #117 CI/user review pending"
+    status: "satisfied_pr_117_merged"
+    gated_on: "codex_primary_review PASS (satisfied); PR #117 merged"
 
 verification_run_docs_only:
   - "git status --short --branch"

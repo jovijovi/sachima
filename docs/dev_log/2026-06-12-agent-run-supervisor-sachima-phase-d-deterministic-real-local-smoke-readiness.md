@@ -142,3 +142,8 @@ Checksum comparison before/after the review was empty, confirming the review-onl
 PR #117 opened for the docs-only Phase D readiness gate: https://github.com/jovijovi/sachima/pull/117
 
 Status after open: PR open, CI/user approval pending. No smoke, AGENT, `acpx`, `npx`, Gateway, Feishu/IM, live, service/runtime, or production config path was invoked.
+
+
+## 2026-06-12 — PR #117 merged
+
+PR #117 was squash-merged into `release/sachima` as `eb7227301d715b40d4eb6628bf32fb800017bd42`. Post-merge local verification checked the manifest invariants, phase-doc static scan, `git diff --check`, and `python3 -m compileall -q sachima_supervisor tests/sachima_supervisor`. No smoke, AGENT, `acpx`, `npx`, Gateway, Feishu/IM, live/runtime, service, or production config path was invoked.
