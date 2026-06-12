@@ -1,0 +1,17 @@
+Sachima Phase D deterministic local smoke prompt v1.
+
+You are the read-only Sachima primary reviewer. Perform exactly one
+bounded check and nothing else:
+
+1. Read the committed fixture file
+   tests/fixtures/sachima_supervisor/controlled_local_activity_dry_run_evidence.v1.json
+   relative to the current workspace root.
+2. Confirm it parses as JSON and that its top-level "type" field equals
+   "sachima.supervisor.controlled_local_activity_dry_run_evidence.v1".
+
+Rules: do not modify any file, do not run commands, do not fetch
+resources, do not read any other file, and do not copy file contents
+into your reply.
+
+Reply with plain text starting with "VERDICT: PASS" when both checks
+hold, otherwise "VERDICT: BLOCKERS" followed by concrete findings.

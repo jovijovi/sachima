@@ -14,12 +14,31 @@ from sachima_supervisor.activity_controlled_exec import (
     CONTROLLED_EXEC_MODES,
     CONTROLLED_EXEC_ROLE_ALLOWLIST,
     CONTROLLED_LOCAL_EXEC_APPROVAL_TOKEN,
+    FORBIDDEN_RUNNER_BASENAMES,
     ControlledLocalExecClaimStore,
     ControlledLocalExecError,
     ControlledLocalExecRequest,
     ControlledLocalExecResult,
+    PinnedLocalAcpxProvenance,
     query_controlled_local_exec,
     start_controlled_local_exec,
+    verify_pinned_local_acpx_binary,
+)
+from sachima_supervisor.smoke_prompt import (
+    PHASE_D_SMOKE_PROMPT_FIXTURE_RELATIVE_PATH,
+    PHASE_D_SMOKE_PROMPT_MAX_CHARS,
+    PHASE_D_SMOKE_PROMPT_REF,
+    PHASE_D_SMOKE_PROMPT_TYPE,
+    PhaseDSmokePromptError,
+    build_phase_d_smoke_prompt,
+    materialize_phase_d_smoke_prompt,
+)
+from sachima_supervisor.supervisor_library import (
+    AGENT_RUN_SUPERVISOR_DISTRIBUTION,
+    AGENT_RUN_SUPERVISOR_IMPORT_NAME,
+    EXPECTED_AGENT_RUN_SUPERVISOR_VERSION,
+    SupervisorLibraryPinStatus,
+    check_supervisor_library_pin,
 )
 from sachima_supervisor.activity import (
     ACTIVITY_IMPLEMENTATION_APPROVAL_TOKEN,
@@ -104,4 +123,21 @@ __all__ = [
     "ControlledLocalExecResult",
     "query_controlled_local_exec",
     "start_controlled_local_exec",
+    # Phase D smoke prerequisites (preparation only; no smoke, no AGENT,
+    # no acpx/npx, no Gateway/Feishu/live, no production config)
+    "FORBIDDEN_RUNNER_BASENAMES",
+    "PinnedLocalAcpxProvenance",
+    "verify_pinned_local_acpx_binary",
+    "PHASE_D_SMOKE_PROMPT_FIXTURE_RELATIVE_PATH",
+    "PHASE_D_SMOKE_PROMPT_MAX_CHARS",
+    "PHASE_D_SMOKE_PROMPT_REF",
+    "PHASE_D_SMOKE_PROMPT_TYPE",
+    "PhaseDSmokePromptError",
+    "build_phase_d_smoke_prompt",
+    "materialize_phase_d_smoke_prompt",
+    "AGENT_RUN_SUPERVISOR_DISTRIBUTION",
+    "AGENT_RUN_SUPERVISOR_IMPORT_NAME",
+    "EXPECTED_AGENT_RUN_SUPERVISOR_VERSION",
+    "SupervisorLibraryPinStatus",
+    "check_supervisor_library_pin",
 ]

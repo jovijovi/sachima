@@ -41,11 +41,17 @@ Boundaries enforced here (local/offline only):
   * Only the public ``invoke_local_offline_supervisor`` boundary (or an
     injected equivalent in tests) is ever called. This module never spawns a
     child process, agent CLI, shell, container, service, Gateway, or IM
-    delivery surface. Raw prompt/context never travel from here: the seam
-    request carries claim-check refs only with a ``None`` prompt, and the
-    caller boundary inside the supervisor library fails closed on an empty
-    exec prompt — so no agent run can start from this slice. Prompt
-    materialization is a later, separately approved phase.
+    delivery surface. By default the seam request carries claim-check refs
+    only with a ``None`` prompt, and the caller boundary inside the
+    supervisor library fails closed on an empty exec prompt — so no agent
+    run can start from the default path. A deterministic prompt may only
+    enter through an explicitly injected ``prompt_materializer`` (the Phase D
+    smoke prerequisite seam): it runs after the acquired pre-launch claim,
+    its output is screened and bounded, it lives only in the in-memory seam
+    request, and a failed/unsafe materialization fails closed with no
+    supervisor invocation. Raw prompt text never enters durable claim state,
+    fingerprints, or query projections. Running a real smoke remains a
+    later, separately approved phase.
   * ``business_verdict`` stays ``None`` and caller-owned. It is never
     inferred from exit codes or supervisor status, and a lower layer that
     reports one is collapsed to a stable terminal failure.
@@ -59,6 +65,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import threading
 from collections.abc import Mapping
@@ -135,6 +142,15 @@ _TERMINAL_STATUSES = frozenset(
     {_STATUS_COMPLETED, _STATUS_FAILED_RETRYABLE, _STATUS_FAILED_TERMINAL}
 )
 _CLAIM_STATUSES = frozenset({_STATUS_CLAIMED, *_TERMINAL_STATUSES})
+#: The only stable error codes a failed claim state may carry. Lower-layer
+#: failures collapse to ``activity_supervisor_failed``; a failed/unsafe prompt
+#: materialization collapses to ``activity_prompt_materialization_failed``
+#: (always terminal, never a supervisor invocation).
+_ERROR_SUPERVISOR_FAILED = "activity_supervisor_failed"
+_ERROR_PROMPT_MATERIALIZATION_FAILED = "activity_prompt_materialization_failed"
+_FAILURE_COLLAPSE_CODES = frozenset(
+    {_ERROR_SUPERVISOR_FAILED, _ERROR_PROMPT_MATERIALIZATION_FAILED}
+)
 
 _REQUIRED_RUNNER_TYPE = "acpx"
 _REQUIRED_ACPX_VERSION = "0.10.0"
@@ -143,6 +159,58 @@ _REQUIRED_ROLE_SCHEMA_VERSION = 1
 #: Package-runner basename that implies a network fetch; never a pinned local
 #: binary.
 _FORBIDDEN_RUNNER_BASENAME = "npx"
+#: Fetch-shaped package runners and shell/launcher basenames that can never be
+#: an operator-pinned local acpx executable. Any of these as the candidate
+#: binary basename fails provenance closed before the injected probe runs.
+FORBIDDEN_RUNNER_BASENAMES: frozenset[str] = frozenset(
+    {
+        "npx",
+        "npm",
+        "pnpm",
+        "yarn",
+        "bunx",
+        "bun",
+        "corepack",
+        "sh",
+        "bash",
+        "zsh",
+        "dash",
+        "ksh",
+        "fish",
+        "env",
+        "node",
+    }
+)
+#: Sanitized single-line probe text only: bounded, printable, no whitespace
+#: beyond plain spaces, so raw stderr/exception material can never pass.
+_ACPX_PROBE_TEXT_MAX_CHARS = 256
+_SAFE_PROBE_TEXT_RE = re.compile(r"^[A-Za-z0-9 ._+:/()-]{1,256}$")
+#: Characters that would extend a version token if adjacent to it. The pinned
+#: version must stand alone in the probe text: ``0.10.0`` inside ``10.10.0``,
+#: ``0.10.0-dev``, ``0.10.0rc1``, or ``0.10.0+build.5`` is a different version
+#: and never satisfies the pin.
+_VERSION_TOKEN_BOUNDARY_CLASS = r"[A-Za-z0-9._+-]"
+
+
+def _is_forbidden_runner_basename(basename: str) -> bool:
+    lowered = basename.lower()
+    return lowered in FORBIDDEN_RUNNER_BASENAMES or lowered.startswith(
+        _FORBIDDEN_RUNNER_BASENAME
+    )
+
+
+def _probe_text_has_exact_version(probe_text: str, expected_version: str) -> bool:
+    pattern = (
+        r"(?<!" + _VERSION_TOKEN_BOUNDARY_CLASS + r")"
+        + re.escape(expected_version)
+        + r"(?!" + _VERSION_TOKEN_BOUNDARY_CLASS + r")"
+    )
+    return re.search(pattern, probe_text) is not None
+
+
+#: Upper bound for a materialized deterministic smoke prompt. Anything larger
+#: is treated as unsafe material and fails closed.
+_MAX_MATERIALIZED_PROMPT_CHARS = 4096
 _READ_ONLY_TRUE_PERMISSIONS = ("read", "search")
 _READ_ONLY_FALSE_PERMISSIONS = (
     "write",
@@ -676,9 +744,11 @@ def _check_runner_provenance(
 
     The request must carry the exact sha256 digest of the allowlisted role
     file, and that file must declare a non-null absolute local ``acpx_binary``
-    with no whitespace and no package-runner basename. A null binary would let
-    the supervisor library fall back to its network-fetching package-runner
-    prefix, which is forbidden for strict local/offline claims.
+    with no whitespace and no fetch-shaped package-runner or shell basename
+    (the same ``FORBIDDEN_RUNNER_BASENAMES`` predicate the standalone
+    provenance verifier enforces). A null binary would let the supervisor
+    library fall back to its network-fetching package-runner prefix, which is
+    forbidden for strict local/offline claims.
     """
 
     if (
@@ -713,7 +783,7 @@ def _check_runner_provenance(
         or not binary
         or not binary.startswith("/")
         or any(ch.isspace() for ch in binary)
-        or Path(binary).name.startswith(_FORBIDDEN_RUNNER_BASENAME)
+        or _is_forbidden_runner_basename(Path(binary).name)
     ):
         raise _provenance_error()
     return mapping
@@ -752,6 +822,83 @@ def _check_role_capability(
     if session is not None:
         if type(session) is not dict or session.get("strategy") != "exec":
             raise _capability_error()
+
+
+# --------------------------------------------------------------------------- #
+# Pinned local acpx binary provenance (Phase D smoke prerequisite)
+# --------------------------------------------------------------------------- #
+@dataclass(frozen=True)
+class PinnedLocalAcpxProvenance:
+    """Sanitized provenance proof for an operator-pinned local acpx binary.
+
+    Carries only the verified absolute path, the executable's sha256, the
+    exact pinned version, and the sanitized single-line probe text. Raw probe
+    output, stderr, or exception material never reach this record.
+    """
+
+    binary_path: str
+    binary_sha256: str
+    acpx_version: str
+    probe_text: str
+
+
+def verify_pinned_local_acpx_binary(
+    binary_path: Any,
+    *,
+    version_probe: Callable[[str], str],
+    expected_version: str = _REQUIRED_ACPX_VERSION,
+) -> PinnedLocalAcpxProvenance:
+    """Verify an operator-pinned local acpx executable without invoking it here.
+
+    Preparation helper for a later, separately approved Phase D smoke: the
+    candidate path must be absolute, whitespace-free, and not a fetch-shaped
+    package runner or shell basename; the file must exist and be executable;
+    and the **injected** ``version_probe`` must return sanitized single-line
+    text carrying the pinned version (``0.10.0``) as an exact standalone
+    token — a substring hit inside ``10.10.0`` or a pre-release/build variant
+    like ``0.10.0-dev`` never satisfies the pin. This module never
+    executes the binary — how the probe text is produced is the caller's
+    responsibility, out of band. Every miss fails closed with the stable
+    ``activity_runner_provenance_unverified`` code and no raw detail.
+    """
+
+    if expected_version != _REQUIRED_ACPX_VERSION:
+        raise _provenance_error()
+    if (
+        type(binary_path) is not str
+        or not binary_path.startswith("/")
+        or any(ch.isspace() for ch in binary_path)
+    ):
+        raise _provenance_error()
+    path = Path(binary_path)
+    if _is_forbidden_runner_basename(path.name):
+        raise _provenance_error()
+    try:
+        if not path.is_file() or not os.access(binary_path, os.X_OK):
+            raise _provenance_error()
+        payload = path.read_bytes()
+    except OSError:
+        raise _provenance_error() from None
+    binary_sha256 = "sha256:" + hashlib.sha256(payload).hexdigest()
+    try:
+        probe_text = version_probe(binary_path)
+    except Exception:
+        raise _provenance_error() from None
+    if (
+        type(probe_text) is not str
+        or len(probe_text) > _ACPX_PROBE_TEXT_MAX_CHARS
+        or _SAFE_PROBE_TEXT_RE.fullmatch(probe_text) is None
+        or _value_is_unsafe(probe_text)
+        or _has_exec_unsafe_marker(probe_text)
+        or not _probe_text_has_exact_version(probe_text, expected_version)
+    ):
+        raise _provenance_error()
+    return PinnedLocalAcpxProvenance(
+        binary_path=binary_path,
+        binary_sha256=binary_sha256,
+        acpx_version=expected_version,
+        probe_text=probe_text,
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -845,6 +992,7 @@ def _failure_state(
     *,
     status: str,
     retryable: bool,
+    error_code: str = _ERROR_SUPERVISOR_FAILED,
 ) -> dict[str, Any]:
     return _build_claim_state(
         request,
@@ -856,7 +1004,7 @@ def _failure_state(
         evidence_ref=None,
         evidence_digest=None,
         caller_verdict=None,
-        error_code="activity_supervisor_failed",
+        error_code=error_code,
         retryable=retryable,
     )
 
@@ -921,15 +1069,55 @@ def _state_from_supervisor_outcome(
     )
 
 
-def _build_local_offline_request(
-    request: ControlledLocalExecRequest, role_file_path: Path
-) -> LocalOfflineSupervisorRequest:
-    """Assemble the seam request from sanitized claim-check refs only.
+def _materialize_prompt(
+    request: ControlledLocalExecRequest,
+    materializer: Callable[[ControlledLocalExecRequest], str],
+) -> str:
+    """Run an explicitly injected prompt materializer and screen its output.
 
-    ``prompt``/``context`` stay ``None`` in this slice: raw material never
+    Called only after the atomic pre-launch claim is already resident. A
+    raising materializer or any non-string, empty, oversized, or
+    unsafe-marker output fails closed with a stable code; raw materializer
+    detail never propagates.
+    """
+
+    try:
+        prompt = materializer(request)
+    except Exception:
+        raise ControlledLocalExecError(
+            _ERROR_PROMPT_MATERIALIZATION_FAILED,
+            "prompt materialization failed closed",
+        ) from None
+    if (
+        type(prompt) is not str
+        or not prompt
+        or len(prompt) > _MAX_MATERIALIZED_PROMPT_CHARS
+        or _value_is_unsafe(prompt)
+        or _has_exec_unsafe_marker(prompt)
+    ):
+        raise ControlledLocalExecError(
+            _ERROR_PROMPT_MATERIALIZATION_FAILED,
+            "prompt materialization failed closed",
+        )
+    return prompt
+
+
+def _build_local_offline_request(
+    request: ControlledLocalExecRequest,
+    role_file_path: Path,
+    *,
+    prompt: str | None = None,
+) -> LocalOfflineSupervisorRequest:
+    """Assemble the seam request from sanitized claim-check refs.
+
+    ``prompt`` defaults to ``None`` (the Phase C posture): raw material never
     travels from here, and the caller boundary inside the supervisor library
-    fails closed on an empty exec prompt, so no agent run can start. Prompt
-    materialization is a later, separately approved phase.
+    fails closed on an empty exec prompt, so no agent run can start. A
+    non-``None`` prompt is only ever supplied by the materialization-aware
+    start path — after the acquired claim and after the ``_materialize_prompt``
+    screen — and exists solely in this in-memory seam request: it never enters
+    durable claim state, fingerprints, or query projections. ``context`` stays
+    ``None`` unconditionally.
     """
 
     refs: list[str] = [request.transaction_ref, request.operation_ref]
@@ -943,7 +1131,7 @@ def _build_local_offline_request(
         role_file=str(role_file_path),
         enabled=True,
         approval_token=LOCAL_OFFLINE_APPROVAL_TOKEN,
-        prompt=None,
+        prompt=prompt,
         context=None,
         claim_check_refs=tuple(refs),
     )
@@ -960,6 +1148,7 @@ def start_controlled_local_exec(
     invoke_supervisor: Callable[[LocalOfflineSupervisorRequest], LocalOfflineSupervisorOutcome]
     | None = None,
     role_root: str | Path | None = None,
+    prompt_materializer: Callable[[ControlledLocalExecRequest], str] | None = None,
 ) -> ControlledLocalExecResult:
     """Start one controlled local one-shot exec attempt.
 
@@ -971,6 +1160,14 @@ def start_controlled_local_exec(
     without a second launch; conflicting replays fail closed pre-launch. A
     supervisor exception or unsafe outcome collapses to a stable sanitized
     failure state with no raw detail.
+
+    ``prompt_materializer`` is the Phase D smoke prerequisite seam: when
+    ``None`` (the default) the seam request keeps ``prompt=None`` exactly as
+    in Phase C, so no agent run can start. When explicitly injected, it runs
+    only after the acquired claim and before the single supervisor call; its
+    screened output travels solely in the in-memory seam request and never
+    enters durable state. A failed or unsafe materialization finalizes the
+    claim as a terminal sanitized failure and never invokes the supervisor.
     """
 
     _check_enabled_and_approved(request)
@@ -1009,11 +1206,32 @@ def start_controlled_local_exec(
     )
     if disposition == "replayed":
         # In-progress (e.g. post-crash) and terminal claims both replay the
-        # resident projection; a second launch never happens here.
+        # resident projection; a second launch — and a second prompt
+        # materialization — never happens here.
         return ControlledLocalExecResult(resident_state)
 
+    prompt: str | None = None
+    if prompt_materializer is not None:
+        try:
+            prompt = _materialize_prompt(request, prompt_materializer)
+        except ControlledLocalExecError as exc:
+            final_state = _failure_state(
+                request,
+                preflight_view_ref,
+                status=_STATUS_FAILED_TERMINAL,
+                retryable=False,
+                error_code=exc.error_code,
+            )
+            store.finalize(
+                activity_id=request.activity_id,
+                idempotency_key=request.idempotency_key,
+                fingerprint=fingerprint,
+                state=final_state,
+            )
+            return ControlledLocalExecResult(final_state)
+
     invoke = invoke_supervisor if invoke_supervisor is not None else invoke_local_offline_supervisor
-    seam_request = _build_local_offline_request(request, role_file_path)
+    seam_request = _build_local_offline_request(request, role_file_path, prompt=prompt)
     try:
         outcome = invoke(seam_request)
     except Exception:
@@ -1207,12 +1425,19 @@ def _validate_claim_state_projection(state: Mapping[str, Any]) -> dict[str, Any]
             raise _reject_unsafe_state()
     else:
         # claimed_in_progress and both failure states carry no lower-layer
-        # payload at all; failures carry only the stable collapse code.
-        expected_error = None if status == _STATUS_CLAIMED else "activity_supervisor_failed"
+        # payload at all; failures carry only a stable collapse code. A
+        # materialization failure is always terminal (the supervisor was
+        # never invoked, so a retryable variant would be untruthful).
+        if status == _STATUS_CLAIMED:
+            error_code_is_valid = projected["error_code"] is None
+        elif status == _STATUS_FAILED_TERMINAL:
+            error_code_is_valid = projected["error_code"] in _FAILURE_COLLAPSE_CODES
+        else:
+            error_code_is_valid = projected["error_code"] == _ERROR_SUPERVISOR_FAILED
         expected_retryable = status == _STATUS_FAILED_RETRYABLE
         if (
             projected["ok"] is not False
-            or projected["error_code"] != expected_error
+            or not error_code_is_valid
             or projected["retryable"] is not expected_retryable
             or projected["supervisor_status"] is not None
             or projected["artifact_ref_count"] != 0
