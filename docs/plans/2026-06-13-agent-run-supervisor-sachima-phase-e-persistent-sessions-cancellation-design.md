@@ -42,7 +42,7 @@ ARS_SACHIMA_PHASE_E_PRODUCTION_CONFIG_NOT_APPROVED
 Strongest allowed outcome of this PR:
 
 ```text
-phase_e_persistent_sessions_cancellation_design_ready_for_review
+phase_e_persistent_sessions_cancellation_design_open_for_merge_decision
 ```
 
 That means: a Phase E persistent-sessions/cancellation **design packet exists and may be reviewed/merged**. It does not authorize implementation, persistent session execution, cancellation execution, real AGENT execution, controlled AI FLOW execution, live/default-on behavior, Gateway/Feishu involvement, production config writes, or real delivery.
@@ -447,8 +447,8 @@ Run by Hermes; the author does not commit, push, merge, or execute runtime code.
 - [ ] Status markers present and unambiguous (all 11 markers above).
 - [ ] User approval phrase quoted verbatim and interpreted as docs-only.
 - [ ] Goal trace links Goal → Gap → Phase → Task → Test → Evidence → Decision.
-- [ ] Manifest YAML parses with required keys (`phase_id`, `level: level-3`, `status: design_candidate_pr_pending`, scope booleans all-false on execution/live/production/delivery axes, `docs_only: true`, `strongest_allowed_outcome`).
-- [ ] Status sync: `docs/roadmap/current-status.md` updated consistently (latest fields, phase-map row, references, tails, next allowed request) with candidate wording (no PR number invented).
+- [ ] Manifest YAML parses with required keys (`phase_id`, `level: level-3`, `status: design_pr_open_pending_merge_decision`, scope booleans all-false on execution/live/production/delivery axes, `docs_only: true`, `strongest_allowed_outcome`).
+- [ ] Status sync: `docs/roadmap/current-status.md` updated consistently (latest fields, phase-map row, references, tails, next allowed request) with PR #123 open / pending-merge wording (no merge commit invented).
 - [ ] Changed-file allowlist: exactly the 4 docs/status paths in the manifest; no other file touched.
 - [ ] No source diff: `git diff` contains no changes under `sachima_supervisor/`, `tests/`, roles JSON, configs, or any runtime/service file.
 - [ ] Secret-shaped / no-leak scan over the four files passes.

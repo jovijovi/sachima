@@ -1,6 +1,6 @@
 phase_id: "agent-run-supervisor-sachima-phase-e-persistent-sessions-cancellation-design"
 level: "level-3"
-status: "design_candidate_pr_pending"
+status: "design_pr_open_pending_merge_decision"
 repo: "jovijovi/sachima"
 base_branch: "release/sachima"
 base_commit: "10102f595983727e7f569f58e9beadf9554fdfae"
@@ -9,11 +9,11 @@ worktree: "/home/ecs-user/workspace/hermes/worktrees/sachima/phase-e-persistent-
 created_at: "2026-06-13"
 owner_dri: "Hermes operator with Dog Brother approval"
 
-# PR fields intentionally unset: candidate PR pending. Hermes patches these after PR creation/merge.
-pr_number: null
-pr_url: null
+# PR fields are filled after PR creation; merge_commit stays null until explicit merge approval and merge.
+pr_number: 123
+pr_url: "https://github.com/jovijovi/sachima/pull/123"
 merge_commit: null
-pr_number_note: "candidate design PR not yet opened; Hermes will patch pr_number/pr_url/merge_commit after creation"
+pr_number_note: "PR opened; merge_commit remains null until explicit merge approval and merge"
 
 received_approval_text:
   - "批准准备 Phase E persistent sessions / cancellation docs-only design gate，仍遵循 AGENT 分工，不批准 live/Gateway/Feishu/生产/真实投递。"
@@ -159,8 +159,8 @@ explicit_non_approvals:
   - "@all_fanout"
   - "trusted_markdown_html_rendering"
 
-strongest_allowed_outcome: "phase_e_persistent_sessions_cancellation_design_ready_for_review"
-strongest_allowed_outcome_meaning: "a Phase E persistent-sessions/cancellation design packet exists and may be reviewed/merged; design packet only — no implementation, no persistent session execution, no cancellation execution, no real AGENT/acpx execution, no controlled AI FLOW execution, no live/Gateway/Feishu/production-config/real-delivery expansion"
+strongest_allowed_outcome: "phase_e_persistent_sessions_cancellation_design_open_for_merge_decision"
+strongest_allowed_outcome_meaning: "a Phase E persistent-sessions/cancellation design packet is open as PR #123; design packet only — no implementation, no persistent session execution, no cancellation execution, no real AGENT/acpx execution, no controlled AI FLOW execution, no live/Gateway/Feishu/production-config/real-delivery expansion"
 
 next_allowed_request: "approve_agent_run_supervisor_sachima_phase_e_persistent_session_lifecycle_preflight_state_machine_local_offline_implementation_no_real_session_launch_no_cancellation_execution_no_real_agent_execution_no_live_no_gateway_no_feishu_no_production_config_no_real_delivery"
 next_allowed_request_note: "only after this design PR merges; Option A (local/offline lifecycle preflight/state machine with injected fakes) is the recommended first slice; bounded local session execution and cancellation execution remain later, separately approved gates"
@@ -168,7 +168,7 @@ next_allowed_request_note: "only after this design PR merges; Option A (local/of
 verification_gates:
   - "docs marker gate (11 status markers)"
   - "manifest YAML parse + required keys"
-  - "status sync with docs/roadmap/current-status.md (candidate wording, no invented PR number)"
+  - "status sync with docs/roadmap/current-status.md (PR #123 open / pending-merge wording, no merge commit invented)"
   - "changed-file allowlist (4 docs/status paths)"
   - "no source diff (no sachima_supervisor/tests/roles/config/runtime changes)"
   - "secret-shaped / no-leak scan"
