@@ -1,0 +1,178 @@
+phase_id: "agent-run-supervisor-sachima-phase-e-persistent-sessions-cancellation-design"
+level: "level-3"
+status: "design_candidate_pr_pending"
+repo: "jovijovi/sachima"
+base_branch: "release/sachima"
+base_commit: "10102f595983727e7f569f58e9beadf9554fdfae"
+branch: "docs/phase-e-persistent-sessions-cancellation-design"
+worktree: "/home/ecs-user/workspace/hermes/worktrees/sachima/phase-e-persistent-sessions-cancellation-design"
+created_at: "2026-06-13"
+owner_dri: "Hermes operator with Dog Brother approval"
+
+# PR fields intentionally unset: candidate PR pending. Hermes patches these after PR creation/merge.
+pr_number: null
+pr_url: null
+merge_commit: null
+pr_number_note: "candidate design PR not yet opened; Hermes will patch pr_number/pr_url/merge_commit after creation"
+
+received_approval_text:
+  - "批准准备 Phase E persistent sessions / cancellation docs-only design gate，仍遵循 AGENT 分工，不批准 live/Gateway/Feishu/生产/真实投递。"
+approval_interpretation: "docs-only Phase E design gate for persistent-session and cancellation semantics on the supervisor → Sachima mainline, following the established AGENT split (Hermes PM/controller/verifier, Claude Code architect + documentation engineer, Codex CLI primary blocker reviewer); no implementation, no persistent session execution, no cancellation execution, no real local exec, no additional real AGENT/acpx execution, no controlled AI FLOW execution, no live/default-on, no Gateway, no Feishu/IM, no public ingress, no production config writes, no service restarts, no real delivery"
+
+agent_split:
+  hermes: "PM / controller / verifier / repo operator / evidence arbiter"
+  claude_code: "architect + documentation engineer (docs only; no commit/push/PR/merge/runtime)"
+  codex_cli: "primary blocker reviewer after draft"
+
+scope:
+  docs_only: true
+  design_only: true
+  implementation_approved: false
+  persistent_session_execution_approved: false
+  persistent_session_preflight_state_machine_implementation_approved: false
+  cancellation_execution_approved: false
+  cancellation_request_record_implementation_approved: false
+  session_capable_role_config_approved: false
+  real_local_exec_approved: false
+  real_agent_execution_approved: false
+  additional_real_local_smoke_approved: false
+  acpx_invocation_approved: false
+  npx_or_network_fetch_approved: false
+  write_capable_role_approved: false
+  satine_or_hermes_profile_acp_approved: false
+  controlled_ai_flow_execution_approved: false
+  live_or_default_on_approved: false
+  gateway_approved: false
+  feishu_or_im_approved: false
+  public_ingress_approved: false
+  real_delivery_approved: false
+  production_config_write_approved: false
+  service_restart_or_reload_approved: false
+  platform_adapter_mutation_approved: false
+
+allowed_changed_paths:
+  - "docs/plans/2026-06-13-agent-run-supervisor-sachima-phase-e-persistent-sessions-cancellation-design.md"
+  - "docs/plans/2026-06-13-agent-run-supervisor-sachima-phase-e-persistent-sessions-cancellation-design-manifest.yaml"
+  - "docs/dev_log/2026-06-13-agent-run-supervisor-sachima-phase-e-persistent-sessions-cancellation-design.md"
+  - "docs/roadmap/current-status.md"
+
+prior_evidence:
+  pr_102:
+    title: "supervised local Activity durable runtime ownership & controlled local execution design (deferred session/cancel labels)"
+    merge_commit: "e49709d6e960b8e11f8e220fa087488132f64f93"
+  pr_107:
+    title: "supervised local Activity durable-state preflight implementation"
+    merge_commit: "6795da2930324cde1448586e71ff8d80bc6e9ae1"
+  pr_114:
+    title: "Phase C controlled local agent execution first slice (exec_controlled one-shot wrapper)"
+    merge_commit: "21d1bafc22c6fcde2bb0af6fff6becfb0886cf4f"
+  pr_117:
+    title: "Phase D deterministic real local smoke readiness gate (docs-only)"
+    merge_commit: "eb7227301d715b40d4eb6628bf32fb800017bd42"
+  pr_119:
+    title: "Phase D smoke prerequisites implementation (injected fakes only)"
+    merge_commit: "0c9e4342e2befe1db6ecf5774c51b313c8bb5f5b"
+  phase_d_real_local_smoke:
+    manifest: "docs/plans/2026-06-12-agent-run-supervisor-sachima-phase-d-real-local-smoke-manifest.yaml"
+    dev_log: "docs/dev_log/2026-06-12-agent-run-supervisor-sachima-phase-d-real-local-smoke.md"
+    result: "single host-local read-only Codex one-shot via pinned local acpx 0.10.0; execution pipeline PASS; business VERDICT: PASS; replay created no extra run"
+  code_reference_only:
+    - "sachima_supervisor/local_offline.py"
+    - "sachima_supervisor/activity_controlled_exec.py"
+    - "sachima_supervisor/activity_preflight.py"
+    - "sachima_supervisor/supervisor_library.py"
+
+design_labels:
+  session_records:
+    - "SessionRecord (session_id / activity_ref / role_key / role_file_digest / session_binding / lifecycle_state / lease / state_version / turn_count / open_turn_index / budgets)"
+    - "TurnRecord (append-only; turn_index / idempotency_key / request_fingerprint / prompt_ref / status / lease_epoch_at_launch)"
+    - "CancellationRequestRecord (cancel_id / target / operator_gate / lease binding / idempotency / reason_code / status)"
+  lifecycle_states:
+    - "session_requested -> session_validated -> session_opening -> session_open"
+    - "session_open <-> session_turn (single in-flight turn)"
+    - "session_closing -> session_closed; session_aborting -> session_aborted; any -> session_failed"
+    - "cancel_requested -> cancelled | cancel_failed | cancel_ambiguous (design labels; execution not approved)"
+  commands:
+    - "session_create / session_send / session_query / session_list / session_close / session_abort (design only)"
+  concurrency_rules:
+    - "lease-internal open-state recheck before any launch (work-starting operations)"
+    - "lifecycle guard re-read for close/abort/cancel"
+    - "stable lock ordering: store lock -> lifecycle guard -> future supervisor handle; no supervisor call under store lock"
+    - "fail-closed on ambiguous prior run/session state; no duplicate launch to resolve ambiguity"
+    - "race regression tests required in any future implementation"
+
+failure_taxonomy_additions:
+  - "activity_session_disabled"
+  - "activity_session_approval_mismatch"
+  - "activity_session_already_open"
+  - "activity_session_not_open"
+  - "activity_session_binding_mismatch"
+  - "activity_session_lease_lost"
+  - "activity_session_stale_state"
+  - "activity_session_toctou_conflict"
+  - "activity_session_turn_ambiguous"
+  - "activity_cancel_not_approved"
+  - "activity_cancel_ambiguous"
+  - "activity_lifecycle_conflict"
+  - "activity_budget_exceeded"
+  - "activity_supervisor_failed"
+
+evidence:
+  design_doc: "docs/plans/2026-06-13-agent-run-supervisor-sachima-phase-e-persistent-sessions-cancellation-design.md"
+  manifest: "docs/plans/2026-06-13-agent-run-supervisor-sachima-phase-e-persistent-sessions-cancellation-design-manifest.yaml"
+  dev_log: "docs/dev_log/2026-06-13-agent-run-supervisor-sachima-phase-e-persistent-sessions-cancellation-design.md"
+  current_status: "docs/roadmap/current-status.md"
+  codegraph: "Hermes-run CodeGraph status check in this worktree (or N/A for docs-only worktree per AGENTS.md)"
+  runtime_evidence: "none — this PR runs no execution; prior-phase evidence stays outside the repo"
+
+explicit_non_approvals:
+  - "implementation_of_any_kind"
+  - "persistent_session_execution"
+  - "cancellation_execution"
+  - "session_capable_role_configs_or_role_allowlist_changes"
+  - "real_local_exec"
+  - "additional_real_local_smoke_execution"
+  - "additional_real_agent_execution"
+  - "additional_acpx_invocation"
+  - "npx_fallback_or_network_fetch_evidence"
+  - "write_capable_claude_or_codex_roles"
+  - "satine_or_hermes_profile_acp_execution"
+  - "controlled_ai_flow_execution"
+  - "real_external_sachima_ingress"
+  - "production_durable_runtime_code_implementation"
+  - "real_external_delivery"
+  - "production_delivery_control"
+  - "production_agent_tool_execution_expansion"
+  - "production_config_write"
+  - "gateway_involvement_or_mutation"
+  - "gateway_restart_or_reload"
+  - "platform_adapter_mutation"
+  - "gateway_owned_temporal_lifecycle"
+  - "external_temporal_service_or_worker_startup"
+  - "real_send_api_or_external_im_call"
+  - "feishu_or_im_delivery"
+  - "live_or_default_on_behavior"
+  - "public_webhook_exposure"
+  - "automatic_replies"
+  - "worker_auto_routing"
+  - "agent_to_agent_auto_routing"
+  - "@all_fanout"
+  - "trusted_markdown_html_rendering"
+
+strongest_allowed_outcome: "phase_e_persistent_sessions_cancellation_design_ready_for_review"
+strongest_allowed_outcome_meaning: "a Phase E persistent-sessions/cancellation design packet exists and may be reviewed/merged; design packet only — no implementation, no persistent session execution, no cancellation execution, no real AGENT/acpx execution, no controlled AI FLOW execution, no live/Gateway/Feishu/production-config/real-delivery expansion"
+
+next_allowed_request: "approve_agent_run_supervisor_sachima_phase_e_persistent_session_lifecycle_preflight_state_machine_local_offline_implementation_no_real_session_launch_no_cancellation_execution_no_real_agent_execution_no_live_no_gateway_no_feishu_no_production_config_no_real_delivery"
+next_allowed_request_note: "only after this design PR merges; Option A (local/offline lifecycle preflight/state machine with injected fakes) is the recommended first slice; bounded local session execution and cancellation execution remain later, separately approved gates"
+
+verification_gates:
+  - "docs marker gate (11 status markers)"
+  - "manifest YAML parse + required keys"
+  - "status sync with docs/roadmap/current-status.md (candidate wording, no invented PR number)"
+  - "changed-file allowlist (4 docs/status paths)"
+  - "no source diff (no sachima_supervisor/tests/roles/config/runtime changes)"
+  - "secret-shaped / no-leak scan"
+  - "forbidden-surface scan"
+  - "optional Hermes choice: pytest -q tests/sachima_supervisor (unchanged suite) + compileall"
+  - "CodeGraph status (or N/A for docs-only worktree)"
+  - "Codex CLI primary blocker review (fresh context; VERDICT: PASS / BLOCKERS: None required)"
