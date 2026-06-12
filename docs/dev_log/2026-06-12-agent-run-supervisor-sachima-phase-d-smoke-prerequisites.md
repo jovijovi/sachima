@@ -52,7 +52,7 @@ static scans over changed files                      # no forbidden execution/de
                                                      # host-private paths committed
 ```
 
-No real smoke, no AGENT launch, no `acpx`/`npx`/product-path `codex`/`claude` invocation, no network fetch, no Gateway/Feishu/IM/live surface, no service/runtime start, and no production config write occurred. Git/PR/merge remain Hermes-owned; Codex primary review is pending.
+No real smoke, no AGENT launch, no `acpx`/`npx`/product-path `codex`/`claude` invocation, no network fetch, no Gateway/Feishu/IM/live surface, no service/runtime start, and no production config write occurred. Git/PR/merge remain Hermes-owned; Codex primary review and re-review results are recorded below.
 
 ## 2026-06-12 — Codex blocker-only review round 1: BLOCK → narrow fixes (Claude Code)
 
@@ -82,3 +82,15 @@ Fresh-context Codex CLI re-reviewed only the two round-1 blockers plus the narro
 - scope remains prerequisites-only: no smoke, no AGENT, no `acpx`/`npx`, no Gateway/Feishu/live, no production config.
 
 Codex reported it personally ran a targeted filtered test (`29 passed, 156 deselected`), the full `tests/sachima_supervisor/` suite (`325 passed`), and `git diff --check` (clean). The checksum guard excluding `.git`/`.codegraph` showed no repo-file modification during the re-review.
+
+## 2026-06-12 — PR #119 merged and status closure
+
+Hermes merged PR #119 after explicit user approval and synchronized `release/sachima` to merge commit `0c9e4342e2befe1db6ecf5774c51b313c8bb5f5b`. PR checks were green before merge. Post-merge local verification on the canonical branch passed:
+
+```text
+pytest -q tests/sachima_supervisor        # 325 passed
+python3 -m compileall -q sachima_supervisor tests/sachima_supervisor
+git diff --check                          # clean
+```
+
+This status closure records the merge only. It does not approve or perform a real Phase D smoke, AGENT launch, `acpx`/`npx` product-path invocation, Gateway/Feishu/live/public-ingress behavior, production config write, service/runtime start, persistent session, cancellation execution, write-capable role, Satine/Hermes-profile ACP execution, or controlled AI FLOW execution. Host provisioning blockers remain: no pinned local `acpx` executable/overlay and no installed/pinned `agent_run_supervisor` on the smoke host.

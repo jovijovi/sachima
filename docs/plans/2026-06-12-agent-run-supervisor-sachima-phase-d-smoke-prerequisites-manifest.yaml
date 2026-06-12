@@ -12,11 +12,15 @@ gateway_approved: false
 real_delivery_approved: false
 production_config_write_approved: false
 owner_dri: "Hermes operator with Dog Brother approval"
-status: "implemented_local_verification_passed_pr_pending"
+status: "merged_pr_119_post_merge_verification_passed"
 repo: "jovijovi/sachima"
 base_branch: "release/sachima"
 base_merge: "PR #118 (b36dfb5f40d62334e94fbb2163eed4b9ee36abd6)"
 branch: "feat/phase-d-smoke-prerequisites"
+pr: 119
+pr_url: "https://github.com/jovijovi/sachima/pull/119"
+merged_at: "2026-06-12T12:48:15Z"
+merge_commit: "0c9e4342e2befe1db6ecf5774c51b313c8bb5f5b"
 created_at: "2026-06-12"
 
 received_approval_text:
@@ -125,10 +129,17 @@ review_gates:
     blocker_only_rereview: "VERDICT: PASS; BLOCKERS: None"
   hermes_pr_ci:
     role: "PM / controller / verifier; git + PR + CI"
-    status: "pending"
+    status: "PR #119 merged; PR checks passed; canonical release/sachima fast-forwarded; post-merge local verification passed"
   user_approval:
     role: "Dog Brother"
-    status: "pending_after_codex_pass"
+    status: "approved_merge_pr_119"
 
-strongest_allowed_outcome: "phase_d_smoke_prerequisites_implemented_no_smoke_no_agent_launch"
+post_merge_verification:
+  - "gh pr view 119 --repo jovijovi/sachima: MERGED; merge commit 0c9e4342e2befe1db6ecf5774c51b313c8bb5f5b"
+  - "git pull --ff-only sachima release/sachima: canonical release/sachima at 0c9e4342e2befe1db6ecf5774c51b313c8bb5f5b"
+  - "pytest -q tests/sachima_supervisor (325 passed)"
+  - "python3 -m compileall -q sachima_supervisor tests/sachima_supervisor"
+  - "git diff --check (clean)"
+
+strongest_allowed_outcome: "phase_d_smoke_prerequisites_merged_no_smoke_no_agent_launch"
 strongest_allowed_outcome_meaning: "the three smoke prerequisite layers are implemented and locally verified with injected fakes only; no acpx/npx/agent/supervisor was invoked; real smoke remains BLOCKED on host provisioning, Definition of Ready, and a separate named approval"
