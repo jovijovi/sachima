@@ -135,3 +135,10 @@ BLOCKERS:
 ```
 
 Checksum comparison before/after the review was empty, confirming the review-only Codex pass did not modify files. Remaining gate is PR/CI/user approval; real smoke execution remains separately blocked.
+
+
+## 2026-06-12 — PR opened
+
+PR #117 opened for the docs-only Phase D readiness gate: https://github.com/jovijovi/sachima/pull/117
+
+Status after open: PR open, CI/user approval pending. No smoke, AGENT, `acpx`, `npx`, Gateway, Feishu/IM, live, service/runtime, or production config path was invoked.
