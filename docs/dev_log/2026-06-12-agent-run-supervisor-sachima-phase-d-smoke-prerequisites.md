@@ -21,7 +21,7 @@ Host preflight facts (real environment preconditions, truthfully recorded, uncha
 ### Roadmap preflight statement
 
 - Current position: Phase C `exec_controlled` wrapper merged (PR #114); Phase D readiness gate docs-only merged (PR #117); real smoke BLOCKED on three provisioning prerequisites plus separate approval.
-- Next allowed request: Definition-of-Ready provisioning / implementation planning for Phase D smoke — exactly this slice.
+- At slice start, the approved next step was this prerequisites implementation slice; it has since merged in PR #119.
 - Explicit non-approvals preserved: no smoke, no AGENT, no `acpx`/`npx`, no Gateway/Feishu/live, no production config.
 - Open tails checked: `ROADMAP-NEXT-ARS-CTRL-EXEC-REAL-SMOKE` stays open/BLOCKED.
 
