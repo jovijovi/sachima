@@ -1,0 +1,139 @@
+phase_id: "agent-run-supervisor-sachima-phase-d-deterministic-real-local-smoke-readiness"
+level: "level-3"
+design_only: true
+docs_only: true
+readiness_gate_only: true
+readiness_design_complete: true
+real_local_smoke_approved: false
+real_local_smoke_run: false
+real_agent_execution_approved: false
+controlled_ai_flow_execution_approved: false
+live_approved: false
+gateway_approved: false
+real_delivery_approved: false
+production_config_write_approved: false
+owner_dri: "Hermes operator with Dog Brother approval"
+status: "pr_open_awaiting_ci_user_review"
+repo: "jovijovi/sachima"
+base_branch: "release/sachima"
+base_pr_merge: "#116 (790fe8596)"
+branch: "docs/phase-d-real-local-smoke-readiness"
+pr_number: 117
+pr_url: "https://github.com/jovijovi/sachima/pull/117"
+commit: "ce9e040605535493e285e4cc9ef8518fc87d3d8f"
+created_at: "2026-06-12"
+
+received_approval_text:
+  - "批准准备 Phase D deterministic real local smoke readiness gate：先完成 pinned local acpx_binary 方案、prompt materialization 方案、Phase D PRD/评审包与风险边界；不执行真实 smoke，不启动真实 AGENT，不接入 Gateway/Feishu/live，不写生产配置。遵循 AGENT 分工：Hermes 总控，Claude Code 架构/文档，Codex 主审，完成后交我批准。"
+  - "注意：若 Claude Code 因配额不足报错，则由 Codex CLI 顶上。"
+
+approved_scope:
+  - "Phase D readiness PRD"
+  - "pinned local acpx_binary readiness scheme"
+  - "prompt materialization readiness scheme"
+  - "architecture/readiness packet"
+  - "user review packet"
+  - "risk boundaries and non-approvals"
+  - "Codex CLI substitution for architecture/docs if Claude Code is unavailable due quota/session limit"
+  - "separate fresh-context Codex primary review of docs-only readiness gate"
+
+explicit_non_approvals:
+  - "real_local_smoke_execution"
+  - "real_agent_process_launch"
+  - "acpx_invocation"
+  - "codex_or_claude_invocation_through_acpx"
+  - "npx_fallback_or_network_fetch_evidence"
+  - "gateway_involvement_or_mutation"
+  - "feishu_or_im_delivery"
+  - "live_or_default_on_behavior"
+  - "public_ingress"
+  - "production_durable_runtime_code_implementation"
+  - "production_config_write"
+  - "service_restart_or_reload"
+  - "platform_adapter_mutation"
+  - "persistent_session_execution"
+  - "cancellation_execution"
+  - "write_capable_claude_or_codex_roles"
+  - "satine_or_hermes_profile_acp_execution"
+  - "controlled_ai_flow_execution"
+
+required_artifacts:
+  - "docs/plans/2026-06-12-agent-run-supervisor-sachima-phase-d-deterministic-real-local-smoke-readiness-prd.md"
+  - "docs/plans/2026-06-12-agent-run-supervisor-sachima-phase-d-deterministic-real-local-smoke-readiness-architecture.md"
+  - "docs/plans/2026-06-12-agent-run-supervisor-sachima-phase-d-deterministic-real-local-smoke-readiness-user-review-packet.md"
+  - "docs/plans/2026-06-12-agent-run-supervisor-sachima-phase-d-deterministic-real-local-smoke-readiness-manifest.yaml"
+  - "docs/dev_log/2026-06-12-agent-run-supervisor-sachima-phase-d-deterministic-real-local-smoke-readiness.md"
+  - "docs/roadmap/current-status.md"
+
+grounded_in:
+  phase_c_implementation: "sachima_supervisor/activity_controlled_exec.py (PR #114 merge 21d1bafc22c6fcde2bb0af6fff6becfb0886cf4f)"
+  local_offline_seam: "sachima_supervisor/local_offline.py"
+  committed_role_config: "sachima_supervisor/roles/codex_primary_reviewer_exec_controlled_v1.json (acpx_binary: null; not runnable by construction)"
+  prior_dry_run_evidence_digest_source: "sachima_supervisor/activity_evidence.py::build_controlled_local_dry_run_evidence"
+  exact_phase_c_approval_marker: "CONTROLLED_LOCAL_EXEC_APPROVAL_TOKEN (sachima_supervisor/activity_controlled_exec.py)"
+
+readiness_design_schemes:
+  pinned_acpx_binary:
+    operator_provisioning: "auditable build; absolute path + binary sha256 + sanitized `acpx --version`; match runner.acpx_version 0.10.0"
+    in_gate_verification: "_check_runner_provenance: role-file sha256 binding; non-null absolute whitespace-free non-npx binary; read-only capability"
+  committed_role_path_decision: "NO host-local path in committed JSON; use an untracked local-only role overlay via start_controlled_local_exec(role_root=...); committed config stays acpx_binary null + portable placeholder /workspace/sachima"
+  prompt_materialization:
+    source: "small repo-controlled fixture or deterministic builder (mirrors build_controlled_local_dry_run_evidence); not raw IM/card/media/tool/gateway/env"
+    rules: "read-only harmless; bounded; passes _value_is_unsafe and _EXEC_UNSAFE_MARKERS; only digest reaches durable state"
+    entry_point: "request carries prompt_ref/digest-safe refs before claim; materialization-aware _build_local_offline_request sets prompt=<materialized> after acquired claim and before invoke_local_offline_supervisor (today hardcodes prompt=None)"
+  smoke_request_construction_boundary: "single exec_controlled request; sachima.codex.primary_reviewer only; enabled True + exact token; gates/provenance -> claim/CAS -> materialization-aware seam request -> one invoke_local_offline_supervisor call"
+  sanitized_evidence_shape: "durable claim projection over _CLAIM_STATE_KEYS + out-of-PR sanitized smoke evidence via seam evidence_dir/_write_evidence; no raw stdout/stderr/prompt/paths/exceptions"
+  replay_no_duplicate_launch: "atomic claim/CAS; first start acquired -> exactly one supervisor invocation; identical replay returns resident projection, zero second launch; conflicts fail closed"
+  rollback_cleanup: "delete untracked local role overlay; committed config stays null; ephemeral in-process claim store (no cross-process rollback); no Gateway/config/delivery touched; codegraph uninit + worktree remove if throwaway"
+  test_probe_plan: "RED-first materialization + overlay provenance + construction-boundary + replay + evidence no-leak + forbidden-surface tests; real-acpx smoke probe gated behind env marker + pinned binary + installed library, skipped by default"
+
+current_blockers_for_execution:
+  - id: "no_pinned_local_acpx"
+    detail: "no pinned local acpx executable on PATH at readiness preflight; committed role acpx_binary null; provenance gate fails closed (activity_runner_provenance_unverified)"
+  - id: "prompt_materialization_unimplemented"
+    detail: "_build_local_offline_request hardcodes prompt=None; empty exec prompt fails closed at the supervisor caller boundary"
+  - id: "supervisor_library_absent"
+    detail: "agent_run_supervisor not installed in any interpreter on this host; invoke_local_offline_supervisor would raise supervisor_library_unavailable (surfaced by this architecture pass; not in the earlier baseline)"
+
+definition_of_ready:
+  - "verified pinned local acpx binary (absolute path + sha256 + sanitized --version)"
+  - "untracked local-only role overlay with that path; committed config stays null"
+  - "agent_run_supervisor library installed and pinned per repo dependency policy"
+  - "prompt materialization fixture/builder landed and approved"
+  - "real PR #107 durable-state preflight record with held lease + state version"
+  - "separate named user approval for the Phase D smoke"
+  - "Codex primary review PASS on the smoke branch; local checks + CI green"
+  - "sanitized-only evidence plan, out of PR payload; no Gateway/Feishu/live/public ingress"
+
+review_gates:
+  claude_architecture_docs:
+    role: "architecture + documentation engineer"
+    status: "attempted_interrupted_session_limit_429_after_partial_docs_edits"
+    fallback_exercised: true
+  codex_architecture_docs_substitution:
+    role: "architecture + documentation engineer substitute"
+    status: "complete_docs_only"
+    reason: "Claude Code hit session-limit / 429; Codex CLI substituted for authoring only"
+    separation: "not the Codex primary review"
+  codex_primary_review:
+    role: "primary review (fresh context, review-only)"
+    status: "pass_after_blocker_fix"
+    expected: "VERDICT: PASS / BLOCKERS: None"
+    verdict: "PASS"
+    blockers: "None"
+    review_result_path: "/tmp/sachima_phase_d_readiness_codex_blocker_rereview_result.md"
+  user_approval:
+    role: "Dog Brother"
+    status: "pending_pr_117_ci_and_user_review"
+    gated_on: "codex_primary_review PASS (satisfied); PR #117 CI/user review pending"
+
+verification_run_docs_only:
+  - "git status --short --branch"
+  - "git diff --check (clean)"
+  - "static grep checks over docs (no forbidden surfaces invoked)"
+  - "read-only host preflight: acpx absent; codex/claude present; npx present (forbidden path); agent_run_supervisor absent"
+
+recommended_next_approval_text: "批准执行 Phase D deterministic real local smoke：仅在完整 Definition of Ready 已满足后，使用已验证的 pinned local acpx_binary、已安装/固定的 agent_run_supervisor、repo-controlled prompt materialization fixture，运行一次 read-only Codex one-shot smoke；不接入 Gateway/Feishu/live，不写生产配置，不启用持久会话/取消执行/写权限角色/Satine/controlled AI FLOW；输出仅限 sanitized evidence，完成后交我审查。"
+
+strongest_allowed_outcome: "phase_d_readiness_gate_prepared_docs_only_no_smoke_no_agent_launch"
+strongest_allowed_outcome_meaning: "Phase D real local smoke is fully designed and gated on a docs-only readiness packet; no acpx/agent/supervisor was invoked; real smoke remains BLOCKED on three provisioning prerequisites and a separate named approval"
