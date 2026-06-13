@@ -1,6 +1,6 @@
 # agent-run-supervisor x Sachima Phase E Persistent Session Lifecycle State Machine Implementation
 
-> **Status: PR #125 open, awaiting CI / merge decision.** This implementation slice is local/offline only and uses injected fakes only. It does not open a real persistent session, send a real session turn, execute cancellation, invoke `agent-run-supervisor`, invoke `acpx` or `npx`, start a process, touch Gateway/Feishu/IM/live/public surfaces, write production config, restart services, or deliver anything.
+> **Status: merged in PR #125.** This implementation slice is local/offline only and uses injected fakes only. It does not open a real persistent session, send a real session turn, execute cancellation, invoke `agent-run-supervisor`, invoke `acpx` or `npx`, start a process, touch Gateway/Feishu/IM/live/public surfaces, write production config, restart services, or deliver anything.
 
 ## Scope
 
@@ -20,7 +20,7 @@ Branch and worktree:
 ```text
 branch: feature/phase-e-persistent-session-lifecycle
 worktree: /home/ecs-user/workspace/hermes/worktrees/sachima/phase-e-persistent-session-lifecycle
-status: PR #125 open; head commit 79864934c15527cc86965ccee915d508c3834055; CI pending/in progress; no merge claimed
+status: PR #125 merged; head commit f30b81a6f4f3989396c208846a32da875e749a99; merge commit a564a775f809cfdd08209863702d0249610dd286; CI passed before merge
 ```
 
 ## Approval Boundary
@@ -135,7 +135,7 @@ They reject raw prompts/context, model/tool output, card/media material, platfor
 
 Resident durable state is validated on every read. A poisoned resident projection fails closed as `activity_unsafe_material`.
 
-The candidate also fixes a sanitizer false positive found during this substitute pass: durable `error_code` fields now accept only exact members of the stored stable taxonomy, bypassing the generic platform-id scan for that one field only. This preserves platform-id/secret rejection for every other string field while allowing legitimate taxonomy values such as `activity_session_toctou_conflict`.
+The implementation also fixes a sanitizer false positive found during this substitute pass: durable `error_code` fields now accept only exact members of the stored stable taxonomy, bypassing the generic platform-id scan for that one field only. This preserves platform-id/secret rejection for every other string field while allowing legitimate taxonomy values such as `activity_session_toctou_conflict`.
 
 ## Test Coverage
 
@@ -159,9 +159,9 @@ Coverage includes:
 - validate-on-read hardening and exact stored `error_code` allowlist behavior without weakening other string scans;
 - no default runner and source scan for forbidden runtime/delivery surfaces.
 
-## Current Candidate Verification Gates
+## Final Verification Gates
 
-Required local gates for this branch:
+Required local gates for PR #125 before merge:
 
 ```text
 uv run --extra dev python -m pytest tests/sachima_supervisor/test_activity_session_lifecycle.py -q --tb=short
@@ -170,8 +170,8 @@ uv run --extra dev python -m compileall -q sachima_supervisor tests/sachima_supe
 git diff --check
 ```
 
-This document does not claim PR, merge, CI, commit, production readiness, real session execution, or cancellation execution.
+This document records PR #125 as merged. It does not claim production readiness, real session execution, or cancellation execution.
 
 ## Next Decision
 
-Before this can close as a phase slice, a fresh independent Codex review should run in review mode, then Hermes/operator-owned repo actions can decide whether to open a PR. Any later bounded real persistent session, cancellation execution, write-capable role, Satine/Hermes-profile ACP, controlled AI FLOW, Gateway/Feishu/live/public ingress, production config, service restart, or real delivery remains a separate approval gate.
+This local/offline state-machine slice is closed by PR #125. Any later bounded real persistent session, cancellation execution, write-capable role, Satine/Hermes-profile ACP, controlled AI FLOW, Gateway/Feishu/live/public ingress, production config, service restart, or real delivery remains a separate approval gate.

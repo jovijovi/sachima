@@ -1,6 +1,6 @@
 phase_id: "agent-run-supervisor-sachima-phase-e-persistent-session-lifecycle-state-machine-implementation"
 level: "level-3"
-status: "pr_open_awaiting_ci"
+status: "merged"
 repo: "jovijovi/sachima"
 base_branch: "release/sachima"
 branch: "feature/phase-e-persistent-session-lifecycle"
@@ -10,10 +10,11 @@ owner_dri: "Hermes operator with Dog Brother approval"
 
 pr_number: 125
 pr_url: "https://github.com/jovijovi/sachima/pull/125"
-merge_commit: null
-ci_status: "in_progress_at_pr_open_metadata_sync"
+merged_at: "2026-06-13T02:01:08Z"
+merge_commit: "a564a775f809cfdd08209863702d0249610dd286"
+ci_status: "passed_before_merge"
 commit_claimed: true
-head_commit: "79864934c15527cc86965ccee915d508c3834055"
+head_commit: "f30b81a6f4f3989396c208846a32da875e749a99"
 
 approval_token: "approve_agent_run_supervisor_sachima_phase_e_persistent_session_lifecycle_preflight_state_machine_local_offline_implementation_no_real_session_launch_no_cancellation_execution_no_real_agent_execution_no_live_no_gateway_no_feishu_no_production_config_no_real_delivery"
 approval_interpretation: "local/offline persistent-session lifecycle preflight/state-machine implementation only; injected fakes only; no real session launch; no cancellation execution; no real agent execution; no acpx/npx; no live, Gateway, Feishu, production config, service restart, platform adapter mutation, or real delivery"
@@ -168,5 +169,5 @@ codex_primary_review:
   round_1_fix_status: "fixed locally with regression coverage"
   blocker_only_rereview: "VERDICT: PASS; BLOCKERS: None"
 
-strongest_allowed_outcome: "candidate_open_branch_local_offline_phase_e_lifecycle_state_machine_implementation"
-strongest_allowed_outcome_meaning: "PR #125 contains a default-off caller-owned persistent-session lifecycle state machine and cancellation request-state model with injected fakes only; local tests and Codex blocker-only re-review passed; GitHub CI is pending/in progress; no real session launch, no cancellation execution, no real agent/acpx/npx, no live/Gateway/Feishu/production config/service restart/platform mutation/real delivery; no merge claimed"
+strongest_allowed_outcome: "merged_local_offline_phase_e_lifecycle_state_machine_implementation"
+strongest_allowed_outcome_meaning: "PR #125 merged a default-off caller-owned persistent-session lifecycle state machine and cancellation request-state model with injected fakes only; local tests, Codex blocker-only re-review, GitHub CI, and post-merge local verification passed; no real session launch, no cancellation execution, no real agent/acpx/npx, no live/Gateway/Feishu/production config/service restart/platform mutation/real delivery"
