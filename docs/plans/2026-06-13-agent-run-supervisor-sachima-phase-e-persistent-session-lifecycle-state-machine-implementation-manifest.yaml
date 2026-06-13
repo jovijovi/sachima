@@ -1,0 +1,171 @@
+phase_id: "agent-run-supervisor-sachima-phase-e-persistent-session-lifecycle-state-machine-implementation"
+level: "level-3"
+status: "candidate_open_branch"
+repo: "jovijovi/sachima"
+base_branch: "release/sachima"
+branch: "feature/phase-e-persistent-session-lifecycle"
+worktree: "/home/ecs-user/workspace/hermes/worktrees/sachima/phase-e-persistent-session-lifecycle"
+created_at: "2026-06-13"
+owner_dri: "Hermes operator with Dog Brother approval"
+
+pr_number: null
+pr_url: null
+merge_commit: null
+ci_status: null
+commit_claimed: false
+
+approval_token: "approve_agent_run_supervisor_sachima_phase_e_persistent_session_lifecycle_preflight_state_machine_local_offline_implementation_no_real_session_launch_no_cancellation_execution_no_real_agent_execution_no_live_no_gateway_no_feishu_no_production_config_no_real_delivery"
+approval_interpretation: "local/offline persistent-session lifecycle preflight/state-machine implementation only; injected fakes only; no real session launch; no cancellation execution; no real agent execution; no acpx/npx; no live, Gateway, Feishu, production config, service restart, platform adapter mutation, or real delivery"
+
+scope:
+  implementation_approved: true
+  local_offline_only: true
+  injected_fakes_only: true
+  persistent_session_preflight_state_machine_approved: true
+  persistent_session_execution_approved: false
+  real_session_launch_approved: false
+  cancellation_request_state_approved: true
+  cancellation_execution_approved: false
+  real_agent_execution_approved: false
+  acpx_invocation_approved: false
+  npx_or_network_fetch_approved: false
+  controlled_ai_flow_execution_approved: false
+  live_or_default_on_approved: false
+  gateway_approved: false
+  feishu_or_im_approved: false
+  public_ingress_approved: false
+  real_delivery_approved: false
+  production_config_write_approved: false
+  service_restart_or_reload_approved: false
+  platform_adapter_mutation_approved: false
+
+allowed_changed_paths:
+  - "sachima_supervisor/activity_session_lifecycle.py"
+  - "tests/sachima_supervisor/test_activity_session_lifecycle.py"
+  - "docs/plans/2026-06-13-agent-run-supervisor-sachima-phase-e-persistent-session-lifecycle-state-machine-implementation.md"
+  - "docs/plans/2026-06-13-agent-run-supervisor-sachima-phase-e-persistent-session-lifecycle-state-machine-implementation-manifest.yaml"
+  - "docs/dev_log/2026-06-13-agent-run-supervisor-sachima-phase-e-persistent-session-lifecycle-state-machine-implementation.md"
+  - "docs/roadmap/current-status.md"
+
+implemented_apis:
+  - "SessionLifecycleStore.grant_lease"
+  - "create_session"
+  - "send_session_turn"
+  - "query_session"
+  - "list_sessions"
+  - "list_session_turns"
+  - "close_session"
+  - "abort_session"
+  - "request_cancellation"
+
+implemented_records:
+  - "SessionRecordResult projection"
+  - "TurnRecordResult projection"
+  - "CancellationRequestResult projection"
+
+implemented_states:
+  session:
+    - "session_opening"
+    - "session_open"
+    - "session_turn"
+    - "session_closing"
+    - "session_closed"
+    - "session_aborting"
+    - "session_aborted"
+    - "session_failed"
+  turn:
+    - "claimed_in_progress"
+    - "completed"
+    - "failed_retryable"
+    - "failed_terminal"
+    - "turn_ambiguous"
+  cancellation_request:
+    - "cancel_requested"
+    - "rejected"
+
+blocked_modes:
+  - "real session_create through supervisor"
+  - "real session_send through supervisor"
+  - "real session_status/liveness probe"
+  - "real session_close through supervisor"
+  - "cancellation execution"
+  - "rollback"
+  - "live delivery"
+
+failure_taxonomy:
+  stored_error_code_allowlist: "exact stable taxonomy only for durable error_code fields"
+  codes:
+    - "activity_disabled"
+    - "activity_approval_mismatch"
+    - "activity_unsupported_mode"
+    - "activity_unknown_role"
+    - "activity_unsafe_material"
+    - "activity_idempotency_conflict"
+    - "activity_stale_state"
+    - "activity_lease_lost"
+    - "activity_toctou_conflict"
+    - "activity_retry_ambiguous"
+    - "activity_precondition_unmet"
+    - "activity_budget_exceeded"
+    - "activity_supervisor_failed"
+    - "activity_evidence_write_failed"
+    - "activity_not_found"
+    - "activity_runner_provenance_unverified"
+    - "activity_role_capability_rejected"
+    - "activity_claim_conflict"
+    - "activity_session_disabled"
+    - "activity_session_approval_mismatch"
+    - "activity_session_already_open"
+    - "activity_session_not_open"
+    - "activity_session_binding_mismatch"
+    - "activity_session_lease_lost"
+    - "activity_session_stale_state"
+    - "activity_session_toctou_conflict"
+    - "activity_session_turn_ambiguous"
+    - "activity_cancel_not_approved"
+    - "activity_cancel_ambiguous"
+    - "activity_lifecycle_conflict"
+
+explicit_non_approvals:
+  - "persistent_session_execution"
+  - "real_session_launch"
+  - "cancellation_execution"
+  - "session_capable_role_config_changes"
+  - "real_local_exec"
+  - "additional_real_local_smoke_execution"
+  - "additional_real_agent_execution"
+  - "additional_acpx_invocation"
+  - "npx_fallback_or_network_fetch_evidence"
+  - "write_capable_claude_or_codex_roles"
+  - "satine_or_hermes_profile_acp_execution"
+  - "controlled_ai_flow_execution"
+  - "real_external_sachima_ingress"
+  - "production_durable_runtime_code_implementation"
+  - "real_external_delivery"
+  - "production_delivery_control"
+  - "production_agent_tool_execution_expansion"
+  - "production_config_write"
+  - "gateway_involvement_or_mutation"
+  - "gateway_restart_or_reload"
+  - "platform_adapter_mutation"
+  - "gateway_owned_temporal_lifecycle"
+  - "external_temporal_service_or_worker_startup"
+  - "real_send_api_or_external_im_call"
+  - "feishu_or_im_delivery"
+  - "live_or_default_on_behavior"
+  - "public_webhook_exposure"
+
+verification_gates:
+  - "uv run --extra dev python -m pytest tests/sachima_supervisor/test_activity_session_lifecycle.py -q --tb=short"
+  - "uv run --extra dev python -m pytest tests/sachima_supervisor -q --tb=short"
+  - "uv run --extra dev python -m compileall -q sachima_supervisor tests/sachima_supervisor"
+  - "git diff --check"
+  - "fresh independent Codex primary review"
+
+codex_primary_review:
+  round_1: "VERDICT: BLOCKERS; three blockers found: lifecycle finalize drift left ambiguous opening/closing/aborting records, failed turns were not append-only/budget-consuming, and max_artifacts_per_turn was not enforced"
+  round_1_fix_status: "fixed locally with regression coverage"
+  blocker_only_rereview: "VERDICT: PASS; BLOCKERS: None"
+
+strongest_allowed_outcome: "candidate_open_branch_local_offline_phase_e_lifecycle_state_machine_implementation"
+strongest_allowed_outcome_meaning: "candidate branch contains a default-off caller-owned persistent-session lifecycle state machine and cancellation request-state model with injected fakes only; local tests and Codex blocker-only re-review passed; no real session launch, no cancellation execution, no real agent/acpx/npx, no live/Gateway/Feishu/production config/service restart/platform mutation/real delivery; no PR, merge, CI, or commit claimed"
