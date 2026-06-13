@@ -3,7 +3,7 @@
 Date: 2026-06-13
 Branch: `feature/phase-e-persistent-session-lifecycle`
 Worktree: `/home/ecs-user/workspace/hermes/worktrees/sachima/phase-e-persistent-session-lifecycle`
-Status: PR #125 open; head commit `79864934c15527cc86965ccee915d508c3834055`; CI pending/in progress; no merge claimed.
+Status: PR #125 merged; head commit `f30b81a6f4f3989396c208846a32da875e749a99`; merge commit `a564a775f809cfdd08209863702d0249610dd286`; CI passed before merge.
 
 ## Boundary
 
@@ -16,7 +16,7 @@ This is the local/offline Phase E lifecycle preflight/state-machine implementati
 - no `acpx` or `npx`;
 - no Gateway, Feishu, IM, live/public ingress, production config, service restart, platform adapter mutation, or real delivery.
 
-Claude Code had partially implemented the module/tests and then hung/failed to converge. Codex CLI acted only as a temporary substitute worker for implementation/fix, not as the independent primary review. A separate fresh Codex review remains required later.
+Claude Code had partially implemented the module/tests and then hung/failed to converge. Codex CLI acted as a temporary substitute worker for a narrow implementation/fix pass; a separate fresh Codex primary review then ran later and passed after blocker fixes.
 
 ## Roadmap Preflight
 
@@ -35,11 +35,11 @@ Preflight state:
 - Next allowed request: the local/offline persistent-session lifecycle preflight/state-machine implementation gate with injected fakes only.
 - Explicit non-approvals: persistent session execution, cancellation execution, additional real AGENT/acpx, write-capable roles, Satine/Hermes-profile ACP, controlled AI FLOW, Gateway/Feishu/live/public ingress, production config, service restart, platform adapter mutation, and real delivery.
 - Open tails: `ROADMAP-WATCH-8788`, `ROADMAP-WATCH-STATUS-DASHBOARD`, `ROADMAP-NEXT-P4-ENV-V1-CONFORMANCE`, `ROADMAP-NEXT-ARS-CONTROLLED-AI-FLOW`.
-- Requested task status: allowed as a candidate/open local/offline implementation branch only.
+- Requested task status at branch start: allowed as a local/offline implementation branch only. That slice later merged in PR #125 after verification and review.
 
 Hermes loaded the current governance workflow guidance, including the persistent-session lifecycle phase-gate reference, before starting this implementation branch.
 
-## Implementation Candidate
+## Implementation Slice
 
 Files added in this branch:
 
@@ -108,7 +108,7 @@ uv run --extra dev python -m pytest tests/sachima_supervisor/test_activity_sessi
 100 passed
 ```
 
-## Pending Review
+## Review And Fixes
 
 The first fresh Codex primary review returned `VERDICT: BLOCKERS` and found three real implementation gaps:
 
@@ -134,10 +134,10 @@ BLOCKERS:
 
 Codex reported that it re-ran focused lifecycle tests, the full `tests/sachima_supervisor` suite, compileall, `git diff --cached --check`, CodeGraph status, manifest YAML parsing, and a forbidden runtime surface scan.
 
-## PR Open Metadata
+## PR / Merge Metadata
 
 PR #125: `https://github.com/jovijovi/sachima/pull/125`
 
-Head commit: `79864934c15527cc86965ccee915d508c3834055`
+Head commit: `f30b81a6f4f3989396c208846a32da875e749a99`
 
-At metadata sync time, GitHub reported `mergeable=MERGEABLE`, `mergeStateStatus=UNSTABLE`, with CI still in progress. No merge is claimed.
+At metadata sync time, GitHub reported `mergeable=MERGEABLE`, `mergeStateStatus=UNSTABLE`, with checks not yet complete. CI later passed and PR #125 merged at `2026-06-13T02:01:08Z` with merge commit `a564a775f809cfdd08209863702d0249610dd286`.
