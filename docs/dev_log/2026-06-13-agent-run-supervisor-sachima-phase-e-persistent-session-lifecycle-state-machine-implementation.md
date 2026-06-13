@@ -3,7 +3,7 @@
 Date: 2026-06-13
 Branch: `feature/phase-e-persistent-session-lifecycle`
 Worktree: `/home/ecs-user/workspace/hermes/worktrees/sachima/phase-e-persistent-session-lifecycle`
-Status: candidate/open branch; no PR number, merge, CI, or commit claimed.
+Status: PR #125 open; head commit `79864934c15527cc86965ccee915d508c3834055`; CI pending/in progress; no merge claimed.
 
 ## Boundary
 
@@ -132,4 +132,12 @@ BLOCKERS:
 - None
 ```
 
-Codex reported that it re-ran focused lifecycle tests, the full `tests/sachima_supervisor` suite, compileall, `git diff --cached --check`, CodeGraph status, manifest YAML parsing, and a forbidden runtime surface scan. This dev log still does not claim PR, CI, merge, or commit completion.
+Codex reported that it re-ran focused lifecycle tests, the full `tests/sachima_supervisor` suite, compileall, `git diff --cached --check`, CodeGraph status, manifest YAML parsing, and a forbidden runtime surface scan.
+
+## PR Open Metadata
+
+PR #125: `https://github.com/jovijovi/sachima/pull/125`
+
+Head commit: `79864934c15527cc86965ccee915d508c3834055`
+
+At metadata sync time, GitHub reported `mergeable=MERGEABLE`, `mergeStateStatus=UNSTABLE`, with CI still in progress. No merge is claimed.

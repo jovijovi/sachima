@@ -1,6 +1,6 @@
 phase_id: "agent-run-supervisor-sachima-phase-e-persistent-session-lifecycle-state-machine-implementation"
 level: "level-3"
-status: "candidate_open_branch"
+status: "pr_open_awaiting_ci"
 repo: "jovijovi/sachima"
 base_branch: "release/sachima"
 branch: "feature/phase-e-persistent-session-lifecycle"
@@ -8,11 +8,12 @@ worktree: "/home/ecs-user/workspace/hermes/worktrees/sachima/phase-e-persistent-
 created_at: "2026-06-13"
 owner_dri: "Hermes operator with Dog Brother approval"
 
-pr_number: null
-pr_url: null
+pr_number: 125
+pr_url: "https://github.com/jovijovi/sachima/pull/125"
 merge_commit: null
-ci_status: null
-commit_claimed: false
+ci_status: "in_progress_at_pr_open_metadata_sync"
+commit_claimed: true
+head_commit: "79864934c15527cc86965ccee915d508c3834055"
 
 approval_token: "approve_agent_run_supervisor_sachima_phase_e_persistent_session_lifecycle_preflight_state_machine_local_offline_implementation_no_real_session_launch_no_cancellation_execution_no_real_agent_execution_no_live_no_gateway_no_feishu_no_production_config_no_real_delivery"
 approval_interpretation: "local/offline persistent-session lifecycle preflight/state-machine implementation only; injected fakes only; no real session launch; no cancellation execution; no real agent execution; no acpx/npx; no live, Gateway, Feishu, production config, service restart, platform adapter mutation, or real delivery"
@@ -168,4 +169,4 @@ codex_primary_review:
   blocker_only_rereview: "VERDICT: PASS; BLOCKERS: None"
 
 strongest_allowed_outcome: "candidate_open_branch_local_offline_phase_e_lifecycle_state_machine_implementation"
-strongest_allowed_outcome_meaning: "candidate branch contains a default-off caller-owned persistent-session lifecycle state machine and cancellation request-state model with injected fakes only; local tests and Codex blocker-only re-review passed; no real session launch, no cancellation execution, no real agent/acpx/npx, no live/Gateway/Feishu/production config/service restart/platform mutation/real delivery; no PR, merge, CI, or commit claimed"
+strongest_allowed_outcome_meaning: "PR #125 contains a default-off caller-owned persistent-session lifecycle state machine and cancellation request-state model with injected fakes only; local tests and Codex blocker-only re-review passed; GitHub CI is pending/in progress; no real session launch, no cancellation execution, no real agent/acpx/npx, no live/Gateway/Feishu/production config/service restart/platform mutation/real delivery; no merge claimed"

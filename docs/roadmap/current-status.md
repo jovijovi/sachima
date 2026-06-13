@@ -234,7 +234,7 @@ After the Phase E design PR merged, the next safe mainline request became a **se
 approve_agent_run_supervisor_sachima_phase_e_persistent_session_lifecycle_preflight_state_machine_local_offline_implementation_no_real_session_launch_no_cancellation_execution_no_real_agent_execution_no_live_no_gateway_no_feishu_no_production_config_no_real_delivery
 ```
 
-That request is currently represented by an open candidate branch (`feature/phase-e-persistent-session-lifecycle`). Until it is reviewed, PR/CI-verified, merged, and status-closed by the repo owner, the next safe work is to review/fix/verify that candidate branch only.
+That request is currently represented by PR #125 (`feature/phase-e-persistent-session-lifecycle`). Local verification and Codex blocker-only re-review passed, and GitHub CI is pending/in progress. Until PR #125 is CI-verified, merged, and status-closed by the repo owner, the next safe work is to monitor/fix that PR only.
 
 Do not skip straight to live/runtime expansion.
 

@@ -1,6 +1,6 @@
 # agent-run-supervisor x Sachima Phase E Persistent Session Lifecycle State Machine Implementation
 
-> **Status: open candidate branch.** This implementation slice is local/offline only and uses injected fakes only. It does not open a real persistent session, send a real session turn, execute cancellation, invoke `agent-run-supervisor`, invoke `acpx` or `npx`, start a process, touch Gateway/Feishu/IM/live/public surfaces, write production config, restart services, or deliver anything.
+> **Status: PR #125 open, awaiting CI / merge decision.** This implementation slice is local/offline only and uses injected fakes only. It does not open a real persistent session, send a real session turn, execute cancellation, invoke `agent-run-supervisor`, invoke `acpx` or `npx`, start a process, touch Gateway/Feishu/IM/live/public surfaces, write production config, restart services, or deliver anything.
 
 ## Scope
 
@@ -20,7 +20,7 @@ Branch and worktree:
 ```text
 branch: feature/phase-e-persistent-session-lifecycle
 worktree: /home/ecs-user/workspace/hermes/worktrees/sachima/phase-e-persistent-session-lifecycle
-status: candidate/open branch; no PR number, merge, CI, or commit claimed
+status: PR #125 open; head commit 79864934c15527cc86965ccee915d508c3834055; CI pending/in progress; no merge claimed
 ```
 
 ## Approval Boundary
