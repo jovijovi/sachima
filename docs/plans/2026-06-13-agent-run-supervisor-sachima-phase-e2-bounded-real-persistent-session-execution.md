@@ -3,7 +3,7 @@
 Date: 2026-06-13
 Base branch: `release/sachima` (at `83db916e494a40d4511098a217806f23eea45931`)
 Branch: `feature/phase-e2-bounded-real-session-execution`
-Status: `pr_open_awaiting_ci` (PR #127 open; NOT merged)
+Status: `merged` (PR #127 merged into `release/sachima`; merge commit `813c0eb051efd822d214b2cd8619b8a941536abb`)
 
 ## Approval
 

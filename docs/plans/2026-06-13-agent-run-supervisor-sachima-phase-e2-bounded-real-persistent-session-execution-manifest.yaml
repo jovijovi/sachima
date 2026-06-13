@@ -1,6 +1,6 @@
 phase_id: "agent-run-supervisor-sachima-phase-e2-bounded-real-persistent-session-execution"
 level: "level-3"
-status: "pr_open_awaiting_ci"
+status: "merged"
 repo: "jovijovi/sachima"
 base_branch: "release/sachima"
 base_commit: "83db916e494a40d4511098a217806f23eea45931"
@@ -14,7 +14,9 @@ pushed: true
 pr_opened: true
 pr_number: 127
 pr_url: "https://github.com/jovijovi/sachima/pull/127"
-merged: false
+merged: true
+merge_commit: "813c0eb051efd822d214b2cd8619b8a941536abb"
+merged_at: "2026-06-13T08:42:22Z"
 
 approval_token: "approve_agent_run_supervisor_sachima_phase_e2_bounded_real_persistent_session_execution_local_offline_smoke_no_live_no_gateway_no_feishu_no_production_config_no_real_delivery"
 approval_interpretation: "bounded real persistent-session execution, local/offline only; the existing Phase E lifecycle state machine driven by a real agent_run_supervisor.session_runtime.SessionRuntime for create / one read-only turn / close; one minimal real persistent-session smoke; pinned local acpx only (no npx/network fallback); committed source default-off and CI-safe; no Gateway, Feishu, IM delivery, live/default-on behavior, public ingress, production config write, service restart, platform adapter mutation, or real delivery; no cancellation execution"
