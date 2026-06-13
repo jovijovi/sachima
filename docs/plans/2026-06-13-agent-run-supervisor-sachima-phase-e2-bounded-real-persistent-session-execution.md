@@ -3,7 +3,7 @@
 Date: 2026-06-13
 Base branch: `release/sachima` (at `83db916e494a40d4511098a217806f23eea45931`)
 Branch: `feature/phase-e2-bounded-real-session-execution`
-Status: `implemented_real_smoke_and_codex_review_passed_pr_pending` (NOT committed, NOT merged)
+Status: `pr_open_awaiting_ci` (PR #127 open; NOT merged)
 
 ## Approval
 

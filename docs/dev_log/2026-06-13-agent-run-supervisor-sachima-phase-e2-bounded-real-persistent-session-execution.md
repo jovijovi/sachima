@@ -4,7 +4,7 @@ Date: 2026-06-13
 Branch: `feature/phase-e2-bounded-real-session-execution`
 Base: `release/sachima` at `83db916e494a40d4511098a217806f23eea45931`
 Worktree: `/data/agents/workspace/hermes/worktrees/sachima/phase-e2-bounded-real-session-execution`
-Status: implemented locally; real smoke PASS; Codex blocker-only re-review PASS / BLOCKERS None; NOT committed / pushed / PR'd / merged.
+Status: implemented, committed, pushed, and opened as PR #127; real smoke PASS; Codex blocker-only re-review PASS / BLOCKERS None; NOT merged.
 
 ## Boundary
 

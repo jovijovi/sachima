@@ -1,6 +1,6 @@
 phase_id: "agent-run-supervisor-sachima-phase-e2-bounded-real-persistent-session-execution"
 level: "level-3"
-status: "implemented_real_smoke_and_codex_review_passed_pr_pending"
+status: "pr_open_awaiting_ci"
 repo: "jovijovi/sachima"
 base_branch: "release/sachima"
 base_commit: "83db916e494a40d4511098a217806f23eea45931"
@@ -9,9 +9,11 @@ worktree: "/data/agents/workspace/hermes/worktrees/sachima/phase-e2-bounded-real
 created_at: "2026-06-13"
 owner_dri: "Hermes operator with Dog Brother approval"
 
-committed: false
-pushed: false
-pr_opened: false
+committed: true
+pushed: true
+pr_opened: true
+pr_number: 127
+pr_url: "https://github.com/jovijovi/sachima/pull/127"
 merged: false
 
 approval_token: "approve_agent_run_supervisor_sachima_phase_e2_bounded_real_persistent_session_execution_local_offline_smoke_no_live_no_gateway_no_feishu_no_production_config_no_real_delivery"
