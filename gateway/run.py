@@ -17132,6 +17132,7 @@ class GatewayRunner:
         _interrupt_depth: int = 0,
         event_message_id: Optional[str] = None,
         channel_prompt: Optional[str] = None,
+        _progress_transaction: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
@@ -17283,7 +17284,20 @@ class GatewayRunner:
         
         # Queue for progress messages (thread-safe). Shadow collection must not
         # create a visible progress queue; it only needs the callback/tracker.
-        progress_queue = queue.Queue() if progress_display_enabled else None
+        # Continuation frames for the same logical user task reuse the outer
+        # transaction queue/tracker so Feishu card identity and finalization are
+        # owned by the logical task, not by an individual _run_agent frame.
+        progress_transaction = _progress_transaction
+        progress_transaction_owner = progress_transaction is None
+        progress_queue = (
+            progress_transaction.get("queue")
+            if isinstance(progress_transaction, dict)
+            else None
+        )
+        if progress_queue is None and progress_display_enabled:
+            progress_queue = queue.Queue()
+        if progress_transaction is None and (progress_queue is not None or flowweaver_shadow_enabled):
+            progress_transaction = {"queue": progress_queue}
         last_tool = [None]  # Mutable container for tracking in closure
         last_progress_msg = [None]  # Track last message for dedup
         repeat_count = [0]  # How many times the same message repeated
@@ -17362,14 +17376,21 @@ class GatewayRunner:
                 from gateway.progress.store import build_progress_event_store
                 from gateway.progress.task_titles import summarize_task_intent
                 from gateway.progress.tracker import ProgressTracker
-                _tracker_title = summarize_task_intent(message)
-                progress_tracker = ProgressTracker(
-                    transaction_id=session_id or session_key or "gateway-task",
-                    title=_tracker_title,
-                    max_operations=task_tracker_max_operations,
-                )
-                if progress_queue is not None and task_tracker_enabled:
-                    progress_event_store = build_progress_event_store(task_tracker_config)
+                if isinstance(progress_transaction, dict) and progress_transaction.get("tracker") is not None:
+                    progress_tracker = progress_transaction.get("tracker")
+                    progress_event_store = progress_transaction.get("event_store")
+                else:
+                    _tracker_title = summarize_task_intent(message)
+                    progress_tracker = ProgressTracker(
+                        transaction_id=session_id or session_key or "gateway-task",
+                        title=_tracker_title,
+                        max_operations=task_tracker_max_operations,
+                    )
+                    if progress_queue is not None and task_tracker_enabled:
+                        progress_event_store = build_progress_event_store(task_tracker_config)
+                    if isinstance(progress_transaction, dict):
+                        progress_transaction["tracker"] = progress_tracker
+                        progress_transaction["event_store"] = progress_event_store
             except Exception as _tracker_err:
                 logger.debug("Task tracker disabled after setup error: %s", _tracker_err)
                 progress_tracker = None
@@ -18032,6 +18053,10 @@ class GatewayRunner:
                                     _cleanup_msg_ids.append(str(result.message_id))
                             if is_final_tracker_flush:
                                 progress_final_flushed.set()
+
+                    if is_final_tracker_flush:
+                        progress_final_flushed.set()
+                        return
 
                     _last_edit_ts = time.monotonic()
 
@@ -19098,9 +19123,11 @@ class GatewayRunner:
                 "response_transformed": result.get("response_transformed", False),
             }
         
-        # Start progress message sender if enabled
+        # Start progress message sender if this frame owns the visible logical
+        # transaction. Continuation frames reuse the owner sender so they patch
+        # the same card/message instead of creating a second visible surface.
         progress_task = None
-        if progress_queue is not None:
+        if progress_queue is not None and progress_transaction_owner:
             progress_task = asyncio.create_task(send_progress_messages())
 
         # Start stream consumer task — polls for consumer creation since it
@@ -19691,11 +19718,13 @@ class GatewayRunner:
                     _interrupt_depth=_interrupt_depth + 1,
                     event_message_id=next_message_id,
                     channel_prompt=next_channel_prompt,
+                    _progress_transaction=progress_transaction,
                 )
-                return _preserve_queued_followup_history_offset(result, followup_result)
+                response = _preserve_queued_followup_history_offset(result, followup_result)
+                return response
         finally:
             # Stop progress sender, interrupt monitor, and notification task
-            if progress_tracker is not None:
+            if progress_tracker is not None and progress_transaction_owner:
                 try:
                     _progress_failed = sys.exc_info()[0] is not None
                     _response_for_progress = locals().get("response")

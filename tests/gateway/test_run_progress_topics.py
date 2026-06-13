@@ -1539,6 +1539,39 @@ async def test_feishu_task_tracker_card_mode_sends_and_patches_one_card(monkeypa
 
 
 @pytest.mark.asyncio
+async def test_feishu_task_tracker_card_mode_reuses_one_card_for_queued_followup(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        TransactionPanelAgent,
+        session_id="sess-feishu-progress-card-queued-followup",
+        pending_text="continue the same task",
+        platform=Platform.FEISHU,
+        chat_id="oc_1",
+        chat_type="dm",
+        thread_id=None,
+        adapter_cls=FeishuProgressCardCaptureAdapter,
+        config_data={
+            "display": {
+                "tool_progress": "all",
+                "task_tracker": {"enabled": True, "mode": "feishu_card", "max_operations": 8},
+            },
+        },
+    )
+
+    assert result["final_response"] == "done"
+    assert len(adapter.cards_sent) == 1
+    assert adapter.cards_patched
+    assert [call["message_id"] for call in adapter.cards_patched] == ["om_card_1"] * len(adapter.cards_patched)
+    assert sum(1 for call in adapter.cards_patched if call["finalize"]) == 1
+    final_card = adapter.cards_patched[-1]["card"]
+    rendered = json.dumps(final_card, ensure_ascii=False)
+    assert "Completed" in rendered
+    assert "Running" not in rendered
+    assert adapter.edits == []
+
+
+@pytest.mark.asyncio
 async def test_feishu_task_tracker_card_mode_final_card_includes_context_usage(monkeypatch, tmp_path):
     adapter, result = await _run_with_agent(
         monkeypatch,
@@ -2436,7 +2469,7 @@ async def test_task_tracker_final_completed_panel_is_flushed_before_progress_tas
     )
 
     assert result["final_response"] == "done"
-    assert adapter.dropped_completed_updates
+    assert adapter.dropped_completed_updates == []
     assert adapter.visible_completed_updates
     assert "**Status:** Completed" in adapter.visible_completed_updates[-1]
 
