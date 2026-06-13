@@ -4,7 +4,7 @@
 Date: 2026-06-13
 Base branch: `release/sachima` at `3e71cb77625882d1ac51c73b50b695da98b55750`
 Planning branch: `docs/agent-run-supervisor-remaining-goals-plan`
-Status: `docs_only_planning_gate_codex_review_passed` (not implementation approval)
+Status: `pr_open_awaiting_ci` — PR #128 open; docs-only planning gate, not implementation approval
 
 ## Hermes final arbitration
 

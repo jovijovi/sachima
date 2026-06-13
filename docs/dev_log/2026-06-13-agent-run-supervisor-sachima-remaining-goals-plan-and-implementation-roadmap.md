@@ -4,7 +4,7 @@ Date: 2026-06-13
 Branch: `docs/agent-run-supervisor-remaining-goals-plan`
 Base: `release/sachima` at `3e71cb77625882d1ac51c73b50b695da98b55750`
 Worktree: `/home/ecs-user/workspace/hermes/worktrees/sachima/agent-run-supervisor-remaining-goals-plan`
-Status: docs-only planning gate drafted; Claude Code architect draft complete; Codex CLI blocker-only review PASS / BLOCKERS None; not committed / pushed / PR'd / merged at creation time.
+Status: docs-only planning gate committed, pushed, and opened as PR #128; Claude Code architect draft complete; Codex CLI blocker-only review PASS / BLOCKERS None; not merged.
 
 ## Boundary
 
