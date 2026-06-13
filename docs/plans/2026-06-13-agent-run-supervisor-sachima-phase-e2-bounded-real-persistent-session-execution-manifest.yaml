@@ -1,0 +1,169 @@
+phase_id: "agent-run-supervisor-sachima-phase-e2-bounded-real-persistent-session-execution"
+level: "level-3"
+status: "pr_open_awaiting_ci"
+repo: "jovijovi/sachima"
+base_branch: "release/sachima"
+base_commit: "83db916e494a40d4511098a217806f23eea45931"
+branch: "feature/phase-e2-bounded-real-session-execution"
+worktree: "/data/agents/workspace/hermes/worktrees/sachima/phase-e2-bounded-real-session-execution"
+created_at: "2026-06-13"
+owner_dri: "Hermes operator with Dog Brother approval"
+
+committed: true
+pushed: true
+pr_opened: true
+pr_number: 127
+pr_url: "https://github.com/jovijovi/sachima/pull/127"
+merged: false
+
+approval_token: "approve_agent_run_supervisor_sachima_phase_e2_bounded_real_persistent_session_execution_local_offline_smoke_no_live_no_gateway_no_feishu_no_production_config_no_real_delivery"
+approval_interpretation: "bounded real persistent-session execution, local/offline only; the existing Phase E lifecycle state machine driven by a real agent_run_supervisor.session_runtime.SessionRuntime for create / one read-only turn / close; one minimal real persistent-session smoke; pinned local acpx only (no npx/network fallback); committed source default-off and CI-safe; no Gateway, Feishu, IM delivery, live/default-on behavior, public ingress, production config write, service restart, platform adapter mutation, or real delivery; no cancellation execution"
+
+scope:
+  implementation_approved: true
+  local_offline_only: true
+  bounded_real_persistent_session_execution_approved: true
+  one_minimal_real_persistent_session_smoke_approved: true
+  pinned_local_acpx_only: true
+  npx_or_network_fetch_runnable_path_approved: false
+  cancellation_request_state_approved: true
+  cancellation_execution_approved: false
+  real_agent_execution_bounded_approved: true
+  controlled_ai_flow_execution_approved: false
+  live_or_default_on_approved: false
+  gateway_approved: false
+  feishu_or_im_approved: false
+  public_ingress_approved: false
+  real_delivery_approved: false
+  production_config_write_approved: false
+  service_restart_or_reload_approved: false
+  platform_adapter_mutation_approved: false
+
+allowed_changed_paths:
+  - "sachima_supervisor/activity_session_real_execution.py"
+  - "sachima_supervisor/roles/session_worker_persistent_v1.json"
+  - "tests/sachima_supervisor/test_activity_session_real_execution.py"
+  - "scripts/sachima_phase_e2_persistent_session_smoke.py"
+  - "docs/plans/2026-06-13-agent-run-supervisor-sachima-phase-e2-bounded-real-persistent-session-execution.md"
+  - "docs/plans/2026-06-13-agent-run-supervisor-sachima-phase-e2-bounded-real-persistent-session-execution-manifest.yaml"
+  - "docs/dev_log/2026-06-13-agent-run-supervisor-sachima-phase-e2-bounded-real-persistent-session-execution.md"
+  - "docs/roadmap/current-status.md"
+
+implemented_module: "sachima_supervisor/activity_session_real_execution.py"
+implemented_apis:
+  - "PHASE_E2_REAL_SESSION_APPROVAL_TOKEN"
+  - "RealPersistentSessionConfig"
+  - "ResolvedRealSessionConfig"
+  - "RealSessionExecutionError"
+  - "validate_real_session_config"
+  - "open_real_persistent_session"
+  - "run_real_persistent_session_turn"
+  - "close_real_persistent_session"
+  - "best_effort_close_real_session"
+  - "execute_real_cancellation (fail-closed only)"
+  - "bind_open_session"
+  - "bind_run_turn"
+  - "bind_close_session"
+
+committed_role:
+  path: "sachima_supervisor/roles/session_worker_persistent_v1.json"
+  acpx_binary: null
+  session_strategy: "persistent"
+  runnable_by_construction: false
+  note: "non-runnable until an operator local overlay pins a verified absolute local acpx 0.10.0 binary"
+
+smoke_script:
+  path: "scripts/sachima_phase_e2_persistent_session_smoke.py"
+  lifecycle: "create -> send(one read-only turn) -> close"
+  self_test_mode: true
+  real_mode_requires: "pinned local acpx (--acpx-binary) and importable agent_run_supervisor"
+  real_smoke_run: true
+  real_smoke_status: "PASS"
+  real_smoke_evidence_dir: "/data/agents/workspace/hermes/outputs/sachima/phase-e2-bounded-real-persistent-session-execution/20260613T063219Z"
+  real_smoke_summary: "/data/agents/workspace/hermes/outputs/sachima/phase-e2-bounded-real-persistent-session-execution/20260613T063219Z/summary.json"
+  real_smoke_final_validation: "/data/agents/workspace/hermes/outputs/sachima/phase-e2-bounded-real-persistent-session-execution/20260613T063219Z/final_validation.json"
+  real_smoke_invariants:
+    ok: true
+    mode: "real"
+    create_lifecycle_state: "session_open"
+    turn_status: "completed"
+    close_lifecycle_state: "session_closed"
+    supervisor_session_count: 1
+    supervisor_turn_count: 1
+    supervisor_session_state_closed: true
+    business_marker_matches: true
+    final_message_persisted_in_sachima_state: false
+    npx_in_runner: false
+
+ci_safety:
+  module_import_requires_agent_run_supervisor: false
+  config_validation_requires_agent_run_supervisor: false
+  lazy_import_site: "default _AgentRunSupervisorBackend methods only"
+
+durable_state_safety:
+  final_message_persisted: false
+  raw_prompt_or_context_persisted: false
+  session_binding: "opaque hash of runtime/acpx session id (raw id never stored)"
+  evidence: "safe refs + sha256 digests + counts only"
+
+blocked_modes:
+  - "cancellation execution"
+  - "npx/npm/pnpm/yarn/bunx/shell runnable fallback"
+  - "live / default-on behavior"
+  - "Gateway involvement or mutation"
+  - "Feishu / IM delivery"
+  - "public ingress"
+  - "production config write"
+  - "service restart or reload"
+  - "platform adapter mutation"
+  - "real delivery"
+
+failure_taxonomy:
+  codes:
+    - "activity_session_disabled"
+    - "activity_session_approval_mismatch"
+    - "activity_cancel_not_approved"
+    - "activity_runner_provenance_unverified"
+    - "activity_role_capability_rejected"
+    - "activity_precondition_unmet"
+    - "activity_unsafe_material"
+    - "activity_supervisor_failed"
+  note: "all codes are a subset of the Phase E lifecycle stored-error-code allowlist, so mapped outcomes remain durable-state safe"
+
+verification_gates:
+  - "uv run --extra dev python -m pytest tests/sachima_supervisor/test_activity_session_real_execution.py -q --tb=short"
+  - "uv run --extra dev python -m pytest tests/sachima_supervisor/test_activity_session_lifecycle.py -q --tb=short"
+  - "uv run --extra dev python -m pytest tests/sachima_supervisor -q --tb=short"
+  - "uv run --extra dev python -m compileall -q sachima_supervisor tests/sachima_supervisor scripts/sachima_phase_e2_persistent_session_smoke.py"
+  - "git diff --check"
+  - "codegraph sync && codegraph status"
+  - "smoke --self-test"
+  - "fresh independent Codex blocker-only re-review PASS / BLOCKERS None"
+
+local_verification_results:
+  focused_real_execution_tests: "44 passed"
+  phase_e_lifecycle_tests: "106 passed"
+  full_supervisor_suite: "475 passed"
+  compileall: "clean"
+  git_diff_check: "clean"
+  smoke_self_test: "ok=true; create session_open / turn completed / close session_closed; final_message_persisted=false"
+  real_smoke: "PASS; create session_open / turn completed / close session_closed; supervisor session.json closed; exactly one supervisor session and one turn; business marker verified; final_message_persisted=false; no npx runner"
+
+explicit_non_approvals:
+  - "cancellation_execution"
+  - "npx_fallback_or_network_fetch_runnable_path"
+  - "controlled_ai_flow_execution"
+  - "write_capable_roles"
+  - "satine_or_hermes_profile_acp_execution"
+  - "live_or_default_on_behavior"
+  - "gateway_involvement_or_mutation"
+  - "gateway_restart_or_reload"
+  - "feishu_or_im_delivery"
+  - "public_ingress_or_webhook_exposure"
+  - "production_config_write"
+  - "service_restart_or_reload"
+  - "platform_adapter_mutation"
+  - "real_external_delivery"
+
+strongest_allowed_outcome: "implemented_local_offline_phase_e2_bounded_real_execution_bridge_real_smoke_and_codex_review_passed_pr_pending"
+strongest_allowed_outcome_meaning: "a default-off, fail-closed, CI-safe bridge that lets the merged Phase E lifecycle state machine drive a real local acpx persistent session for create / one read-only turn / close, plus a committed non-runnable persistent role and a reproducible smoke script; local tests + self-test smoke pass; one minimal real smoke passed with evidence outside the repo; Codex blocker-only re-review PASS / BLOCKERS None; no commit/PR/merge performed yet; no cancellation execution, no live/Gateway/Feishu/production config/real delivery"
