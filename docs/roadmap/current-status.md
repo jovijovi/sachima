@@ -11,9 +11,20 @@
 ```json
 {
   "base_branch": "release/sachima",
-  "base_head": "0d6e5a690eaa359861eb3049dc5875b4b5b26dc1",
+  "base_head": "b6ca8f7fbf733b9bf9b7c8cd6df902f987143360",
   "base_head_note": "latest first-parent base commit excluding machine status-sync self-commits",
   "latest_merged_prs": [
+    {
+      "baseRefName": "release/sachima",
+      "headRefName": "fix/status-sync-self-head",
+      "mergeCommit": {
+        "oid": "b6ca8f7fbf733b9bf9b7c8cd6df902f987143360"
+      },
+      "mergedAt": "2026-06-14T15:59:47Z",
+      "number": 133,
+      "title": "fix: keep roadmap status sync self-stable",
+      "url": "https://github.com/jovijovi/sachima/pull/133"
+    },
     {
       "baseRefName": "release/sachima",
       "headRefName": "feature/status-sync-automation",
@@ -57,17 +68,6 @@
       "number": 129,
       "title": "fix: reuse progress transaction across followups",
       "url": "https://github.com/jovijovi/sachima/pull/129"
-    },
-    {
-      "baseRefName": "release/sachima",
-      "headRefName": "docs/agent-run-supervisor-remaining-goals-plan",
-      "mergeCommit": {
-        "oid": "ae27fbf458b32d05a85703095102c79c17c14071"
-      },
-      "mergedAt": "2026-06-13T10:09:07Z",
-      "number": 128,
-      "title": "docs: plan remaining agent-run-supervisor goals",
-      "url": "https://github.com/jovijovi/sachima/pull/128"
     }
   ],
   "open_pr_count": 0,
