@@ -80,7 +80,9 @@ real_smoke_evidence:
 status_closure_pr:
   number: 134
   url: "https://github.com/jovijovi/sachima/pull/134"
-  state: "open_pending_merge_decision"
+  state: "merged"
+  merged_at: "2026-06-14T17:15:48Z"
+  merge_commit: "2f8fe8d7011957d2305c3e4a88758e8c0052f0dc"
   head_branch: "docs/wp1b-claude-readonly-smoke-status-closure"
   base_branch: "release/sachima"
 

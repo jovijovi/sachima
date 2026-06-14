@@ -1,7 +1,7 @@
 # WP1b — Claude Code read-only bounded real local smoke
 
 Date: 2026-06-14
-Status: real smoke passed; status closure PR #134 open, pending merge decision
+Status: real smoke passed; status closure PR #134 merged (merge commit `2f8fe8d70119`)
 Scope: local/offline only; one bounded read-only Claude Code one-shot through the Sachima controlled local exec wrapper
 
 ## Approval
