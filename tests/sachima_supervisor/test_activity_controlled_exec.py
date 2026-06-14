@@ -471,8 +471,11 @@ def test_first_slice_runs_only_read_only_codex_primary_reviewer_role(
     )
 
 
-def test_role_allowlist_is_exactly_codex_primary_reviewer_and_future_roles_are_disjoint() -> None:
-    assert set(CONTROLLED_EXEC_ROLE_ALLOWLIST) == {"sachima.codex.primary_reviewer"}
+def test_role_allowlist_is_exactly_codex_and_claude_read_only_and_future_roles_are_disjoint() -> None:
+    assert set(CONTROLLED_EXEC_ROLE_ALLOWLIST) == {
+        "sachima.codex.primary_reviewer",
+        "sachima.claude.read_only_reviewer",
+    }
     assert CONTROLLED_EXEC_FUTURE_ROLE_KEYS == frozenset(
         {
             "sachima.claude.architect",
@@ -481,6 +484,8 @@ def test_role_allowlist_is_exactly_codex_primary_reviewer_and_future_roles_are_d
             "sachima.codex.blocker_only_reviewer",
         }
     )
+    # The write-capable Claude roles and the Codex blocker-only reviewer remain
+    # future, non-runnable keys disjoint from the runnable allowlist.
     assert not (CONTROLLED_EXEC_FUTURE_ROLE_KEYS & set(CONTROLLED_EXEC_ROLE_ALLOWLIST))
 
 
@@ -761,6 +766,139 @@ def test_write_capable_non_codex_or_persistent_role_files_fail_closed(
 ) -> None:
     request, store, preflight_store, role_root = _env(
         tmp_path, role_mapping=_role_mapping(**role_overrides)
+    )
+
+    _assert_fails_closed_before_launch(
+        request, store, preflight_store, role_root, "activity_role_capability_rejected"
+    )
+
+
+# --------------------------------------------------------------------------- #
+# WP1a: read-only Claude Code adapter admit + cross-adapter reject
+# --------------------------------------------------------------------------- #
+CLAUDE_ROLE_KEY = "sachima.claude.read_only_reviewer"
+#: Literal (not derived from the allowlist) so this module still collects while
+#: the new role is being added under TDD.
+CLAUDE_ROLE_FILE_REF = "roles/claude_code_read_only_reviewer_v1.json"
+
+
+def _claude_role_mapping(**overrides: Any) -> dict[str, Any]:
+    """A pinned read-only Claude Code reviewer overlay (adapter_agent=claude)."""
+
+    mapping = _role_mapping()
+    mapping["role_id"] = CLAUDE_ROLE_KEY
+    mapping["display_name"] = "Sachima Claude Code read-only reviewer (read-only one-shot exec)"
+    mapping["runner"] = {**mapping["runner"], "adapter_agent": "claude"}
+    for key, value in overrides.items():
+        if isinstance(value, dict) and isinstance(mapping.get(key), dict):
+            mapping[key] = {**mapping[key], **value}
+        else:
+            mapping[key] = value
+    return mapping
+
+
+def _write_role_at(
+    tmp_path: Path, mapping: dict[str, Any], role_file_ref: str
+) -> tuple[Path, str]:
+    role_path = tmp_path / role_file_ref
+    role_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = json.dumps(mapping, indent=2, sort_keys=True).encode("utf-8")
+    role_path.write_bytes(payload)
+    return tmp_path, "sha256:" + hashlib.sha256(payload).hexdigest()
+
+
+def _claude_env(
+    tmp_path: Path,
+    *,
+    role_mapping: dict[str, Any] | None = None,
+    **request_overrides: Any,
+) -> tuple[
+    ControlledLocalExecRequest,
+    ControlledLocalExecClaimStore,
+    DurableStatePreflightStore,
+    Path,
+]:
+    mapping = role_mapping if role_mapping is not None else _claude_role_mapping()
+    role_root, digest = _write_role_at(tmp_path, mapping, CLAUDE_ROLE_FILE_REF)
+    overrides: dict[str, Any] = {"role_file_digest": digest, "role_key": CLAUDE_ROLE_KEY}
+    overrides.update(request_overrides)
+    request = _request(**overrides)
+    return request, ControlledLocalExecClaimStore(), _preflight_store_with_record(), role_root
+
+
+def test_pinned_claude_read_only_overlay_is_admitted_and_seam_is_ref_only(
+    tmp_path: Path,
+) -> None:
+    request, store, preflight_store, role_root = _claude_env(tmp_path)
+    counter: dict[str, Any] = {"calls": 0}
+
+    result = _start(request, store, preflight_store, role_root, _counting_fake(counter, _success_outcome))
+    state = result.to_durable_state()
+
+    assert counter["calls"] == 1
+    assert result.ok is True
+    assert result.status == "completed"
+    assert result.business_verdict is None
+    assert state["role_key"] == "sachima.claude.read_only_reviewer"
+    assert set(state) == EXPECTED_CLAIM_STATE_KEYS
+    _assert_no_leaks(state)
+
+    seam_request = counter["last_request"]
+    assert seam_request.mode == "exec"
+    assert seam_request.role is None
+    assert seam_request.role_file == str(role_root / CLAUDE_ROLE_FILE_REF)
+    # Claim-check discipline holds for the Claude adapter exactly as for Codex.
+    assert seam_request.prompt is None
+    assert seam_request.context is None
+    assert seam_request.claim_check_refs == (
+        "claim_txn_exec_001",
+        "claim_op_exec_001",
+        "claim_prompt_exec_001",
+        "claim_context_exec_001",
+    )
+    assert query_controlled_local_exec(
+        store, activity_id=request.activity_id
+    ).to_durable_state() == state
+
+
+@pytest.mark.parametrize(
+    "adapter",
+    ["codex", "hermes --profile satine acp", "anthropic", "gpt", "", "Claude"],
+)
+def test_claude_role_with_non_claude_adapter_fails_closed(
+    tmp_path: Path, adapter: str
+) -> None:
+    request, store, preflight_store, role_root = _claude_env(
+        tmp_path, role_mapping=_claude_role_mapping(runner={"adapter_agent": adapter})
+    )
+
+    _assert_fails_closed_before_launch(
+        request, store, preflight_store, role_root, "activity_role_capability_rejected"
+    )
+
+
+@pytest.mark.parametrize(
+    "role_overrides",
+    [
+        {"permissions": {"write": True}},
+        {"permissions": {"execute": True}},
+        {"permissions": {"terminal": True}},
+        {"permissions": {"delete": True}},
+        {"permissions": {"move": True}},
+        {"permissions": {"fetch": True}},
+        {"permissions": {"switch_mode": True}},
+        {"permissions": {"other": True}},
+        {"permissions": {"read": False}},
+        {"permissions": {"search": False}},
+        {"session": {"strategy": "persistent"}},
+        {"role_id": "sachima.claude.architect"},
+    ],
+)
+def test_claude_role_write_capable_or_non_read_only_or_wrong_id_fails_closed(
+    tmp_path: Path, role_overrides: dict[str, Any]
+) -> None:
+    request, store, preflight_store, role_root = _claude_env(
+        tmp_path, role_mapping=_claude_role_mapping(**role_overrides)
     )
 
     _assert_fails_closed_before_launch(
