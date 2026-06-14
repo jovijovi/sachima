@@ -11,9 +11,20 @@
 ```json
 {
   "base_branch": "release/sachima",
-  "base_head": "b6ca8f7fbf733b9bf9b7c8cd6df902f987143360",
+  "base_head": "2f8fe8d7011957d2305c3e4a88758e8c0052f0dc",
   "base_head_note": "latest first-parent base commit excluding machine status-sync self-commits",
   "latest_merged_prs": [
+    {
+      "baseRefName": "release/sachima",
+      "headRefName": "docs/wp1b-claude-readonly-smoke-status-closure",
+      "mergeCommit": {
+        "oid": "2f8fe8d7011957d2305c3e4a88758e8c0052f0dc"
+      },
+      "mergedAt": "2026-06-14T17:15:48Z",
+      "number": 134,
+      "title": "docs: record WP1b Claude read-only smoke pass",
+      "url": "https://github.com/jovijovi/sachima/pull/134"
+    },
     {
       "baseRefName": "release/sachima",
       "headRefName": "fix/status-sync-self-head",
@@ -57,31 +68,10 @@
       "number": 130,
       "title": "docs: mark PR 128 remaining-goals plan merged",
       "url": "https://github.com/jovijovi/sachima/pull/130"
-    },
-    {
-      "baseRefName": "release/sachima",
-      "headRefName": "fix/feishu-progress-logical-transaction",
-      "mergeCommit": {
-        "oid": "64de7c49cda30e4852966df1d95ba8d1e8879bf1"
-      },
-      "mergedAt": "2026-06-13T14:37:41Z",
-      "number": 129,
-      "title": "fix: reuse progress transaction across followups",
-      "url": "https://github.com/jovijovi/sachima/pull/129"
     }
   ],
-  "open_pr_count": 1,
-  "open_prs": [
-    {
-      "baseRefName": "release/sachima",
-      "headRefName": "docs/wp1b-claude-readonly-smoke-status-closure",
-      "isDraft": false,
-      "mergeStateStatus": "UNSTABLE",
-      "number": 134,
-      "title": "docs: record WP1b Claude read-only smoke pass",
-      "url": "https://github.com/jovijovi/sachima/pull/134"
-    }
-  ],
+  "open_pr_count": 0,
+  "open_prs": [],
   "repository": "jovijovi/sachima",
   "scope_note": "machine dynamic status only; approvals and phase meaning remain human-authored outside this block"
 }
