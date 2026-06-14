@@ -19,6 +19,7 @@ END_MARKER = "<!-- sachima-status-sync:end -->"
 DEFAULT_STATUS_FILE = Path("docs/roadmap/current-status.md")
 DEFAULT_REPOSITORY = "jovijovi/sachima"
 DEFAULT_BASE_BRANCH = "release/sachima"
+STATUS_SYNC_COMMIT_SUBJECT = "docs: sync machine roadmap status [skip status-sync]"
 
 
 class StatusSyncError(RuntimeError):
@@ -120,6 +121,7 @@ def collect_snapshot(
         "repository": repository,
         "base_branch": base_branch,
         "base_head": base_head,
+        "base_head_note": "latest first-parent base commit excluding machine status-sync self-commits",
         "open_pr_count": len(open_prs),
         "open_prs": open_prs,
         "latest_merged_prs": latest_merged_prs,
@@ -223,9 +225,21 @@ def _line_start(document: str, index: int) -> int:
 
 def _ref_head(ref: str, cwd: Path) -> str:
     try:
-        return _run_text(["git", "rev-parse", ref], cwd=cwd)
+        return _latest_non_status_sync_head(ref, cwd)
     except subprocess.CalledProcessError:
-        return _run_text(["git", "rev-parse", "HEAD"], cwd=cwd)
+        return _latest_non_status_sync_head("HEAD", cwd)
+
+
+def _latest_non_status_sync_head(ref: str, cwd: Path) -> str:
+    output = _run_text(
+        ["git", "log", "--first-parent", "--format=%H%x00%s", "--max-count=50", ref],
+        cwd=cwd,
+    )
+    for line in output.splitlines():
+        commit, _, subject = line.partition("\x00")
+        if subject.strip() != STATUS_SYNC_COMMIT_SUBJECT:
+            return commit
+    return _run_text(["git", "rev-parse", ref], cwd=cwd)
 
 
 def _current_branch(cwd: Path) -> str:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 from tools import sync_roadmap_status
@@ -40,6 +41,25 @@ def _json_payload_from_block(block: str) -> dict:
     start = lines.index("```json") + 1
     end = lines.index("```")
     return json.loads("\n".join(lines[start:end]))
+
+
+def _git(repo: Path, *args: str) -> str:
+    result = subprocess.run(
+        ["git", *args],
+        cwd=repo,
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    return result.stdout.strip()
+
+
+def _commit(repo: Path, message: str, content: str) -> str:
+    (repo / "status.md").write_text(content, encoding="utf-8")
+    _git(repo, "add", "status.md")
+    _git(repo, "commit", "-m", message)
+    return _git(repo, "rev-parse", "HEAD")
 
 
 def test_render_status_block_is_machine_owned_and_json_parsable() -> None:
@@ -92,3 +112,24 @@ def test_check_file_reports_stale_then_clean(tmp_path: Path) -> None:
     assert sync_roadmap_status.check_file(status_file, SNAPSHOT) is False
     sync_roadmap_status.write_file(status_file, SNAPSHOT)
     assert sync_roadmap_status.check_file(status_file, SNAPSHOT) is True
+
+
+def test_ref_head_ignores_machine_status_sync_commit(tmp_path: Path) -> None:
+    _git(tmp_path, "init", "-b", "release/sachima")
+    _git(tmp_path, "config", "user.name", "Test Bot")
+    _git(tmp_path, "config", "user.email", "test@example.invalid")
+
+    _commit(tmp_path, "docs: close prior status", "prior\n")
+    expected_head = _commit(
+        tmp_path,
+        "Merge pull request #132 from jovijovi/feature/status-sync-automation",
+        "merged\n",
+    )
+    sync_head = _commit(
+        tmp_path,
+        "docs: sync machine roadmap status [skip status-sync]",
+        "generated\n",
+    )
+
+    assert sync_head != expected_head
+    assert sync_roadmap_status._ref_head("HEAD", tmp_path) == expected_head
