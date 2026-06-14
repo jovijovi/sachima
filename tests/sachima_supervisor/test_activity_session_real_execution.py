@@ -830,3 +830,181 @@ def test_smoke_real_post_verify_rejects_wrong_business_marker(tmp_path: Path) ->
     verify = smoke.post_verify(store=store, config=config, mode="real")
     with pytest.raises(smoke.SmokeError, match="final_message did not match"):
         smoke.assert_post_verify(verify, mode="real")
+
+
+# --------------------------------------------------------------------------- #
+# WP2: bounded multi-turn session
+# --------------------------------------------------------------------------- #
+def test_smoke_multi_turn_lifecycle_with_fake_backend(tmp_path: Path) -> None:
+    """WP2: run_lifecycle accepts turn_prompts and drives N turns in one session."""
+    smoke = _load_smoke_module()
+    backend = FakeBackend(artifact_count=1)
+    config = _config(tmp_path)
+
+    # Desired WP2 API: turn_prompts drives multiple turns within a single session.
+    lifecycle = smoke.run_lifecycle(
+        config=config,
+        backend=backend,
+        turn_prompts=("turn1", "turn2"),
+    )
+
+    assert lifecycle.get("turn_count") == 2
+    # One session created, two turns sent — no second session opened.
+    assert backend.create_calls == 1
+    assert backend.send_calls == 2
+
+
+def test_smoke_post_verify_reports_multi_turn(tmp_path: Path) -> None:
+    """WP2: post_verify and assert_post_verify accept and validate N-turn sessions."""
+    smoke = _load_smoke_module()
+    backend = FakeBackend(artifact_count=1)
+    config = _config(tmp_path)
+
+    # Build a 2-turn session manually through the state machine.
+    store = SessionLifecycleStore()
+    store.grant_lease(
+        activity_id=smoke.ACTIVITY_ID,
+        lease_id=smoke.LEASE_ID,
+        lease_epoch=1,
+        lease_holder_ref=smoke.LEASE_HOLDER,
+        state_version=0,
+    )
+
+    create_res = create_session(
+        SessionCreateRequest(
+            activity_id=smoke.ACTIVITY_ID,
+            transaction_ref=smoke.TXN_REF,
+            operation_ref=smoke.OP_REF,
+            session_id=smoke.SESSION_REF,
+            idempotency_key="idem_wp2_pv_create",
+            role_key=ROLE_KEY,
+            approval_token=SESSION_LIFECYCLE_APPROVAL_TOKEN,
+            enabled=True,
+            role_file_digest=config.expected_role_digest,
+            prompt_ref="claim_prompt_wp2_pv_create",
+            context_refs=("claim_context_wp2_pv",),
+            cwd_ref="workspace_ref_phase_e2_smoke",
+            allowed_roots_ref="allowed_roots_ref_phase_e2_smoke",
+            lease_id=smoke.LEASE_ID,
+            lease_epoch=1,
+            lease_holder_ref=smoke.LEASE_HOLDER,
+            expected_state_version=0,
+            operator_gate=True,
+            max_turns=4,
+            max_artifacts_per_turn=8,
+        ),
+        store=store,
+        open_session=bind_open_session(config, backend=backend),
+    )
+    assert create_res.ok
+    binding = create_res.session_binding
+
+    for i, prompt in enumerate(("wp2-turn1", "wp2-turn2"), start=1):
+        turn_res = send_session_turn(
+            SessionSendRequest(
+                activity_id=smoke.ACTIVITY_ID,
+                session_id=smoke.SESSION_REF,
+                transaction_ref=smoke.TXN_REF,
+                operation_ref=smoke.OP_REF,
+                idempotency_key=f"idem_wp2_pv_send_{i:03d}",
+                approval_token=SESSION_LIFECYCLE_APPROVAL_TOKEN,
+                enabled=True,
+                session_binding=binding,
+                prompt_ref=f"claim_prompt_wp2_pv_send_{i:03d}",
+                context_refs=(f"claim_context_wp2_pv_send_{i:03d}",),
+                lease_id=smoke.LEASE_ID,
+                lease_epoch=1,
+                lease_holder_ref=smoke.LEASE_HOLDER,
+                expected_state_version=i,
+                operator_gate=True,
+            ),
+            store=store,
+            run_turn=bind_run_turn(config, prompt, backend=backend),
+        )
+        assert turn_res.ok, f"turn {i} failed: {turn_res.status}"
+
+    close_res = close_session(
+        SessionCloseRequest(
+            activity_id=smoke.ACTIVITY_ID,
+            session_id=smoke.SESSION_REF,
+            transaction_ref=smoke.TXN_REF,
+            operation_ref=smoke.OP_REF,
+            idempotency_key="idem_wp2_pv_close",
+            approval_token=SESSION_LIFECYCLE_APPROVAL_TOKEN,
+            enabled=True,
+            session_binding=binding,
+            lease_id=smoke.LEASE_ID,
+            lease_epoch=1,
+            lease_holder_ref=smoke.LEASE_HOLDER,
+            expected_state_version=3,
+            operator_gate=True,
+        ),
+        store=store,
+        apply_close=bind_close_session(config, backend=backend),
+    )
+    assert close_res.ok
+
+    verify = smoke.post_verify(store=store, config=config, mode="self_test")
+    assert verify["turn_count_state_machine"] == 2
+
+    smoke.assert_post_verify(verify, mode="self_test")
+
+
+def test_smoke_empty_turn_prompts_rejected_before_runtime_session(tmp_path: Path) -> None:
+    """WP2: run_lifecycle(turn_prompts=()) raises SmokeError before any backend call."""
+    smoke = _load_smoke_module()
+    backend = ExplodingBackend()  # any backend touch is a test failure
+    config = _config(tmp_path)
+
+    with pytest.raises(smoke.SmokeError, match=r"(?i)(at least 1 turn|turn_prompts)"):
+        smoke.run_lifecycle(config=config, backend=backend, turn_prompts=())
+
+
+def test_smoke_real_post_verify_n_turn_checks_all_results(tmp_path: Path) -> None:
+    """WP2: post_verify real-mode checks business_marker across all N turn result files."""
+    smoke = _load_smoke_module()
+    config = _config(tmp_path)
+    backend = FakeBackend(artifact_count=1)
+
+    lifecycle = smoke.run_lifecycle(config=config, backend=backend, turn_prompts=("turn1", "turn2"))
+
+    sessions_root = Path(config.sessions_dir)
+    session_dir = sessions_root / config.runtime_session_id
+    session_dir.mkdir(parents=True, exist_ok=True)
+    (session_dir / "session.json").write_text(
+        json.dumps({"state": "closed"}), encoding="utf-8"
+    )
+    for turn_name in ("turn_001", "turn_002"):
+        turn_dir = session_dir / "turns" / turn_name
+        turn_dir.mkdir(parents=True)
+        (turn_dir / "result.json").write_text(
+            json.dumps({"final_message": smoke.TURN_MARKER}), encoding="utf-8"
+        )
+
+    verify = smoke.post_verify(store=lifecycle["_store"], config=config, mode="real")
+
+    assert verify["supervisor_turn_count"] == 2
+    assert verify["business_marker_checked"] is True
+    assert verify["business_marker_matches"] is True
+    smoke.assert_post_verify(verify, mode="real")
+
+
+def test_wp2_cli_turn_count_flag(tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
+    """WP2 CLI: --turn-count 2 drives two turns through the bounded smoke CLI."""
+    smoke = _load_smoke_module()
+
+    exit_code = smoke.main([
+        "--self-test",
+        "--sessions-dir", str(tmp_path / "sessions"),
+        "--evidence-dir", str(tmp_path / "evidence"),
+        "--work-dir", str(tmp_path / "work"),
+        "--allow-repo-paths",
+        "--turn-count", "2",
+    ])
+
+    captured = capsys.readouterr()
+    summary = json.loads(captured.out)
+    assert exit_code == 0
+    assert summary["turn_count"] == 2
+    assert summary["post_verify"]["turn_count_state_machine"] == 2
+    assert summary["execution_pipeline"]["close"]["lifecycle_state"] == "session_closed"
