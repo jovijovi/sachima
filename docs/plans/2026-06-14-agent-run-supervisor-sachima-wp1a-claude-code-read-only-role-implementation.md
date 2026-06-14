@@ -1,7 +1,7 @@
 # WP1a — Claude Code read-only role + capability-gate extension (local/offline, injected fakes only)
 
 Date: 2026-06-14
-Status: PR #131 open (not merged)
+Status: merged in PR #131 (`d2e8c49f7042715062ec755eb8177396d6df3bcd`)
 Branch: `feature/wp1a-claude-code-read-only`
 Base: `release/sachima` at `2cf507c3a8bd6cdba354dd7d699685fa146441a8`
 
@@ -77,4 +77,4 @@ git diff --check
 codegraph status
 ```
 
-PR / merge state is recorded by the manifest and live GitHub status; WP1b remains separately gated.
+Merged in PR #131. WP1b remains separately gated and is not approved by this implementation.

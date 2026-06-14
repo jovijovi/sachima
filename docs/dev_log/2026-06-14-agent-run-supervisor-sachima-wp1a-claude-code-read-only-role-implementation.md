@@ -4,7 +4,7 @@ Date: 2026-06-14
 Branch: `feature/wp1a-claude-code-read-only`
 Base: `release/sachima` at `2cf507c3a8bd6cdba354dd7d699685fa146441a8`
 Worktree: `/data/agents/workspace/hermes/worktrees/sachima/wp1a-claude-code-read-only`
-Status: PR #131 open — local verification passed; Codex primary blocker review PASS / BLOCKERS None; not merged.
+Status: PR #131 merged — local verification passed; Codex primary blocker review PASS / BLOCKERS None; PR checks passed; merge commit `d2e8c49f7042715062ec755eb8177396d6df3bcd`.
 
 ## Boundary
 
@@ -109,8 +109,8 @@ BLOCKERS:
 - None
 ```
 
-## Next steps (operator / Hermes)
+## Post-merge status
 
-1. Wait for PR #131 CI.
-2. Merge remains a separate owner decision after PR/CI.
+1. PR #131 merged after CI passed.
+2. WP1a remains injected-fakes / deterministic self-test only.
 3. WP1b (real read-only Claude Code smoke) stays a separate, later approval.
