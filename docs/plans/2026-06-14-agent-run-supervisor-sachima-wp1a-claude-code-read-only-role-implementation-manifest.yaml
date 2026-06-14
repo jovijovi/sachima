@@ -1,0 +1,110 @@
+phase_id: "agent-run-supervisor-sachima-wp1a-claude-code-read-only-role-implementation"
+level: "level-3"
+status: "pr_candidate"
+repo: "jovijovi/sachima"
+base_branch: "release/sachima"
+branch: "feature/wp1a-claude-code-read-only"
+base_commit: "2cf507c3a8bd6cdba354dd7d699685fa146441a8"
+worktree: "/data/agents/workspace/hermes/worktrees/sachima/wp1a-claude-code-read-only"
+created_at: "2026-06-14"
+owner_dri: "Hermes operator with Dog Brother approval"
+
+# PR/merge fields are synchronized after PR creation; merge remains separately gated.
+pr_number: null
+pr_url: null
+merged_at: null
+merge_commit: null
+ci_status: "pending_pr"
+codex_primary_blocker_review: "PASS / BLOCKERS None"
+
+approval_token: "approve_agent_run_supervisor_sachima_claude_code_read_only_role_capability_extension_local_offline_implementation_injected_fakes_only_no_real_smoke_no_write_roles_no_live_no_gateway_no_feishu_no_production_config_no_real_delivery"
+approval_interpretation: "Sachima-side read-only Claude Code reviewer role + minimal controlled-exec capability-gate extension only; injected fakes / deterministic self-test only; no real Claude Code smoke; no write-capable roles; no additional acpx invocation; no npx/network fetch; no multi-turn/persistent sessions; no cancellation execution; no controlled AI FLOW; no Satine/Hermes-profile ACP; no live, Gateway, Feishu, production config, or real delivery"
+
+scope:
+  implementation_approved: true
+  local_offline_only: true
+  injected_fakes_only: true
+  claude_code_read_only_role_approved: true
+  per_role_adapter_gate_extension_approved: true
+  real_claude_code_smoke_approved: false
+  real_local_smoke_execution_approved: false
+  real_agent_execution_approved: false
+  acpx_invocation_approved: false
+  npx_or_network_fetch_approved: false
+  write_capable_roles_approved: false
+  multi_turn_or_persistent_session_approved: false
+  cancellation_execution_approved: false
+  controlled_ai_flow_execution_approved: false
+  satine_or_hermes_profile_acp_approved: false
+  live_or_default_on_approved: false
+  gateway_approved: false
+  feishu_or_im_approved: false
+  public_ingress_approved: false
+  real_delivery_approved: false
+  production_config_write_approved: false
+
+allowed_changed_paths:
+  - "sachima_supervisor/activity_controlled_exec.py"
+  - "sachima_supervisor/roles/claude_code_read_only_reviewer_v1.json"
+  - "scripts/sachima_claude_code_read_only_smoke.py"
+  - "tests/sachima_supervisor/test_activity_controlled_exec.py"
+  - "tests/sachima_supervisor/test_claude_code_read_only_role.py"
+  - "docs/plans/2026-06-14-agent-run-supervisor-sachima-wp1a-claude-code-read-only-role-implementation.md"
+  - "docs/plans/2026-06-14-agent-run-supervisor-sachima-wp1a-claude-code-read-only-role-implementation-manifest.yaml"
+  - "docs/dev_log/2026-06-14-agent-run-supervisor-sachima-wp1a-claude-code-read-only-role-implementation.md"
+  - "docs/roadmap/current-status.md"
+
+implemented_apis:
+  - "CONTROLLED_EXEC_ROLE_ADAPTER_AGENT mapping (codex->codex, claude read-only->claude)"
+  - "CONTROLLED_EXEC_ROLE_ALLOWLIST claude read-only entry"
+  - "_check_role_capability per-role adapter binding"
+  - "scripts/sachima_claude_code_read_only_smoke.py run_self_test / main"
+
+committed_role:
+  path: "sachima_supervisor/roles/claude_code_read_only_reviewer_v1.json"
+  role_id: "sachima.claude.read_only_reviewer"
+  adapter_agent: "claude"
+  acpx_binary: null
+  session_strategy: "exec"
+  read_only: true
+  runnable_by_construction: false
+
+blocked_modes:
+  - "real Claude Code one-shot exec (WP1b)"
+  - "real acpx invocation"
+  - "npx/network-fetch runnable fallback"
+  - "multi-turn / persistent sessions"
+  - "cancellation execution"
+  - "write-capable roles"
+  - "live delivery"
+
+explicit_non_approvals:
+  - "real_claude_code_smoke_wp1b"
+  - "additional_real_local_smoke_execution"
+  - "additional_real_agent_execution"
+  - "additional_acpx_invocation"
+  - "npx_fallback_or_network_fetch_evidence"
+  - "write_capable_claude_or_codex_roles"
+  - "unbounded_or_additional_persistent_session_execution"
+  - "cancellation_execution"
+  - "controlled_ai_flow_execution"
+  - "satine_or_hermes_profile_acp_execution"
+  - "real_external_sachima_ingress"
+  - "real_external_delivery"
+  - "production_config_write"
+  - "gateway_involvement_or_mutation"
+  - "feishu_or_im_delivery"
+  - "live_or_default_on_behavior"
+  - "public_webhook_exposure"
+
+verification_gates:
+  - "uv run --extra dev pytest tests/sachima_supervisor/test_activity_controlled_exec.py tests/sachima_supervisor/test_claude_code_read_only_role.py -q"
+  - "uv run --extra dev python scripts/sachima_claude_code_read_only_smoke.py --self-test"
+  - "uv run --extra dev pytest tests/sachima_supervisor -q"
+  - "uv run --extra dev python -m compileall sachima_supervisor scripts/sachima_claude_code_read_only_smoke.py"
+  - "git diff --check"
+  - "codegraph status"
+  - "fresh independent Codex blocker-only review: PASS / BLOCKERS None"
+
+strongest_allowed_outcome: "pr_candidate_local_offline_wp1a_claude_code_read_only_role_and_capability_gate"
+strongest_allowed_outcome_meaning: "A default-off, fail-closed read-only Claude Code reviewer role plus a per-role adapter capability-gate extension, exercised with injected fakes and a deterministic self-test only. It proves the admit/reject paths for the Claude adapter; it does not run or approve real Claude Code execution (WP1b), real acpx, write-capable roles, multi-turn sessions, cancellation, controlled AI FLOW, or any live/Gateway/Feishu/production config/real delivery. Merge remains a separate owner decision after PR/CI."

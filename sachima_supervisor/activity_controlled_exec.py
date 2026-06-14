@@ -14,9 +14,13 @@ Boundaries enforced here (local/offline only):
   * Only the explicit ``exec_controlled`` mode is accepted. ``exec_dry_run``
     keeps its existing path; seam-level ``exec``, session, cancel, live, and
     delivery-shaped modes are rejected here.
-  * Only the read-only Codex primary reviewer role is runnable. Claude
-    architect / main-programmer / docs roles and the Codex blocker-only
-    reviewer are documented future mainline keys and fail closed.
+  * Only read-only one-shot reviewer roles are runnable: the Codex primary
+    reviewer (``adapter_agent=codex``) and the Claude Code read-only reviewer
+    (``adapter_agent=claude``). Each role key pins exactly one adapter via
+    ``CONTROLLED_EXEC_ROLE_ADAPTER_AGENT``, so a role file can never run under
+    the wrong adapter. The write-capable Claude architect / main-programmer /
+    docs roles and the Codex blocker-only reviewer are documented future
+    mainline keys and fail closed.
   * Pinned local runner provenance: the allowlisted role file must declare a
     non-null absolute local ``acpx_binary`` and the request must carry the
     exact sha256 digest of that role file. A null binary (which would fall
@@ -106,11 +110,25 @@ CONTROLLED_LOCAL_EXEC_APPROVAL_TOKEN = (
 CONTROLLED_EXEC_MODE = "exec_controlled"
 CONTROLLED_EXEC_MODES: frozenset[str] = frozenset({CONTROLLED_EXEC_MODE})
 
-#: First-slice runnable role allowlist. Values are role-config refs relative
-#: to the role root (default: this package directory). Only the read-only
-#: Codex primary reviewer is runnable in Phase C.
+#: Runnable role allowlist. Values are role-config refs relative to the role
+#: root (default: this package directory). The read-only Codex primary reviewer
+#: (Phase C) and the read-only Claude Code reviewer (WP1a) are the only runnable
+#: roles; both stay read/search-only one-shot ``exec`` and are committed
+#: null-binary (non-runnable by construction until an operator pins a verified
+#: local acpx).
 CONTROLLED_EXEC_ROLE_ALLOWLIST: Mapping[str, str] = {
     "sachima.codex.primary_reviewer": "roles/codex_primary_reviewer_exec_controlled_v1.json",
+    "sachima.claude.read_only_reviewer": "roles/claude_code_read_only_reviewer_v1.json",
+}
+
+#: Per-role required adapter agent. Each runnable role pins exactly one adapter
+#: so a role file can never run under the wrong one: the Codex primary reviewer
+#: must declare ``adapter_agent=codex`` and the Claude Code read-only reviewer
+#: ``adapter_agent=claude``. The map is kept in lockstep with the runnable
+#: allowlist (same key set) and disjoint from the future role keys.
+CONTROLLED_EXEC_ROLE_ADAPTER_AGENT: Mapping[str, str] = {
+    "sachima.codex.primary_reviewer": "codex",
+    "sachima.claude.read_only_reviewer": "claude",
 }
 
 #: Documented future mainline role keys (per the PRD role map). They are NOT
@@ -154,7 +172,6 @@ _FAILURE_COLLAPSE_CODES = frozenset(
 
 _REQUIRED_RUNNER_TYPE = "acpx"
 _REQUIRED_ACPX_VERSION = "0.10.0"
-_REQUIRED_ADAPTER_AGENT = "codex"
 _REQUIRED_ROLE_SCHEMA_VERSION = 1
 #: Package-runner basename that implies a network fetch; never a pinned local
 #: binary.
@@ -792,22 +809,31 @@ def _check_runner_provenance(
 def _capability_error() -> ControlledLocalExecError:
     return ControlledLocalExecError(
         "activity_role_capability_rejected",
-        "role config exceeds the read-only Codex one-shot first slice",
+        "role config exceeds the read-only one-shot reviewer first slice",
     )
 
 
 def _check_role_capability(
     request: ControlledLocalExecRequest, mapping: Mapping[str, Any]
 ) -> None:
-    """Reject any role config beyond read-only Codex one-shot exec."""
+    """Reject any role config beyond a read-only one-shot reviewer.
 
+    The role file must declare exactly the adapter agent its role key pins in
+    ``CONTROLLED_EXEC_ROLE_ADAPTER_AGENT`` (``codex`` for the Codex primary
+    reviewer, ``claude`` for the Claude Code read-only reviewer), so a Codex
+    role can never run under the Claude adapter and vice versa.
+    """
+
+    required_adapter = CONTROLLED_EXEC_ROLE_ADAPTER_AGENT.get(request.role_key)
+    if required_adapter is None:
+        raise _capability_error()
     if (
         mapping.get("schema_version") != _REQUIRED_ROLE_SCHEMA_VERSION
         or mapping.get("role_id") != request.role_key
     ):
         raise _capability_error()
     runner = mapping["runner"]
-    if runner.get("adapter_agent") != _REQUIRED_ADAPTER_AGENT:
+    if runner.get("adapter_agent") != required_adapter:
         raise _capability_error()
     permissions = mapping.get("permissions")
     if type(permissions) is not dict:
