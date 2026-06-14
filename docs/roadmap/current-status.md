@@ -11,9 +11,20 @@
 ```json
 {
   "base_branch": "release/sachima",
-  "base_head": "eeec8f0e857415bf592a99565333e434940f4a75",
+  "base_head": "b59f12d518951e62acdc2a329d6569f94a765546",
   "base_head_note": "latest first-parent base commit excluding machine status-sync self-commits",
   "latest_merged_prs": [
+    {
+      "baseRefName": "release/sachima",
+      "headRefName": "feature/feishu-pr-card-i18n",
+      "mergeCommit": {
+        "oid": "b59f12d518951e62acdc2a329d6569f94a765546"
+      },
+      "mergedAt": "2026-06-14T19:29:02Z",
+      "number": 136,
+      "title": "feat: localize Feishu PR approval cards",
+      "url": "https://github.com/jovijovi/sachima/pull/136"
+    },
     {
       "baseRefName": "release/sachima",
       "headRefName": "feature/feishu-pr-approval-card",
@@ -57,17 +68,6 @@
       "number": 132,
       "title": "feat: automate roadmap status sync",
       "url": "https://github.com/jovijovi/sachima/pull/132"
-    },
-    {
-      "baseRefName": "release/sachima",
-      "headRefName": "feature/wp1a-claude-code-read-only",
-      "mergeCommit": {
-        "oid": "d2e8c49f7042715062ec755eb8177396d6df3bcd"
-      },
-      "mergedAt": "2026-06-14T08:04:15Z",
-      "number": 131,
-      "title": "feat: add WP1a Claude read-only role gate",
-      "url": "https://github.com/jovijovi/sachima/pull/131"
     }
   ],
   "open_pr_count": 0,
