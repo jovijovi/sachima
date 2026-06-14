@@ -40,6 +40,7 @@ _ensure_feishu_mocks()
 from gateway.config import PlatformConfig
 import gateway.platforms.feishu as feishu_module
 from gateway.platforms.feishu import FeishuAdapter
+from gateway.platforms.base import MessageType
 
 
 # ---------------------------------------------------------------------------
@@ -745,6 +746,258 @@ class TestCardActionCallbackResponse:
         data = _make_card_action_data(
             {"hermes_update_prompt_action": "y", "update_prompt_id": 1},
             open_id="ou_intruder",
+        )
+
+        with patch("asyncio.run_coroutine_threadsafe") as mock_submit:
+            response = adapter._on_card_action_trigger(data)
+
+        assert response is not None
+        assert response.card is None
+        mock_submit.assert_not_called()
+
+
+class TestFeishuGitHubPrApprovalCard:
+    """Test Feishu GitHub PR approval cards."""
+
+    @pytest.mark.asyncio
+    async def test_sends_github_pr_approval_card(self):
+        adapter = _make_adapter()
+
+        mock_response = SimpleNamespace(
+            success=lambda: True,
+            data=SimpleNamespace(message_id="msg_pr_001"),
+        )
+        with patch.object(
+            adapter, "_feishu_send_with_retry", new_callable=AsyncMock,
+            return_value=mock_response,
+        ) as mock_send:
+            result = await adapter.send_github_pr_approval_card(
+                chat_id="oc_12345",
+                repo="NousResearch/hermes-agent",
+                pr_number=123,
+                title="Add Feishu PR approval card",
+                pr_url="https://github.com/NousResearch/hermes-agent/pull/123",
+                author="octocat",
+                head_sha="abc123def456",
+                base_ref="release/sachima",
+                head_ref="feature/feishu-pr-approval-card",
+                session_key="agent:main:feishu:group:oc_12345",
+                metadata={"thread_id": "th_1"},
+            )
+
+        assert result.success is True
+        assert result.message_id == "msg_pr_001"
+
+        kwargs = mock_send.call_args[1]
+        assert kwargs["chat_id"] == "oc_12345"
+        assert kwargs["msg_type"] == "interactive"
+        assert kwargs["metadata"] == {"thread_id": "th_1"}
+
+        card = json.loads(kwargs["payload"])
+        assert card["header"]["template"] == "blue"
+        assert "PR #123" in card["header"]["title"]["content"]
+        assert "NousResearch/hermes-agent" in card["elements"][0]["content"]
+        assert "Add Feishu PR approval card" in card["elements"][0]["content"]
+        assert "abc123def456" in card["elements"][0]["content"]
+        actions = card["elements"][1]["actions"]
+        assert [a["value"]["hermes_github_pr_action"] for a in actions] == [
+            "approve", "reject", "ignore"
+        ]
+        approval_id = actions[0]["value"]["github_pr_approval_id"]
+        assert approval_id in adapter._github_pr_approval_state
+        state = adapter._github_pr_approval_state[approval_id]
+        assert state["repo"] == "NousResearch/hermes-agent"
+        assert state["pr_number"] == "123"
+        assert state["message_id"] == "msg_pr_001"
+        assert state["chat_id"] == "oc_12345"
+
+
+    @pytest.mark.asyncio
+    async def test_requires_head_sha_before_sending_card(self):
+        adapter = _make_adapter()
+
+        with patch.object(adapter, "_feishu_send_with_retry", new_callable=AsyncMock) as mock_send:
+            result = await adapter.send_github_pr_approval_card(
+                chat_id="oc_12345",
+                repo="NousResearch/hermes-agent",
+                pr_number=123,
+                title="Add Feishu PR approval card",
+                head_sha="",
+            )
+
+        assert result.success is False
+        assert "head_sha" in (result.error or "")
+        mock_send.assert_not_awaited()
+
+
+class TestGitHubPrApprovalResolution:
+    """Test PR approval button effects stay inside the controlled merge flow."""
+
+    @pytest.mark.asyncio
+    async def test_approve_routes_synthetic_merge_request_with_fresh_gate_context(self):
+        adapter = _make_adapter()
+        adapter._github_pr_approval_state[1] = {
+            "chat_id": "oc_12345",
+            "message_id": "msg_pr_001",
+            "repo": "NousResearch/hermes-agent",
+            "pr_number": "123",
+            "title": "Add Feishu PR approval card",
+            "pr_url": "https://github.com/NousResearch/hermes-agent/pull/123",
+            "author": "octocat",
+            "head_sha": "abc123def456",
+            "base_ref": "release/sachima",
+            "head_ref": "feature/feishu-pr-approval-card",
+            "session_key": "agent:main:feishu:group:oc_12345",
+        }
+
+        with (
+            patch.object(
+                adapter,
+                "_resolve_sender_profile",
+                new_callable=AsyncMock,
+                return_value={"user_id": "ou_bob", "user_name": "Bob", "user_id_alt": None},
+            ),
+            patch.object(adapter, "get_chat_info", new_callable=AsyncMock, return_value={"name": "Review Chat"}),
+            patch.object(adapter, "_handle_message_with_guards", new_callable=AsyncMock) as mock_handle,
+        ):
+            await adapter._resolve_github_pr_approval(
+                1,
+                "approve",
+                "Bob",
+                open_id="ou_bob",
+                chat_id="oc_12345",
+                **{"token": "tok_pr_" + "approve"},
+            )
+
+        assert 1 not in adapter._github_pr_approval_state
+        mock_handle.assert_awaited_once()
+        synthetic_event = mock_handle.call_args[0][0]
+        assert synthetic_event.message_type == MessageType.TEXT
+        assert "批准合并 PR #123" in synthetic_event.text
+        assert "NousResearch/hermes-agent" in synthetic_event.text
+        assert "abc123def456" in synthetic_event.text
+        assert "fresh-check" in synthetic_event.text
+        assert synthetic_event.source.chat_id == "oc_12345"
+        assert synthetic_event.source.user_name == "Bob"
+
+    @pytest.mark.asyncio
+    async def test_reject_records_status_without_routing_merge_request(self):
+        adapter = _make_adapter()
+        adapter._github_pr_approval_state[2] = {
+            "chat_id": "oc_12345",
+            "message_id": "msg_pr_002",
+            "repo": "NousResearch/hermes-agent",
+            "pr_number": "124",
+        }
+
+        with patch.object(adapter, "_handle_message_with_guards", new_callable=AsyncMock) as mock_handle:
+            await adapter._resolve_github_pr_approval(
+                2,
+                "reject",
+                "Alice",
+                open_id="ou_alice",
+                chat_id="oc_12345",
+                **{"token": "tok_pr_" + "reject"},
+            )
+
+        assert 2 not in adapter._github_pr_approval_state
+        mock_handle.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_ignore_records_status_without_routing_merge_request(self):
+        adapter = _make_adapter()
+        adapter._github_pr_approval_state[3] = {
+            "chat_id": "oc_12345",
+            "message_id": "msg_pr_003",
+            "repo": "NousResearch/hermes-agent",
+            "pr_number": "125",
+        }
+
+        with patch.object(adapter, "_handle_message_with_guards", new_callable=AsyncMock) as mock_handle:
+            await adapter._resolve_github_pr_approval(
+                3,
+                "ignore",
+                "Alice",
+                open_id="ou_alice",
+                chat_id="oc_12345",
+                **{"token": "tok_pr_" + "ignore"},
+            )
+
+        assert 3 not in adapter._github_pr_approval_state
+        mock_handle.assert_not_awaited()
+
+
+class TestGitHubPrApprovalCallbackResponse:
+    """Test PR approval card callbacks return inline status cards."""
+
+    def test_returns_status_card_for_pr_approve_action(self, _patch_callback_card_types):
+        adapter = _make_adapter()
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._allowed_group_users = {"ou_bob"}
+        adapter._github_pr_approval_state[1] = {
+            "chat_id": "oc_12345",
+            "message_id": "msg_pr_001",
+            "repo": "NousResearch/hermes-agent",
+            "pr_number": "123",
+            "head_sha": "abc123def456",
+        }
+        adapter._sender_name_cache["ou_bob"] = ("Bob", 9999999999)
+        data = _make_card_action_data(
+            {"hermes_github_pr_action": "approve", "github_pr_approval_id": 1},
+            open_id="ou_bob",
+        )
+
+        with patch("asyncio.run_coroutine_threadsafe", side_effect=_close_submitted_coro):
+            response = adapter._on_card_action_trigger(data)
+
+        assert response is not None
+        assert response.card is not None
+        assert response.card.type == "raw"
+        card = response.card.data
+        assert card["header"]["template"] == "green"
+        assert "PR #123" in card["header"]["title"]["content"]
+        assert "fresh pre-merge checks" in card["elements"][0]["content"]
+        assert "Bob" in card["elements"][0]["content"]
+
+    def test_rejects_pr_action_from_unauthorized_user(self, _patch_callback_card_types):
+        adapter = _make_adapter()
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._allowed_group_users = {"ou_allowed"}
+        adapter._github_pr_approval_state[2] = {
+            "chat_id": "oc_12345",
+            "message_id": "msg_pr_002",
+            "repo": "NousResearch/hermes-agent",
+            "pr_number": "124",
+        }
+        data = _make_card_action_data(
+            {"hermes_github_pr_action": "approve", "github_pr_approval_id": 2},
+            open_id="ou_attacker",
+        )
+
+        with patch("asyncio.run_coroutine_threadsafe") as mock_submit:
+            response = adapter._on_card_action_trigger(data)
+
+        assert response is not None
+        assert response.card is None
+        mock_submit.assert_not_called()
+    def test_rejects_pr_action_when_callback_chat_missing(self, _patch_callback_card_types):
+        adapter = _make_adapter()
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._allowed_group_users = {"ou_bob"}
+        adapter._github_pr_approval_state[3] = {
+            "chat_id": "oc_expected",
+            "message_id": "msg_pr_003",
+            "repo": "NousResearch/hermes-agent",
+            "pr_number": "125",
+            "head_sha": "abc123def456",
+        }
+        data = _make_card_action_data(
+            {"hermes_github_pr_action": "approve", "github_pr_approval_id": 3},
+            chat_id="",
+            open_id="ou_bob",
         )
 
         with patch("asyncio.run_coroutine_threadsafe") as mock_submit:
