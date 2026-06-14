@@ -77,6 +77,13 @@ real_smoke_evidence:
     service_restart: false
     real_delivery: false
 
+status_closure_pr:
+  number: 134
+  url: "https://github.com/jovijovi/sachima/pull/134"
+  state: "open_pending_merge_decision"
+  head_branch: "docs/wp1b-claude-readonly-smoke-status-closure"
+  base_branch: "release/sachima"
+
 verification_gates:
   - "python3 - <<'PY' YAML parse for manifest files PY"
   - "git diff --check"
