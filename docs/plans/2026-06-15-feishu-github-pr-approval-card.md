@@ -16,6 +16,8 @@ Make recurring GitHub PR merge approvals available as a Feishu interactive card 
   - approve: route a guarded synthetic user approval back into the same chat/session.
   - reject: record a rejected/declined card result; do not merge.
   - ignore: record an ignored card result; do not merge.
+- Support localized PR approval cards (`locale: auto | zh-CN | en`). In Feishu, `auto` currently resolves to Chinese.
+- Preserve PR metadata in the resolved card after approve/reject/ignore so the user can still see repo/title/head SHA/URL.
 - Preserve existing dangerous-command approval buttons and update prompt buttons unchanged.
 
 ## First-slice behavior
@@ -36,11 +38,14 @@ The synthetic approve command must include the repo, PR number, and expected hea
 
 1. Feishu card payload contains PR repo, number, URL, title, base/head branch, and required head SHA.
 2. Button values carry a distinct `hermes_github_pr_action` and `github_pr_approval_id`; PR metadata is stored server-side in the adapter.
-3. Approve click schedules a synthetic `批准合并 PR #N` user message through existing guarded Feishu message handling.
-4. Reject/ignore clicks do not schedule a merge command and return a resolved card.
-5. Unauthorized clickers, chat mismatch, and already-resolved/unknown approval IDs do nothing.
-6. Existing command approval and update prompt card tests remain green.
-7. Skill documents when to send the card and the required fresh-check rules.
+3. The tool accepts optional `locale` (`auto`, `zh-CN`, `en`) and rejects unsupported locale values before sending.
+4. Initial and resolved cards render localized text for Chinese and English.
+5. Resolved approve/reject/ignore cards preserve original PR repo/title/base/head/head SHA/URL instead of replacing the card with status-only text.
+6. Approve click schedules a synthetic `批准合并 PR #N` user message through existing guarded Feishu message handling.
+7. Reject/ignore clicks do not schedule a merge command and return a resolved card.
+8. Unauthorized clickers, chat mismatch, and already-resolved/unknown approval IDs do nothing.
+9. Existing command approval and update prompt card tests remain green.
+10. Skill documents when to send the card and the required fresh-check rules.
 
 ## Verification plan
 
