@@ -1,20 +1,22 @@
 phase_id: "agent-run-supervisor-sachima-wp1b-claude-code-read-only-smoke-dependency-installation-invocation"
 level: "level-2-docs"
-status: "documented"
+status: "real_smoke_passed"
 repo: "jovijovi/sachima"
 base_branch: "release/sachima"
 created_at: "2026-06-14"
 owner_dri: "Hermes operator with Dog Brother approval"
 
 scope:
-  docs_only: true
+  docs_only: false
+  status_closure_docs_only: true
   local_offline_only: true
   dependency_inventory: true
   installation_notes: true
   invocation_notes: true
-  real_smoke_execution: false
-  acpx_invocation: false
-  npx_or_network_fetch: false
+  real_smoke_execution: true
+  acpx_invocation: true
+  smoke_runner_npx_or_network_fetch: false
+  pre_smoke_host_local_provisioning: true
   gateway: false
   feishu_or_im: false
   live_or_default_on: false
@@ -43,8 +45,39 @@ components:
     optional_dev_dependencies:
       - "pytest>=8,<10"
 
-strongest_allowed_outcome: "dependency_installation_invocation_documentation_only"
-strongest_allowed_outcome_meaning: "Documents the WP1b acpx and agent-run-supervisor dependency/provisioning/invocation contract. It does not run a smoke, invoke acpx, install packages, use network fetch, or approve live/Gateway/Feishu/production/real-delivery behavior."
+strongest_allowed_outcome: "single_bounded_claude_code_read_only_real_local_smoke_passed"
+strongest_allowed_outcome_meaning: "One separately approved WP1b bounded Claude Code read-only real local smoke passed through the Sachima controlled local exec wrapper with pinned local acpx, out-of-repo evidence, no duplicate replay launch, and no live/Gateway/Feishu/production/real-delivery behavior."
+
+real_smoke_evidence:
+  status: "PASS"
+  approval: "approve_agent_run_supervisor_sachima_claude_code_read_only_bounded_real_local_smoke_pinned_local_runner_only_single_run_no_unbounded_no_cancellation_no_write_roles_no_live_no_gateway_no_feishu_no_production_config_no_real_delivery"
+  evidence_root: "/data/agents/workspace/hermes/outputs/sachima/wp1b-claude-readonly-smoke-20260614T162903Z"
+  preflight_summary: "/data/agents/workspace/hermes/outputs/sachima/wp1b-claude-readonly-smoke-20260614T162903Z/preflight-summary.json"
+  post_verify_summary: "/data/agents/workspace/hermes/outputs/sachima/wp1b-claude-readonly-smoke-20260614T162903Z/post-verify-summary.json"
+  host_postverify_compact: "/data/agents/workspace/hermes/outputs/sachima/wp1b-claude-readonly-smoke-20260614T162903Z/host-postverify-compact.json"
+  host_postverify_processes: "/data/agents/workspace/hermes/outputs/sachima/wp1b-claude-readonly-smoke-20260614T162903Z/host-postverify-processes.json"
+  host_postverify_policy_redaction: "/data/agents/workspace/hermes/outputs/sachima/wp1b-claude-readonly-smoke-20260614T162903Z/host-postverify-policy-redaction.json"
+  execution_pipeline: "PASS"
+  business_task: "VERDICT: PASS"
+  real_run_count: 1
+  replay_created_extra_run: false
+  leftover_acpx_or_claude_processes: 0
+  permission_policy: "default-deny; auto-approve read/search; auto-deny delete/edit/execute/fetch/move/other/switch_mode"
+  non_approvals_held:
+    additional_real_local_smoke: false
+    persistent_or_unbounded_sessions: false
+    cancellation_execution: false
+    write_capable_roles: false
+    controlled_ai_flow_execution: false
+    satine_or_hermes_profile_acp_execution: false
+    gateway: false
+    feishu_or_im_delivery: false
+    public_ingress: false
+    production_config_write: false
+    service_restart: false
+    real_delivery: false
+
 verification_gates:
   - "python3 - <<'PY' YAML parse for manifest files PY"
   - "git diff --check"
+  - "python3 tools/sync_roadmap_status.py --check --base-remote sachima"
