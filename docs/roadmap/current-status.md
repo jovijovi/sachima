@@ -12,6 +12,7 @@
 {
   "base_branch": "release/sachima",
   "base_head": "0d6e5a690eaa359861eb3049dc5875b4b5b26dc1",
+  "base_head_note": "latest first-parent base commit excluding machine status-sync self-commits",
   "latest_merged_prs": [
     {
       "baseRefName": "release/sachima",
