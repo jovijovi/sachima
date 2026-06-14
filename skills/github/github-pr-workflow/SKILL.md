@@ -149,6 +149,26 @@ The response JSON includes the PR `number` — save it for later commands.
 
 To create as a draft, add `"draft": true` to the JSON body.
 
+### Feishu PR approval cards
+
+When working inside a Feishu gateway session, use `github_pr_approval_card` to ask for merge approval with buttons instead of asking the user to type `批准合并 PR #N` manually.
+
+Required fields:
+- `repo`
+- `pr_number`
+- `head_sha`
+
+Optional metadata:
+- `title`, `pr_url`, `author`, `base_ref`, `head_ref`
+- `locale`: `auto`, `zh-CN`, or `en`. `auto` resolves to Chinese for Feishu cards.
+
+Rules:
+- The approve button is only a UI shortcut into the existing controlled merge path; it must not directly merge.
+- The approve callback must route a synthetic approval message back to Hermes, including repo, PR number, and head SHA.
+- Hermes must fresh-check live PR state, expected head SHA, CI/checks, and mergeability before any merge.
+- Reject and ignore never trigger a merge request.
+- Resolved cards should preserve the original PR metadata so humans can still see what was approved, rejected, or ignored.
+
 ## 4. Monitoring CI Status
 
 ### Check CI Status

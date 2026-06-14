@@ -13,6 +13,23 @@ from gateway.platforms.feishu import get_active_adapter
 from tools.registry import registry, tool_error
 
 
+_LOCALE_ALIASES = {
+    "": "zh-CN",
+    "auto": "zh-CN",
+    "zh": "zh-CN",
+    "zh-cn": "zh-CN",
+    "zh_cn": "zh-CN",
+    "cn": "zh-CN",
+    "en": "en",
+    "en-us": "en",
+    "en_us": "en",
+}
+
+
+def _normalize_locale(locale: Any = "auto") -> str:
+    return _LOCALE_ALIASES.get(str(locale or "auto").strip().lower(), "")
+
+
 GITHUB_PR_APPROVAL_CARD_SCHEMA = {
     "name": "github_pr_approval_card",
     "description": (
@@ -41,6 +58,11 @@ GITHUB_PR_APPROVAL_CARD_SCHEMA = {
             "head_sha": {"type": "string", "description": "Current PR head SHA to display and re-check."},
             "base_ref": {"type": "string", "description": "Target/base branch."},
             "head_ref": {"type": "string", "description": "Source/head branch."},
+            "locale": {
+                "type": "string",
+                "enum": ["auto", "zh-CN", "en"],
+                "description": "Card language. 'auto' defaults to Chinese in Feishu; use 'en' for English.",
+            },
         },
         "required": ["repo", "pr_number", "head_sha"],
     },
@@ -81,6 +103,8 @@ def _validate_args(args: Dict[str, Any]) -> str:
         return "pr_number must be a positive integer"
     if not str(args.get("head_sha") or "").strip():
         return "head_sha is required"
+    if "locale" in args and not _normalize_locale(args.get("locale")):
+        return "locale must be one of: auto, zh-CN, en"
     return ""
 
 
@@ -114,6 +138,7 @@ def github_pr_approval_card_tool(args, **_kwargs) -> str:
                 head_sha=str(args.get("head_sha") or ""),
                 base_ref=str(args.get("base_ref") or ""),
                 head_ref=str(args.get("head_ref") or ""),
+                locale=_normalize_locale(args.get("locale", "auto")),
                 session_key=_current_session_key(),
                 metadata=_session_metadata(),
             )

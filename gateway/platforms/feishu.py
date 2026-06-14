@@ -260,11 +260,66 @@ _APPROVAL_LABEL_MAP: Dict[str, str] = {
     "deny": "Denied",
 }
 _GITHUB_PR_APPROVAL_ACTIONS = frozenset({"approve", "reject", "ignore"})
-_GITHUB_PR_APPROVAL_LABEL_MAP: Dict[str, str] = {
-    "approve": "Approved for gated merge",
-    "reject": "Rejected",
-    "ignore": "Ignored",
+_GITHUB_PR_APPROVAL_LOCALE_ALIASES: Dict[str, str] = {
+    "": "zh-CN",
+    "auto": "zh-CN",
+    "zh": "zh-CN",
+    "zh-cn": "zh-CN",
+    "zh_cn": "zh-CN",
+    "cn": "zh-CN",
+    "en": "en",
+    "en-us": "en",
+    "en_us": "en",
 }
+_GITHUB_PR_APPROVAL_I18N: Dict[str, Dict[str, str]] = {
+    "zh-CN": {
+        "initial_title": "GitHub PR #{pr_number} 合并审批",
+        "repo": "仓库",
+        "title": "标题",
+        "author": "作者",
+        "base": "目标分支",
+        "head": "源分支",
+        "head_sha": "Head SHA",
+        "url": "URL",
+        "initial_notice": "点击 **批准** 只会把审批送回 Hermes；Hermes 仍必须重新检查 PR 状态、head SHA、CI 和 mergeability 后才可合并。",
+        "approve_button": "✅ 批准",
+        "reject_button": "❌ 拒绝",
+        "ignore_button": "忽略",
+        "approve_label": "已批准",
+        "reject_label": "已拒绝",
+        "ignore_label": "已忽略",
+        "approve_detail": "已回传给 Hermes；Hermes 会先重新检查 PR 状态、head SHA、CI 和 mergeability，再按受控流程处理。",
+        "reject_detail": "合并审批已拒绝。未触发合并请求。",
+        "ignore_detail": "审批卡已忽略。未触发合并请求。",
+        "operator": "操作人",
+    },
+    "en": {
+        "initial_title": "GitHub PR #{pr_number} merge approval",
+        "repo": "Repo",
+        "title": "Title",
+        "author": "Author",
+        "base": "Base",
+        "head": "Head",
+        "head_sha": "Head SHA",
+        "url": "URL",
+        "initial_notice": "Clicking **Approve** only sends the approval back to Hermes. Hermes will still re-check PR state, head SHA, CI, and mergeability before any merge.",
+        "approve_button": "✅ Approve",
+        "reject_button": "❌ Reject",
+        "ignore_button": "Ignore",
+        "approve_label": "Approved for gated merge",
+        "reject_label": "Rejected",
+        "ignore_label": "Ignored",
+        "approve_detail": "Approval sent back to Hermes. Hermes will run fresh pre-merge checks before any merge.",
+        "reject_detail": "Merge approval rejected. No merge request was routed.",
+        "ignore_detail": "Approval card ignored. No merge request was routed.",
+        "operator": "Operator",
+    },
+}
+
+
+def _normalize_github_pr_approval_locale(locale: str = "auto") -> str:
+    normalized = str(locale or "auto").strip().lower()
+    return _GITHUB_PR_APPROVAL_LOCALE_ALIASES.get(normalized, "zh-CN")
 _FEISHU_BOT_MSG_TRACK_SIZE = 512                   # LRU size for tracking sent message IDs
 _FEISHU_REPLY_FALLBACK_CODES = frozenset({230011, 231003})  # reply target withdrawn/missing → create fallback
 
@@ -2067,6 +2122,24 @@ class FeishuAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=str(exc))
 
     @staticmethod
+    def _build_github_pr_detail_content(*, state: Dict[str, str], locale: str) -> str:
+        text = _GITHUB_PR_APPROVAL_I18N[_normalize_github_pr_approval_locale(locale)]
+
+        def _line(label: str, value: str) -> str:
+            return f"**{label}:** {value}" if value else ""
+
+        detail_lines = [
+            _line(text["repo"], state.get("repo", "")),
+            _line(text["title"], state.get("title", "")),
+            _line(text["author"], state.get("author", "")),
+            _line(text["base"], state.get("base_ref", "")),
+            _line(text["head"], state.get("head_ref", "")),
+            _line(text["head_sha"], state.get("head_sha", "")),
+            _line(text["url"], state.get("pr_url", "")),
+        ]
+        return "\n".join(line for line in detail_lines if line)
+
+    @staticmethod
     def _build_github_pr_approval_card(
         *,
         approval_id: int,
@@ -2078,22 +2151,21 @@ class FeishuAdapter(BasePlatformAdapter):
         head_sha: str = "",
         base_ref: str = "",
         head_ref: str = "",
+        locale: str = "auto",
     ) -> Dict[str, Any]:
-        def _line(label: str, value: str) -> str:
-            return f"**{label}:** {value}" if value else ""
-
-        detail_lines = [
-            _line("Repo", repo),
-            _line("Title", title),
-            _line("Author", author),
-            _line("Base", base_ref),
-            _line("Head", head_ref),
-            _line("Head SHA", head_sha),
-            _line("URL", pr_url),
-            "",
-            "点击 **批准** 只会把审批送回 Hermes；Hermes 仍必须重新检查 PR 状态、head SHA、CI 和 mergeability 后才可合并。",
-        ]
-        content = "\n".join(line for line in detail_lines if line or line == "")
+        locale = _normalize_github_pr_approval_locale(locale)
+        text = _GITHUB_PR_APPROVAL_I18N[locale]
+        state = {
+            "repo": repo,
+            "title": title,
+            "author": author,
+            "base_ref": base_ref,
+            "head_ref": head_ref,
+            "head_sha": head_sha,
+            "pr_url": pr_url,
+        }
+        detail_content = FeishuAdapter._build_github_pr_detail_content(state=state, locale=locale)
+        content = "\n\n".join(part for part in (detail_content, text["initial_notice"]) if part)
 
         def _btn(label: str, action_name: str, btn_type: str = "default") -> dict:
             return {
@@ -2109,7 +2181,10 @@ class FeishuAdapter(BasePlatformAdapter):
         return {
             "config": {"wide_screen_mode": True},
             "header": {
-                "title": {"content": f"GitHub PR #{pr_number} merge approval", "tag": "plain_text"},
+                "title": {
+                    "content": text["initial_title"].format(pr_number=pr_number),
+                    "tag": "plain_text",
+                },
                 "template": "blue",
             },
             "elements": [
@@ -2117,9 +2192,9 @@ class FeishuAdapter(BasePlatformAdapter):
                 {
                     "tag": "action",
                     "actions": [
-                        _btn("✅ 批准", "approve", "primary"),
-                        _btn("❌ 拒绝", "reject", "danger"),
-                        _btn("忽略", "ignore"),
+                        _btn(text["approve_button"], "approve", "primary"),
+                        _btn(text["reject_button"], "reject", "danger"),
+                        _btn(text["ignore_button"], "ignore"),
                     ],
                 },
             ],
@@ -2137,6 +2212,7 @@ class FeishuAdapter(BasePlatformAdapter):
         head_sha: str = "",
         base_ref: str = "",
         head_ref: str = "",
+        locale: str = "auto",
         session_key: str = "",
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
@@ -2149,6 +2225,7 @@ class FeishuAdapter(BasePlatformAdapter):
         try:
             approval_id = next(self._github_pr_approval_counter)
             pr_number_text = str(pr_number).strip()
+            locale_text = _normalize_github_pr_approval_locale(locale)
             state = {
                 "chat_id": str(chat_id or ""),
                 "message_id": "",
@@ -2160,6 +2237,7 @@ class FeishuAdapter(BasePlatformAdapter):
                 "head_sha": str(head_sha or ""),
                 "base_ref": str(base_ref or ""),
                 "head_ref": str(head_ref or ""),
+                "locale": locale_text,
                 "session_key": str(session_key or ""),
             }
             payload = json.dumps(
@@ -2173,6 +2251,7 @@ class FeishuAdapter(BasePlatformAdapter):
                     head_sha=state["head_sha"],
                     base_ref=state["base_ref"],
                     head_ref=state["head_ref"],
+                    locale=state["locale"],
                 ),
                 ensure_ascii=False,
             )
@@ -2287,19 +2366,29 @@ class FeishuAdapter(BasePlatformAdapter):
         user_name: str,
     ) -> Dict[str, Any]:
         pr_number = state.get("pr_number", "")
-        label = _GITHUB_PR_APPROVAL_LABEL_MAP.get(action, "Resolved")
+        locale = _normalize_github_pr_approval_locale(state.get("locale", "auto"))
+        text = _GITHUB_PR_APPROVAL_I18N[locale]
         if action == "approve":
             icon = "✅"
             template = "green"
-            detail = "Approval sent back to Hermes. Hermes will run fresh pre-merge checks before any merge."
+            label = text["approve_label"]
+            detail = text["approve_detail"]
         elif action == "reject":
             icon = "❌"
             template = "red"
-            detail = "Merge approval rejected. No merge request was routed."
+            label = text["reject_label"]
+            detail = text["reject_detail"]
         else:
             icon = "⏭️"
             template = "grey"
-            detail = "Approval card ignored. No merge request was routed."
+            label = text["ignore_label"]
+            detail = text["ignore_detail"]
+        detail_content = FeishuAdapter._build_github_pr_detail_content(state=state, locale=locale)
+        content_parts = [
+            f"{icon} **{label}**\n\n{detail}",
+            f"**{text['operator']}:** {user_name}" if user_name else "",
+            detail_content,
+        ]
         return {
             "config": {"wide_screen_mode": True},
             "header": {
@@ -2309,7 +2398,7 @@ class FeishuAdapter(BasePlatformAdapter):
             "elements": [
                 {
                     "tag": "markdown",
-                    "content": f"{icon} **{label}** by {user_name}\n\n{detail}",
+                    "content": "\n\n".join(part for part in content_parts if part),
                 },
             ],
         }

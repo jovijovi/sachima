@@ -42,6 +42,7 @@ def test_sends_pr_approval_card_to_current_feishu_chat():
                     "head_sha": "abc123def456",
                     "base_ref": "release/sachima",
                     "head_ref": "feature/feishu-pr-approval-card",
+                    "locale": "zh-CN",
                 }
             )
         )
@@ -62,6 +63,7 @@ def test_sends_pr_approval_card_to_current_feishu_chat():
         head_sha="abc123def456",
         base_ref="release/sachima",
         head_ref="feature/feishu-pr-approval-card",
+        locale="zh-CN",
         session_key="agent:main:feishu:group:oc_12345",
         metadata={"thread_id": "th_1"},
     )
@@ -104,3 +106,21 @@ def test_requires_head_sha():
 
     assert "error" in result
     assert "head_sha is required" in result["error"]
+
+
+def test_rejects_unsupported_locale():
+    from tools.github_pr_approval_card import github_pr_approval_card_tool
+
+    result = json.loads(
+        github_pr_approval_card_tool(
+            {
+                "repo": "NousResearch/hermes-agent",
+                "pr_number": 123,
+                "head_sha": "abc123def456",
+                "locale": "fr",
+            }
+        )
+    )
+
+    assert "error" in result
+    assert "locale must be one of" in result["error"]

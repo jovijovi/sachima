@@ -781,6 +781,7 @@ class TestFeishuGitHubPrApprovalCard:
                 head_sha="abc123def456",
                 base_ref="release/sachima",
                 head_ref="feature/feishu-pr-approval-card",
+                locale="zh-CN",
                 session_key="agent:main:feishu:group:oc_12345",
                 metadata={"thread_id": "th_1"},
             )
@@ -796,6 +797,7 @@ class TestFeishuGitHubPrApprovalCard:
         card = json.loads(kwargs["payload"])
         assert card["header"]["template"] == "blue"
         assert "PR #123" in card["header"]["title"]["content"]
+        assert "合并审批" in card["header"]["title"]["content"]
         assert "NousResearch/hermes-agent" in card["elements"][0]["content"]
         assert "Add Feishu PR approval card" in card["elements"][0]["content"]
         assert "abc123def456" in card["elements"][0]["content"]
@@ -803,6 +805,7 @@ class TestFeishuGitHubPrApprovalCard:
         assert [a["value"]["hermes_github_pr_action"] for a in actions] == [
             "approve", "reject", "ignore"
         ]
+        assert [a["text"]["content"] for a in actions] == ["✅ 批准", "❌ 拒绝", "忽略"]
         approval_id = actions[0]["value"]["github_pr_approval_id"]
         assert approval_id in adapter._github_pr_approval_state
         state = adapter._github_pr_approval_state[approval_id]
@@ -810,7 +813,41 @@ class TestFeishuGitHubPrApprovalCard:
         assert state["pr_number"] == "123"
         assert state["message_id"] == "msg_pr_001"
         assert state["chat_id"] == "oc_12345"
+        assert state["locale"] == "zh-CN"
 
+    @pytest.mark.asyncio
+    async def test_sends_github_pr_approval_card_in_english(self):
+        adapter = _make_adapter()
+
+        mock_response = SimpleNamespace(
+            success=lambda: True,
+            data=SimpleNamespace(message_id="msg_pr_en"),
+        )
+        with patch.object(
+            adapter, "_feishu_send_with_retry", new_callable=AsyncMock,
+            return_value=mock_response,
+        ) as mock_send:
+            await adapter.send_github_pr_approval_card(
+                chat_id="oc_12345",
+                repo="NousResearch/hermes-agent",
+                pr_number=123,
+                title="Add Feishu PR approval card",
+                pr_url="https://github.com/NousResearch/hermes-agent/pull/123",
+                author="octocat",
+                head_sha="abc123def456",
+                base_ref="release/sachima",
+                head_ref="feature/feishu-pr-approval-card",
+                locale="en",
+            )
+
+        card = json.loads(mock_send.call_args[1]["payload"])
+        assert card["header"]["title"]["content"] == "GitHub PR #123 merge approval"
+        content = card["elements"][0]["content"]
+        assert "**Repo:** NousResearch/hermes-agent" in content
+        assert "**Title:** Add Feishu PR approval card" in content
+        assert "Hermes will still re-check" in content
+        actions = card["elements"][1]["actions"]
+        assert [a["text"]["content"] for a in actions] == ["✅ Approve", "❌ Reject", "Ignore"]
 
     @pytest.mark.asyncio
     async def test_requires_head_sha_before_sending_card(self):
@@ -941,6 +978,7 @@ class TestGitHubPrApprovalCallbackResponse:
             "repo": "NousResearch/hermes-agent",
             "pr_number": "123",
             "head_sha": "abc123def456",
+            "locale": "en",
         }
         adapter._sender_name_cache["ou_bob"] = ("Bob", 9999999999)
         data = _make_card_action_data(
@@ -959,6 +997,46 @@ class TestGitHubPrApprovalCallbackResponse:
         assert "PR #123" in card["header"]["title"]["content"]
         assert "fresh pre-merge checks" in card["elements"][0]["content"]
         assert "Bob" in card["elements"][0]["content"]
+
+    def test_returns_localized_ignore_status_card_with_original_pr_details(self, _patch_callback_card_types):
+        adapter = _make_adapter()
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._allowed_group_users = {"ou_bob"}
+        adapter._github_pr_approval_state[4] = {
+            "chat_id": "oc_12345",
+            "message_id": "msg_pr_004",
+            "repo": "jovijovi/sachima",
+            "pr_number": "135",
+            "title": "feat: add Feishu PR approval cards",
+            "pr_url": "https://github.com/jovijovi/sachima/pull/135",
+            "author": "jovijovi",
+            "head_sha": "6222ab08f6b84470fe6e1e9724e9467e0b77acd1",
+            "base_ref": "release/sachima",
+            "head_ref": "feature/feishu-pr-approval-card",
+            "locale": "zh-CN",
+        }
+        adapter._sender_name_cache["ou_bob"] = ("鲍勃", 9999999999)
+        data = _make_card_action_data(
+            {"hermes_github_pr_action": "ignore", "github_pr_approval_id": 4},
+            open_id="ou_bob",
+        )
+
+        with patch("asyncio.run_coroutine_threadsafe", side_effect=_close_submitted_coro):
+            response = adapter._on_card_action_trigger(data)
+
+        assert response is not None
+        assert response.card is not None
+        card = response.card.data
+        assert card["header"]["template"] == "grey"
+        assert card["header"]["title"]["content"] == "⏭️ PR #135 已忽略"
+        content = card["elements"][0]["content"]
+        assert "未触发合并请求" in content
+        assert "jovijovi/sachima" in content
+        assert "feat: add Feishu PR approval cards" in content
+        assert "6222ab08f6b84470fe6e1e9724e9467e0b77acd1" in content
+        assert "https://github.com/jovijovi/sachima/pull/135" in content
+        assert all(element.get("tag") != "action" for element in card["elements"])
 
     def test_rejects_pr_action_from_unauthorized_user(self, _patch_callback_card_types):
         adapter = _make_adapter()
