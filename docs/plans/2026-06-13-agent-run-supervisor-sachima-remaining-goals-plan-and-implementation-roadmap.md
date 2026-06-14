@@ -4,7 +4,7 @@
 Date: 2026-06-13
 Base branch: `release/sachima` at `3e71cb77625882d1ac51c73b50b695da98b55750`
 Planning branch: `docs/agent-run-supervisor-remaining-goals-plan`
-Status: `pr_open_awaiting_ci` — PR #128 open; docs-only planning gate, not implementation approval
+Status: `merged` — PR #128 merged into `release/sachima` on 2026-06-13 (merge commit `ae27fbf458b32d05a85703095102c79c17c14071`); docs-only planning gate, not implementation approval
 
 ## Hermes final arbitration
 

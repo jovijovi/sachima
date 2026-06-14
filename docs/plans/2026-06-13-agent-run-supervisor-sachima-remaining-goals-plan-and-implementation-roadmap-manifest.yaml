@@ -1,13 +1,13 @@
 phase_id: "agent-run-supervisor-sachima-remaining-goals-plan-and-implementation-roadmap"
 level: "level-2"
-status: "pr_open_awaiting_ci"
+status: "merged"
 repo: "jovijovi/sachima"
 base_branch: "release/sachima"
 base_commit: "3e71cb77625882d1ac51c73b50b695da98b55750"
 branch: "docs/agent-run-supervisor-remaining-goals-plan"
 worktree: "/home/ecs-user/workspace/hermes/worktrees/sachima/agent-run-supervisor-remaining-goals-plan"
 created_at: "2026-06-13"
-updated_at: "2026-06-13T09:53:47Z"
+updated_at: "2026-06-14"
 owner_dri: "Hermes operator with Dog Brother approval"
 
 committed: true
@@ -15,7 +15,9 @@ pushed: true
 pr_opened: true
 pr_number: 128
 pr_url: "https://github.com/jovijovi/sachima/pull/128"
-merged: false
+merged: true
+merged_at: "2026-06-13T10:09:07Z"
+merge_commit: "ae27fbf458b32d05a85703095102c79c17c14071"
 
 docs_only: true
 planning_gate_only: true
