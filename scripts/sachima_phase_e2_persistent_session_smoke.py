@@ -6,7 +6,7 @@ Drives the **existing** Phase E state machine
 execution bridge (``sachima_supervisor.activity_session_real_execution``) over a
 single minimal persistent-session lifecycle:
 
-    create  ->  send (one read-only turn)  ->  close
+    create  ->  send (one or more read-only turns)  ->  close
 
 The only real surface is a *pinned local* ``acpx`` persistent session reached
 through ``agent_run_supervisor.session_runtime.SessionRuntime`` (lazily imported
@@ -168,13 +168,22 @@ def build_config(
 # Lifecycle (deterministic; backend-injectable for self-test)
 # --------------------------------------------------------------------------- #
 def run_lifecycle(
-    *, config: RealPersistentSessionConfig, backend: Any | None = None
+    *,
+    config: RealPersistentSessionConfig,
+    backend: Any | None = None,
+    turn_prompts: tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
-    """Drive create -> send(one read-only turn) -> close and return a summary.
+    """Drive create -> send(N read-only turns) -> close and return a summary.
 
-    ``backend=None`` uses the default lazy real runtime backend. A fake backend
+    ``turn_prompts`` drives N sequential turns within a single session.  When
+    omitted, the default one-turn behavior using ``TURN_PROMPT`` is preserved.
+    ``backend=None`` uses the default lazy real runtime backend.  A fake backend
     can be injected to exercise the identical wiring deterministically.
     """
+    prompts = turn_prompts if turn_prompts is not None else (TURN_PROMPT,)
+    if not prompts:
+        raise SmokeError("turn_prompts must contain at least 1 turn")
+    n_turns = len(prompts)
 
     store = SessionLifecycleStore()
     store.grant_lease(
@@ -209,6 +218,7 @@ def run_lifecycle(
     )
 
     created = False
+    last_turn_res: Any = None
     try:
         create_res = create_session(
             create_req, store=store, open_session=bind_open_session(config, backend=backend)
@@ -220,28 +230,34 @@ def run_lifecycle(
         if not binding:
             raise SmokeError("create: missing session binding")
 
-        send_req = SessionSendRequest(
-            activity_id=ACTIVITY_ID,
-            session_id=SESSION_REF,
-            transaction_ref=TXN_REF,
-            operation_ref=OP_REF,
-            idempotency_key="idem_phase_e2_turn",
-            approval_token=SESSION_LIFECYCLE_APPROVAL_TOKEN,
-            enabled=True,
-            session_binding=binding,
-            prompt_ref="claim_prompt_phase_e2_turn",
-            context_refs=("claim_context_phase_e2_turn",),
-            lease_id=LEASE_ID,
-            lease_epoch=1,
-            lease_holder_ref=LEASE_HOLDER,
-            expected_state_version=1,
-            operator_gate=True,
-        )
-        turn_res = send_session_turn(
-            send_req, store=store, run_turn=bind_run_turn(config, TURN_PROMPT, backend=backend)
-        )
-        if not turn_res.ok or turn_res.status != "completed":
-            raise SmokeError(f"turn: status={turn_res.status!r}")
+        for i, prompt in enumerate(prompts, start=1):
+            # Use the legacy key for the default single-turn case to preserve
+            # idempotency semantics for existing real-mode replays.
+            idem_key = (
+                "idem_phase_e2_turn" if turn_prompts is None else f"idem_phase_e2_turn_{i:03d}"
+            )
+            send_req = SessionSendRequest(
+                activity_id=ACTIVITY_ID,
+                session_id=SESSION_REF,
+                transaction_ref=TXN_REF,
+                operation_ref=OP_REF,
+                idempotency_key=idem_key,
+                approval_token=SESSION_LIFECYCLE_APPROVAL_TOKEN,
+                enabled=True,
+                session_binding=binding,
+                prompt_ref="claim_prompt_phase_e2_turn",
+                context_refs=("claim_context_phase_e2_turn",),
+                lease_id=LEASE_ID,
+                lease_epoch=1,
+                lease_holder_ref=LEASE_HOLDER,
+                expected_state_version=i,
+                operator_gate=True,
+            )
+            last_turn_res = send_session_turn(
+                send_req, store=store, run_turn=bind_run_turn(config, prompt, backend=backend)
+            )
+            if not last_turn_res.ok or last_turn_res.status != "completed":
+                raise SmokeError(f"turn {i}: status={last_turn_res.status!r}")
 
         close_req = SessionCloseRequest(
             activity_id=ACTIVITY_ID,
@@ -255,7 +271,7 @@ def run_lifecycle(
             lease_id=LEASE_ID,
             lease_epoch=1,
             lease_holder_ref=LEASE_HOLDER,
-            expected_state_version=2,
+            expected_state_version=n_turns + 1,
             operator_gate=True,
         )
         close_res = close_session(
@@ -271,7 +287,7 @@ def run_lifecycle(
             best_effort_close_real_session(config, backend=backend)
         raise
 
-    turn_state = turn_res.to_durable_state()
+    turn_state = last_turn_res.to_durable_state()
     return {
         "execution_pipeline": {
             "create": {
@@ -280,8 +296,8 @@ def run_lifecycle(
                 "session_binding_prefix": binding[:6],
             },
             "turn": {
-                "ok": turn_res.ok,
-                "status": turn_res.status,
+                "ok": last_turn_res.ok,
+                "status": last_turn_res.status,
                 "artifact_ref_count": turn_state["artifact_ref_count"],
                 "final_message_persisted": "final_message" in turn_state,
             },
@@ -291,6 +307,7 @@ def run_lifecycle(
             "business_verdict": None,
             "cancellation_executed": False,
         },
+        "turn_count": n_turns,
         "_store": store,
         "_closed": closed,
     }
@@ -343,16 +360,25 @@ def post_verify(
         verify["supervisor_session_state_closed"] = supervisor_session_state_closed
         marker_checked = False
         marker_matches = False
-        if len(turn_dirs) == 1:
-            result_path = turn_dirs[0] / "result.json"
-            try:
-                result_payload = json.loads(result_path.read_text(encoding="utf-8"))
-            except (OSError, ValueError):
-                result_payload = None
-            if isinstance(result_payload, dict):
-                marker_checked = True
-                final_message = result_payload.get("final_message")
-                marker_matches = isinstance(final_message, str) and final_message.strip() == TURN_MARKER
+        if turn_dirs:
+            sorted_turn_dirs = sorted(turn_dirs, key=lambda p: p.name)
+            all_readable = True
+            all_match = True
+            for td in sorted_turn_dirs:
+                result_path = td / "result.json"
+                try:
+                    result_payload = json.loads(result_path.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    result_payload = None
+                if not isinstance(result_payload, dict):
+                    all_readable = False
+                    all_match = False
+                else:
+                    final_message = result_payload.get("final_message")
+                    if not (isinstance(final_message, str) and final_message.strip() == TURN_MARKER):
+                        all_match = False
+            marker_checked = all_readable
+            marker_matches = all_readable and all_match
         verify["business_marker_checked"] = marker_checked
         verify["business_marker_matches"] = marker_matches
         verify["business_marker_expected"] = TURN_MARKER
@@ -362,8 +388,9 @@ def post_verify(
 def assert_post_verify(verify: dict[str, Any], *, mode: str) -> None:
     if not verify["closed"]:
         raise SmokeError("post-verify: session is not closed")
-    if verify["turn_count_state_machine"] != 1:
-        raise SmokeError(f"post-verify: expected 1 turn, got {verify['turn_count_state_machine']}")
+    n = verify["turn_count_state_machine"]
+    if n < 1:
+        raise SmokeError(f"post-verify: expected at least 1 turn, got {n}")
     if verify["npx_in_runner"]:
         raise SmokeError("post-verify: runner basename is an npx/package-manager launcher")
     if mode == "real":
@@ -372,9 +399,9 @@ def assert_post_verify(verify: dict[str, Any], *, mode: str) -> None:
                 f"post-verify: expected exactly 1 supervisor session, "
                 f"got {verify.get('supervisor_session_count')}"
             )
-        if verify.get("supervisor_turn_count") != 1:
+        if verify.get("supervisor_turn_count") != n:
             raise SmokeError(
-                f"post-verify: expected exactly 1 supervisor turn dir, "
+                f"post-verify: expected exactly {n} supervisor turn dir(s), "
                 f"got {verify.get('supervisor_turn_count')}"
             )
         if not verify.get("supervisor_session_state_closed"):
@@ -461,8 +488,13 @@ def run(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
         allow_repo_paths=args.allow_repo_paths,
     )
 
+    turn_count = args.turn_count
+    if turn_count < 1:
+        raise SmokeError(f"--turn-count must be >= 1, got {turn_count}")
+    turn_prompts = None if turn_count == 1 else tuple(TURN_PROMPT for _ in range(turn_count))
+
     backend = _SelfTestBackend() if mode == "self_test" else None
-    lifecycle = run_lifecycle(config=config, backend=backend)
+    lifecycle = run_lifecycle(config=config, backend=backend, turn_prompts=turn_prompts)
     store = lifecycle.pop("_store")
     lifecycle.pop("_closed", None)
     verify = post_verify(store=store, config=config, mode=mode)
@@ -515,6 +547,15 @@ def main(argv: list[str] | None = None) -> int:
         "--allow-repo-paths",
         action="store_true",
         help="Test-only: allow runtime/evidence paths inside the repo tree.",
+    )
+    parser.add_argument(
+        "--turn-count",
+        type=int,
+        default=1,
+        help=(
+            "Run N sequential read-only turns in one session (default: 1). "
+            "Must be >= 1. When 1, legacy single-turn idempotency key is preserved."
+        ),
     )
     parser.add_argument(
         "--keep-artifacts",
