@@ -1,0 +1,50 @@
+phase_id: "agent-run-supervisor-sachima-wp1b-claude-code-read-only-smoke-dependency-installation-invocation"
+level: "level-2-docs"
+status: "documented"
+repo: "jovijovi/sachima"
+base_branch: "release/sachima"
+created_at: "2026-06-14"
+owner_dri: "Hermes operator with Dog Brother approval"
+
+scope:
+  docs_only: true
+  local_offline_only: true
+  dependency_inventory: true
+  installation_notes: true
+  invocation_notes: true
+  real_smoke_execution: false
+  acpx_invocation: false
+  npx_or_network_fetch: false
+  gateway: false
+  feishu_or_im: false
+  live_or_default_on: false
+  production_config_write: false
+  real_delivery: false
+
+artifacts:
+  dependency_installation_invocation_doc: "docs/runbooks/agent-run-supervisor-wp1b-claude-code-read-only-smoke-dependency-installation-invocation.md"
+
+components:
+  acpx:
+    package: "acpx"
+    required_version: "0.10.0"
+    node_requirement: "agent-run-supervisor doctor reports >=22.12; Sachima root package requires >=20.0.0"
+    runner_policy: "absolute local runner.acpx_binary only; no npx/npm/pnpm/yarn/bunx/shell fallback"
+    current_verified_binary_path: "/home/ecs-user/workspace/hermes/worktrees/sachima/phase-d-smoke-host-provisioning-dor/sachima_supervisor/roles/local/npm-acpx-0.10.0/node_modules/.bin/acpx"
+    current_verified_realpath: "/data/agents/workspace/hermes/worktrees/sachima/phase-d-smoke-host-provisioning-dor/sachima_supervisor/roles/local/npm-acpx-0.10.0/node_modules/acpx/dist/cli.js"
+    current_verified_sha256: "sha256:54d586ec3916fb55c7ea724df4b868d3a958492081e2cd21bdfb1ae8d67d46a6"
+  agent_run_supervisor:
+    repo: "jovijovi/agent-run-supervisor"
+    local_source_checkout: "/home/ecs-user/workspace/hermes/repo/agent-run-supervisor"
+    import_name: "agent_run_supervisor"
+    distribution: "agent-run-supervisor"
+    expected_version: "0.0.0"
+    runtime_dependencies: []
+    optional_dev_dependencies:
+      - "pytest>=8,<10"
+
+strongest_allowed_outcome: "dependency_installation_invocation_documentation_only"
+strongest_allowed_outcome_meaning: "Documents the WP1b acpx and agent-run-supervisor dependency/provisioning/invocation contract. It does not run a smoke, invoke acpx, install packages, use network fetch, or approve live/Gateway/Feishu/production/real-delivery behavior."
+verification_gates:
+  - "python3 - <<'PY' YAML parse for manifest files PY"
+  - "git diff --check"
