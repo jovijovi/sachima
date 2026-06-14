@@ -11,9 +11,20 @@
 ```json
 {
   "base_branch": "release/sachima",
-  "base_head": "b59f12d518951e62acdc2a329d6569f94a765546",
+  "base_head": "b1b2c018ea25828de31a5e762f526a7056730a2c",
   "base_head_note": "latest first-parent base commit excluding machine status-sync self-commits",
   "latest_merged_prs": [
+    {
+      "baseRefName": "release/sachima",
+      "headRefName": "feature/ars-wp2-bounded-multiturn-session",
+      "mergeCommit": {
+        "oid": "b1b2c018ea25828de31a5e762f526a7056730a2c"
+      },
+      "mergedAt": "2026-06-14T21:14:14Z",
+      "number": 137,
+      "title": "feat: harden bounded multi-turn session smoke",
+      "url": "https://github.com/jovijovi/sachima/pull/137"
+    },
     {
       "baseRefName": "release/sachima",
       "headRefName": "feature/feishu-pr-card-i18n",
@@ -57,17 +68,6 @@
       "number": 133,
       "title": "fix: keep roadmap status sync self-stable",
       "url": "https://github.com/jovijovi/sachima/pull/133"
-    },
-    {
-      "baseRefName": "release/sachima",
-      "headRefName": "feature/status-sync-automation",
-      "mergeCommit": {
-        "oid": "0d6e5a690eaa359861eb3049dc5875b4b5b26dc1"
-      },
-      "mergedAt": "2026-06-14T10:09:22Z",
-      "number": 132,
-      "title": "feat: automate roadmap status sync",
-      "url": "https://github.com/jovijovi/sachima/pull/132"
     }
   ],
   "open_pr_count": 0,
