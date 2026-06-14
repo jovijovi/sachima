@@ -1,7 +1,7 @@
 # WP1a — Claude Code read-only role + capability-gate extension (local/offline, injected fakes only)
 
 Date: 2026-06-14
-Status: PR candidate (not merged; PR number recorded after PR creation)
+Status: PR #131 open (not merged)
 Branch: `feature/wp1a-claude-code-read-only`
 Base: `release/sachima` at `2cf507c3a8bd6cdba354dd7d699685fa146441a8`
 
