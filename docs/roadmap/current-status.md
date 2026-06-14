@@ -11,8 +11,19 @@
 ```json
 {
   "base_branch": "release/sachima",
-  "base_head": "71ab3780bb1fc65c79788f22ac94e822ea970307",
+  "base_head": "0d6e5a690eaa359861eb3049dc5875b4b5b26dc1",
   "latest_merged_prs": [
+    {
+      "baseRefName": "release/sachima",
+      "headRefName": "feature/status-sync-automation",
+      "mergeCommit": {
+        "oid": "0d6e5a690eaa359861eb3049dc5875b4b5b26dc1"
+      },
+      "mergedAt": "2026-06-14T10:09:22Z",
+      "number": 132,
+      "title": "feat: automate roadmap status sync",
+      "url": "https://github.com/jovijovi/sachima/pull/132"
+    },
     {
       "baseRefName": "release/sachima",
       "headRefName": "feature/wp1a-claude-code-read-only",
@@ -56,17 +67,6 @@
       "number": 128,
       "title": "docs: plan remaining agent-run-supervisor goals",
       "url": "https://github.com/jovijovi/sachima/pull/128"
-    },
-    {
-      "baseRefName": "release/sachima",
-      "headRefName": "feature/phase-e2-bounded-real-session-execution",
-      "mergeCommit": {
-        "oid": "813c0eb051efd822d214b2cd8619b8a941536abb"
-      },
-      "mergedAt": "2026-06-13T08:42:22Z",
-      "number": 127,
-      "title": "feat: add Phase E-2 bounded real session execution",
-      "url": "https://github.com/jovijovi/sachima/pull/127"
     }
   ],
   "open_pr_count": 0,
