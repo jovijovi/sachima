@@ -11,7 +11,7 @@
 ```json
 {
   "base_branch": "release/sachima",
-  "base_head": "2f8fe8d7011957d2305c3e4a88758e8c0052f0dc",
+  "base_head": "6b9365dd918ec3c727beefe1967b487a7e3cd112",
   "base_head_note": "latest first-parent base commit excluding machine status-sync self-commits",
   "latest_merged_prs": [
     {
