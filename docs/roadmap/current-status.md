@@ -11,9 +11,20 @@
 ```json
 {
   "base_branch": "release/sachima",
-  "base_head": "6b9365dd918ec3c727beefe1967b487a7e3cd112",
+  "base_head": "eeec8f0e857415bf592a99565333e434940f4a75",
   "base_head_note": "latest first-parent base commit excluding machine status-sync self-commits",
   "latest_merged_prs": [
+    {
+      "baseRefName": "release/sachima",
+      "headRefName": "feature/feishu-pr-approval-card",
+      "mergeCommit": {
+        "oid": "eeec8f0e857415bf592a99565333e434940f4a75"
+      },
+      "mergedAt": "2026-06-14T18:21:26Z",
+      "number": 135,
+      "title": "feat: add Feishu PR approval cards",
+      "url": "https://github.com/jovijovi/sachima/pull/135"
+    },
     {
       "baseRefName": "release/sachima",
       "headRefName": "docs/wp1b-claude-readonly-smoke-status-closure",
@@ -57,17 +68,6 @@
       "number": 131,
       "title": "feat: add WP1a Claude read-only role gate",
       "url": "https://github.com/jovijovi/sachima/pull/131"
-    },
-    {
-      "baseRefName": "release/sachima",
-      "headRefName": "docs/pr128-status-closure",
-      "mergeCommit": {
-        "oid": "2cf507c3a8bd6cdba354dd7d699685fa146441a8"
-      },
-      "mergedAt": "2026-06-14T05:24:51Z",
-      "number": 130,
-      "title": "docs: mark PR 128 remaining-goals plan merged",
-      "url": "https://github.com/jovijovi/sachima/pull/130"
     }
   ],
   "open_pr_count": 0,
