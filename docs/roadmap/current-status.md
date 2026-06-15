@@ -205,6 +205,10 @@ Before any roadmap, phase, PR, CI, merge, review, or next-phase-readiness work:
 
 If this file is stale or contradicts a requested task, stop and report the drift risk.
 
+## Governance note: safety evidence over status churn
+
+Sachima governed PRs should preserve hard safety evidence—exact approval gates, local/offline boundaries, role capability limits, no-leak scans, race/idempotency/cleanup proof, forbidden-surface scans, focused tests, and blocker-only review. Status evidence should stay compact: this file, manifests, dev logs, and PR bodies should point to the same evidence instead of repeating long synonym status blocks. Pure “merged status” cleanup is only worth doing when it changes user-visible truth, phase authority, or safety boundaries.
+
 ## Current phase map
 
 | Phase | Status | Evidence / decision | Strongest current meaning |
