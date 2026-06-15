@@ -109,6 +109,11 @@ _STATUS_TURN = "turn_completed"
 _STATUS_CLOSED = "session_closed"
 _STATUS_CANCELLED = "session_cancelled"
 
+# Private capability marker proving the abort callable was produced by
+# ``bind_real_cancellation`` and therefore entered only after the lifecycle
+# state machine checked prior cancel_requested + the active in-flight turn.
+_STATE_MACHINE_IN_FLIGHT_CANCEL_PROOF = object()
+
 #: Runner identity required by this first slice.
 _REQUIRED_RUNNER_TYPE = "acpx"
 _REQUIRED_ACPX_VERSION = "0.10.0"
@@ -685,6 +690,7 @@ def execute_real_cancellation(
     config: RealPersistentSessionConfig,
     *,
     backend: Any | None = None,
+    _state_machine_in_flight_proof: object | None = None,
 ) -> SessionInterruptOutcome:
     """WP3b bounded real cancellation execution (local/offline, operator-gated).
 
@@ -709,6 +715,11 @@ def execute_real_cancellation(
         )
 
     resolved = _validate_config_body(config)
+    if _state_machine_in_flight_proof is not _STATE_MACHINE_IN_FLIGHT_CANCEL_PROOF:
+        raise RealSessionExecutionError(
+            _ERROR_PRECONDITION,
+            "WP3b cancellation execution requires lifecycle state-machine in-flight turn proof",
+        )
     backend = _resolve_backend(backend)
 
     try:
@@ -777,6 +788,18 @@ def bind_real_cancellation(
     def _work(request: SessionInterruptRequest) -> SessionInterruptOutcome:
         return execute_real_cancellation(request, config, backend=backend)
 
+    def _work_with_in_flight_proof(
+        request: SessionInterruptRequest,
+    ) -> SessionInterruptOutcome:
+        return execute_real_cancellation(
+            request,
+            config,
+            backend=backend,
+            _state_machine_in_flight_proof=_STATE_MACHINE_IN_FLIGHT_CANCEL_PROOF,
+        )
+
+    _work._sachima_requires_in_flight_turn = True  # type: ignore[attr-defined]
+    _work._sachima_call_with_in_flight_proof = _work_with_in_flight_proof  # type: ignore[attr-defined]
     return _work
 
 

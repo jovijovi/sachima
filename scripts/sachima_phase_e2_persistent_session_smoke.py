@@ -543,6 +543,13 @@ def run_cancellation_lifecycle(
 
     turn_state = last_turn_res.to_durable_state()
     cancel_state = interrupt_res.to_durable_state()
+    backend_abort_calls = getattr(backend, "abort_calls", None)
+    backend_released_turn = getattr(backend, "abort_released_turn", False) is True
+    turn_interrupted_observed = (
+        backend_abort_calls == 1
+        and backend_released_turn
+        and last_turn_res.status != "completed"
+    )
     return {
         "execution_pipeline": {
             "create": {
@@ -555,6 +562,7 @@ def run_cancellation_lifecycle(
                 "status": last_turn_res.status,
                 "artifact_ref_count": turn_state["artifact_ref_count"],
                 "final_message_persisted": "final_message" in turn_state,
+                "interrupted_observed": turn_interrupted_observed,
             },
             "cancel_request": {
                 "ok": cancel_res.to_durable_state()["ok"],
@@ -570,9 +578,10 @@ def run_cancellation_lifecycle(
         },
         "business_task": {
             "business_verdict": None,
-            "cancellation_executed": True,
+            "cancellation_executed": turn_interrupted_observed,
             "cleanup_verified": interrupt_res.status == "cancelled",
-            "backend_abort_calls": getattr(backend, "abort_calls", None),
+            "backend_abort_calls": backend_abort_calls,
+            "backend_released_turn": backend_released_turn,
         },
         "turn_count": 1,
         "_store": store,
@@ -697,6 +706,7 @@ class _SelfTestBackend:
         self.turn_entered = threading.Event()
         self.release_turn = threading.Event()
         self.abort_calls = 0
+        self.abort_released_turn = False
 
     def create(self, resolved: Any) -> Any:
         from sachima_supervisor.activity_session_real_execution import _RuntimeCreateResult
@@ -710,14 +720,25 @@ class _SelfTestBackend:
             self.turn_entered.set()
             if not self.release_turn.wait(timeout=10.0):
                 raise SmokeError("self-test backend timed out waiting for cancel release")
+            completed = not self.abort_released_turn
+            status_label = "completed" if completed else "cancelled_by_abort"
+            artifact_count = 1 if completed else 0
+        else:
+            completed = True
+            status_label = "completed"
+            artifact_count = 1
         return _RuntimeTurnResult(
-            completed=True, status_label="completed", turn_id="self-test-turn", artifact_count=1
+            completed=completed,
+            status_label=status_label,
+            turn_id="self-test-turn",
+            artifact_count=artifact_count,
         )
 
     def abort(self, resolved: Any) -> Any:
         from sachima_supervisor.activity_session_real_execution import _RuntimeAbortResult
 
         self.abort_calls += 1
+        self.abort_released_turn = True
         self.release_turn.set()
         return _RuntimeAbortResult(cancelled=True, state="cancelled")
 
