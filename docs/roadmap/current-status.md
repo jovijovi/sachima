@@ -11,9 +11,20 @@
 ```json
 {
   "base_branch": "release/sachima",
-  "base_head": "b1b2c018ea25828de31a5e762f526a7056730a2c",
+  "base_head": "c74c2302129d2e9e1409910966c1075b4b19fabf",
   "base_head_note": "latest first-parent base commit excluding machine status-sync self-commits",
   "latest_merged_prs": [
+    {
+      "baseRefName": "release/sachima",
+      "headRefName": "feature/ars-wp3a-cancellation-interrupt-api",
+      "mergeCommit": {
+        "oid": "c74c2302129d2e9e1409910966c1075b4b19fabf"
+      },
+      "mergedAt": "2026-06-15T05:02:52Z",
+      "number": 138,
+      "title": "feat: add cancellation interrupt request seam",
+      "url": "https://github.com/jovijovi/sachima/pull/138"
+    },
     {
       "baseRefName": "release/sachima",
       "headRefName": "feature/ars-wp2-bounded-multiturn-session",
@@ -57,17 +68,6 @@
       "number": 134,
       "title": "docs: record WP1b Claude read-only smoke pass",
       "url": "https://github.com/jovijovi/sachima/pull/134"
-    },
-    {
-      "baseRefName": "release/sachima",
-      "headRefName": "fix/status-sync-self-head",
-      "mergeCommit": {
-        "oid": "b6ca8f7fbf733b9bf9b7c8cd6df902f987143360"
-      },
-      "mergedAt": "2026-06-14T15:59:47Z",
-      "number": 133,
-      "title": "fix: keep roadmap status sync self-stable",
-      "url": "https://github.com/jovijovi/sachima/pull/133"
     }
   ],
   "open_pr_count": 0,
