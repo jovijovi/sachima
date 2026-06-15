@@ -11,9 +11,20 @@
 ```json
 {
   "base_branch": "release/sachima",
-  "base_head": "c74c2302129d2e9e1409910966c1075b4b19fabf",
+  "base_head": "1b929370a02d7b85362957f3eb9185bffa9970c3",
   "base_head_note": "latest first-parent base commit excluding machine status-sync self-commits",
   "latest_merged_prs": [
+    {
+      "baseRefName": "release/sachima",
+      "headRefName": "docs/wp3a-merge-status-cleanup",
+      "mergeCommit": {
+        "oid": "1b929370a02d7b85362957f3eb9185bffa9970c3"
+      },
+      "mergedAt": "2026-06-15T05:42:39Z",
+      "number": 139,
+      "title": "docs: record WP3a merge status",
+      "url": "https://github.com/jovijovi/sachima/pull/139"
+    },
     {
       "baseRefName": "release/sachima",
       "headRefName": "feature/ars-wp3a-cancellation-interrupt-api",
@@ -57,17 +68,6 @@
       "number": 135,
       "title": "feat: add Feishu PR approval cards",
       "url": "https://github.com/jovijovi/sachima/pull/135"
-    },
-    {
-      "baseRefName": "release/sachima",
-      "headRefName": "docs/wp1b-claude-readonly-smoke-status-closure",
-      "mergeCommit": {
-        "oid": "2f8fe8d7011957d2305c3e4a88758e8c0052f0dc"
-      },
-      "mergedAt": "2026-06-14T17:15:48Z",
-      "number": 134,
-      "title": "docs: record WP1b Claude read-only smoke pass",
-      "url": "https://github.com/jovijovi/sachima/pull/134"
     }
   ],
   "open_pr_count": 0,
