@@ -17,12 +17,15 @@ import pytest
 
 from sachima_supervisor.activity import ROLE_KEY_ALLOWLIST
 from sachima_supervisor.activity_session_lifecycle import (
+    SESSION_INTERRUPT_API_APPROVAL_TOKEN,
     SESSION_LIFECYCLE_APPROVAL_TOKEN,
     CancellationRequest,
     CancellationRequestResult,
     SessionAbortRequest,
     SessionCloseRequest,
     SessionCreateRequest,
+    SessionInterruptOutcome,
+    SessionInterruptRequest,
     SessionLifecycleError,
     SessionLifecycleStore,
     SessionRecordResult,
@@ -30,6 +33,7 @@ from sachima_supervisor.activity_session_lifecycle import (
     SessionWorkOutcome,
     TurnRecordResult,
     abort_session,
+    apply_session_interrupt,
     close_session,
     create_session,
     list_session_turns,
@@ -1500,6 +1504,271 @@ def test_cancel_gates_fail_closed(field: str, value: Any, error_code: str) -> No
 
 
 # --------------------------------------------------------------------------- #
+# Supervisor interrupt API (request-state + injected fake seam; no real execution)
+#
+# WP3a: applying an interrupt advances a prior cancellation request using an
+# injected fake outcome (``interrupted`` / ``cleanup_verified``). This is not
+# real cancellation execution and no real interrupt happens.
+# --------------------------------------------------------------------------- #
+def _interrupt_request(**overrides: Any) -> SessionInterruptRequest:
+    base: dict[str, Any] = {
+        "cancel_id": "cancel_session_001",
+        "activity_id": "activity_session_001",
+        "session_id": "session_local_001",
+        "transaction_ref": "claim_txn_session_001",
+        "operation_ref": "claim_op_session_001",
+        "idempotency_key": "idem_session_interrupt_001",
+        "approval_token": SESSION_INTERRUPT_API_APPROVAL_TOKEN,
+        "enabled": True,
+        "session_binding": SESSION_BINDING,
+        "requested_by_ref": "operator_ref_dog_brother",
+        "reason_code": "operator_requested_stop",
+        "turn_index": None,
+        "lease_id": "lease_session_001",
+        "lease_epoch": 3,
+        "lease_holder_ref": "controller_ref_sachima_flowweaver",
+        "operator_gate": True,
+    }
+    base.update(overrides)
+    return SessionInterruptRequest(**base)
+
+
+def _interrupt_ok(_request: SessionInterruptRequest) -> SessionInterruptOutcome:
+    return SessionInterruptOutcome(
+        interrupted=True,
+        cleanup_verified=True,
+        supervisor_status="session_cancelled",
+        evidence_ref="session_evidence_interrupt_001",
+        evidence_digest=EVIDENCE_DIGEST,
+    )
+
+
+def _open_session_and_request_cancellation(store: SessionLifecycleStore) -> None:
+    _open_session(store)
+    result = request_cancellation(_cancel_request(), store=store)
+    assert result.status == "cancel_requested"
+
+
+def test_apply_session_interrupt_stops_run_and_records_cancelled() -> None:
+    store = _store()
+    _open_session_and_request_cancellation(store)
+
+    result = apply_session_interrupt(
+        _interrupt_request(), store=store, apply_interrupt=_interrupt_ok
+    )
+    state = result.to_durable_state()
+
+    assert isinstance(result, CancellationRequestResult)
+    assert result.status == "cancelled"
+    assert state["ok"] is True
+    assert state["error_code"] is None
+    assert state["evidence_ref"] == "session_evidence_interrupt_001"
+    assert state["evidence_digest"] == EVIDENCE_DIGEST
+    _assert_no_leaks(state)
+
+    # The injected fake outcome advances only the cancellation request record;
+    # it does not close or abort the session lifecycle, which stays open.
+    session = query_session(store, activity_id="activity_session_001").to_durable_state()
+    assert session["lifecycle_state"] == "session_open"
+    assert tuple(signature(apply_session_interrupt).parameters) == (
+        "request",
+        "store",
+        "apply_interrupt",
+    )
+
+
+def test_apply_session_interrupt_not_stopped_records_cancel_failed() -> None:
+    store = _store()
+    _open_session_and_request_cancellation(store)
+
+    def _interrupt_not_stopped(
+        _request: SessionInterruptRequest,
+    ) -> SessionInterruptOutcome:
+        return SessionInterruptOutcome(interrupted=False, cleanup_verified=False)
+
+    result = apply_session_interrupt(
+        _interrupt_request(), store=store, apply_interrupt=_interrupt_not_stopped
+    )
+    state = result.to_durable_state()
+
+    assert result.status == "cancel_failed"
+    assert state["ok"] is False
+    assert state["error_code"] == "activity_supervisor_failed"
+    _assert_no_leaks(state)
+
+
+def test_apply_session_interrupt_cleanup_unverified_is_ambiguous() -> None:
+    store = _store()
+    _open_session_and_request_cancellation(store)
+
+    def _interrupt_ambiguous(
+        _request: SessionInterruptRequest,
+    ) -> SessionInterruptOutcome:
+        return SessionInterruptOutcome(
+            interrupted=True,
+            cleanup_verified=False,
+            evidence_ref="session_evidence_interrupt_001",
+            evidence_digest=EVIDENCE_DIGEST,
+        )
+
+    with pytest.raises(SessionLifecycleError) as exc:
+        apply_session_interrupt(
+            _interrupt_request(), store=store, apply_interrupt=_interrupt_ambiguous
+        )
+    assert exc.value.error_code == "activity_cancel_ambiguous"
+
+    # The ambiguous interrupt is durable: the cancel record is left explicitly
+    # ``cancel_ambiguous`` rather than silently cancelled or rolled back.
+    record = store._cancels["cancel_session_001"]
+    assert record["status"] == "cancel_ambiguous"
+    _assert_no_leaks(record)
+
+
+def test_apply_session_interrupt_idempotent_replay_fires_fake_once() -> None:
+    store = _store()
+    _open_session_and_request_cancellation(store)
+    counter: dict[str, Any] = {"calls": 0}
+    fake = _counting(counter, _interrupt_ok)
+
+    first = apply_session_interrupt(_interrupt_request(), store=store, apply_interrupt=fake)
+    second = apply_session_interrupt(_interrupt_request(), store=store, apply_interrupt=fake)
+
+    assert counter["calls"] == 1
+    assert second.to_durable_state() == first.to_durable_state()
+
+
+def test_apply_session_interrupt_replay_during_fake_keeps_ambiguous() -> None:
+    store = _store()
+    _open_session_and_request_cancellation(store)
+    replay_error_codes: list[str] = []
+
+    def _fake_with_replay(_request: SessionInterruptRequest) -> SessionInterruptOutcome:
+        with pytest.raises(SessionLifecycleError) as replay_exc:
+            apply_session_interrupt(
+                _interrupt_request(), store=store, apply_interrupt=_interrupt_ok
+            )
+        replay_error_codes.append(replay_exc.value.error_code)
+        return _interrupt_ok(_request)
+
+    with pytest.raises(SessionLifecycleError) as outer_exc:
+        apply_session_interrupt(
+            _interrupt_request(), store=store, apply_interrupt=_fake_with_replay
+        )
+
+    assert replay_error_codes == ["activity_cancel_ambiguous"]
+    assert outer_exc.value.error_code == "activity_cancel_ambiguous"
+    record = store._cancels["cancel_session_001"]
+    assert record["status"] == "cancel_ambiguous"
+    assert record["error_code"] == "activity_cancel_ambiguous"
+    _assert_no_leaks(record)
+
+
+def test_apply_session_interrupt_prior_cancel_must_match_target() -> None:
+    store = _store()
+    _open_session_and_request_cancellation(store)
+    store.grant_lease(
+        activity_id="activity_session_002",
+        lease_id="lease_session_002",
+        lease_epoch=3,
+        lease_holder_ref="controller_ref_sachima_flowweaver_b",
+        state_version=0,
+    )
+    create_session(
+        _create_request(
+            activity_id="activity_session_002",
+            session_id="session_local_002",
+            transaction_ref="claim_txn_session_002",
+            operation_ref="claim_op_session_002",
+            idempotency_key="idem_session_create_002",
+            lease_id="lease_session_002",
+            lease_holder_ref="controller_ref_sachima_flowweaver_b",
+        ),
+        store=store,
+        open_session=_open_ok,
+    )
+    counter: dict[str, Any] = {"calls": 0}
+
+    def fake(request: SessionInterruptRequest) -> SessionInterruptOutcome:
+        counter["calls"] += 1
+        counter["last_request"] = request
+        return _interrupt_ok(request)
+
+    with pytest.raises(SessionLifecycleError) as exc:
+        apply_session_interrupt(
+            _interrupt_request(
+                activity_id="activity_session_002",
+                session_id="session_local_002",
+                transaction_ref="claim_txn_session_002",
+                operation_ref="claim_op_session_002",
+                idempotency_key="idem_session_interrupt_002",
+                lease_id="lease_session_002",
+                lease_holder_ref="controller_ref_sachima_flowweaver_b",
+            ),
+            store=store,
+            apply_interrupt=fake,
+        )
+
+    assert exc.value.error_code == "activity_not_found"
+    assert counter["calls"] == 0
+    assert store._cancels["cancel_session_001"]["status"] == "cancel_requested"
+
+
+def test_apply_session_interrupt_without_prior_cancel_record_fails_before_fake() -> None:
+    store = _store()
+    _open_session(store)
+    counter: dict[str, Any] = {"calls": 0}
+    fake = _counting(counter, _interrupt_ok)
+
+    with pytest.raises(SessionLifecycleError) as exc:
+        apply_session_interrupt(_interrupt_request(), store=store, apply_interrupt=fake)
+
+    assert exc.value.error_code == "activity_not_found"
+    assert counter["calls"] == 0
+    assert "cancel_session_001" not in store._cancels
+
+
+def test_request_cancellation_same_cancel_id_cannot_reopen_cancelled_record() -> None:
+    store = _store()
+    _open_session_and_request_cancellation(store)
+    first_terminal = apply_session_interrupt(
+        _interrupt_request(), store=store, apply_interrupt=_interrupt_ok
+    )
+    assert first_terminal.status == "cancelled"
+
+    second_request = request_cancellation(
+        _cancel_request(idempotency_key="idem_session_cancel_002"), store=store
+    )
+
+    assert second_request.status == "cancelled"
+    assert store._cancels["cancel_session_001"]["status"] == "cancelled"
+    assert store._cancels["cancel_session_001"]["idempotency_key"] == "idem_session_cancel_001"
+
+
+def test_request_cancellation_same_cancel_id_cannot_reopen_ambiguous_record() -> None:
+    store = _store()
+    _open_session_and_request_cancellation(store)
+
+    def _interrupt_ambiguous(
+        _request: SessionInterruptRequest,
+    ) -> SessionInterruptOutcome:
+        return SessionInterruptOutcome(interrupted=True, cleanup_verified=False)
+
+    with pytest.raises(SessionLifecycleError) as exc:
+        apply_session_interrupt(
+            _interrupt_request(), store=store, apply_interrupt=_interrupt_ambiguous
+        )
+    assert exc.value.error_code == "activity_cancel_ambiguous"
+
+    second_request = request_cancellation(
+        _cancel_request(idempotency_key="idem_session_cancel_003"), store=store
+    )
+
+    assert second_request.status == "cancel_ambiguous"
+    assert store._cancels["cancel_session_001"]["status"] == "cancel_ambiguous"
+    assert store._cancels["cancel_session_001"]["idempotency_key"] == "idem_session_cancel_001"
+
+
+# --------------------------------------------------------------------------- #
 # Store hardening / validate-on-read
 # --------------------------------------------------------------------------- #
 def test_query_rejects_poisoned_resident_session_state() -> None:
@@ -1559,6 +1828,7 @@ def test_session_lifecycle_source_has_no_forbidden_runtime_or_delivery_surface()
     # real runtime/delivery surface.
     joined = re.sub(r'"\s*\n\s*"', "", source)
     joined = joined.replace(SESSION_LIFECYCLE_APPROVAL_TOKEN.lower(), "")
+    joined = joined.replace(SESSION_INTERRUPT_API_APPROVAL_TOKEN.lower(), "")
     source = joined
     for token in (
         "aiohttp",
