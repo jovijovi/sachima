@@ -75,6 +75,15 @@ SESSION_LIFECYCLE_APPROVAL_TOKEN = (
     "no_production_config_no_real_delivery"
 )
 
+#: Exact approval token for WP3a's local/offline supervisor interrupt API seam.
+#: It approves only caller-owned cancellation request-state transitions driven
+#: by an injected fake interrupt outcome. It does not approve a real interrupt.
+SESSION_INTERRUPT_API_APPROVAL_TOKEN = (
+    "approve_agent_run_supervisor_sachima_cancellation_request_state_and_"
+    "supervisor_interrupt_api_design_local_offline_no_real_interrupt_no_live_"
+    "no_gateway_no_feishu_no_production_config_no_real_delivery"
+)
+
 # --------------------------------------------------------------------------- #
 # Lifecycle + status labels
 # --------------------------------------------------------------------------- #
@@ -118,13 +127,28 @@ _TURN_STATUSES = frozenset(
 
 _CANCEL_REQUESTED = "cancel_requested"
 _CANCEL_REJECTED = "rejected"
-_CANCEL_STATUSES = frozenset({_CANCEL_REQUESTED, _CANCEL_REJECTED})
+_CANCEL_INTERRUPTING = "cancel_interrupting"
+_CANCEL_CANCELLED = "cancelled"
+_CANCEL_FAILED = "cancel_failed"
+_CANCEL_AMBIGUOUS = "cancel_ambiguous"
+_CANCEL_STATUSES = frozenset(
+    {
+        _CANCEL_REQUESTED,
+        _CANCEL_REJECTED,
+        _CANCEL_INTERRUPTING,
+        _CANCEL_CANCELLED,
+        _CANCEL_FAILED,
+        _CANCEL_AMBIGUOUS,
+    }
+)
+_CANCEL_TERMINAL_STATUSES = frozenset(
+    {_CANCEL_REJECTED, _CANCEL_CANCELLED, _CANCEL_FAILED, _CANCEL_AMBIGUOUS}
+)
 
 #: Stable failure taxonomy carried by this slice (design taxonomy +
-#: inherited). ``activity_cancel_ambiguous`` is defined for taxonomy
-#: stability but is never raised here: cancellation execution has no approved
-#: path, so there is no run whose stopped/not-stopped state could be
-#: ambiguous.
+#: inherited). ``activity_cancel_ambiguous`` is raised/stored only by WP3a's
+#: injected-fake interrupt API seam when the stopped/not-stopped or cleanup
+#: state is unsafe to treat as cancelled.
 _ERROR_SUPERVISOR_FAILED = "activity_supervisor_failed"
 _ERROR_TOCTOU = "activity_session_toctou_conflict"
 #: Stable taxonomy values allowed in durable ``error_code`` fields. They are
@@ -392,6 +416,37 @@ class CancellationRequest:
     execute: bool = False
 
 
+@dataclass(frozen=True)
+class SessionInterruptOutcome:
+    interrupted: bool
+    cleanup_verified: bool = False
+    ambiguous: bool = False
+    supervisor_status: str | None = None
+    evidence_ref: str | None = None
+    evidence_digest: str | None = None
+    error_code: str | None = None
+
+
+@dataclass(frozen=True)
+class SessionInterruptRequest:
+    cancel_id: str
+    activity_id: str
+    session_id: str
+    transaction_ref: str
+    operation_ref: str
+    idempotency_key: str
+    approval_token: str = ""
+    enabled: bool = False
+    session_binding: str | None = None
+    requested_by_ref: str | None = None
+    reason_code: str | None = None
+    turn_index: int | None = None
+    lease_id: str | None = None
+    lease_epoch: int = 0
+    lease_holder_ref: str | None = None
+    operator_gate: bool = False
+
+
 class _RecordResult:
     """Sanitized, read-only view over a validated durable record."""
 
@@ -499,6 +554,7 @@ class SessionLifecycleStore:
     _turn_idem: dict[str, tuple[str, dict[str, Any]]] = field(default_factory=dict)
     _cancels: dict[str, dict[str, Any]] = field(default_factory=dict)
     _cancel_idem: dict[str, tuple[str, dict[str, Any]]] = field(default_factory=dict)
+    _interrupt_idem: dict[str, tuple[str, dict[str, Any]]] = field(default_factory=dict)
     _leases: dict[str, _LeaseRecord] = field(default_factory=dict)
     _lock: threading.RLock = field(default_factory=threading.RLock, repr=False, compare=False)
 
@@ -537,6 +593,18 @@ def _check_enabled_and_approved(request: Any) -> None:
         raise SessionLifecycleError(
             "activity_session_approval_mismatch",
             "exact session lifecycle approval token required",
+        )
+
+
+def _check_interrupt_enabled_and_approved(request: SessionInterruptRequest) -> None:
+    if request.enabled is not True:
+        raise SessionLifecycleError(
+            "activity_session_disabled", "session lifecycle is default-off"
+        )
+    if request.approval_token != SESSION_INTERRUPT_API_APPROVAL_TOKEN:
+        raise SessionLifecycleError(
+            "activity_session_approval_mismatch",
+            "exact session interrupt approval token required",
         )
 
 
@@ -641,7 +709,7 @@ def _check_lifecycle_material(request: SessionCloseRequest | SessionAbortRequest
     _check_optional_refs((request.lease_id, request.lease_holder_ref))
 
 
-def _check_cancel_material(request: CancellationRequest) -> None:
+def _check_cancel_material(request: CancellationRequest | SessionInterruptRequest) -> None:
     _check_required_refs(
         (
             request.cancel_id,
@@ -1228,6 +1296,16 @@ def request_cancellation(
                     "idempotency key maps to an incompatible cancellation request",
                 )
             return CancellationRequestResult(existing_state)
+        existing_cancel = store._cancels.get(request.cancel_id)
+        if existing_cancel is not None:
+            existing_state = _validate_cancel_projection(existing_cancel)
+            if existing_state["request_fingerprint"] != fingerprint:
+                raise SessionLifecycleError(
+                    "activity_idempotency_conflict",
+                    "cancel id maps to an incompatible cancellation request",
+                )
+            store._cancel_idem[request.idempotency_key] = (fingerprint, existing_state)
+            return CancellationRequestResult(existing_state)
         session = _resident_session(store, request.activity_id)
         if session is None or request.session_id != session["session_id"]:
             raise SessionLifecycleError("activity_not_found", "no session for cancellation target")
@@ -1246,7 +1324,180 @@ def request_cancellation(
         return CancellationRequestResult(validated)
 
 
-def _check_cancel_turn_scope(request: CancellationRequest, session: Mapping[str, Any]) -> None:
+# --------------------------------------------------------------------------- #
+# apply_session_interrupt (WP3a injected fake only; NO real interrupt)
+# --------------------------------------------------------------------------- #
+def apply_session_interrupt(
+    request: SessionInterruptRequest,
+    *,
+    store: SessionLifecycleStore,
+    apply_interrupt: Callable[[SessionInterruptRequest], SessionInterruptOutcome],
+) -> CancellationRequestResult:
+    """Apply a caller-approved interrupt result through an injected fake.
+
+    This is WP3a request-state plus API-seam behavior only. The caller must
+    provide ``apply_interrupt``; this module has no default runner and never
+    signals a real process. The durable cancellation record advances to one of
+    ``cancelled``, ``cancel_failed``, or ``cancel_ambiguous`` while the session
+    lifecycle remains authoritative and unmodified.
+    """
+
+    _check_interrupt_enabled_and_approved(request)
+    _check_operator_gate(request)
+    _check_cancel_material(request)
+    fingerprint = _interrupt_fingerprint(request)
+
+    with store._lock:
+        existing = _resident_idem(
+            store._interrupt_idem, request.idempotency_key, _validate_cancel_projection
+        )
+        if existing is not None:
+            existing_fp, existing_state = existing
+            if existing_fp != fingerprint:
+                raise SessionLifecycleError(
+                    "activity_idempotency_conflict",
+                    "idempotency key maps to an incompatible session interrupt",
+                )
+            if existing_state["status"] == _CANCEL_INTERRUPTING:
+                ambiguous = _cancel_with(
+                    existing_state,
+                    status=_CANCEL_AMBIGUOUS,
+                    ok=False,
+                    evidence_ref=None,
+                    evidence_digest=None,
+                    error_code="activity_cancel_ambiguous",
+                )
+                _store_interrupt_cancel(
+                    store,
+                    ambiguous,
+                    fingerprint=fingerprint,
+                    interrupt_idempotency_key=request.idempotency_key,
+                )
+                raise SessionLifecycleError(
+                    "activity_cancel_ambiguous",
+                    "prior interrupt did not reach a safe terminal state",
+                )
+            return CancellationRequestResult(existing_state)
+
+        session = _resident_session(store, request.activity_id)
+        if session is None or request.session_id != session["session_id"]:
+            raise SessionLifecycleError("activity_not_found", "no session for interrupt target")
+        _check_session_binding(request, session)
+        _check_lease(request, store)
+        _check_cancel_turn_scope(request, session)
+
+        existing_cancel = store._cancels.get(request.cancel_id)
+        if existing_cancel is None:
+            raise SessionLifecycleError(
+                "activity_not_found", "no cancellation request for interrupt target"
+            )
+        existing_cancel = _validate_cancel_projection(existing_cancel)
+        _check_interrupt_cancel_target(request, existing_cancel)
+        if existing_cancel["status"] in _CANCEL_TERMINAL_STATUSES:
+            store._interrupt_idem[request.idempotency_key] = (
+                fingerprint,
+                existing_cancel,
+            )
+            return CancellationRequestResult(existing_cancel)
+        if existing_cancel["status"] == _CANCEL_INTERRUPTING:
+            ambiguous = _cancel_with(
+                existing_cancel,
+                status=_CANCEL_AMBIGUOUS,
+                ok=False,
+                evidence_ref=None,
+                evidence_digest=None,
+                error_code="activity_cancel_ambiguous",
+            )
+            _store_interrupt_cancel(
+                store,
+                ambiguous,
+                fingerprint=fingerprint,
+                interrupt_idempotency_key=request.idempotency_key,
+            )
+            raise SessionLifecycleError(
+                "activity_cancel_ambiguous",
+                "prior interrupt did not reach a safe terminal state",
+            )
+
+        if session["lifecycle_state"] in _TERMINAL_STATES:
+            failed = _cancel_with(
+                existing_cancel,
+                status=_CANCEL_FAILED,
+                ok=False,
+                evidence_ref=None,
+                evidence_digest=None,
+                error_code=_ERROR_SUPERVISOR_FAILED,
+            )
+            final = _store_interrupt_cancel(
+                store,
+                failed,
+                fingerprint=fingerprint,
+                interrupt_idempotency_key=request.idempotency_key,
+            )
+            return CancellationRequestResult(final)
+
+        claimed = _cancel_with(
+            existing_cancel,
+            status=_CANCEL_INTERRUPTING,
+            ok=False,
+            evidence_ref=None,
+            evidence_digest=None,
+            error_code=None,
+        )
+        claimed = _store_interrupt_cancel(
+            store,
+            claimed,
+            fingerprint=fingerprint,
+            interrupt_idempotency_key=request.idempotency_key,
+        )
+
+    outcome = _safe_interrupt_call(apply_interrupt, request)
+
+    with store._lock:
+        resident_cancel = store._cancels.get(claimed["cancel_id"])
+        if resident_cancel is None:
+            raise SessionLifecycleError(
+                "activity_cancel_ambiguous", "interrupt claim disappeared before finalize"
+            )
+        resident_cancel = _validate_cancel_projection(resident_cancel)
+        if resident_cancel != claimed:
+            if resident_cancel["status"] != _CANCEL_AMBIGUOUS:
+                resident_cancel = _cancel_with(
+                    resident_cancel,
+                    status=_CANCEL_AMBIGUOUS,
+                    ok=False,
+                    evidence_ref=None,
+                    evidence_digest=None,
+                    error_code="activity_cancel_ambiguous",
+                )
+            _store_interrupt_cancel(
+                store,
+                resident_cancel,
+                fingerprint=fingerprint,
+                interrupt_idempotency_key=request.idempotency_key,
+            )
+            raise SessionLifecycleError(
+                "activity_cancel_ambiguous",
+                "interrupt claim changed before finalize",
+            )
+        final, ambiguous = _cancel_from_interrupt_outcome(claimed, outcome)
+        final = _store_interrupt_cancel(
+            store,
+            final,
+            fingerprint=fingerprint,
+            interrupt_idempotency_key=request.idempotency_key,
+        )
+        if ambiguous:
+            raise SessionLifecycleError(
+                "activity_cancel_ambiguous",
+                "interrupt outcome could not be safely verified",
+            )
+        return CancellationRequestResult(final)
+
+
+def _check_cancel_turn_scope(
+    request: CancellationRequest | SessionInterruptRequest, session: Mapping[str, Any]
+) -> None:
     if request.turn_index is None:
         return
     if not _is_int_at_least(request.turn_index, 1):
@@ -1260,6 +1511,25 @@ def _check_cancel_turn_scope(request: CancellationRequest, session: Mapping[str,
         raise SessionLifecycleError(
             "activity_not_found", "cancellation turn index is out of range"
         )
+
+
+def _check_interrupt_cancel_target(
+    request: SessionInterruptRequest, cancel: Mapping[str, Any]
+) -> None:
+    for field in (
+        "activity_id",
+        "session_id",
+        "transaction_ref",
+        "operation_ref",
+        "turn_index",
+        "lease_id",
+        "lease_epoch",
+        "lease_holder_ref",
+    ):
+        if cancel[field] != getattr(request, field):
+            raise SessionLifecycleError(
+                "activity_not_found", "no cancellation request for interrupt target"
+            )
 
 
 # --------------------------------------------------------------------------- #
@@ -1361,10 +1631,19 @@ def _turn_with(turn: Mapping[str, Any], **changes: Any) -> dict[str, Any]:
     return _materialize(core, _TURN_VIEW_PREFIX)
 
 
-def _new_cancel(request: CancellationRequest, *, fingerprint: str, status: str) -> dict[str, Any]:
+def _new_cancel(
+    request: CancellationRequest | SessionInterruptRequest,
+    *,
+    fingerprint: str,
+    status: str,
+    ok: bool = True,
+    evidence_ref: str | None = None,
+    evidence_digest: str | None = None,
+    error_code: str | None = None,
+) -> dict[str, Any]:
     core = {
         "type": _CANCEL_TYPE,
-        "ok": True,
+        "ok": ok,
         "status": status,
         "cancel_id": request.cancel_id,
         "session_id": request.session_id,
@@ -1380,11 +1659,39 @@ def _new_cancel(request: CancellationRequest, *, fingerprint: str, status: str) 
         "lease_id": request.lease_id,
         "lease_epoch": request.lease_epoch,
         "lease_holder_ref": request.lease_holder_ref,
-        "evidence_ref": None,
-        "evidence_digest": None,
-        "error_code": None,
+        "evidence_ref": evidence_ref,
+        "evidence_digest": evidence_digest,
+        "error_code": error_code,
     }
     return _materialize(core, _CANCEL_VIEW_PREFIX)
+
+
+def _cancel_with(cancel: Mapping[str, Any], **changes: Any) -> dict[str, Any]:
+    core = {key: value for key, value in cancel.items() if key != "view_model_ref"}
+    core.update(changes)
+    return _materialize(core, _CANCEL_VIEW_PREFIX)
+
+
+def _store_interrupt_cancel(
+    store: SessionLifecycleStore,
+    state: dict[str, Any],
+    *,
+    fingerprint: str,
+    interrupt_idempotency_key: str | None = None,
+) -> dict[str, Any]:
+    validated = _validate_cancel_projection(state)
+    store._cancels[validated["cancel_id"]] = validated
+    idem_key = (
+        interrupt_idempotency_key
+        if interrupt_idempotency_key is not None
+        else validated["idempotency_key"]
+    )
+    store._interrupt_idem[idem_key] = (fingerprint, validated)
+    for key, (cancel_fp, cancel_state) in list(store._cancel_idem.items()):
+        resident = _validate_cancel_projection(cancel_state)
+        if resident["cancel_id"] == validated["cancel_id"]:
+            store._cancel_idem[key] = (cancel_fp, validated)
+    return validated
 
 
 def _turn_from_outcome(
@@ -1445,6 +1752,93 @@ def _turn_from_outcome(
     )
 
 
+def _cancel_from_interrupt_outcome(
+    claimed: Mapping[str, Any], outcome: SessionInterruptOutcome | None
+) -> tuple[dict[str, Any], bool]:
+    if outcome is None:
+        return (
+            _cancel_with(
+                claimed,
+                status=_CANCEL_AMBIGUOUS,
+                ok=False,
+                evidence_ref=None,
+                evidence_digest=None,
+                error_code="activity_cancel_ambiguous",
+            ),
+            True,
+        )
+
+    try:
+        interrupted = getattr(outcome, "interrupted", None)
+        cleanup_verified = getattr(outcome, "cleanup_verified", None)
+        ambiguous_flag = getattr(outcome, "ambiguous", None)
+        supervisor_status_raw = getattr(outcome, "supervisor_status", None)
+        supervisor_status = _safe_code(supervisor_status_raw)
+        evidence_ref_raw = getattr(outcome, "evidence_ref", None)
+        evidence_ref = _safe_evidence_ref(evidence_ref_raw)
+        evidence_digest_raw = getattr(outcome, "evidence_digest", None)
+        evidence_digest = _safe_digest(evidence_digest_raw)
+        error_code_raw = getattr(outcome, "error_code", None)
+        error_code = _safe_code(error_code_raw)
+    except Exception:
+        return (
+            _cancel_with(
+                claimed,
+                status=_CANCEL_AMBIGUOUS,
+                ok=False,
+                evidence_ref=None,
+                evidence_digest=None,
+                error_code="activity_cancel_ambiguous",
+            ),
+            True,
+        )
+
+    unsafe = (
+        type(interrupted) is not bool
+        or type(cleanup_verified) is not bool
+        or type(ambiguous_flag) is not bool
+        or (supervisor_status_raw is not None and supervisor_status is None)
+        or (evidence_ref_raw is not None and evidence_ref is None)
+        or (evidence_digest_raw is not None and evidence_digest is None)
+        or (error_code_raw is not None and error_code is None)
+    )
+    if unsafe or ambiguous_flag or (interrupted and not cleanup_verified):
+        return (
+            _cancel_with(
+                claimed,
+                status=_CANCEL_AMBIGUOUS,
+                ok=False,
+                evidence_ref=evidence_ref if not unsafe else None,
+                evidence_digest=evidence_digest if not unsafe else None,
+                error_code="activity_cancel_ambiguous",
+            ),
+            True,
+        )
+    if not interrupted:
+        return (
+            _cancel_with(
+                claimed,
+                status=_CANCEL_FAILED,
+                ok=False,
+                evidence_ref=None,
+                evidence_digest=None,
+                error_code=_ERROR_SUPERVISOR_FAILED,
+            ),
+            False,
+        )
+    return (
+        _cancel_with(
+            claimed,
+            status=_CANCEL_CANCELLED,
+            ok=True,
+            evidence_ref=evidence_ref,
+            evidence_digest=evidence_digest,
+            error_code=None,
+        ),
+        False,
+    )
+
+
 # --------------------------------------------------------------------------- #
 # Finalize drift + fakes
 # --------------------------------------------------------------------------- #
@@ -1490,6 +1884,16 @@ def _safe_call(work: Callable[[Any], SessionWorkOutcome], request: Any) -> Sessi
     text never propagates into durable state.
     """
 
+    try:
+        return work(request)
+    except Exception:
+        return None
+
+
+def _safe_interrupt_call(
+    work: Callable[[SessionInterruptRequest], SessionInterruptOutcome],
+    request: SessionInterruptRequest,
+) -> SessionInterruptOutcome | None:
     try:
         return work(request)
     except Exception:
@@ -1548,6 +1952,27 @@ def _cancel_fingerprint(request: CancellationRequest) -> str:
     return _digest_hex(
         {
             "kind": "session_cancel",
+            "cancel_id": request.cancel_id,
+            "activity_id": request.activity_id,
+            "session_id": request.session_id,
+            "transaction_ref": request.transaction_ref,
+            "operation_ref": request.operation_ref,
+            "session_binding": request.session_binding,
+            "requested_by_ref": request.requested_by_ref,
+            "reason_code": request.reason_code,
+            "turn_index": request.turn_index,
+            "lease_id": request.lease_id,
+            "lease_epoch": request.lease_epoch,
+            "lease_holder_ref": request.lease_holder_ref,
+            "operator_gate": request.operator_gate,
+        }
+    )
+
+
+def _interrupt_fingerprint(request: SessionInterruptRequest) -> str:
+    return _digest_hex(
+        {
+            "kind": "session_interrupt",
             "cancel_id": request.cancel_id,
             "activity_id": request.activity_id,
             "session_id": request.session_id,
@@ -1776,13 +2201,12 @@ def _validate_cancel_projection(state: Mapping[str, Any]) -> dict[str, Any]:
     if type(state) is not dict or set(state) != _CANCEL_STATE_KEYS:
         raise _reject_unsafe_state()
     projected = dict(state)
+    status = projected["status"]
     if (
         projected["type"] != _CANCEL_TYPE
-        or projected["status"] not in _CANCEL_STATUSES
-        or projected["ok"] is not True
+        or status not in _CANCEL_STATUSES
+        or type(projected["ok"]) is not bool
         or projected["operator_gate"] is not True
-        or projected["evidence_ref"] is not None
-        or projected["evidence_digest"] is not None
         or not _is_safe_fingerprint(projected["request_fingerprint"])
         or not projected["view_model_ref"].startswith(_CANCEL_VIEW_PREFIX)
     ):
@@ -1810,9 +2234,50 @@ def _validate_cancel_projection(state: Mapping[str, Any]) -> dict[str, Any]:
     reason = projected["reason_code"]
     if reason is not None and _safe_code(reason) is None:
         raise _reject_unsafe_state()
+    if (
+        projected["evidence_ref"] is not None
+        and _safe_evidence_ref(projected["evidence_ref"]) is None
+    ):
+        raise _reject_unsafe_state()
+    if (
+        projected["evidence_digest"] is not None
+        and _safe_digest(projected["evidence_digest"]) is None
+    ):
+        raise _reject_unsafe_state()
     if projected["error_code"] is not None and not _is_safe_stored_error_code(
         projected["error_code"]
     ):
         raise _reject_unsafe_state()
+    if status in {_CANCEL_REQUESTED, _CANCEL_REJECTED}:
+        if (
+            projected["ok"] is not True
+            or projected["evidence_ref"] is not None
+            or projected["evidence_digest"] is not None
+            or projected["error_code"] is not None
+        ):
+            raise _reject_unsafe_state()
+    elif status == _CANCEL_INTERRUPTING:
+        if (
+            projected["ok"] is not False
+            or projected["evidence_ref"] is not None
+            or projected["evidence_digest"] is not None
+            or projected["error_code"] is not None
+        ):
+            raise _reject_unsafe_state()
+    elif status == _CANCEL_CANCELLED:
+        if projected["ok"] is not True or projected["error_code"] is not None:
+            raise _reject_unsafe_state()
+    elif status == _CANCEL_FAILED:
+        if (
+            projected["ok"] is not False
+            or projected["error_code"] != _ERROR_SUPERVISOR_FAILED
+        ):
+            raise _reject_unsafe_state()
+    elif status == _CANCEL_AMBIGUOUS:
+        if (
+            projected["ok"] is not False
+            or projected["error_code"] != "activity_cancel_ambiguous"
+        ):
+            raise _reject_unsafe_state()
     _assert_all_strings_safe(projected)
     return projected
