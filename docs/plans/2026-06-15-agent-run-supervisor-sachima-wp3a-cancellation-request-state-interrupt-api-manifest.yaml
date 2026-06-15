@@ -1,7 +1,7 @@
 phase_id: "agent-run-supervisor-sachima-wp3a-cancellation-request-state-interrupt-api"
 level: "level-3-implementation"
-status: "implementation_candidate_pr_ready_local_branch"
-status_meaning: "Branch has local verified candidate changes; local gates and final Codex blocker-only re-review PASS after the same-cancel-id terminal replay blocker fix. Not merged; PR/CI state must be checked live in GitHub after PR creation."
+status: "merged"
+status_meaning: "Merged in PR #138 on 2026-06-15 after local gates, final Codex blocker-only re-review, and PR CI passed."
 repo: "jovijovi/sachima"
 base_branch: "release/sachima"
 base_head: "8c50110fe720ad4990b737d8604eb852bbbc409b"
@@ -130,16 +130,17 @@ worker_history:
   blocker_regressions: "added RED first, then fixed GREEN"
   codex_final_full_diff_review_round_2: "BLOCKED: same cancel_id/new cancellation idempotency could reopen terminal cancel records"
   blocker3_regressions: "added RED first, then fixed GREEN"
-  fresh_review: "pending after blocker #3 RED/GREEN fix"
+  fresh_review: "final blocker-only re-review PASS"
 
 candidate_state:
-  committed: false
-  pushed: false
-  pr_number: null
-  pr_url: null
-  merge_commit: null
-  ci_validated: false
-  fresh_review_completed: false
+  committed: true
+  pushed: true
+  pr_number: 138
+  pr_url: "https://github.com/jovijovi/sachima/pull/138"
+  merge_commit: "c74c2302129d2e9e1409910966c1075b4b19fabf"
+  merged_at: "2026-06-15T05:02:52Z"
+  ci_validated: true
+  fresh_review_completed: true
 
 non_approvals_held:
   real_interrupt: true
