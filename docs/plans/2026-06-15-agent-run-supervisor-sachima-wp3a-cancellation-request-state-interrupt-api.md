@@ -1,7 +1,7 @@
 # WP3a — Cancellation request state + supervisor interrupt API (local/offline, injected fake only; NO real interrupt)
 
 Date: 2026-06-15
-Status: **Implementation candidate — PR-ready local branch.** Local gates and final Codex blocker-only re-review PASS; not merged. PR/CI state must be checked live in GitHub after PR creation.
+Status: **Merged in PR #138** (`c74c2302129d2e9e1409910966c1075b4b19fabf`) on 2026-06-15. Local gates, final Codex blocker-only re-review, and PR CI passed before merge.
 Branch: `feature/ars-wp3a-cancellation-interrupt-api`
 Base: `release/sachima` at `8c50110fe720ad4990b737d8604eb852bbbc409b`
 
@@ -199,10 +199,10 @@ rejects with `activity_cancel_not_approved`.
 - Final full-diff review round 2 returned `VERDICT: BLOCKED` on same-`cancel_id`
   / new-cancel-idempotency replay reopening terminal cancel records.
 - Two blocker #3 regressions were added RED first, then the GREEN fix was applied.
-- Final re-review is pending after the blocker #3 fix.
+- Final re-review returned `VERDICT: PASS`; `BLOCKERS: None`.
 
-## Pending
+## Closure
 
-- Commit, push, PR creation, CI.
-- Roadmap status closure once a PR/merge exists.
+- PR #138 completed the commit/push/open/check/merge lifecycle.
+- Roadmap status closure is handled by this post-merge docs-only cleanup.
 - WP3b bounded real cancellation execution remains a separate later gate.
