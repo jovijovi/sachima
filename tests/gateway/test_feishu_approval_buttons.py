@@ -916,6 +916,54 @@ class TestGitHubPrApprovalResolution:
         assert "fresh-check" in synthetic_event.text
         assert synthetic_event.source.chat_id == "oc_12345"
         assert synthetic_event.source.user_name == "Bob"
+        # The synthetic approval message is answered by the normal gateway
+        # send path.  The callback token is not a Feishu open_message_id, so
+        # using it as the event message_id makes the final gate-failure report
+        # try to reply to an invalid id and vanish from the user's chat.
+        assert synthetic_event.message_id == "msg_pr_001"
+        assert synthetic_event.raw_message["token"] == "tok_pr_approve"
+
+    @pytest.mark.asyncio
+    async def test_approve_without_stored_card_message_id_sends_unthreaded_not_to_callback_token(self):
+        adapter = _make_adapter()
+        adapter._github_pr_approval_state[1] = {
+            "chat_id": "oc_12345",
+            "message_id": "",
+            "repo": "NousResearch/hermes-agent",
+            "pr_number": "123",
+            "title": "Add Feishu PR approval card",
+            "pr_url": "https://github.com/NousResearch/hermes-agent/pull/123",
+            "author": "octocat",
+            "head_sha": "abc123def456",
+            "base_ref": "release/sachima",
+            "head_ref": "feature/feishu-pr-approval-card",
+            "session_key": "agent:main:feishu:group:oc_12345",
+        }
+
+        with (
+            patch.object(
+                adapter,
+                "_resolve_sender_profile",
+                new_callable=AsyncMock,
+                return_value={"user_id": "ou_bob", "user_name": "Bob", "user_id_alt": None},
+            ),
+            patch.object(adapter, "get_chat_info", new_callable=AsyncMock, return_value={"name": "Review Chat"}),
+            patch.object(adapter, "_handle_message_with_guards", new_callable=AsyncMock) as mock_handle,
+        ):
+            await adapter._resolve_github_pr_approval(
+                1,
+                "approve",
+                "Bob",
+                open_id="ou_bob",
+                chat_id="oc_12345",
+                **{"token": "tok_pr_approve"},
+            )
+
+        mock_handle.assert_awaited_once()
+        synthetic_event = mock_handle.call_args[0][0]
+        assert synthetic_event.message_id is None
+        assert synthetic_event.raw_message["token"] == "tok_pr_approve"
+        assert "批准合并 PR #123" in synthetic_event.text
 
     @pytest.mark.asyncio
     async def test_reject_records_status_without_routing_merge_request(self):

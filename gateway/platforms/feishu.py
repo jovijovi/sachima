@@ -3271,12 +3271,18 @@ class FeishuAdapter(BasePlatformAdapter):
             + (f"url: {pr_url}\n" if pr_url else "")
             + "请先 fresh-check PR 状态、head SHA、CI 和 mergeability，再按既有受控 pre-merge gate 处理；不要直接无检查合并。"
         )
+        # The callback token is not a Feishu open_message_id.  The normal
+        # gateway response path replies to ``event.message_id``; using the
+        # card-action token there makes the final pre-merge gate report fail
+        # delivery with ``invalid open_message_id``.  Anchor replies to the
+        # original approval-card message when available, otherwise send a plain
+        # chat message by leaving the reply anchor empty.
         synthetic_event = MessageEvent(
             text=synthetic_text,
             message_type=MessageType.TEXT,
             source=source,
-            raw_message={"github_pr_approval": dict(state), "action": action},
-            message_id=token or f"github-pr-approval-{approval_id}",
+            raw_message={"github_pr_approval": dict(state), "action": action, "token": token},
+            message_id=str(state.get("message_id") or "") or None,
             timestamp=datetime.now(),
         )
         logger.info(
