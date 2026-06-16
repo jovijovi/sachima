@@ -916,6 +916,11 @@ class TestGitHubPrApprovalResolution:
         assert "fresh-check" in synthetic_event.text
         assert synthetic_event.source.chat_id == "oc_12345"
         assert synthetic_event.source.user_name == "Bob"
+        # The synthetic approval message is answered by the normal gateway
+        # send path.  The callback token is not a Feishu open_message_id, so
+        # using it as the event message_id makes the final gate-failure report
+        # try to reply to an invalid id and vanish from the user's chat.
+        assert synthetic_event.message_id == "msg_pr_001"
 
     @pytest.mark.asyncio
     async def test_reject_records_status_without_routing_merge_request(self):
