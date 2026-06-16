@@ -21,7 +21,9 @@ Scope boundary (local/offline only):
   * NEVER touches Gateway, Feishu, IM delivery, public ingress, live/default-on
     behavior, production config, service restart, platform-adapter mutation, or
     real delivery.
-  * Cancellation execution is NOT performed (request-state only elsewhere).
+  * Cancellation execution is exercised by ``--cancel-during-turn`` only in
+    deterministic ``--self-test`` mode; real acpx cancellation is host/ACP
+    dependent and is not claimed by this smoke unless a future gate proves it.
   * Writes only under caller-provided ``--sessions-dir`` / ``--evidence-dir`` /
     ``--work-dir`` (which must live outside the tracked repo), so a ``git
     status`` of the worktree stays clean.
@@ -47,30 +49,41 @@ import argparse
 import json
 import shutil
 import sys
+import threading
+import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
+from collections.abc import Mapping
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from sachima_supervisor.activity_session_lifecycle import (  # noqa: E402
+    SESSION_INTERRUPT_API_APPROVAL_TOKEN,
     SESSION_LIFECYCLE_APPROVAL_TOKEN,
+    CancellationRequest,
     SessionCloseRequest,
     SessionCreateRequest,
+    SessionInterruptRequest,
     SessionLifecycleStore,
     SessionSendRequest,
+    apply_session_interrupt,
     close_session,
     create_session,
     list_session_turns,
     query_session,
+    request_cancellation,
     send_session_turn,
 )
 from sachima_supervisor.activity_session_real_execution import (  # noqa: E402
+    PHASE_E2_CANCEL_EXECUTION_APPROVAL_TOKEN,
     PHASE_E2_REAL_SESSION_APPROVAL_TOKEN,
     RealPersistentSessionConfig,
     best_effort_close_real_session,
     bind_close_session,
+    bind_real_cancellation,
     bind_open_session,
     bind_run_turn,
     validate_real_session_config,
@@ -90,6 +103,13 @@ TURN_MARKER = "SACHIMA_PHASE_E2_TURN_OK"
 TURN_PROMPT = (
     "Phase E-2 bounded persistent-session smoke. Do not read files, run tools, "
     f"fetch, or edit anything. Reply with exactly this token and nothing else: {TURN_MARKER}"
+)
+CANCEL_TURN_MARKER = "SACHIMA_WP3B_CANCEL_SHOULD_HAVE_INTERRUPTED"
+CANCEL_TURN_PROMPT = (
+    "WP3b bounded cancellation smoke. This prompt is intentionally long-running "
+    "so the operator-gated cancel path can interrupt it. Do not read files, run tools, "
+    "fetch, edit, or access external systems. Think silently for at least 90 seconds "
+    f"before replying. If not interrupted, reply exactly: {CANCEL_TURN_MARKER}"
 )
 
 # Generous artifact budget so a real turn's redacted artifact bundle never trips
@@ -163,6 +183,11 @@ def build_config(
         allow_repo_paths=allow_repo_paths,
     )
 
+
+def build_cancel_config(config: RealPersistentSessionConfig) -> RealPersistentSessionConfig:
+    """Return the same runtime config with the separate WP3b cancel gate token."""
+
+    return replace(config, approval_token=PHASE_E2_CANCEL_EXECUTION_APPROVAL_TOKEN)
 
 # --------------------------------------------------------------------------- #
 # Lifecycle (deterministic; backend-injectable for self-test)
@@ -313,11 +338,267 @@ def run_lifecycle(
     }
 
 
+def _wait_for_turn_claimed(store: SessionLifecycleStore, *, timeout_seconds: float = 10.0) -> None:
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        session = query_session(store, activity_id=ACTIVITY_ID)
+        state = session.to_durable_state()
+        if state["lifecycle_state"] == "session_turn" and state["open_turn_index"] == 1:
+            return
+        time.sleep(0.01)
+    raise SmokeError("cancel smoke: timed out waiting for a claimed in-flight turn")
+
+
+def _release_blocked_turn(backend: Any | None) -> None:
+    release = getattr(backend, "release_turn", None)
+    if release is not None and hasattr(release, "set"):
+        release.set()
+
+
+def run_cancellation_lifecycle(
+    *, config: RealPersistentSessionConfig, backend: Any | None = None
+) -> dict[str, Any]:
+    """Drive create -> in-flight turn -> cancel request -> real interrupt -> close.
+
+    The self-test backend blocks the turn until ``abort`` runs, giving the smoke
+    deterministic proof that WP3b cancellation is applied while a turn is really
+    in flight. Real mode uses the same wiring and fails if it cannot observe the
+    claimed turn before timeout.
+    """
+
+    store = SessionLifecycleStore()
+    store.grant_lease(
+        activity_id=ACTIVITY_ID,
+        lease_id=LEASE_ID,
+        lease_epoch=1,
+        lease_holder_ref=LEASE_HOLDER,
+        state_version=0,
+    )
+
+    create_req = SessionCreateRequest(
+        activity_id=ACTIVITY_ID,
+        transaction_ref=TXN_REF,
+        operation_ref=OP_REF,
+        session_id=SESSION_REF,
+        idempotency_key="idem_phase_e2_create",
+        role_key=ROLE_KEY,
+        approval_token=SESSION_LIFECYCLE_APPROVAL_TOKEN,
+        enabled=True,
+        role_file_digest=config.expected_role_digest,
+        prompt_ref="claim_prompt_phase_e2_create",
+        context_refs=("claim_context_phase_e2",),
+        cwd_ref="workspace_ref_phase_e2_smoke",
+        allowed_roots_ref="allowed_roots_ref_phase_e2_smoke",
+        lease_id=LEASE_ID,
+        lease_epoch=1,
+        lease_holder_ref=LEASE_HOLDER,
+        expected_state_version=0,
+        operator_gate=True,
+        max_turns=MAX_TURNS,
+        max_artifacts_per_turn=MAX_ARTIFACTS_PER_TURN,
+    )
+    create_res = create_session(
+        create_req, store=store, open_session=bind_open_session(config, backend=backend)
+    )
+    if not create_res.ok or create_res.lifecycle_state != "session_open":
+        raise SmokeError(f"create: lifecycle_state={create_res.lifecycle_state!r}")
+    binding = create_res.session_binding
+    if not binding:
+        raise SmokeError("create: missing session binding")
+
+    turn_result: dict[str, Any] = {}
+    turn_errors: list[BaseException] = []
+
+    def _send_turn() -> None:
+        try:
+            send_req = SessionSendRequest(
+                activity_id=ACTIVITY_ID,
+                session_id=SESSION_REF,
+                transaction_ref=TXN_REF,
+                operation_ref=OP_REF,
+                idempotency_key="idem_phase_e2_turn_cancel",
+                approval_token=SESSION_LIFECYCLE_APPROVAL_TOKEN,
+                enabled=True,
+                session_binding=binding,
+                prompt_ref="claim_prompt_phase_e2_cancel_turn",
+                context_refs=("claim_context_phase_e2_cancel_turn",),
+                lease_id=LEASE_ID,
+                lease_epoch=1,
+                lease_holder_ref=LEASE_HOLDER,
+                expected_state_version=1,
+                operator_gate=True,
+            )
+            turn_result["value"] = send_session_turn(
+                send_req,
+                store=store,
+                run_turn=bind_run_turn(config, CANCEL_TURN_PROMPT, backend=backend),
+            )
+        except BaseException as exc:  # pragma: no cover - surfaced after join
+            turn_errors.append(exc)
+
+    thread = threading.Thread(
+        target=_send_turn, name="wp3b-cancel-smoke-turn", daemon=True
+    )
+    pending_error: BaseException | None = None
+    cancel_res: Any | None = None
+    interrupt_res: Any | None = None
+    thread.start()
+    try:
+        _wait_for_turn_claimed(store)
+
+        cancel_req = CancellationRequest(
+            cancel_id="cancel_phase_e2_smoke",
+            activity_id=ACTIVITY_ID,
+            session_id=SESSION_REF,
+            transaction_ref=TXN_REF,
+            operation_ref=OP_REF,
+            idempotency_key="idem_phase_e2_cancel_request",
+            approval_token=SESSION_LIFECYCLE_APPROVAL_TOKEN,
+            enabled=True,
+            session_binding=binding,
+            requested_by_ref="operator_ref_phase_e2_smoke",
+            reason_code="operator_requested_stop",
+            turn_index=1,
+            lease_id=LEASE_ID,
+            lease_epoch=1,
+            lease_holder_ref=LEASE_HOLDER,
+            operator_gate=True,
+            execute=False,
+        )
+        cancel_res = request_cancellation(cancel_req, store=store)
+        if cancel_res.status != "cancel_requested":
+            raise SmokeError(f"cancel request: status={cancel_res.status!r}")
+
+        interrupt_req = SessionInterruptRequest(
+            cancel_id="cancel_phase_e2_smoke",
+            activity_id=ACTIVITY_ID,
+            session_id=SESSION_REF,
+            transaction_ref=TXN_REF,
+            operation_ref=OP_REF,
+            idempotency_key="idem_phase_e2_interrupt",
+            approval_token=SESSION_INTERRUPT_API_APPROVAL_TOKEN,
+            enabled=True,
+            session_binding=binding,
+            requested_by_ref="operator_ref_phase_e2_smoke",
+            reason_code="operator_requested_stop",
+            turn_index=1,
+            lease_id=LEASE_ID,
+            lease_epoch=1,
+            lease_holder_ref=LEASE_HOLDER,
+            operator_gate=True,
+        )
+        interrupt_res = apply_session_interrupt(
+            interrupt_req,
+            store=store,
+            apply_interrupt=bind_real_cancellation(build_cancel_config(config), backend=backend),
+        )
+        if interrupt_res.status != "cancelled":
+            raise SmokeError(f"interrupt: status={interrupt_res.status!r}")
+    except BaseException as exc:
+        pending_error = exc
+    finally:
+        _release_blocked_turn(backend)
+        thread.join(timeout=10.0)
+
+    try:
+        if thread.is_alive():
+            raise SmokeError("cancel smoke: send thread did not finish after interrupt")
+        if pending_error is not None:
+            raise pending_error
+        if cancel_res is None or interrupt_res is None:
+            raise SmokeError("cancel smoke: missing cancellation/interrupt result")
+        if turn_errors:
+            raise SmokeError(
+                f"cancel smoke: send thread failed with {type(turn_errors[0]).__name__}"
+            )
+        last_turn_res = turn_result.get("value")
+        if last_turn_res is None:
+            raise SmokeError("cancel smoke: send thread produced no turn result")
+
+        close_req = SessionCloseRequest(
+            activity_id=ACTIVITY_ID,
+            session_id=SESSION_REF,
+            transaction_ref=TXN_REF,
+            operation_ref=OP_REF,
+            idempotency_key="idem_phase_e2_close",
+            approval_token=SESSION_LIFECYCLE_APPROVAL_TOKEN,
+            enabled=True,
+            session_binding=binding,
+            lease_id=LEASE_ID,
+            lease_epoch=1,
+            lease_holder_ref=LEASE_HOLDER,
+            expected_state_version=2,
+            operator_gate=True,
+        )
+        close_res = close_session(
+            close_req, store=store, apply_close=bind_close_session(config, backend=backend)
+        )
+        if not close_res.ok or close_res.lifecycle_state != "session_closed":
+            raise SmokeError(f"close: lifecycle_state={close_res.lifecycle_state!r}")
+    except Exception:
+        try:
+            best_effort_close_real_session(config, backend=backend)
+        except Exception:
+            pass
+        raise
+
+    turn_state = last_turn_res.to_durable_state()
+    cancel_state = interrupt_res.to_durable_state()
+    backend_abort_calls = getattr(backend, "abort_calls", None)
+    backend_released_turn = getattr(backend, "abort_released_turn", False) is True
+    turn_interrupted_observed = (
+        backend_abort_calls == 1
+        and backend_released_turn
+        and last_turn_res.status != "completed"
+    )
+    return {
+        "execution_pipeline": {
+            "create": {
+                "ok": create_res.ok,
+                "lifecycle_state": create_res.lifecycle_state,
+                "session_binding_prefix": binding[:6],
+            },
+            "turn": {
+                "ok": last_turn_res.ok,
+                "status": last_turn_res.status,
+                "artifact_ref_count": turn_state["artifact_ref_count"],
+                "final_message_persisted": "final_message" in turn_state,
+                "interrupted_observed": turn_interrupted_observed,
+            },
+            "cancel_request": {
+                "ok": cancel_res.to_durable_state()["ok"],
+                "status": cancel_res.status,
+            },
+            "interrupt": {
+                "ok": cancel_state["ok"],
+                "status": interrupt_res.status,
+                "evidence_digest_present": cancel_state["evidence_digest"] is not None,
+                "error_code": interrupt_res.error_code,
+            },
+            "close": {"ok": close_res.ok, "lifecycle_state": close_res.lifecycle_state},
+        },
+        "business_task": {
+            "business_verdict": None,
+            "cancellation_executed": turn_interrupted_observed,
+            "cleanup_verified": interrupt_res.status == "cancelled",
+            "backend_abort_calls": backend_abort_calls,
+            "backend_released_turn": backend_released_turn,
+        },
+        "turn_count": 1,
+        "_store": store,
+        "_closed": True,
+    }
+
+
 # --------------------------------------------------------------------------- #
 # Host-side post-verify
 # --------------------------------------------------------------------------- #
 def post_verify(
-    *, store: SessionLifecycleStore, config: RealPersistentSessionConfig, mode: str
+    *,
+    store: SessionLifecycleStore,
+    config: RealPersistentSessionConfig,
+    mode: str,
+    require_marker: bool = True,
 ) -> dict[str, Any]:
     session = query_session(store, activity_id=ACTIVITY_ID)
     turns = list_session_turns(store, activity_id=ACTIVITY_ID)
@@ -382,10 +663,13 @@ def post_verify(
         verify["business_marker_checked"] = marker_checked
         verify["business_marker_matches"] = marker_matches
         verify["business_marker_expected"] = TURN_MARKER
+        verify["business_marker_required"] = require_marker
     return verify
 
 
-def assert_post_verify(verify: dict[str, Any], *, mode: str) -> None:
+def assert_post_verify(
+    verify: dict[str, Any], *, mode: str, require_marker: bool = True
+) -> None:
     if not verify["closed"]:
         raise SmokeError("post-verify: session is not closed")
     n = verify["turn_count_state_machine"]
@@ -406,9 +690,9 @@ def assert_post_verify(verify: dict[str, Any], *, mode: str) -> None:
             )
         if not verify.get("supervisor_session_state_closed"):
             raise SmokeError("post-verify: supervisor session.json state is not closed")
-        if not verify.get("business_marker_checked"):
+        if require_marker and not verify.get("business_marker_checked"):
             raise SmokeError("post-verify: turn result.json final_message was not checkable")
-        if not verify.get("business_marker_matches"):
+        if require_marker and not verify.get("business_marker_matches"):
             raise SmokeError("post-verify: turn final_message did not match the smoke marker")
 
 
@@ -418,6 +702,13 @@ def assert_post_verify(verify: dict[str, Any], *, mode: str) -> None:
 class _SelfTestBackend:
     """In-process fake runtime backend for ``--self-test`` (deterministic)."""
 
+    def __init__(self, *, block_turn_until_cancel: bool = False) -> None:
+        self.block_turn_until_cancel = block_turn_until_cancel
+        self.turn_entered = threading.Event()
+        self.release_turn = threading.Event()
+        self.abort_calls = 0
+        self.abort_released_turn = False
+
     def create(self, resolved: Any) -> Any:
         from sachima_supervisor.activity_session_real_execution import _RuntimeCreateResult
 
@@ -426,9 +717,31 @@ class _SelfTestBackend:
     def send(self, resolved: Any, prompt: str) -> Any:
         from sachima_supervisor.activity_session_real_execution import _RuntimeTurnResult
 
+        if self.block_turn_until_cancel:
+            self.turn_entered.set()
+            if not self.release_turn.wait(timeout=10.0):
+                raise SmokeError("self-test backend timed out waiting for cancel release")
+            completed = not self.abort_released_turn
+            status_label = "completed" if completed else "cancelled_by_abort"
+            artifact_count = 1 if completed else 0
+        else:
+            completed = True
+            status_label = "completed"
+            artifact_count = 1
         return _RuntimeTurnResult(
-            completed=True, status_label="completed", turn_id="self-test-turn", artifact_count=1
+            completed=completed,
+            status_label=status_label,
+            turn_id="self-test-turn",
+            artifact_count=artifact_count,
         )
+
+    def abort(self, resolved: Any) -> Any:
+        from sachima_supervisor.activity_session_real_execution import _RuntimeAbortResult
+
+        self.abort_calls += 1
+        self.abort_released_turn = True
+        self.release_turn.set()
+        return _RuntimeAbortResult(cancelled=True, state="cancelled")
 
     def close(self, resolved: Any) -> Any:
         from sachima_supervisor.activity_session_real_execution import _RuntimeCloseResult
@@ -436,12 +749,32 @@ class _SelfTestBackend:
         return _RuntimeCloseResult(closed=True, state="closed")
 
     def best_effort_close(self, resolved: Any) -> None:
+        self.release_turn.set()
         return None
 
 
 # --------------------------------------------------------------------------- #
 # Driver
 # --------------------------------------------------------------------------- #
+def assert_cancel_during_turn_observed(lifecycle: Mapping[str, Any]) -> None:
+    business = lifecycle.get("business_task", {})
+    pipeline = lifecycle.get("execution_pipeline", {})
+    turn = pipeline.get("turn", {}) if isinstance(pipeline, Mapping) else {}
+    if not (
+        isinstance(business, Mapping)
+        and business.get("cancellation_executed") is True
+        and business.get("backend_abort_calls") == 1
+        and business.get("backend_released_turn") is True
+        and isinstance(turn, Mapping)
+        and turn.get("interrupted_observed") is True
+        and turn.get("status") != "completed"
+    ):
+        raise SmokeError(
+            "cancel-during-turn did not prove abort_calls=1, released in-flight turn, "
+            "and a non-completed interrupted turn"
+        )
+
+
 def preflight_real(acpx_binary: str) -> None:
     binary = Path(acpx_binary)
     if not binary.is_file():
@@ -461,6 +794,12 @@ def run(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
     work_dir.mkdir(parents=True, exist_ok=True)
 
     acpx_binary = args.acpx_binary or str((work_dir / "pinned-acpx-placeholder").resolve())
+
+    if args.cancel_during_turn and mode == "real":
+        raise EnvironmentNotReady(
+            "--cancel-during-turn is currently deterministic self-test only; "
+            "real acpx cancel did not reliably confirm active-run cancellation on this host"
+        )
 
     if mode == "real":
         if not args.acpx_binary:
@@ -491,14 +830,25 @@ def run(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
     turn_count = args.turn_count
     if turn_count < 1:
         raise SmokeError(f"--turn-count must be >= 1, got {turn_count}")
+    if args.cancel_during_turn and turn_count != 1:
+        raise SmokeError("--cancel-during-turn requires --turn-count 1")
     turn_prompts = None if turn_count == 1 else tuple(TURN_PROMPT for _ in range(turn_count))
 
-    backend = _SelfTestBackend() if mode == "self_test" else None
-    lifecycle = run_lifecycle(config=config, backend=backend, turn_prompts=turn_prompts)
+    backend = (
+        _SelfTestBackend(block_turn_until_cancel=args.cancel_during_turn)
+        if mode == "self_test"
+        else None
+    )
+    if args.cancel_during_turn:
+        lifecycle = run_cancellation_lifecycle(config=config, backend=backend)
+        assert_cancel_during_turn_observed(lifecycle)
+    else:
+        lifecycle = run_lifecycle(config=config, backend=backend, turn_prompts=turn_prompts)
     store = lifecycle.pop("_store")
     lifecycle.pop("_closed", None)
-    verify = post_verify(store=store, config=config, mode=mode)
-    assert_post_verify(verify, mode=mode)
+    require_marker = not args.cancel_during_turn
+    verify = post_verify(store=store, config=config, mode=mode, require_marker=require_marker)
+    assert_post_verify(verify, mode=mode, require_marker=require_marker)
     if mode == "real":
         lifecycle["business_task"] = {
             **lifecycle["business_task"],
@@ -510,11 +860,13 @@ def run(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
         "smoke": "sachima-phase-e2-bounded-real-persistent-session",
         "ok": True,
         "mode": mode,
+        "cancel_during_turn": bool(args.cancel_during_turn),
         "runtime_session_id": args.session_id,
         **lifecycle,
         "post_verify": verify,
         "non_approvals_held": {
-            "cancellation_execution": False,
+            "unapproved_cancellation_execution": False,
+            "wp3b_bounded_cancellation_execution": bool(args.cancel_during_turn),
             "gateway": False,
             "feishu_or_im_delivery": False,
             "live_or_default_on": False,
@@ -555,6 +907,15 @@ def main(argv: list[str] | None = None) -> int:
         help=(
             "Run N sequential read-only turns in one session (default: 1). "
             "Must be >= 1. When 1, legacy single-turn idempotency key is preserved."
+        ),
+    )
+    parser.add_argument(
+        "--cancel-during-turn",
+        action="store_true",
+        help=(
+            "Exercise WP3b bounded cancellation while turn 1 is in flight. "
+            "Currently deterministic self-test only: the fake backend blocks until abort() "
+            "proves the interrupt path, while real acpx cancellation remains host/ACP dependent."
         ),
     )
     parser.add_argument(

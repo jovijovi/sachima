@@ -56,7 +56,7 @@ import re
 import threading
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any, Callable, cast
 
 from .activity import ROLE_KEY_ALLOWLIST
 from .local_offline import _value_is_unsafe
@@ -144,6 +144,24 @@ _CANCEL_STATUSES = frozenset(
 _CANCEL_TERMINAL_STATUSES = frozenset(
     {_CANCEL_REJECTED, _CANCEL_CANCELLED, _CANCEL_FAILED, _CANCEL_AMBIGUOUS}
 )
+
+# Real-execution binders opt in by returning the private bound-cancellation
+# object from ``activity_session_real_execution``. The lifecycle module does not
+# expose a proof minting registry; it only recognizes that exact implementation
+# type and invokes its proven method after the durable state checks below.
+def _state_machine_in_flight_interrupt_callable(
+    work: Callable[[SessionInterruptRequest], SessionInterruptOutcome],
+) -> Callable[[SessionInterruptRequest], SessionInterruptOutcome] | None:
+    work_type = type(work)
+    if (
+        work_type.__module__ != "sachima_supervisor.activity_session_real_execution"
+        or work_type.__qualname__ != "_BoundRealCancellation"
+    ):
+        return None
+    proven = getattr(work, "_apply_after_lifecycle_validation", None)
+    if not callable(proven):
+        return None
+    return cast(Callable[[SessionInterruptRequest], SessionInterruptOutcome], proven)
 
 #: Stable failure taxonomy carried by this slice (design taxonomy +
 #: inherited). ``activity_cancel_ambiguous`` is raised/stored only by WP3a's
@@ -1325,7 +1343,7 @@ def request_cancellation(
 
 
 # --------------------------------------------------------------------------- #
-# apply_session_interrupt (WP3a injected fake only; NO real interrupt)
+# apply_session_interrupt (WP3a fake seam; WP3b real cancellation opt-in)
 # --------------------------------------------------------------------------- #
 def apply_session_interrupt(
     request: SessionInterruptRequest,
@@ -1333,19 +1351,23 @@ def apply_session_interrupt(
     store: SessionLifecycleStore,
     apply_interrupt: Callable[[SessionInterruptRequest], SessionInterruptOutcome],
 ) -> CancellationRequestResult:
-    """Apply a caller-approved interrupt result through an injected fake.
+    """Apply a caller-approved interrupt result through an injected callable.
 
-    This is WP3a request-state plus API-seam behavior only. The caller must
-    provide ``apply_interrupt``; this module has no default runner and never
-    signals a real process. The durable cancellation record advances to one of
-    ``cancelled``, ``cancel_failed``, or ``cancel_ambiguous`` while the session
-    lifecycle remains authoritative and unmodified.
+    The default WP3a contract remains a fake/injected seam: this module has no
+    default runner and never signals a real process itself. WP3b real
+    cancellation binders may opt in by carrying the private in-flight-turn
+    marker; in that case this state machine first verifies the matching
+    ``cancel_requested`` record and active turn before invoking the proven call
+    path. The durable cancellation record advances to one of ``cancelled``,
+    ``cancel_failed``, or ``cancel_ambiguous`` while the session lifecycle
+    remains authoritative and unmodified.
     """
 
     _check_interrupt_enabled_and_approved(request)
     _check_operator_gate(request)
     _check_cancel_material(request)
     fingerprint = _interrupt_fingerprint(request)
+    proven_interrupt = _state_machine_in_flight_interrupt_callable(apply_interrupt)
 
     with store._lock:
         existing = _resident_idem(
@@ -1384,7 +1406,11 @@ def apply_session_interrupt(
             raise SessionLifecycleError("activity_not_found", "no session for interrupt target")
         _check_session_binding(request, session)
         _check_lease(request, store)
-        _check_cancel_turn_scope(request, session)
+        _check_cancel_turn_scope(
+            request,
+            session,
+            require_in_flight_interrupt=(proven_interrupt is not None),
+        )
 
         existing_cancel = store._cancels.get(request.cancel_id)
         if existing_cancel is None:
@@ -1451,7 +1477,10 @@ def apply_session_interrupt(
             interrupt_idempotency_key=request.idempotency_key,
         )
 
-    outcome = _safe_interrupt_call(apply_interrupt, request)
+    outcome = _safe_interrupt_call(
+        proven_interrupt if proven_interrupt is not None else apply_interrupt,
+        request,
+    )
 
     with store._lock:
         resident_cancel = store._cancels.get(claimed["cancel_id"])
@@ -1495,9 +1524,41 @@ def apply_session_interrupt(
         return CancellationRequestResult(final)
 
 
+def _missing_in_flight_proof_callable(
+    _request: SessionInterruptRequest,
+) -> SessionInterruptOutcome:
+    return SessionInterruptOutcome(
+        interrupted=True,
+        cleanup_verified=False,
+        ambiguous=True,
+        error_code="activity_cancel_ambiguous",
+    )
+
+
 def _check_cancel_turn_scope(
-    request: CancellationRequest | SessionInterruptRequest, session: Mapping[str, Any]
+    request: CancellationRequest | SessionInterruptRequest,
+    session: Mapping[str, Any],
+    *,
+    require_in_flight_interrupt: bool = False,
 ) -> None:
+    if isinstance(request, SessionInterruptRequest) and require_in_flight_interrupt:
+        if request.turn_index is None:
+            raise SessionLifecycleError(
+                "activity_not_found", "interrupt target must name an in-flight turn"
+            )
+        if not _is_int_at_least(request.turn_index, 1):
+            raise SessionLifecycleError(
+                "activity_not_found", "cancellation turn index is invalid"
+            )
+        if (
+            session["lifecycle_state"] != _STATE_TURN
+            or session["open_turn_index"] != request.turn_index
+        ):
+            raise SessionLifecycleError(
+                "activity_not_found", "interrupt target is not the active in-flight turn"
+            )
+        return
+
     if request.turn_index is None:
         return
     if not _is_int_at_least(request.turn_index, 1):

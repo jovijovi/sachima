@@ -25,9 +25,10 @@ What this slice is, and is deliberately NOT:
     ``bunx``/``bun``/``node``/``sh``/…). A committed role with ``acpx_binary:
     null`` is therefore non-runnable by construction until an operator local
     overlay pins a verified local acpx. There is no npx/network fallback.
-  * **Cancellation execution is NOT approved.** ``execute_real_cancellation``
-    always fails closed with ``activity_cancel_not_approved`` and never loads a
-    runtime. Cancellation stays request-state only in the state machine.
+  * **Cancellation execution is separately gated.** ``execute_real_cancellation``
+    requires the distinct WP3b cancellation approval token before it can call the
+    local supervisor abort path. Without that exact gate, cancellation still
+    fails closed with ``activity_cancel_not_approved`` before runtime touch.
   * **Lazy import.** ``agent_run_supervisor`` is imported lazily, only inside the
     default runtime backend's methods. Importing this module — and validating a
     config — never requires the external package, so normal CI is unaffected.
@@ -46,6 +47,7 @@ fail-closed config gate around the real runtime.
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import os
 import re
@@ -54,10 +56,15 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .activity_session_lifecycle import (
+    SESSION_INTERRUPT_API_APPROVAL_TOKEN,
     SessionCloseRequest,
     SessionCreateRequest,
+    SessionInterruptOutcome,
+    SessionInterruptRequest,
     SessionSendRequest,
     SessionWorkOutcome,
+    _safe_interrupt_call as _lifecycle_safe_interrupt_call,
+    apply_session_interrupt as _lifecycle_apply_session_interrupt,
 )
 
 # --------------------------------------------------------------------------- #
@@ -75,6 +82,16 @@ PHASE_E2_REAL_SESSION_APPROVAL_TOKEN = (
     "no_real_delivery"
 )
 
+#: Exact approval token required for WP3b bounded real cancellation execution.
+#: Deliberately narrower and distinct from both the session token and the lifecycle
+#: token: it approves a *bounded local cancel* (abort with cleanup proof) and
+#: nothing live, Gateway, Feishu, production-write, or real-delivery related.
+PHASE_E2_CANCEL_EXECUTION_APPROVAL_TOKEN = (
+    "approve_agent_run_supervisor_sachima_bounded_cancellation_execution_local_offline_"
+    "with_cleanup_proof_operator_gated_read_only_sessions_only_no_write_roles_no_live_"
+    "no_gateway_no_feishu_no_production_config_no_real_delivery"
+)
+
 # --------------------------------------------------------------------------- #
 # Stable error taxonomy (subset of the lifecycle stored taxonomy)
 # --------------------------------------------------------------------------- #
@@ -86,12 +103,14 @@ _ERROR_ROLE_CAPABILITY = "activity_role_capability_rejected"
 _ERROR_PRECONDITION = "activity_precondition_unmet"
 _ERROR_UNSAFE = "activity_unsafe_material"
 _ERROR_SUPERVISOR_FAILED = "activity_supervisor_failed"
+_ERROR_CANCEL_AMBIGUOUS = "activity_cancel_ambiguous"
 
 # Stable supervisor-status labels surfaced into the sanitized outcome. These are
 # Sachima-owned codes, never raw runtime/model text.
 _STATUS_OPEN = "session_open"
 _STATUS_TURN = "turn_completed"
 _STATUS_CLOSED = "session_closed"
+_STATUS_CANCELLED = "session_cancelled"
 
 #: Runner identity required by this first slice.
 _REQUIRED_RUNNER_TYPE = "acpx"
@@ -226,6 +245,12 @@ class _RuntimeCloseResult:
     state: str | None
 
 
+@dataclass(frozen=True)
+class _RuntimeAbortResult:
+    cancelled: bool
+    state: str | None = None
+
+
 # --------------------------------------------------------------------------- #
 # Fail-closed config validation (stdlib only; no agent_run_supervisor import)
 # --------------------------------------------------------------------------- #
@@ -238,6 +263,11 @@ def validate_real_session_config(config: RealPersistentSessionConfig) -> Resolve
     """
 
     _check_enabled_and_approved(config)
+    return _validate_config_body(config)
+
+
+def _validate_config_body(config: RealPersistentSessionConfig) -> ResolvedRealSessionConfig:
+    """Validate role provenance, runner pinning, and paths — no approval gate."""
 
     role_file = _require_str(config.role_file, _ERROR_PRECONDITION, "role_file is required")
     role_path = Path(role_file)
@@ -463,6 +493,19 @@ class _AgentRunSupervisorBackend:
         except Exception:
             pass
 
+    def abort(self, resolved: ResolvedRealSessionConfig) -> _RuntimeAbortResult:
+        runtime, role = self._runtime_and_role(resolved)
+        outcome = runtime.abort(
+            role=role,
+            session_id=resolved.runtime_session_id,
+            cwd=resolved.work_dir,
+        )
+        cancelled = getattr(outcome, "cancelled", False) is True
+        return _RuntimeAbortResult(
+            cancelled=cancelled,
+            state="cancelled" if cancelled else None,
+        )
+
 
 def _resolve_backend(backend: Any | None) -> Any:
     return backend if backend is not None else _AgentRunSupervisorBackend()
@@ -623,24 +666,130 @@ def best_effort_close_real_session(
         pass
 
 
-def execute_real_cancellation(
-    config: RealPersistentSessionConfig, *, backend: Any | None = None
-) -> SessionWorkOutcome:
-    """Always fail closed: cancellation *execution* has no approved path here.
+def _check_interrupt_request_gate(request: SessionInterruptRequest) -> None:
+    """Validate the interrupt request's own gate before any real abort touch."""
 
-    Refuses before loading any runtime or touching a backend, regardless of the
-    config gate, so an enabled+approved config still cannot execute a cancel.
+    if request.enabled is not True:
+        raise RealSessionExecutionError(
+            _ERROR_DISABLED, "session interrupt request is disabled"
+        )
+    if request.approval_token != SESSION_INTERRUPT_API_APPROVAL_TOKEN:
+        raise RealSessionExecutionError(
+            _ERROR_APPROVAL, "session interrupt request approval token mismatch"
+        )
+    if request.operator_gate is not True:
+        raise RealSessionExecutionError(
+            _ERROR_PRECONDITION, "session interrupt request requires operator gate"
+        )
+
+
+def execute_real_cancellation(
+    request: SessionInterruptRequest,
+    config: RealPersistentSessionConfig,
+    *,
+    backend: Any | None = None,
+) -> SessionInterruptOutcome:
+    """WP3b public cancellation entrypoint: validate gates, then fail closed.
+
+    Real backend abort is intentionally not reachable from this public function.
+    It is invoked only by the proven callback registered by
+    ``bind_real_cancellation`` and selected by ``apply_session_interrupt`` after
+    durable ``cancel_requested`` + active in-flight-turn checks.
     """
 
+    _check_interrupt_request_gate(request)
+    if config.approval_token != PHASE_E2_CANCEL_EXECUTION_APPROVAL_TOKEN:
+        raise RealSessionExecutionError(
+            _ERROR_CANCEL_NOT_APPROVED,
+            "WP3b cancel execution requires the exact cancel approval token",
+        )
+    if config.enabled is not True:
+        raise RealSessionExecutionError(
+            _ERROR_DISABLED, "phase E-2 cancel execution is default-off"
+        )
+    _validate_config_body(config)
+    _ = backend
     raise RealSessionExecutionError(
-        _ERROR_CANCEL_NOT_APPROVED,
-        "cancellation execution is not approved in this slice (request-state only)",
+        _ERROR_PRECONDITION,
+        "WP3b cancellation execution requires lifecycle state-machine in-flight turn proof",
     )
 
 
 # --------------------------------------------------------------------------- #
 # Binders: produce single-arg callables for the state machine
 # --------------------------------------------------------------------------- #
+def _called_from_lifecycle_apply_session_interrupt(expected_apply_interrupt: object) -> bool:
+    frame = inspect.currentframe()
+    method_frame = frame.f_back if frame is not None else None
+    safe_call_frame = method_frame.f_back if method_frame is not None else None
+    apply_frame = safe_call_frame.f_back if safe_call_frame is not None else None
+    return bool(
+        safe_call_frame is not None
+        and safe_call_frame.f_code is _lifecycle_safe_interrupt_call.__code__
+        and apply_frame is not None
+        and apply_frame.f_code is _lifecycle_apply_session_interrupt.__code__
+        and apply_frame.f_locals.get("apply_interrupt") is expected_apply_interrupt
+    )
+
+
+class _BoundRealCancellation:
+    """Callable whose real-abort path only opens from apply_session_interrupt."""
+
+    __slots__ = ("_backend", "_config")
+
+    def __init__(self, config: RealPersistentSessionConfig, backend: Any | None) -> None:
+        self._config = config
+        self._backend = backend
+
+    def __call__(self, request: SessionInterruptRequest) -> SessionInterruptOutcome:
+        return execute_real_cancellation(request, self._config, backend=self._backend)
+
+    def _apply_after_lifecycle_validation(
+        self, request: SessionInterruptRequest
+    ) -> SessionInterruptOutcome:
+        if not _called_from_lifecycle_apply_session_interrupt(self):
+            raise RealSessionExecutionError(
+                _ERROR_PRECONDITION,
+                "WP3b cancellation execution requires lifecycle state-machine in-flight turn proof",
+            )
+        _check_interrupt_request_gate(request)
+        if self._config.approval_token != PHASE_E2_CANCEL_EXECUTION_APPROVAL_TOKEN:
+            raise RealSessionExecutionError(
+                _ERROR_CANCEL_NOT_APPROVED,
+                "WP3b cancel execution requires the exact cancel approval token",
+            )
+        if self._config.enabled is not True:
+            raise RealSessionExecutionError(
+                _ERROR_DISABLED, "phase E-2 cancel execution is default-off"
+            )
+
+        resolved = _validate_config_body(self._config)
+        resolved_backend = _resolve_backend(self._backend)
+        try:
+            result = resolved_backend.abort(resolved)
+        except Exception:
+            return SessionInterruptOutcome(
+                interrupted=True,
+                cleanup_verified=False,
+                ambiguous=True,
+                error_code=_ERROR_CANCEL_AMBIGUOUS,
+            )
+
+        if getattr(result, "cancelled", False):
+            return SessionInterruptOutcome(
+                interrupted=True,
+                cleanup_verified=True,
+                supervisor_status=_STATUS_CANCELLED,
+                evidence_ref=_evidence_ref("cancel", resolved),
+                evidence_digest=_evidence_digest([_STATUS_CANCELLED, resolved.runtime_session_id]),
+            )
+        return SessionInterruptOutcome(
+            interrupted=False,
+            cleanup_verified=False,
+            supervisor_status="cancel_not_confirmed",
+        )
+
+
 def bind_open_session(
     config: RealPersistentSessionConfig, *, backend: Any | None = None
 ) -> Callable[[SessionCreateRequest], SessionWorkOutcome]:
@@ -669,6 +818,14 @@ def bind_close_session(
         return close_real_persistent_session(request, config, backend=backend)
 
     return _work
+
+
+def bind_real_cancellation(
+    config: RealPersistentSessionConfig, *, backend: Any | None = None
+) -> Callable[[SessionInterruptRequest], SessionInterruptOutcome]:
+    """Return a single-arg callable wiring WP3b cancellation into the state machine."""
+
+    return _BoundRealCancellation(config, backend)
 
 
 def _resolve_prompt(
