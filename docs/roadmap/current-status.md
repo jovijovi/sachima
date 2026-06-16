@@ -11,7 +11,7 @@
 ```json
 {
   "base_branch": "release/sachima",
-  "base_head": "147cd4c726b6e446e5d1b791bca627c7763a8a34",
+  "base_head": "3fe18ab9451d290a70036697da118351d604be27",
   "base_head_note": "latest first-parent base commit excluding machine status-sync self-commits",
   "latest_merged_prs": [
     {
@@ -24,6 +24,17 @@
       "number": 141,
       "title": "fix: preserve Feishu PR approval failure notifications",
       "url": "https://github.com/jovijovi/sachima/pull/141"
+    },
+    {
+      "baseRefName": "release/sachima",
+      "headRefName": "feature/ars-wp3b-bounded-cancellation-execution",
+      "mergeCommit": {
+        "oid": "3fe18ab9451d290a70036697da118351d604be27"
+      },
+      "mergedAt": "2026-06-16T03:00:52Z",
+      "number": 140,
+      "title": "feat: add bounded real cancellation execution",
+      "url": "https://github.com/jovijovi/sachima/pull/140"
     },
     {
       "baseRefName": "release/sachima",
@@ -57,31 +68,10 @@
       "number": 137,
       "title": "feat: harden bounded multi-turn session smoke",
       "url": "https://github.com/jovijovi/sachima/pull/137"
-    },
-    {
-      "baseRefName": "release/sachima",
-      "headRefName": "feature/feishu-pr-card-i18n",
-      "mergeCommit": {
-        "oid": "b59f12d518951e62acdc2a329d6569f94a765546"
-      },
-      "mergedAt": "2026-06-14T19:29:02Z",
-      "number": 136,
-      "title": "feat: localize Feishu PR approval cards",
-      "url": "https://github.com/jovijovi/sachima/pull/136"
     }
   ],
-  "open_pr_count": 1,
-  "open_prs": [
-    {
-      "baseRefName": "release/sachima",
-      "headRefName": "feature/ars-wp3b-bounded-cancellation-execution",
-      "isDraft": false,
-      "mergeStateStatus": "UNKNOWN",
-      "number": 140,
-      "title": "feat: add bounded real cancellation execution",
-      "url": "https://github.com/jovijovi/sachima/pull/140"
-    }
-  ],
+  "open_pr_count": 0,
+  "open_prs": [],
   "repository": "jovijovi/sachima",
   "scope_note": "machine dynamic status only; approvals and phase meaning remain human-authored outside this block"
 }
