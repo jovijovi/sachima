@@ -11,9 +11,20 @@
 ```json
 {
   "base_branch": "release/sachima",
-  "base_head": "1b929370a02d7b85362957f3eb9185bffa9970c3",
+  "base_head": "147cd4c726b6e446e5d1b791bca627c7763a8a34",
   "base_head_note": "latest first-parent base commit excluding machine status-sync self-commits",
   "latest_merged_prs": [
+    {
+      "baseRefName": "release/sachima",
+      "headRefName": "fix/feishu-pr-approval-failure-notify",
+      "mergeCommit": {
+        "oid": "147cd4c726b6e446e5d1b791bca627c7763a8a34"
+      },
+      "mergedAt": "2026-06-16T02:10:03Z",
+      "number": 141,
+      "title": "fix: preserve Feishu PR approval failure notifications",
+      "url": "https://github.com/jovijovi/sachima/pull/141"
+    },
     {
       "baseRefName": "release/sachima",
       "headRefName": "docs/wp3a-merge-status-cleanup",
@@ -57,21 +68,20 @@
       "number": 136,
       "title": "feat: localize Feishu PR approval cards",
       "url": "https://github.com/jovijovi/sachima/pull/136"
-    },
-    {
-      "baseRefName": "release/sachima",
-      "headRefName": "feature/feishu-pr-approval-card",
-      "mergeCommit": {
-        "oid": "eeec8f0e857415bf592a99565333e434940f4a75"
-      },
-      "mergedAt": "2026-06-14T18:21:26Z",
-      "number": 135,
-      "title": "feat: add Feishu PR approval cards",
-      "url": "https://github.com/jovijovi/sachima/pull/135"
     }
   ],
-  "open_pr_count": 0,
-  "open_prs": [],
+  "open_pr_count": 1,
+  "open_prs": [
+    {
+      "baseRefName": "release/sachima",
+      "headRefName": "feature/ars-wp3b-bounded-cancellation-execution",
+      "isDraft": false,
+      "mergeStateStatus": "UNKNOWN",
+      "number": 140,
+      "title": "feat: add bounded real cancellation execution",
+      "url": "https://github.com/jovijovi/sachima/pull/140"
+    }
+  ],
   "repository": "jovijovi/sachima",
   "scope_note": "machine dynamic status only; approvals and phase meaning remain human-authored outside this block"
 }
