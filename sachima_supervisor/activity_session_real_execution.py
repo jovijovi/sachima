@@ -47,6 +47,7 @@ fail-closed config gate around the real runtime.
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import os
 import re
@@ -62,6 +63,8 @@ from .activity_session_lifecycle import (
     SessionInterruptRequest,
     SessionSendRequest,
     SessionWorkOutcome,
+    _safe_interrupt_call as _lifecycle_safe_interrupt_call,
+    apply_session_interrupt as _lifecycle_apply_session_interrupt,
 )
 
 # --------------------------------------------------------------------------- #
@@ -108,11 +111,6 @@ _STATUS_OPEN = "session_open"
 _STATUS_TURN = "turn_completed"
 _STATUS_CLOSED = "session_closed"
 _STATUS_CANCELLED = "session_cancelled"
-
-# Private capability marker proving the abort callable was produced by
-# ``bind_real_cancellation`` and therefore entered only after the lifecycle
-# state machine checked prior cancel_requested + the active in-flight turn.
-_STATE_MACHINE_IN_FLIGHT_CANCEL_PROOF = object()
 
 #: Runner identity required by this first slice.
 _REQUIRED_RUNNER_TYPE = "acpx"
@@ -690,20 +688,16 @@ def execute_real_cancellation(
     config: RealPersistentSessionConfig,
     *,
     backend: Any | None = None,
-    _state_machine_in_flight_proof: object | None = None,
 ) -> SessionInterruptOutcome:
-    """WP3b bounded real cancellation execution (local/offline, operator-gated).
+    """WP3b public cancellation entrypoint: validate gates, then fail closed.
 
-    Fails closed before any backend touch when the cancel-specific approval token
-    is absent or wrong, when the config is disabled, or when role/provenance/path
-    validation fails. On success calls ``backend.abort`` exactly once and maps the
-    result to a sanitized :class:`SessionInterruptOutcome` — no raw prompt, tool
-    text, or exception leaks into the outcome.
+    Real backend abort is intentionally not reachable from this public function.
+    It is invoked only by the proven callback registered by
+    ``bind_real_cancellation`` and selected by ``apply_session_interrupt`` after
+    durable ``cancel_requested`` + active in-flight-turn checks.
     """
 
     _check_interrupt_request_gate(request)
-
-    # Cancel-specific config gate — must fire before backend touch.
     if config.approval_token != PHASE_E2_CANCEL_EXECUTION_APPROVAL_TOKEN:
         raise RealSessionExecutionError(
             _ERROR_CANCEL_NOT_APPROVED,
@@ -713,43 +707,89 @@ def execute_real_cancellation(
         raise RealSessionExecutionError(
             _ERROR_DISABLED, "phase E-2 cancel execution is default-off"
         )
-
-    resolved = _validate_config_body(config)
-    if _state_machine_in_flight_proof is not _STATE_MACHINE_IN_FLIGHT_CANCEL_PROOF:
-        raise RealSessionExecutionError(
-            _ERROR_PRECONDITION,
-            "WP3b cancellation execution requires lifecycle state-machine in-flight turn proof",
-        )
-    backend = _resolve_backend(backend)
-
-    try:
-        result = backend.abort(resolved)
-    except Exception:
-        return SessionInterruptOutcome(
-            interrupted=True,
-            cleanup_verified=False,
-            ambiguous=True,
-            error_code=_ERROR_CANCEL_AMBIGUOUS,
-        )
-
-    if getattr(result, "cancelled", False):
-        return SessionInterruptOutcome(
-            interrupted=True,
-            cleanup_verified=True,
-            supervisor_status=_STATUS_CANCELLED,
-            evidence_ref=_evidence_ref("cancel", resolved),
-            evidence_digest=_evidence_digest([_STATUS_CANCELLED, resolved.runtime_session_id]),
-        )
-    return SessionInterruptOutcome(
-        interrupted=False,
-        cleanup_verified=False,
-        supervisor_status="cancel_not_confirmed",
+    _validate_config_body(config)
+    _ = backend
+    raise RealSessionExecutionError(
+        _ERROR_PRECONDITION,
+        "WP3b cancellation execution requires lifecycle state-machine in-flight turn proof",
     )
 
 
 # --------------------------------------------------------------------------- #
 # Binders: produce single-arg callables for the state machine
 # --------------------------------------------------------------------------- #
+def _called_from_lifecycle_apply_session_interrupt(expected_apply_interrupt: object) -> bool:
+    frame = inspect.currentframe()
+    method_frame = frame.f_back if frame is not None else None
+    safe_call_frame = method_frame.f_back if method_frame is not None else None
+    apply_frame = safe_call_frame.f_back if safe_call_frame is not None else None
+    return bool(
+        safe_call_frame is not None
+        and safe_call_frame.f_code is _lifecycle_safe_interrupt_call.__code__
+        and apply_frame is not None
+        and apply_frame.f_code is _lifecycle_apply_session_interrupt.__code__
+        and apply_frame.f_locals.get("apply_interrupt") is expected_apply_interrupt
+    )
+
+
+class _BoundRealCancellation:
+    """Callable whose real-abort path only opens from apply_session_interrupt."""
+
+    __slots__ = ("_backend", "_config")
+
+    def __init__(self, config: RealPersistentSessionConfig, backend: Any | None) -> None:
+        self._config = config
+        self._backend = backend
+
+    def __call__(self, request: SessionInterruptRequest) -> SessionInterruptOutcome:
+        return execute_real_cancellation(request, self._config, backend=self._backend)
+
+    def _apply_after_lifecycle_validation(
+        self, request: SessionInterruptRequest
+    ) -> SessionInterruptOutcome:
+        if not _called_from_lifecycle_apply_session_interrupt(self):
+            raise RealSessionExecutionError(
+                _ERROR_PRECONDITION,
+                "WP3b cancellation execution requires lifecycle state-machine in-flight turn proof",
+            )
+        _check_interrupt_request_gate(request)
+        if self._config.approval_token != PHASE_E2_CANCEL_EXECUTION_APPROVAL_TOKEN:
+            raise RealSessionExecutionError(
+                _ERROR_CANCEL_NOT_APPROVED,
+                "WP3b cancel execution requires the exact cancel approval token",
+            )
+        if self._config.enabled is not True:
+            raise RealSessionExecutionError(
+                _ERROR_DISABLED, "phase E-2 cancel execution is default-off"
+            )
+
+        resolved = _validate_config_body(self._config)
+        resolved_backend = _resolve_backend(self._backend)
+        try:
+            result = resolved_backend.abort(resolved)
+        except Exception:
+            return SessionInterruptOutcome(
+                interrupted=True,
+                cleanup_verified=False,
+                ambiguous=True,
+                error_code=_ERROR_CANCEL_AMBIGUOUS,
+            )
+
+        if getattr(result, "cancelled", False):
+            return SessionInterruptOutcome(
+                interrupted=True,
+                cleanup_verified=True,
+                supervisor_status=_STATUS_CANCELLED,
+                evidence_ref=_evidence_ref("cancel", resolved),
+                evidence_digest=_evidence_digest([_STATUS_CANCELLED, resolved.runtime_session_id]),
+            )
+        return SessionInterruptOutcome(
+            interrupted=False,
+            cleanup_verified=False,
+            supervisor_status="cancel_not_confirmed",
+        )
+
+
 def bind_open_session(
     config: RealPersistentSessionConfig, *, backend: Any | None = None
 ) -> Callable[[SessionCreateRequest], SessionWorkOutcome]:
@@ -785,22 +825,7 @@ def bind_real_cancellation(
 ) -> Callable[[SessionInterruptRequest], SessionInterruptOutcome]:
     """Return a single-arg callable wiring WP3b cancellation into the state machine."""
 
-    def _work(request: SessionInterruptRequest) -> SessionInterruptOutcome:
-        return execute_real_cancellation(request, config, backend=backend)
-
-    def _work_with_in_flight_proof(
-        request: SessionInterruptRequest,
-    ) -> SessionInterruptOutcome:
-        return execute_real_cancellation(
-            request,
-            config,
-            backend=backend,
-            _state_machine_in_flight_proof=_STATE_MACHINE_IN_FLIGHT_CANCEL_PROOF,
-        )
-
-    _work._sachima_requires_in_flight_turn = True  # type: ignore[attr-defined]
-    _work._sachima_call_with_in_flight_proof = _work_with_in_flight_proof  # type: ignore[attr-defined]
-    return _work
+    return _BoundRealCancellation(config, backend)
 
 
 def _resolve_prompt(

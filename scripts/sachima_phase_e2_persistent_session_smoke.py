@@ -54,6 +54,7 @@ import time
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
+from collections.abc import Mapping
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -755,6 +756,25 @@ class _SelfTestBackend:
 # --------------------------------------------------------------------------- #
 # Driver
 # --------------------------------------------------------------------------- #
+def assert_cancel_during_turn_observed(lifecycle: Mapping[str, Any]) -> None:
+    business = lifecycle.get("business_task", {})
+    pipeline = lifecycle.get("execution_pipeline", {})
+    turn = pipeline.get("turn", {}) if isinstance(pipeline, Mapping) else {}
+    if not (
+        isinstance(business, Mapping)
+        and business.get("cancellation_executed") is True
+        and business.get("backend_abort_calls") == 1
+        and business.get("backend_released_turn") is True
+        and isinstance(turn, Mapping)
+        and turn.get("interrupted_observed") is True
+        and turn.get("status") != "completed"
+    ):
+        raise SmokeError(
+            "cancel-during-turn did not prove abort_calls=1, released in-flight turn, "
+            "and a non-completed interrupted turn"
+        )
+
+
 def preflight_real(acpx_binary: str) -> None:
     binary = Path(acpx_binary)
     if not binary.is_file():
@@ -821,6 +841,7 @@ def run(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
     )
     if args.cancel_during_turn:
         lifecycle = run_cancellation_lifecycle(config=config, backend=backend)
+        assert_cancel_during_turn_observed(lifecycle)
     else:
         lifecycle = run_lifecycle(config=config, backend=backend, turn_prompts=turn_prompts)
     store = lifecycle.pop("_store")

@@ -1236,6 +1236,23 @@ def test_wp3b_cli_cancel_during_turn_self_test(tmp_path: Path, capsys: pytest.Ca
     assert summary["execution_pipeline"]["close"]["lifecycle_state"] == "session_closed"
 
 
+def test_wp3b_cancel_during_turn_summary_must_prove_interruption() -> None:
+    smoke = _load_smoke_module()
+    lifecycle = {
+        "execution_pipeline": {
+            "turn": {"status": "completed", "interrupted_observed": False},
+        },
+        "business_task": {
+            "cancellation_executed": False,
+            "backend_abort_calls": 1,
+            "backend_released_turn": True,
+        },
+    }
+
+    with pytest.raises(smoke.SmokeError):
+        smoke.assert_cancel_during_turn_observed(lifecycle)
+
+
 def test_wp3b_cli_cancel_during_turn_real_mode_is_not_claimed(
     tmp_path: Path, capsys: pytest.CaptureFixture
 ) -> None:
@@ -1393,12 +1410,87 @@ def test_wp3b_direct_bound_real_cancellation_requires_state_machine_call_path(
     config = _cancel_config(tmp_path)
     abort_backend = FakeAbortBackend()
     bound = bind_real_cancellation(config, backend=abort_backend)
+    assert not hasattr(bound, "_sachima_requires_in_flight_turn")
+    assert not hasattr(bound, "_sachima_call_with_in_flight_proof"), (
+        "bound cancellation callable must not expose a direct proof callable"
+    )
 
     with pytest.raises(RealSessionExecutionError) as exc:
         bound(_interrupt_request_e2(turn_index=1))
 
     assert exc.value.error_code == "activity_precondition_unmet"
     assert abort_backend.abort_calls == 0
+
+    with pytest.raises(RealSessionExecutionError) as direct_method_exc:
+        bound._apply_after_lifecycle_validation(_interrupt_request_e2(turn_index=1))  # type: ignore[attr-defined]
+
+    assert direct_method_exc.value.error_code == "activity_precondition_unmet"
+    assert abort_backend.abort_calls == 0
+
+    fake_lifecycle_globals: dict[str, Any] = {
+        "__name__": "sachima_supervisor.activity_session_lifecycle",
+    }
+    exec(
+        "def _safe_interrupt_call(work, request):\n"
+        "    return work(request)\n"
+        "def apply_session_interrupt(work, request):\n"
+        "    return _safe_interrupt_call(work, request)\n",
+        fake_lifecycle_globals,
+    )
+    with pytest.raises(RealSessionExecutionError) as forged_stack_exc:
+        fake_lifecycle_globals["apply_session_interrupt"](
+            bound._apply_after_lifecycle_validation,  # type: ignore[attr-defined]
+            _interrupt_request_e2(turn_index=1),
+        )
+
+    assert forged_stack_exc.value.error_code == "activity_precondition_unmet"
+    assert abort_backend.abort_calls == 0
+
+
+def test_wp3b_bound_method_cannot_be_passed_as_interrupt_callable(tmp_path: Path) -> None:
+    """Passing the exposed bound method itself must not bypass in-flight scope checks."""
+
+    store, binding, _config_unused, backend, thread, turn_result, turn_errors = _start_in_flight_turn(tmp_path)
+    cancel_config = _cancel_config(tmp_path)
+    request_cancellation(_e2_cancel_request(binding, turn_index=None), store=store)
+    bound = bind_real_cancellation(cancel_config, backend=backend)
+
+    try:
+        with pytest.raises(SessionLifecycleError) as exc:
+            apply_session_interrupt(
+                _interrupt_request_e2(session_binding=binding, turn_index=None),
+                store=store,
+                apply_interrupt=bound._apply_after_lifecycle_validation,  # type: ignore[attr-defined]
+            )
+        assert exc.value.error_code == "activity_cancel_ambiguous"
+        assert backend.abort_calls == 0
+    finally:
+        _finish_in_flight_turn(thread, backend, turn_result, turn_errors)
+
+
+def test_wp3b_forged_in_flight_attribute_cannot_enable_real_abort(tmp_path: Path) -> None:
+    """A fake callable attribute must not be enough to enter the real abort path."""
+
+    store, binding, _config_unused, backend, thread, turn_result, turn_errors = _start_in_flight_turn(tmp_path)
+    cancel_config = _cancel_config(tmp_path)
+    request_cancellation(_e2_cancel_request(binding, turn_index=1), store=store)
+
+    def forged_apply(request: SessionInterruptRequest) -> SessionInterruptOutcome:
+        return execute_real_cancellation(request, cancel_config, backend=backend)
+
+    forged_apply._sachima_requires_in_flight_turn = True  # type: ignore[attr-defined]
+
+    try:
+        with pytest.raises(SessionLifecycleError) as exc:
+            apply_session_interrupt(
+                _interrupt_request_e2(session_binding=binding, turn_index=1),
+                store=store,
+                apply_interrupt=forged_apply,
+            )
+        assert exc.value.error_code == "activity_cancel_ambiguous"
+        assert backend.abort_calls == 0
+    finally:
+        _finish_in_flight_turn(thread, backend, turn_result, turn_errors)
 
 
 def test_wp3b_apply_interrupt_requires_named_in_flight_turn(tmp_path: Path) -> None:

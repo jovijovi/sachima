@@ -145,6 +145,24 @@ _CANCEL_TERMINAL_STATUSES = frozenset(
     {_CANCEL_REJECTED, _CANCEL_CANCELLED, _CANCEL_FAILED, _CANCEL_AMBIGUOUS}
 )
 
+# Real-execution binders opt in by returning the private bound-cancellation
+# object from ``activity_session_real_execution``. The lifecycle module does not
+# expose a proof minting registry; it only recognizes that exact implementation
+# type and invokes its proven method after the durable state checks below.
+def _state_machine_in_flight_interrupt_callable(
+    work: Callable[[SessionInterruptRequest], SessionInterruptOutcome],
+) -> Callable[[SessionInterruptRequest], SessionInterruptOutcome] | None:
+    work_type = type(work)
+    if (
+        work_type.__module__ != "sachima_supervisor.activity_session_real_execution"
+        or work_type.__qualname__ != "_BoundRealCancellation"
+    ):
+        return None
+    proven = getattr(work, "_apply_after_lifecycle_validation", None)
+    if not callable(proven):
+        return None
+    return cast(Callable[[SessionInterruptRequest], SessionInterruptOutcome], proven)
+
 #: Stable failure taxonomy carried by this slice (design taxonomy +
 #: inherited). ``activity_cancel_ambiguous`` is raised/stored only by WP3a's
 #: injected-fake interrupt API seam when the stopped/not-stopped or cleanup
@@ -1349,6 +1367,7 @@ def apply_session_interrupt(
     _check_operator_gate(request)
     _check_cancel_material(request)
     fingerprint = _interrupt_fingerprint(request)
+    proven_interrupt = _state_machine_in_flight_interrupt_callable(apply_interrupt)
 
     with store._lock:
         existing = _resident_idem(
@@ -1390,9 +1409,7 @@ def apply_session_interrupt(
         _check_cancel_turn_scope(
             request,
             session,
-            require_in_flight_interrupt=(
-                getattr(apply_interrupt, "_sachima_requires_in_flight_turn", False) is True
-            ),
+            require_in_flight_interrupt=(proven_interrupt is not None),
         )
 
         existing_cancel = store._cancels.get(request.cancel_id)
@@ -1460,19 +1477,10 @@ def apply_session_interrupt(
             interrupt_idempotency_key=request.idempotency_key,
         )
 
-    interrupt_callable: Callable[[SessionInterruptRequest], SessionInterruptOutcome] = apply_interrupt
-    if getattr(apply_interrupt, "_sachima_requires_in_flight_turn", False) is True:
-        proven_callable = getattr(
-            apply_interrupt, "_sachima_call_with_in_flight_proof", None
-        )
-        if callable(proven_callable):
-            interrupt_callable = cast(
-                Callable[[SessionInterruptRequest], SessionInterruptOutcome], proven_callable
-            )
-        else:
-            interrupt_callable = _missing_in_flight_proof_callable
-
-    outcome = _safe_interrupt_call(interrupt_callable, request)
+    outcome = _safe_interrupt_call(
+        proven_interrupt if proven_interrupt is not None else apply_interrupt,
+        request,
+    )
 
     with store._lock:
         resident_cancel = store._cancels.get(claimed["cancel_id"])
