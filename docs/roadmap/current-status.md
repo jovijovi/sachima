@@ -11,9 +11,20 @@
 ```json
 {
   "base_branch": "release/sachima",
-  "base_head": "3fe18ab9451d290a70036697da118351d604be27",
+  "base_head": "bb5e5d9bf707fde7934939cc473544511bd65ffd",
   "base_head_note": "latest first-parent base commit excluding machine status-sync self-commits",
   "latest_merged_prs": [
+    {
+      "baseRefName": "release/sachima",
+      "headRefName": "docs/ars-wp4-controlled-ai-flow-design",
+      "mergeCommit": {
+        "oid": "bb5e5d9bf707fde7934939cc473544511bd65ffd"
+      },
+      "mergedAt": "2026-06-17T03:57:14Z",
+      "number": 142,
+      "title": "docs: design WP4 controlled AI FLOW orchestration",
+      "url": "https://github.com/jovijovi/sachima/pull/142"
+    },
     {
       "baseRefName": "release/sachima",
       "headRefName": "fix/feishu-pr-approval-failure-notify",
@@ -57,17 +68,6 @@
       "number": 138,
       "title": "feat: add cancellation interrupt request seam",
       "url": "https://github.com/jovijovi/sachima/pull/138"
-    },
-    {
-      "baseRefName": "release/sachima",
-      "headRefName": "feature/ars-wp2-bounded-multiturn-session",
-      "mergeCommit": {
-        "oid": "b1b2c018ea25828de31a5e762f526a7056730a2c"
-      },
-      "mergedAt": "2026-06-14T21:14:14Z",
-      "number": 137,
-      "title": "feat: harden bounded multi-turn session smoke",
-      "url": "https://github.com/jovijovi/sachima/pull/137"
     }
   ],
   "open_pr_count": 0,
