@@ -11,9 +11,20 @@
 ```json
 {
   "base_branch": "release/sachima",
-  "base_head": "6c045d26f936cf048dcf427f3e3a753c77c8147a",
+  "base_head": "a30d365e5fadd791361abb3d2c631c5405ae3228",
   "base_head_note": "latest first-parent base commit excluding machine status-sync self-commits",
   "latest_merged_prs": [
+    {
+      "baseRefName": "release/sachima",
+      "headRefName": "docs/wp4-controlled-ai-flow-implementation-gate",
+      "mergeCommit": {
+        "oid": "a30d365e5fadd791361abb3d2c631c5405ae3228"
+      },
+      "mergedAt": "2026-06-17T06:12:25Z",
+      "number": 144,
+      "title": "docs: prepare WP4 implementation gate",
+      "url": "https://github.com/jovijovi/sachima/pull/144"
+    },
     {
       "baseRefName": "release/sachima",
       "headRefName": "docs/wp4-merge-status-cleanup",
@@ -57,17 +68,6 @@
       "number": 140,
       "title": "feat: add bounded real cancellation execution",
       "url": "https://github.com/jovijovi/sachima/pull/140"
-    },
-    {
-      "baseRefName": "release/sachima",
-      "headRefName": "docs/wp3a-merge-status-cleanup",
-      "mergeCommit": {
-        "oid": "1b929370a02d7b85362957f3eb9185bffa9970c3"
-      },
-      "mergedAt": "2026-06-15T05:42:39Z",
-      "number": 139,
-      "title": "docs: record WP3a merge status",
-      "url": "https://github.com/jovijovi/sachima/pull/139"
     }
   ],
   "open_pr_count": 0,
