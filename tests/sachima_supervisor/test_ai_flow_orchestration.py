@@ -393,6 +393,35 @@ def test_cancellation_requires_operator_gate() -> None:
         request_workflow_cancellation(_cancel_request("between_step", operator_gate=False), store=store)
 
 
+def test_different_cancel_id_cannot_downgrade_active_run_watch() -> None:
+    """Final PR review blocker: once a run has active-run WATCH,
+    a later different cancel_id must not rewrite the run to clean cancelled."""
+
+    store = AiFlowRunStore()
+    create_workflow_run(_run_request(), spec=_SPEC, store=store)
+    first = request_workflow_cancellation(
+        _cancel_request("active_run", step_id="architect", idempotency_key="idem_cancel_watch"),
+        store=store,
+    )
+    assert first.status == "cancel_ambiguous"
+    assert query_workflow_run(store, run_id="run_alpha").status == "ambiguous_fail_closed"
+
+    second = request_workflow_cancellation(
+        _cancel_request(
+            "between_step",
+            cancel_id="cancel_beta",
+            idempotency_key="idem_cancel_beta",
+        ),
+        store=store,
+    )
+    assert second.status == "cancel_ambiguous"
+    assert second.error_code == "active_run_cancellation_watch"
+    assert query_workflow_run(store, run_id="run_alpha").status == "ambiguous_fail_closed"
+    beta = store.get_cancellation("cancel_beta")
+    assert beta is not None
+    assert beta["status"] == "cancel_ambiguous"
+
+
 # --------------------------------------------------------------------------- #
 # Codex blocker fix regressions
 # --------------------------------------------------------------------------- #

@@ -665,21 +665,36 @@ def request_workflow_cancellation(
         raise AiFlowOrchestrationError("activity_unsupported_cancel_scope", "unknown cancel scope")
 
     reason_code = _safe_code(request.reason_code)
-    if request.scope == "between_step":
-        # Blocker (mid-step race): a between-step cancellation is only
-        # deterministic when no step is actually in flight. If any resident step
-        # for this run is still ``claimed_in_progress`` the cancellation races a
-        # live step claim and cannot be attributed cleanly, so fail closed to the
-        # active-run WATCH instead of recording a clean ``cancelled``.
-        step_in_flight = any(
-            step_state["status"] == STEP_CLAIMED for step_state in store.list_steps(request.run_id)
+    existing_watch = (
+        run["status"] == "ambiguous_fail_closed"
+        or any(
+            cancel["status"] == "cancel_ambiguous" or cancel["error_code"] == _WATCH_CODE
+            for cancel in store.list_cancellations(request.run_id)
         )
-        if step_in_flight:
+    )
+    if request.scope == "between_step":
+        # Once a run carries active-run WATCH, no later cancellation request —
+        # even with a new cancel_id — may downgrade the run to clean cancelled.
+        # Keep the fail-closed posture until an explicit future inspection gate.
+        if existing_watch:
             status, ok, error_code, run_status = (
                 "cancel_ambiguous", False, _WATCH_CODE, "ambiguous_fail_closed",
             )
         else:
-            status, ok, error_code, run_status = "cancelled", True, None, "cancelled"
+            # Blocker (mid-step race): a between-step cancellation is only
+            # deterministic when no step is actually in flight. If any resident step
+            # for this run is still ``claimed_in_progress`` the cancellation races a
+            # live step claim and cannot be attributed cleanly, so fail closed to the
+            # active-run WATCH instead of recording a clean ``cancelled``.
+            step_in_flight = any(
+                step_state["status"] == STEP_CLAIMED for step_state in store.list_steps(request.run_id)
+            )
+            if step_in_flight:
+                status, ok, error_code, run_status = (
+                    "cancel_ambiguous", False, _WATCH_CODE, "ambiguous_fail_closed",
+                )
+            else:
+                status, ok, error_code, run_status = "cancelled", True, None, "cancelled"
     else:
         # Blocker 3: a confirmed active-run cancellation requires a matching
         # step_id resident in ``claimed_in_progress`` (an actual in-flight

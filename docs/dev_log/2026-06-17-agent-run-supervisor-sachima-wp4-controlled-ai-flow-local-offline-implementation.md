@@ -56,13 +56,14 @@ behavior, then implemented minimal code to GREEN.
   `importlib.metadata` in the pre-existing `supervisor_library`, which WP4 does
   not touch) and asserts `agent_run_supervisor`/`acpx`/`npx` never load.
 - **T6** evidence — RED: module missing; GREEN: 6 passed.
-- **T7+T8** orchestration — RED: module missing; GREEN: 23 passed (happy path +
+- **T7+T8** orchestration — RED: module missing; GREEN: 24 passed (happy path +
   exactly 3 executor calls; admission/pre-step/post-step gate failures;
   idempotent replay = no second call; conflicting replay fails closed
   pre-execute; between-step cancel deterministic; active-run cancel confirmed vs
   WATCH; reviewer blocker regressions for mid-step cancellation, cancel-id
-  conflict downgrade prevention, post-recheck/pre-artifact cancellation, and
-  terminal-gate parking before final acceptance).
+  conflict downgrade prevention, different-cancel-id WATCH downgrade prevention,
+  post-recheck/pre-artifact cancellation, and terminal-gate parking before final
+  acceptance).
 - **T9** smoke + exports — `--self-test` exits `0` with 5/5 checks; no-arg exits
   `2`; package exports resolve.
 
@@ -89,7 +90,7 @@ behavior, then implemented minimal code to GREEN.
 
 ## Verification (all from repo root)
 
-- `scripts/run_tests.sh tests/sachima_supervisor` → **17 files, 623 tests passed, 0 failed**.
+- `scripts/run_tests.sh tests/sachima_supervisor` → **17 files, 624 tests passed, 0 failed**.
 - `python3 scripts/sachima_ai_flow_local_smoke.py --self-test` → exit `0`, 5/5 checks; no-arg → exit `2`.
 - `ruff check` (all WP4 source + script + `__init__.py`) → clean.
 - `python3 -m compileall` (all WP4 modules + script) → clean.
