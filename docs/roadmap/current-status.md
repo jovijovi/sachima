@@ -11,9 +11,20 @@
 ```json
 {
   "base_branch": "release/sachima",
-  "base_head": "a30d365e5fadd791361abb3d2c631c5405ae3228",
+  "base_head": "c4ce77ce52020015f37710025d601a9ecf021a13",
   "base_head_note": "latest first-parent base commit excluding machine status-sync self-commits",
   "latest_merged_prs": [
+    {
+      "baseRefName": "release/sachima",
+      "headRefName": "feat/wp4-controlled-ai-flow-local-offline-implementation",
+      "mergeCommit": {
+        "oid": "c4ce77ce52020015f37710025d601a9ecf021a13"
+      },
+      "mergedAt": "2026-06-17T13:05:36Z",
+      "number": 145,
+      "title": "feat: implement WP4 controlled AI FLOW slice",
+      "url": "https://github.com/jovijovi/sachima/pull/145"
+    },
     {
       "baseRefName": "release/sachima",
       "headRefName": "docs/wp4-controlled-ai-flow-implementation-gate",
@@ -57,31 +68,10 @@
       "number": 141,
       "title": "fix: preserve Feishu PR approval failure notifications",
       "url": "https://github.com/jovijovi/sachima/pull/141"
-    },
-    {
-      "baseRefName": "release/sachima",
-      "headRefName": "feature/ars-wp3b-bounded-cancellation-execution",
-      "mergeCommit": {
-        "oid": "3fe18ab9451d290a70036697da118351d604be27"
-      },
-      "mergedAt": "2026-06-16T03:00:52Z",
-      "number": 140,
-      "title": "feat: add bounded real cancellation execution",
-      "url": "https://github.com/jovijovi/sachima/pull/140"
     }
   ],
-  "open_pr_count": 1,
-  "open_prs": [
-    {
-      "baseRefName": "release/sachima",
-      "headRefName": "feat/wp4-controlled-ai-flow-local-offline-implementation",
-      "isDraft": false,
-      "mergeStateStatus": "CLEAN",
-      "number": 145,
-      "title": "feat: implement WP4 controlled AI FLOW slice",
-      "url": "https://github.com/jovijovi/sachima/pull/145"
-    }
-  ],
+  "open_pr_count": 0,
+  "open_prs": [],
   "repository": "jovijovi/sachima",
   "scope_note": "machine dynamic status only; approvals and phase meaning remain human-authored outside this block"
 }
