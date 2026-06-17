@@ -77,6 +77,70 @@ from sachima_supervisor.local_offline import (
     invoke_local_offline_supervisor,
 )
 
+# WP4 controlled AI FLOW local/offline orchestration (slice 1; injected fakes
+# only; read-only roles; bounded static linear graph; no real workflow
+# execution; no acpx/npx; no Gateway/Feishu/live/production config/real delivery)
+from sachima_supervisor.ai_flow_spec import (
+    SCHEMA_VERSION as AI_FLOW_SCHEMA_VERSION,
+    AiFlowSpecError,
+    RoleBinding,
+    StepSpec,
+    WorkflowBounds,
+    WorkflowSpec,
+    canonical_read_only_workflow_mapping,
+    role_binding_digest,
+    validate_workflow_spec,
+    workflow_spec_digest,
+)
+from sachima_supervisor.ai_flow_artifacts import (
+    AiFlowArtifactError,
+    ArtifactRef,
+    artifact_ref_projection,
+    verify_artifact_ref,
+)
+from sachima_supervisor.ai_flow_gates import (
+    GATE_TYPES,
+    AiFlowGateError,
+    GateDecision,
+    check_gate,
+    gate_decision_projection,
+)
+from sachima_supervisor.ai_flow_store import (
+    AiFlowError,
+    AiFlowRunStore,
+    build_cancel_state,
+    build_run_state,
+    build_step_state,
+    step_fingerprint,
+)
+from sachima_supervisor.ai_flow_executor import (
+    StepExecutionOutcome,
+    StepExecutor,
+)
+from sachima_supervisor.ai_flow_evidence import (
+    FINAL_VERDICTS,
+    AiFlowEvidenceError,
+    WorkflowEvidence,
+    build_workflow_evidence,
+    default_non_approval_flags,
+)
+from sachima_supervisor.activity_ai_flow_orchestration import (
+    AI_FLOW_APPROVAL_TOKEN,
+    AiFlowOrchestrationError,
+    CancellationRecordResult,
+    StepAttemptRequest,
+    StepRecordResult,
+    WorkflowCancellationRequest,
+    WorkflowRunRequest,
+    WorkflowRunResult,
+    create_workflow_run,
+    list_workflow_steps,
+    query_workflow_run,
+    request_workflow_cancellation,
+    step_workflow_run,
+    summarize_workflow_run,
+)
+
 __all__ = [
     # local/offline seam (PR #97)
     "FORBIDDEN_METADATA_KEYS",
@@ -140,4 +204,53 @@ __all__ = [
     "EXPECTED_AGENT_RUN_SUPERVISOR_VERSION",
     "SupervisorLibraryPinStatus",
     "check_supervisor_library_pin",
+    # WP4 controlled AI FLOW local/offline orchestration (slice 1; injected
+    # fakes only; read-only roles; no real workflow execution; no acpx/npx;
+    # no Gateway/Feishu/live/production config/real delivery)
+    "AI_FLOW_SCHEMA_VERSION",
+    "AiFlowSpecError",
+    "RoleBinding",
+    "StepSpec",
+    "WorkflowBounds",
+    "WorkflowSpec",
+    "canonical_read_only_workflow_mapping",
+    "role_binding_digest",
+    "validate_workflow_spec",
+    "workflow_spec_digest",
+    "AiFlowArtifactError",
+    "ArtifactRef",
+    "artifact_ref_projection",
+    "verify_artifact_ref",
+    "GATE_TYPES",
+    "AiFlowGateError",
+    "GateDecision",
+    "check_gate",
+    "gate_decision_projection",
+    "AiFlowError",
+    "AiFlowRunStore",
+    "build_cancel_state",
+    "build_run_state",
+    "build_step_state",
+    "step_fingerprint",
+    "StepExecutionOutcome",
+    "StepExecutor",
+    "FINAL_VERDICTS",
+    "AiFlowEvidenceError",
+    "WorkflowEvidence",
+    "build_workflow_evidence",
+    "default_non_approval_flags",
+    "AI_FLOW_APPROVAL_TOKEN",
+    "AiFlowOrchestrationError",
+    "CancellationRecordResult",
+    "StepAttemptRequest",
+    "StepRecordResult",
+    "WorkflowCancellationRequest",
+    "WorkflowRunRequest",
+    "WorkflowRunResult",
+    "create_workflow_run",
+    "list_workflow_steps",
+    "query_workflow_run",
+    "request_workflow_cancellation",
+    "step_workflow_run",
+    "summarize_workflow_run",
 ]
