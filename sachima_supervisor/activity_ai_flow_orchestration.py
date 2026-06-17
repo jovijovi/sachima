@@ -749,19 +749,30 @@ def _derive_verdict(
     return "parked", False
 
 
-def summarize_workflow_run(store: AiFlowRunStore, *, run_id: str) -> WorkflowEvidence:
+def summarize_workflow_run(
+    store: AiFlowRunStore,
+    *,
+    run_id: str,
+    operator_gate: bool = False,
+    terminal_gate_ref: str | None = None,
+) -> WorkflowEvidence:
     """Return the deterministic sanitized terminal evidence packet for a run."""
 
     run = store.get_run(run_id)
     if run is None:
         raise AiFlowOrchestrationError("activity_not_found", "no workflow run for the given id")
+    terminal = check_gate(
+        "terminal", operator_gate=operator_gate, gate_ref=terminal_gate_ref
+    )
+    store.record_gate(run_id=run_id, projection=gate_decision_projection(terminal))
     steps = store.list_steps(run_id)
     gates = store.list_gates(run_id)
     artifacts = store.list_artifacts(run_id)
     cancels = store.list_cancellations(run_id)
     fingerprints = store.step_fingerprints(run_id)
 
-    verdict, watch = _derive_verdict(steps, cancels)
+    raw_verdict, watch = _derive_verdict(steps, cancels)
+    verdict = raw_verdict if terminal.granted or raw_verdict == "ambiguous_fail_closed" else "parked"
     _update_run_status(store, run, verdict)
 
     ordered_steps = sorted(steps, key=lambda s: s["step_id"])

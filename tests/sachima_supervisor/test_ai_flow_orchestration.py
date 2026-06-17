@@ -132,6 +132,15 @@ def _drive_all(store, executor):
         step_workflow_run(_step_request(step_id), spec=_SPEC, store=store, executor=executor)
 
 
+def _summarize_terminal(store):
+    return summarize_workflow_run(
+        store,
+        run_id="run_alpha",
+        operator_gate=True,
+        terminal_gate_ref="terminal_ref_ok",
+    )
+
+
 # --------------------------------------------------------------------------- #
 # T7 — happy path + replay
 # --------------------------------------------------------------------------- #
@@ -140,7 +149,7 @@ def test_end_to_end_linear_flow_succeeds_with_exactly_three_calls() -> None:
     executor = FakeStepExecutor()
     _drive_all(store, executor)
     assert executor.calls == 3
-    evidence = summarize_workflow_run(store, run_id="run_alpha")
+    evidence = _summarize_terminal(store)
     assert evidence.final_verdict == "succeeded"
     steps = list_workflow_steps(store, run_id="run_alpha")
     assert {s.step_id for s in steps} == set(_STEP_ORDER)
@@ -221,8 +230,26 @@ def test_terminal_executor_failure_is_recorded() -> None:
     result = step_workflow_run(_step_request("architect"), spec=_SPEC, store=store, executor=executor)
     assert result.ok is False
     assert result.status == "failed_terminal"
-    evidence = summarize_workflow_run(store, run_id="run_alpha")
+    evidence = _summarize_terminal(store)
     assert evidence.final_verdict == "failed"
+
+
+def test_terminal_gate_missing_parks_completed_flow() -> None:
+    """FR2 terminal gate: completed steps are not accepted without terminal
+    operator material; summarization must park instead of succeeding."""
+
+    store = AiFlowRunStore()
+    executor = FakeStepExecutor()
+    _drive_all(store, executor)
+    evidence = summarize_workflow_run(store, run_id="run_alpha")
+    assert evidence.final_verdict == "parked"
+    terminal_gates = [
+        gate for gate in evidence.to_durable_state()["gate_decisions"]
+        if gate["gate_type"] == "terminal"
+    ]
+    assert terminal_gates == [
+        {"gate_type": "terminal", "gate_ref": None, "status": "missing", "step_id": None}
+    ]
 
 
 # --------------------------------------------------------------------------- #
@@ -271,7 +298,7 @@ def test_between_step_cancel_is_deterministic_terminal() -> None:
     assert result.status == "cancelled"
     # no executor relaunch
     assert executor.calls == calls_before
-    evidence = summarize_workflow_run(store, run_id="run_alpha")
+    evidence = _summarize_terminal(store)
     assert evidence.final_verdict == "cancelled"
     assert evidence.active_run_cancellation_watch is False
 
