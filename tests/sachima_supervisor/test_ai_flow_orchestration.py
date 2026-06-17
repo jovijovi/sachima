@@ -547,3 +547,88 @@ def test_between_step_cancel_with_resident_claim_holds_watch() -> None:
     evidence = summarize_workflow_run(store, run_id="run_alpha")
     assert evidence.active_run_cancellation_watch is True
     assert evidence.final_verdict == "ambiguous_fail_closed"
+
+
+class _PostRecheckCancellingArtifactRefs(tuple):
+    def __new__(cls, store, refs):
+        obj = super().__new__(cls, refs)
+        obj.store = store  # type: ignore[attr-defined]
+        obj.triggered = False  # type: ignore[attr-defined]
+        return obj
+
+    def _trigger_once(self) -> None:
+        if not self.triggered:
+            self.triggered = True
+            request_workflow_cancellation(
+                _cancel_request(
+                    "between_step",
+                    cancel_id="cancel_after_recheck",
+                    idempotency_key="idem_cancel_after_recheck",
+                ),
+                store=self.store,  # type: ignore[attr-defined]
+            )
+
+    def __len__(self):
+        self._trigger_once()
+        return super().__len__()
+
+    def __getitem__(self, item):
+        self._trigger_once()
+        return super().__getitem__(item)
+
+
+class PostRecheckCancellingExecutor:
+    """Injected fake that cancels after the orchestrator's first post-execute
+    run-status recheck but before artifact propagation."""
+
+    def __init__(self, store) -> None:
+        self.store = store
+        self.calls = 0
+        self.artifact_refs = None
+
+    def execute(self, request, *, role_binding, resolved_inputs) -> StepExecutionOutcome:
+        self.calls += 1
+        kind = _OUTPUT_CONTRACT[request.step_id]
+        body = f"deterministic {request.step_id} body".encode()
+        self.artifact_refs = _PostRecheckCancellingArtifactRefs(
+            self.store,
+            (
+                {
+                    "artifact_id": f"artifact_{request.step_id}",
+                    "producer_step_id": request.step_id,
+                    "content_digest": "sha256:" + hashlib.sha256(body).hexdigest(),
+                    "artifact_kind": kind,
+                    "byte_count": len(body),
+                    "created_at_ref": "created_at_ref_0001",
+                },
+            ),
+        )
+        return StepExecutionOutcome(
+            ok=True, step_status="completed", artifact_refs=self.artifact_refs,
+            evidence_ref=f"evidence_ref_{request.step_id}",
+        )
+
+
+def test_between_step_cancel_after_recheck_before_artifact_holds_watch_no_artifact() -> None:
+    """Final PR-review blocker: cancellation after the post-execute run recheck
+    but before artifact persistence still must not propagate artifacts."""
+
+    store = AiFlowRunStore()
+    executor = PostRecheckCancellingExecutor(store)
+    create_workflow_run(_run_request(), spec=_SPEC, store=store)
+    result = step_workflow_run(
+        _step_request("architect"), spec=_SPEC, store=store, executor=executor
+    )
+    assert executor.calls == 1
+    assert executor.artifact_refs is not None
+    assert executor.artifact_refs.triggered is True
+    assert result.ok is False
+    assert result.status == "cancel_ambiguous"
+    assert store.list_artifacts("run_alpha") == ()
+    cancel = store.get_cancellation("cancel_after_recheck")
+    assert cancel is not None
+    assert cancel["status"] == "cancel_ambiguous"
+    assert cancel["error_code"] == "active_run_cancellation_watch"
+    evidence = summarize_workflow_run(store, run_id="run_alpha")
+    assert evidence.active_run_cancellation_watch is True
+    assert evidence.final_verdict == "ambiguous_fail_closed"

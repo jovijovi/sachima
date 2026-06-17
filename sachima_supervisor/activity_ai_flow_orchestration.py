@@ -586,18 +586,30 @@ def step_workflow_run(
                 error_code="activity_artifact_integrity_failed",
             )
         )
-    store.record_artifact(run_id=request.run_id, projection=artifact_ref_projection(verified))
-    return _finalize(
-        _build_step_terminal(
-            request, step, binding, status=STEP_COMPLETED, ok=True,
-            artifact_ref_count=1,
-            output_artifact_id=verified.artifact_id,
-            output_artifact_digest=verified.content_digest,
-            output_artifact_kind=verified.artifact_kind,
-            evidence_ref=_safe_evidence_ref(outcome.evidence_ref),
-            evidence_digest=_safe_digest(outcome.evidence_digest),
-        )
+    completed_state = _build_step_terminal(
+        request, step, binding, status=STEP_COMPLETED, ok=True,
+        artifact_ref_count=1,
+        output_artifact_id=verified.artifact_id,
+        output_artifact_digest=verified.content_digest,
+        output_artifact_kind=verified.artifact_kind,
+        evidence_ref=_safe_evidence_ref(outcome.evidence_ref),
+        evidence_digest=_safe_digest(outcome.evidence_digest),
     )
+    non_schedulable_state = _build_step_terminal(
+        request, step, binding, status=STEP_CANCEL_AMBIGUOUS, ok=False,
+        error_code=_WATCH_CODE,
+    )
+    stored = store.finalize_step_with_artifact_if_run_schedulable(
+        run_id=request.run_id,
+        step_id=request.step_id,
+        idempotency_key=request.idempotency_key,
+        fingerprint=fingerprint,
+        state=completed_state,
+        artifact_projection=artifact_ref_projection(verified),
+        non_schedulable_state=non_schedulable_state,
+        schedulable_statuses=_SCHEDULABLE_RUN_STATUSES,
+    )
+    return StepRecordResult(stored)
 
 
 def _verify_single_output(spec: WorkflowSpec, step: StepSpec, outcome: StepExecutionOutcome):

@@ -19,7 +19,7 @@ import hashlib
 import json
 import re
 import threading
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -652,6 +652,64 @@ class AiFlowRunStore:
                 raise _unsafe()
             self._steps[(run_id, step_id)] = stored
             self._by_step_idem[idempotency_key] = (fingerprint, stored)
+
+    def finalize_step_with_artifact_if_run_schedulable(
+        self,
+        *,
+        run_id: str,
+        step_id: str,
+        idempotency_key: str,
+        fingerprint: str,
+        state: dict[str, Any],
+        artifact_projection: dict[str, Any],
+        non_schedulable_state: dict[str, Any],
+        schedulable_statuses: Collection[str],
+    ) -> dict[str, Any]:
+        """Atomically persist a step output only while the run is schedulable.
+
+        If a cancellation changed the run while this step was still resident in
+        ``claimed_in_progress``, the step is finalized fail-closed and the
+        artifact is deliberately not propagated.
+        """
+
+        if not _is_safe_fingerprint(fingerprint):
+            raise _unsafe()
+        with self._lock:
+            existing = self.get_step_idempotent(idempotency_key)
+            if existing is None:
+                raise AiFlowError("activity_claim_conflict", "no resident step claim to finalize")
+            existing_fingerprint, existing_state = existing
+            if (
+                existing_fingerprint != fingerprint
+                or existing_state["status"] != STEP_CLAIMED
+                or existing_state["run_id"] != run_id
+                or existing_state["step_id"] != step_id
+            ):
+                raise AiFlowError("activity_claim_conflict", "resident claim does not match")
+            run = self._runs.get(run_id)
+            if run is None:
+                raise AiFlowError("activity_not_found", "no run to finalize step against")
+            run_state = _validate_run_projection(run)
+            if run_state["status"] in schedulable_statuses:
+                stored = _validate_step_projection(state)
+                artifact_to_store = _validate_artifact_projection(
+                    {**artifact_projection, "run_id": run_id}
+                )
+            else:
+                stored = _validate_step_projection(non_schedulable_state)
+                artifact_to_store = None
+            if (
+                stored["status"] not in _STEP_TERMINAL_STATUSES
+                or stored["run_id"] != run_id
+                or stored["step_id"] != step_id
+                or stored["idempotency_key"] != idempotency_key
+            ):
+                raise _unsafe()
+            if artifact_to_store is not None:
+                self._artifacts[artifact_to_store["artifact_id"]] = artifact_to_store
+            self._steps[(run_id, step_id)] = stored
+            self._by_step_idem[idempotency_key] = (fingerprint, stored)
+            return stored
 
     # ---- gates / artifacts / cancellations ----
     def record_gate(self, *, run_id: str, projection: dict[str, Any]) -> dict[str, Any]:
