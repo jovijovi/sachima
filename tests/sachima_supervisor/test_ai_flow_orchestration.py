@@ -431,3 +431,86 @@ def test_active_run_cancel_confirmed_without_resident_claim_holds_watch() -> Non
     evidence = summarize_workflow_run(store, run_id="run_alpha")
     assert evidence.active_run_cancellation_watch is True
     assert evidence.final_verdict == "ambiguous_fail_closed"
+
+
+# --------------------------------------------------------------------------- #
+# Final Codex blocker — mid-step cancellation race
+# --------------------------------------------------------------------------- #
+class MidStepCancellingExecutor:
+    """Injected fake that requests a ``between_step`` cancellation *during* its
+    ``execute()`` — i.e. while this step is still resident in
+    ``claimed_in_progress`` — then returns a normal artifact-bearing success.
+
+    This reproduces the race where a cancellation lands after the step claim but
+    before the orchestrator finalizes the step.
+    """
+
+    def __init__(self, store) -> None:
+        self.store = store
+        self.calls = 0
+
+    def execute(self, request, *, role_binding, resolved_inputs) -> StepExecutionOutcome:
+        self.calls += 1
+        # Cancellation arrives mid-step (after the claim, before finalization).
+        request_workflow_cancellation(_cancel_request("between_step"), store=self.store)
+        kind = _OUTPUT_CONTRACT[request.step_id]
+        body = f"deterministic {request.step_id} body".encode()
+        artifact = {
+            "artifact_id": f"artifact_{request.step_id}",
+            "producer_step_id": request.step_id,
+            "content_digest": "sha256:" + hashlib.sha256(body).hexdigest(),
+            "artifact_kind": kind,
+            "byte_count": len(body),
+            "created_at_ref": "created_at_ref_0001",
+        }
+        return StepExecutionOutcome(
+            ok=True, step_status="completed", artifact_refs=(artifact,),
+            evidence_ref=f"evidence_ref_{request.step_id}",
+        )
+
+
+def test_between_step_cancel_during_execute_holds_watch_no_artifact() -> None:
+    """Final blocker: a ``between_step`` cancellation that races an in-flight step
+    claim must NOT produce completed-step + clean-cancelled + propagated-artifact.
+
+    The step finalizes fail-closed (WATCH/ambiguous), no artifact propagates, the
+    cancellation reclassifies to WATCH/ambiguous (not clean cancelled), and the
+    evidence surfaces ``active_run_cancellation_watch`` with verdict
+    ``ambiguous_fail_closed``."""
+
+    store = AiFlowRunStore()
+    executor = MidStepCancellingExecutor(store)
+    create_workflow_run(_run_request(), spec=_SPEC, store=store)
+    result = step_workflow_run(
+        _step_request("architect"), spec=_SPEC, store=store, executor=executor
+    )
+    assert executor.calls == 1
+    # no post-step success and no artifact propagation
+    assert result.ok is False
+    assert result.status != "completed"
+    assert store.list_artifacts("run_alpha") == ()
+    # the cancellation reclassified to WATCH/ambiguous, not a clean cancelled
+    cancel = store.get_cancellation("cancel_alpha")
+    assert cancel["status"] == "cancel_ambiguous"
+    assert cancel["error_code"] == "active_run_cancellation_watch"
+    # evidence surfaces the WATCH and the ambiguous fail-closed verdict
+    evidence = summarize_workflow_run(store, run_id="run_alpha")
+    assert evidence.active_run_cancellation_watch is True
+    assert evidence.final_verdict == "ambiguous_fail_closed"
+    assert evidence.to_durable_state()["artifact_refs"] == []
+
+
+def test_between_step_cancel_with_resident_claim_holds_watch() -> None:
+    """Protection 1 (direct): a ``between_step`` cancellation requested while a
+    step is resident in ``claimed_in_progress`` must record WATCH/ambiguous, not a
+    clean ``cancelled`` — a step is actually in flight."""
+
+    store = AiFlowRunStore()
+    create_workflow_run(_run_request(), spec=_SPEC, store=store)
+    _claim_in_progress(store, "architect")
+    result = request_workflow_cancellation(_cancel_request("between_step"), store=store)
+    assert result.status == "cancel_ambiguous"
+    assert result.error_code == "active_run_cancellation_watch"
+    evidence = summarize_workflow_run(store, run_id="run_alpha")
+    assert evidence.active_run_cancellation_watch is True
+    assert evidence.final_verdict == "ambiguous_fail_closed"

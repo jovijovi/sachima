@@ -76,7 +76,7 @@ behavior, then implemented minimal code to GREEN.
 
 ## Verification (all from repo root)
 
-- `scripts/run_tests.sh tests/sachima_supervisor` → **17 files, 617 tests passed, 0 failed**.
+- `scripts/run_tests.sh tests/sachima_supervisor` → **17 files, 619 tests passed, 0 failed**.
 - `python3 scripts/sachima_ai_flow_local_smoke.py --self-test` → exit `0`, 5/5 checks; no-arg → exit `2`.
 - `ruff check` (all WP4 source + script + `__init__.py`) → clean.
 - `python3 -m compileall` (all WP4 modules + script) → clean.

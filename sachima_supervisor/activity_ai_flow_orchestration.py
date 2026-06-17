@@ -544,6 +544,22 @@ def step_workflow_run(
             )
         )
 
+    # Blocker (mid-step race): re-check the resident run state after the executor
+    # returns. A cancellation that landed *during* execution leaves the run no
+    # longer schedulable; finalize the step fail-closed (cancel_ambiguous /
+    # active-run WATCH) with no post-step gate, no artifact propagation, and no
+    # relaunch rather than trusting the executor's output. A clean ``cancelled``
+    # is reserved for the confirmed active-run cancellation path; here we fail
+    # closed to the WATCH.
+    run_after = store.get_run(request.run_id)
+    if run_after is None or run_after["status"] not in _SCHEDULABLE_RUN_STATUSES:
+        return _finalize(
+            _build_step_terminal(
+                request, step, binding, status=STEP_CANCEL_AMBIGUOUS, ok=False,
+                error_code=_WATCH_CODE,
+            )
+        )
+
     # Post-step gate (no artifact propagation when not granted).
     post = check_gate(
         "post_step",
@@ -635,7 +651,20 @@ def request_workflow_cancellation(
 
     reason_code = _safe_code(request.reason_code)
     if request.scope == "between_step":
-        status, ok, error_code, run_status = "cancelled", True, None, "cancelled"
+        # Blocker (mid-step race): a between-step cancellation is only
+        # deterministic when no step is actually in flight. If any resident step
+        # for this run is still ``claimed_in_progress`` the cancellation races a
+        # live step claim and cannot be attributed cleanly, so fail closed to the
+        # active-run WATCH instead of recording a clean ``cancelled``.
+        step_in_flight = any(
+            step_state["status"] == STEP_CLAIMED for step_state in store.list_steps(request.run_id)
+        )
+        if step_in_flight:
+            status, ok, error_code, run_status = (
+                "cancel_ambiguous", False, _WATCH_CODE, "ambiguous_fail_closed",
+            )
+        else:
+            status, ok, error_code, run_status = "cancelled", True, None, "cancelled"
     else:
         # Blocker 3: a confirmed active-run cancellation requires a matching
         # step_id resident in ``claimed_in_progress`` (an actual in-flight
