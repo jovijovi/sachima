@@ -56,11 +56,12 @@ behavior, then implemented minimal code to GREEN.
   `importlib.metadata` in the pre-existing `supervisor_library`, which WP4 does
   not touch) and asserts `agent_run_supervisor`/`acpx`/`npx` never load.
 - **T6** evidence — RED: module missing; GREEN: 6 passed.
-- **T7+T8** orchestration — RED: module missing; GREEN: 13 passed (happy path +
+- **T7+T8** orchestration — RED: module missing; GREEN: 21 passed (happy path +
   exactly 3 executor calls; admission/pre-step/post-step gate failures;
   idempotent replay = no second call; conflicting replay fails closed
   pre-execute; between-step cancel deterministic; active-run cancel confirmed vs
-  WATCH).
+  WATCH; reviewer blocker regressions for mid-step cancellation and cancel-id
+  conflict downgrade prevention).
 - **T9** smoke + exports — `--self-test` exits `0` with 5/5 checks; no-arg exits
   `2`; package exports resolve.
 
@@ -72,11 +73,12 @@ behavior, then implemented minimal code to GREEN.
   interrupt outcome reports `interrupted=True and cleanup_verified=True`;
   otherwise it records `cancel_ambiguous` / `active_run_cancellation_watch`, with
   no artifact propagation and no relaunch, and the evidence packet surfaces the
-  WATCH marker. The real WP3b cancellation bridge is **not** wired in.
+  WATCH marker. A later same-`cancel_id` request cannot downgrade that WATCH to
+  a clean cancellation. The real WP3b cancellation bridge is **not** wired in.
 
 ## Verification (all from repo root)
 
-- `scripts/run_tests.sh tests/sachima_supervisor` → **17 files, 619 tests passed, 0 failed**.
+- `scripts/run_tests.sh tests/sachima_supervisor` → **17 files, 620 tests passed, 0 failed**.
 - `python3 scripts/sachima_ai_flow_local_smoke.py --self-test` → exit `0`, 5/5 checks; no-arg → exit `2`.
 - `ruff check` (all WP4 source + script + `__init__.py`) → clean.
 - `python3 -m compileall` (all WP4 modules + script) → clean.

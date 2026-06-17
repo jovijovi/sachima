@@ -692,6 +692,15 @@ class AiFlowRunStore:
             stored = _validate_cancel_projection(state)
             if stored["cancel_id"] != cancel_id:
                 raise _unsafe()
+            existing = self._cancels.get(cancel_id)
+            if existing is not None:
+                existing_stored = _validate_cancel_projection(existing)
+                if existing_stored == stored:
+                    return existing_stored
+                raise AiFlowError(
+                    "activity_idempotency_conflict",
+                    "cancel id maps to an incompatible cancellation request",
+                )
             self._cancels[cancel_id] = stored
             return stored
 

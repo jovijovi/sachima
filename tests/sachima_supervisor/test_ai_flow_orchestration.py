@@ -326,6 +326,39 @@ def test_active_run_cancel_without_outcome_holds_watch() -> None:
     assert result.error_code == "active_run_cancellation_watch"
 
 
+def test_cancel_id_conflict_cannot_downgrade_active_run_watch() -> None:
+    """Final PR review blocker: a later same-cancel-id request must not
+    overwrite a fail-closed active-run WATCH with a clean cancellation."""
+
+    store = AiFlowRunStore()
+    create_workflow_run(_run_request(), spec=_SPEC, store=store)
+    first = request_workflow_cancellation(
+        _cancel_request("active_run", step_id="architect", idempotency_key="idem_cancel_watch"),
+        store=store,
+    )
+    assert first.status == "cancel_ambiguous"
+    assert first.error_code == "active_run_cancellation_watch"
+
+    try:
+        second = request_workflow_cancellation(
+            _cancel_request("between_step", idempotency_key="idem_cancel_conflict"),
+            store=store,
+        )
+    except AiFlowError as exc:
+        assert exc.error_code == "activity_idempotency_conflict"
+    else:
+        assert second.status == "cancel_ambiguous"
+        assert second.error_code == "active_run_cancellation_watch"
+
+    cancel = store.get_cancellation("cancel_alpha")
+    assert cancel is not None
+    assert cancel["status"] == "cancel_ambiguous"
+    assert cancel["error_code"] == "active_run_cancellation_watch"
+    evidence = summarize_workflow_run(store, run_id="run_alpha")
+    assert evidence.active_run_cancellation_watch is True
+    assert evidence.final_verdict == "ambiguous_fail_closed"
+
+
 def test_cancellation_requires_operator_gate() -> None:
     store = AiFlowRunStore()
     create_workflow_run(_run_request(), spec=_SPEC, store=store)
