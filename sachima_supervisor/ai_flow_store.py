@@ -543,17 +543,20 @@ class AiFlowRunStore:
 
     def update_run(self, *, run_id: str, state: dict[str, Any]) -> dict[str, Any]:
         with self._lock:
-            if run_id not in self._runs:
-                raise AiFlowError("activity_not_found", "no run to update")
-            stored = _validate_run_projection(state)
-            if stored["run_id"] != run_id:
-                raise _unsafe()
-            self._runs[run_id] = stored
-            # keep the idempotency mirror consistent
-            for key, (fp, _old) in list(self._run_idem.items()):
-                if _old["run_id"] == run_id:
-                    self._run_idem[key] = (fp, stored)
-            return stored
+            return self._update_run_locked(run_id=run_id, state=state)
+
+    def _update_run_locked(self, *, run_id: str, state: dict[str, Any]) -> dict[str, Any]:
+        if run_id not in self._runs:
+            raise AiFlowError("activity_not_found", "no run to update")
+        stored = _validate_run_projection(state)
+        if stored["run_id"] != run_id:
+            raise _unsafe()
+        self._runs[run_id] = stored
+        # keep the idempotency mirror consistent
+        for key, (fp, _old) in list(self._run_idem.items()):
+            if _old["run_id"] == run_id:
+                self._run_idem[key] = (fp, stored)
+        return stored
 
     # ---- steps ----
     def get_step(self, run_id: str, step_id: str) -> dict[str, Any] | None:
@@ -690,7 +693,11 @@ class AiFlowRunStore:
             if run is None:
                 raise AiFlowError("activity_not_found", "no run to finalize step against")
             run_state = _validate_run_projection(run)
-            if run_state["status"] in schedulable_statuses:
+            cancellation_recorded = any(
+                _validate_cancel_projection(cancel)["run_id"] == run_id
+                for cancel in self._cancels.values()
+            )
+            if run_state["status"] in schedulable_statuses and not cancellation_recorded:
                 stored = _validate_step_projection(state)
                 artifact_to_store = _validate_artifact_projection(
                     {**artifact_projection, "run_id": run_id}
@@ -747,20 +754,38 @@ class AiFlowRunStore:
 
     def record_cancellation(self, *, cancel_id: str, state: dict[str, Any]) -> dict[str, Any]:
         with self._lock:
-            stored = _validate_cancel_projection(state)
-            if stored["cancel_id"] != cancel_id:
-                raise _unsafe()
-            existing = self._cancels.get(cancel_id)
-            if existing is not None:
-                existing_stored = _validate_cancel_projection(existing)
-                if existing_stored == stored:
-                    return existing_stored
-                raise AiFlowError(
-                    "activity_idempotency_conflict",
-                    "cancel id maps to an incompatible cancellation request",
-                )
-            self._cancels[cancel_id] = stored
+            return self._record_cancellation_locked(cancel_id=cancel_id, state=state)
+
+    def record_cancellation_and_update_run(
+        self,
+        *,
+        cancel_id: str,
+        cancel_state: dict[str, Any],
+        run_id: str,
+        run_state: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Atomically persist cancellation evidence and the matching run status."""
+
+        with self._lock:
+            stored = self._record_cancellation_locked(cancel_id=cancel_id, state=cancel_state)
+            self._update_run_locked(run_id=run_id, state=run_state)
             return stored
+
+    def _record_cancellation_locked(self, *, cancel_id: str, state: dict[str, Any]) -> dict[str, Any]:
+        stored = _validate_cancel_projection(state)
+        if stored["cancel_id"] != cancel_id:
+            raise _unsafe()
+        existing = self._cancels.get(cancel_id)
+        if existing is not None:
+            existing_stored = _validate_cancel_projection(existing)
+            if existing_stored == stored:
+                return existing_stored
+            raise AiFlowError(
+                "activity_idempotency_conflict",
+                "cancel id maps to an incompatible cancellation request",
+            )
+        self._cancels[cancel_id] = stored
+        return stored
 
     def get_cancellation(self, cancel_id: str) -> dict[str, Any] | None:
         with self._lock:

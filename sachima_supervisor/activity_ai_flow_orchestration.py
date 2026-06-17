@@ -623,8 +623,8 @@ def _verify_single_output(spec: WorkflowSpec, step: StepSpec, outcome: StepExecu
     )
 
 
-def _update_run_status(store: AiFlowRunStore, run: Mapping[str, Any], status: str) -> None:
-    new_state = build_run_state(
+def _run_status_state(run: Mapping[str, Any], status: str) -> dict[str, Any]:
+    return build_run_state(
         ok=(status == "succeeded"),
         status=status,
         run_id=run["run_id"],
@@ -641,7 +641,10 @@ def _update_run_status(store: AiFlowRunStore, run: Mapping[str, Any], status: st
         lease_holder_ref=run["lease_holder_ref"],
         state_version=run["state_version"] + 1,
     )
-    store.update_run(run_id=run["run_id"], state=new_state)
+
+
+def _update_run_status(store: AiFlowRunStore, run: Mapping[str, Any], status: str) -> None:
+    store.update_run(run_id=run["run_id"], state=_run_status_state(run, status))
 
 
 def request_workflow_cancellation(
@@ -714,8 +717,12 @@ def request_workflow_cancellation(
         reason_code=reason_code,
         error_code=error_code,
     )
-    store.record_cancellation(cancel_id=request.cancel_id, state=cancel_state)
-    _update_run_status(store, run, run_status)
+    store.record_cancellation_and_update_run(
+        cancel_id=request.cancel_id,
+        cancel_state=cancel_state,
+        run_id=request.run_id,
+        run_state=_run_status_state(run, run_status),
+    )
     return CancellationRecordResult(cancel_state)
 
 

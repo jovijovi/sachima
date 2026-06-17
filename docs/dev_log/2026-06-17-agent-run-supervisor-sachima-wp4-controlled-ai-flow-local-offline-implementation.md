@@ -75,10 +75,17 @@ behavior, then implemented minimal code to GREEN.
   no artifact propagation and no relaunch, and the evidence packet surfaces the
   WATCH marker. A later same-`cancel_id` request cannot downgrade that WATCH to
   a clean cancellation. The real WP3b cancellation bridge is **not** wired in.
+- Final blocker repair: cancellation record + run-status transition now happens
+  in one store lock, and artifact finalization also treats any resident
+  cancellation record for the run as non-schedulable, so a lagging run-status
+  projection cannot leak artifacts.
+- Final status repair: `tools/sync_roadmap_status.py` resolves the repository
+  remote before reading `base_head`, so local Sachima worktrees whose `origin`
+  points at upstream Hermes Agent no longer fall back to the PR head.
 
 ## Verification (all from repo root)
 
-- `scripts/run_tests.sh tests/sachima_supervisor` → **17 files, 621 tests passed, 0 failed**.
+- `scripts/run_tests.sh tests/sachima_supervisor` → **17 files, 622 tests passed, 0 failed**.
 - `python3 scripts/sachima_ai_flow_local_smoke.py --self-test` → exit `0`, 5/5 checks; no-arg → exit `2`.
 - `ruff check` (all WP4 source + script + `__init__.py`) → clean.
 - `python3 -m compileall` (all WP4 modules + script) → clean.
