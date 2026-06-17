@@ -11,9 +11,20 @@
 ```json
 {
   "base_branch": "release/sachima",
-  "base_head": "bb5e5d9bf707fde7934939cc473544511bd65ffd",
+  "base_head": "6c045d26f936cf048dcf427f3e3a753c77c8147a",
   "base_head_note": "latest first-parent base commit excluding machine status-sync self-commits",
   "latest_merged_prs": [
+    {
+      "baseRefName": "release/sachima",
+      "headRefName": "docs/wp4-merge-status-cleanup",
+      "mergeCommit": {
+        "oid": "6c045d26f936cf048dcf427f3e3a753c77c8147a"
+      },
+      "mergedAt": "2026-06-17T05:21:19Z",
+      "number": 143,
+      "title": "docs: sync WP4 design merge status",
+      "url": "https://github.com/jovijovi/sachima/pull/143"
+    },
     {
       "baseRefName": "release/sachima",
       "headRefName": "docs/ars-wp4-controlled-ai-flow-design",
@@ -57,17 +68,6 @@
       "number": 139,
       "title": "docs: record WP3a merge status",
       "url": "https://github.com/jovijovi/sachima/pull/139"
-    },
-    {
-      "baseRefName": "release/sachima",
-      "headRefName": "feature/ars-wp3a-cancellation-interrupt-api",
-      "mergeCommit": {
-        "oid": "c74c2302129d2e9e1409910966c1075b4b19fabf"
-      },
-      "mergedAt": "2026-06-15T05:02:52Z",
-      "number": 138,
-      "title": "feat: add cancellation interrupt request seam",
-      "url": "https://github.com/jovijovi/sachima/pull/138"
     }
   ],
   "open_pr_count": 0,
