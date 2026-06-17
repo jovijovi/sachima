@@ -750,7 +750,10 @@ def request_workflow_cancellation(
 
 
 def _derive_verdict(
-    steps: tuple[dict[str, Any], ...], cancels: tuple[dict[str, Any], ...]
+    steps: tuple[dict[str, Any], ...],
+    cancels: tuple[dict[str, Any], ...],
+    *,
+    expected_step_ids: frozenset[str],
 ) -> tuple[str, bool]:
     step_statuses = {s["status"] for s in steps}
     cancel_statuses = {c["status"] for c in cancels}
@@ -767,7 +770,16 @@ def _derive_verdict(
         return "failed", False
     if STEP_GATE_BLOCKED in step_statuses:
         return "parked", False
-    if steps and all(s["status"] == STEP_COMPLETED for s in steps):
+    # Exact expected-step proof (anti-overclaim): terminal success requires that
+    # the resident steps are *exactly* the validated spec's expected steps and
+    # that every one is completed. A partial run (an expected step missing), an
+    # extra/unknown resident step, or any non-completed resident step parks
+    # instead of overclaiming terminal success.
+    if (
+        steps
+        and {s["step_id"] for s in steps} == expected_step_ids
+        and all(s["status"] == STEP_COMPLETED for s in steps)
+    ):
         return "succeeded", False
     return "parked", False
 
@@ -776,6 +788,7 @@ def summarize_workflow_run(
     store: AiFlowRunStore,
     *,
     run_id: str,
+    spec: WorkflowSpec,
     operator_gate: bool = False,
     terminal_gate_ref: str | None = None,
 ) -> WorkflowEvidence:
@@ -784,6 +797,19 @@ def summarize_workflow_run(
     run = store.get_run(run_id)
     if run is None:
         raise AiFlowOrchestrationError("activity_not_found", "no workflow run for the given id")
+    # Bind summary finalization to the validated spec before any terminal gate
+    # or verdict. A divergent workflow id / approval ref / spec digest /
+    # role-binding digest fails closed so the terminal verdict can only ever be
+    # derived against the same expected-step proof the run was admitted under.
+    if (
+        run["workflow_id"] != spec.workflow_id
+        or run["approval_ref"] != spec.approval_ref
+        or run["workflow_spec_digest"] != workflow_spec_digest(spec)
+        or run["role_binding_digest"] != role_binding_digest(spec)
+    ):
+        raise AiFlowOrchestrationError(
+            "activity_spec_binding_mismatch", "summary spec does not bind the resident run"
+        )
     terminal = check_gate(
         "terminal", operator_gate=operator_gate, gate_ref=terminal_gate_ref
     )
@@ -794,7 +820,8 @@ def summarize_workflow_run(
     cancels = store.list_cancellations(run_id)
     fingerprints = store.step_fingerprints(run_id)
 
-    raw_verdict, watch = _derive_verdict(steps, cancels)
+    expected_step_ids = frozenset(step.step_id for step in spec.steps)
+    raw_verdict, watch = _derive_verdict(steps, cancels, expected_step_ids=expected_step_ids)
     verdict = raw_verdict if terminal.granted or raw_verdict == "ambiguous_fail_closed" else "parked"
     _update_run_status(store, run, verdict)
 

@@ -3,7 +3,7 @@
 Date: 2026-06-17
 Branch: `feat/wp4-controlled-ai-flow-local-offline-implementation`
 Base: `release/sachima`
-Status: **Implementation PR candidate on this branch — NOT merged.**
+Status: **Implementation PR #145 candidate evidence on this branch; live merge state is GitHub/roadmap-sync authority.**
 
 ## Scope and approval
 
@@ -56,15 +56,16 @@ behavior, then implemented minimal code to GREEN.
   `importlib.metadata` in the pre-existing `supervisor_library`, which WP4 does
   not touch) and asserts `agent_run_supervisor`/`acpx`/`npx` never load.
 - **T6** evidence — RED: module missing; GREEN: 6 passed.
-- **T7+T8** orchestration — RED: module missing; GREEN: 25 passed (happy path +
+- **T7+T8** orchestration — RED: module missing; GREEN: 27 passed (happy path +
   exactly 3 executor calls; admission/pre-step/post-step gate failures;
   idempotent replay = no second call; conflicting replay fails closed
   pre-execute; between-step cancel deterministic; active-run cancel confirmed vs
   WATCH; reviewer blocker regressions for mid-step cancellation, cancel-id
   conflict downgrade prevention, different-cancel-id between-step/active-run
   WATCH downgrade prevention,
-  post-recheck/pre-artifact cancellation, and terminal-gate parking before final
-  acceptance).
+  post-recheck/pre-artifact cancellation, terminal-gate parking before final
+  acceptance, partial-run expected-step-proof parking instead of overclaiming
+  success, and summary spec-binding mismatch fail-closed).
 - **T9** smoke + exports — `--self-test` exits `0` with 5/5 checks; no-arg exits
   `2`; package exports resolve.
 
@@ -91,10 +92,17 @@ behavior, then implemented minimal code to GREEN.
 - Final terminal-gate repair: `summarize_workflow_run` now requires explicit
   terminal operator gate material for accepted terminal verdicts; missing
   terminal material records a sanitized terminal gate decision and parks the run.
+- Partial-run repair: `summarize_workflow_run` now binds to the validated spec
+  (workflow id / approval ref / spec + role-binding digests; fail-closed on
+  divergence with `activity_spec_binding_mismatch`) and derives the terminal
+  verdict against exact expected-step proof. Terminal `succeeded` requires the
+  resident steps to be *exactly* the spec's expected steps and all completed, so
+  a run that has completed only a subset (e.g. `architect` alone) parks instead
+  of overclaiming `succeeded`.
 
 ## Verification (all from repo root)
 
-- `scripts/run_tests.sh tests/sachima_supervisor` → **17 files, 625 tests passed, 0 failed**.
+- `scripts/run_tests.sh tests/sachima_supervisor` → **17 files, 627 tests passed, 0 failed**.
 - `python3 scripts/sachima_ai_flow_local_smoke.py --self-test` → exit `0`, 5/5 checks; no-arg → exit `2`.
 - `ruff check` (all WP4 source + script + `__init__.py`) → clean.
 - `python3 -m compileall` (all WP4 modules + script) → clean.
@@ -115,4 +123,5 @@ behavior, then implemented minimal code to GREEN.
   delivery.
 - The WP3b active-run cancellation **WATCH** is carried forward, not closed.
 - Hermes owns git commit, PR, CI, blocker review, and the Feishu approval card.
-  This branch is an implementation PR candidate; it is **not** merged.
+  This branch carries PR #145 implementation-candidate evidence; live merge state
+  is determined by GitHub and the machine-owned roadmap-sync block, not this log.

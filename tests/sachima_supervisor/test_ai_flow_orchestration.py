@@ -136,6 +136,7 @@ def _summarize_terminal(store):
     return summarize_workflow_run(
         store,
         run_id="run_alpha",
+        spec=_SPEC,
         operator_gate=True,
         terminal_gate_ref="terminal_ref_ok",
     )
@@ -241,7 +242,7 @@ def test_terminal_gate_missing_parks_completed_flow() -> None:
     store = AiFlowRunStore()
     executor = FakeStepExecutor()
     _drive_all(store, executor)
-    evidence = summarize_workflow_run(store, run_id="run_alpha")
+    evidence = summarize_workflow_run(store, run_id="run_alpha", spec=_SPEC)
     assert evidence.final_verdict == "parked"
     terminal_gates = [
         gate for gate in evidence.to_durable_state()["gate_decisions"]
@@ -317,7 +318,7 @@ def test_active_run_cancel_confirmed_records_cancelled() -> None:
         _cancel_request("active_run", step_id="architect"), store=store, interrupt_outcome=outcome
     )
     assert result.status == "cancelled"
-    evidence = summarize_workflow_run(store, run_id="run_alpha")
+    evidence = summarize_workflow_run(store, run_id="run_alpha", spec=_SPEC)
     assert evidence.active_run_cancellation_watch is False
 
 
@@ -336,11 +337,11 @@ def test_active_run_cancel_unconfirmed_holds_watch() -> None:
     assert result.error_code == "active_run_cancellation_watch"
     # no relaunch of the step
     assert executor.calls == 0
-    evidence = summarize_workflow_run(store, run_id="run_alpha")
+    evidence = summarize_workflow_run(store, run_id="run_alpha", spec=_SPEC)
     assert evidence.active_run_cancellation_watch is True
     assert evidence.final_verdict == "ambiguous_fail_closed"
     # no artifact propagated by the indeterminate cancel
-    assert summarize_workflow_run(store, run_id="run_alpha").to_durable_state()["artifact_refs"] == []
+    assert summarize_workflow_run(store, run_id="run_alpha", spec=_SPEC).to_durable_state()["artifact_refs"] == []
 
 
 def test_active_run_cancel_without_outcome_holds_watch() -> None:
@@ -381,7 +382,7 @@ def test_cancel_id_conflict_cannot_downgrade_active_run_watch() -> None:
     assert cancel is not None
     assert cancel["status"] == "cancel_ambiguous"
     assert cancel["error_code"] == "active_run_cancellation_watch"
-    evidence = summarize_workflow_run(store, run_id="run_alpha")
+    evidence = summarize_workflow_run(store, run_id="run_alpha", spec=_SPEC)
     assert evidence.active_run_cancellation_watch is True
     assert evidence.final_verdict == "ambiguous_fail_closed"
 
@@ -555,7 +556,7 @@ def test_active_run_cancel_confirmed_without_resident_claim_holds_watch() -> Non
     )
     assert result.status == "cancel_ambiguous"
     assert result.error_code == "active_run_cancellation_watch"
-    evidence = summarize_workflow_run(store, run_id="run_alpha")
+    evidence = summarize_workflow_run(store, run_id="run_alpha", spec=_SPEC)
     assert evidence.active_run_cancellation_watch is True
     assert evidence.final_verdict == "ambiguous_fail_closed"
 
@@ -621,7 +622,7 @@ def test_between_step_cancel_during_execute_holds_watch_no_artifact() -> None:
     assert cancel["status"] == "cancel_ambiguous"
     assert cancel["error_code"] == "active_run_cancellation_watch"
     # evidence surfaces the WATCH and the ambiguous fail-closed verdict
-    evidence = summarize_workflow_run(store, run_id="run_alpha")
+    evidence = summarize_workflow_run(store, run_id="run_alpha", spec=_SPEC)
     assert evidence.active_run_cancellation_watch is True
     assert evidence.final_verdict == "ambiguous_fail_closed"
     assert evidence.to_durable_state()["artifact_refs"] == []
@@ -638,7 +639,7 @@ def test_between_step_cancel_with_resident_claim_holds_watch() -> None:
     result = request_workflow_cancellation(_cancel_request("between_step"), store=store)
     assert result.status == "cancel_ambiguous"
     assert result.error_code == "active_run_cancellation_watch"
-    evidence = summarize_workflow_run(store, run_id="run_alpha")
+    evidence = summarize_workflow_run(store, run_id="run_alpha", spec=_SPEC)
     assert evidence.active_run_cancellation_watch is True
     assert evidence.final_verdict == "ambiguous_fail_closed"
 
@@ -723,6 +724,49 @@ def test_between_step_cancel_after_recheck_before_artifact_holds_watch_no_artifa
     assert cancel is not None
     assert cancel["status"] == "cancel_ambiguous"
     assert cancel["error_code"] == "active_run_cancellation_watch"
-    evidence = summarize_workflow_run(store, run_id="run_alpha")
+    evidence = summarize_workflow_run(store, run_id="run_alpha", spec=_SPEC)
     assert evidence.active_run_cancellation_watch is True
     assert evidence.final_verdict == "ambiguous_fail_closed"
+
+
+# --------------------------------------------------------------------------- #
+# Codex blocker — partial-run success (expected-step proof)
+# --------------------------------------------------------------------------- #
+def test_partial_run_under_terminal_gate_parks_not_succeeds() -> None:
+    """Blocker (partial-run success): a terminal-gated summary of a run that has
+    completed only a subset of the validated spec's expected steps (only
+    ``architect`` of architect/programmer_candidate/reviewer) must park, not
+    overclaim ``succeeded``; the run status must not become ``succeeded`` either."""
+
+    store = AiFlowRunStore()
+    executor = FakeStepExecutor()
+    create_workflow_run(_run_request(), spec=_SPEC, store=store)
+    # Execute/store only the first of the three canonical steps successfully.
+    step_workflow_run(_step_request("architect"), spec=_SPEC, store=store, executor=executor)
+    evidence = _summarize_terminal(store)
+    assert evidence.final_verdict == "parked"
+    assert query_workflow_run(store, run_id="run_alpha").status != "succeeded"
+
+
+def test_summary_spec_binding_mismatch_fails_closed() -> None:
+    """A summary whose spec does not bind the resident run — here a divergent
+    ``workflow_spec_digest`` from a different but independently valid spec — fails
+    closed with ``activity_spec_binding_mismatch`` before any terminal verdict."""
+
+    store = AiFlowRunStore()
+    create_workflow_run(_run_request(), spec=_SPEC, store=store)
+
+    other_mapping = canonical_read_only_workflow_mapping()
+    other_mapping["bounds"]["max_runtime_seconds"] += 1
+    other_spec = validate_workflow_spec(other_mapping)
+    assert workflow_spec_digest(other_spec) != _WSD
+
+    with pytest.raises(AiFlowOrchestrationError) as excinfo:
+        summarize_workflow_run(
+            store,
+            run_id="run_alpha",
+            spec=other_spec,
+            operator_gate=True,
+            terminal_gate_ref="terminal_ref_ok",
+        )
+    assert excinfo.value.error_code == "activity_spec_binding_mismatch"

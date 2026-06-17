@@ -173,10 +173,11 @@ def _assert_no_leak(payload: Any) -> None:
             raise SmokeError(f"leak marker present in evidence: {marker!r}")
 
 
-def _terminal_summary(store: AiFlowRunStore, *, run_id: str):
+def _terminal_summary(store: AiFlowRunStore, *, run_id: str, spec):
     return summarize_workflow_run(
         store,
         run_id=run_id,
+        spec=spec,
         operator_gate=True,
         terminal_gate_ref=f"terminal_{run_id}",
     )
@@ -195,7 +196,7 @@ def _scenario_happy_path(spec, wsd, rbd) -> dict[str, Any]:
             ),
             spec=spec, store=store, executor=executor,
         )
-    evidence = _terminal_summary(store, run_id="run_happy")
+    evidence = _terminal_summary(store, run_id="run_happy", spec=spec)
     state = evidence.to_durable_state()
     _assert_no_leak(state)
     steps = list_workflow_steps(store, run_id="run_happy")
@@ -265,7 +266,7 @@ def _scenario_between_step_cancel(spec, wsd, rbd) -> dict[str, Any]:
         ),
         store=store,
     )
-    evidence = _terminal_summary(store, run_id="run_cancel")
+    evidence = _terminal_summary(store, run_id="run_cancel", spec=spec)
     return {
         "scenario": "between_step_cancel",
         "cancel_status": cancel.status,
@@ -290,7 +291,7 @@ def _scenario_active_run_watch(spec, wsd, rbd) -> dict[str, Any]:
         ),
         store=store, interrupt_outcome=outcome,
     )
-    evidence = summarize_workflow_run(store, run_id="run_watch")
+    evidence = summarize_workflow_run(store, run_id="run_watch", spec=spec)
     state = evidence.to_durable_state()
     return {
         "scenario": "active_run_cancellation_watch",

@@ -1,12 +1,13 @@
 phase_id: "agent-run-supervisor-sachima-wp4-controlled-ai-flow-local-offline-implementation"
 work_package: "WP4"
 level: "implementation-slice-1"
-status: "implementation_pr_candidate"
+status: "implementation_pr_145_candidate_evidence"
 status_meaning: >-
   Local/offline, injected-fakes-only controlled AI FLOW orchestration slice-1
-  implemented on the feature branch. NOT merged. Approves no real workflow
-  execution, no additional acpx/npx, no write roles, no auto-routing, and no
-  live/Gateway/Feishu/production config/real delivery.
+  implemented on the feature branch for PR #145. Live merge state is GitHub /
+  roadmap-sync authority, not this manifest. Approves no real workflow execution,
+  no additional acpx/npx, no write roles, no auto-routing, and no live/Gateway/
+  Feishu/production config/real delivery.
 repo: "jovijovi/sachima"
 base_branch: "release/sachima"
 branch: "feat/wp4-controlled-ai-flow-local-offline-implementation"
@@ -90,11 +91,11 @@ tdd_tasks:
   - { task: T4, module: ai_flow_store.py, tests: 9, red: "module missing + reviewer cancellation/run-status interleaving blocker", green: "9 passed (incl. 32-thread CAS)" }
   - { task: T5, module: ai_flow_executor.py, tests: 3, red: "module missing", green: "3 passed (import isolation delta)" }
   - { task: T6, module: ai_flow_evidence.py, tests: 6, red: "module missing", green: "6 passed" }
-  - { task: T7_T8, module: activity_ai_flow_orchestration.py, tests: 25, red: "module missing + reviewer blocker regressions", green: "25 passed" }
+  - { task: T7_T8, module: activity_ai_flow_orchestration.py, tests: 27, red: "module missing + reviewer blocker regressions incl. partial-run success", green: "27 passed" }
   - { task: T9, module: scripts/sachima_ai_flow_local_smoke.py, tests: "self-test", green: "exit 0, 5/5 checks" }
 
 verification:
-  full_suite: "scripts/run_tests.sh tests/sachima_supervisor -q -> 17 files, 625 tests passed, 0 failed"
+  full_suite: "scripts/run_tests.sh tests/sachima_supervisor -q -> 17 files, 627 tests passed, 0 failed"
   self_test_smoke: "python3 scripts/sachima_ai_flow_local_smoke.py --self-test -> exit 0 (5/5 checks); no-arg -> exit 2"
   ruff: "clean on all WP4 source + script + __init__.py"
   compileall: "clean on all WP4 modules + script"
@@ -130,4 +131,4 @@ explicit_non_approvals:
   - "production_config_write"
   - "real_delivery"
 
-merge_status: "not merged; implementation PR candidate on the feature branch; Hermes owns commit/PR/CI/review/Feishu"
+merge_status: "live GitHub/roadmap-sync authority; this manifest records PR #145 implementation-candidate evidence and non-approval boundaries"

@@ -220,7 +220,7 @@ step_workflow_run(request, *, spec, store, executor) -> StepRecordResult
 query_workflow_run(store, *, run_id) -> WorkflowRunResult
 list_workflow_steps(store, *, run_id) -> tuple[StepRecordResult, ...]
 request_workflow_cancellation(request, *, store) -> CancellationRecordResult
-summarize_workflow_run(store, *, run_id) -> WorkflowEvidence      # sanitized, deterministic
+summarize_workflow_run(store, *, run_id, spec) -> WorkflowEvidence # spec-bound, sanitized, deterministic
 ```
 
 ### 2.3 Executor seam (`ai_flow_executor.py`) — injected fakes first
