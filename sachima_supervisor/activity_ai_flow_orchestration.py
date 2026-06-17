@@ -696,28 +696,36 @@ def request_workflow_cancellation(
             else:
                 status, ok, error_code, run_status = "cancelled", True, None, "cancelled"
     else:
-        # Blocker 3: a confirmed active-run cancellation requires a matching
-        # step_id resident in ``claimed_in_progress`` (an actual in-flight
-        # step). Without it the interrupt outcome is unattributable, so fail
-        # closed and preserve the WATCH rather than trusting a bare outcome.
-        resident_step = (
-            store.get_step(request.run_id, request.step_id)
-            if request.step_id is not None
-            else None
-        )
-        in_progress = resident_step is not None and resident_step["status"] == STEP_CLAIMED
-        confirmed = (
-            in_progress
-            and interrupt_outcome is not None
-            and getattr(interrupt_outcome, "interrupted", False) is True
-            and getattr(interrupt_outcome, "cleanup_verified", False) is True
-        )
-        if confirmed:
-            status, ok, error_code, run_status = "cancelled", True, None, "cancelled"
-        else:
+        # Same cross-cancel-id protection as the between_step branch: a prior
+        # active-run WATCH must never be downgraded by a later request with a
+        # different cancel_id, even one whose own interrupt outcome is confirmed.
+        if existing_watch:
             status, ok, error_code, run_status = (
                 "cancel_ambiguous", False, _WATCH_CODE, "ambiguous_fail_closed",
             )
+        else:
+            # Blocker 3: a confirmed active-run cancellation requires a matching
+            # step_id resident in ``claimed_in_progress`` (an actual in-flight
+            # step). Without it the interrupt outcome is unattributable, so fail
+            # closed and preserve the WATCH rather than trusting a bare outcome.
+            resident_step = (
+                store.get_step(request.run_id, request.step_id)
+                if request.step_id is not None
+                else None
+            )
+            in_progress = resident_step is not None and resident_step["status"] == STEP_CLAIMED
+            confirmed = (
+                in_progress
+                and interrupt_outcome is not None
+                and getattr(interrupt_outcome, "interrupted", False) is True
+                and getattr(interrupt_outcome, "cleanup_verified", False) is True
+            )
+            if confirmed:
+                status, ok, error_code, run_status = "cancelled", True, None, "cancelled"
+            else:
+                status, ok, error_code, run_status = (
+                    "cancel_ambiguous", False, _WATCH_CODE, "ambiguous_fail_closed",
+                )
 
     cancel_state = build_cancel_state(
         ok=ok,

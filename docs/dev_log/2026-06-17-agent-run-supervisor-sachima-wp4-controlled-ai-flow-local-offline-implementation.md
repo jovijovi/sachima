@@ -56,12 +56,13 @@ behavior, then implemented minimal code to GREEN.
   `importlib.metadata` in the pre-existing `supervisor_library`, which WP4 does
   not touch) and asserts `agent_run_supervisor`/`acpx`/`npx` never load.
 - **T6** evidence — RED: module missing; GREEN: 6 passed.
-- **T7+T8** orchestration — RED: module missing; GREEN: 24 passed (happy path +
+- **T7+T8** orchestration — RED: module missing; GREEN: 25 passed (happy path +
   exactly 3 executor calls; admission/pre-step/post-step gate failures;
   idempotent replay = no second call; conflicting replay fails closed
   pre-execute; between-step cancel deterministic; active-run cancel confirmed vs
   WATCH; reviewer blocker regressions for mid-step cancellation, cancel-id
-  conflict downgrade prevention, different-cancel-id WATCH downgrade prevention,
+  conflict downgrade prevention, different-cancel-id between-step/active-run
+  WATCH downgrade prevention,
   post-recheck/pre-artifact cancellation, and terminal-gate parking before final
   acceptance).
 - **T9** smoke + exports — `--self-test` exits `0` with 5/5 checks; no-arg exits
@@ -75,8 +76,11 @@ behavior, then implemented minimal code to GREEN.
   interrupt outcome reports `interrupted=True and cleanup_verified=True`;
   otherwise it records `cancel_ambiguous` / `active_run_cancellation_watch`, with
   no artifact propagation and no relaunch, and the evidence packet surfaces the
-  WATCH marker. A later same-`cancel_id` request cannot downgrade that WATCH to
-  a clean cancellation. The real WP3b cancellation bridge is **not** wired in.
+  WATCH marker. Once a run carries that WATCH, no later cancellation request can
+  downgrade it to a clean cancellation — neither a same-`cancel_id` replay nor a
+  different-`cancel_id` request, including a later active-run request that itself
+  reports a confirmed interrupt. The real WP3b cancellation bridge is **not**
+  wired in.
 - Final blocker repair: cancellation record + run-status transition now happens
   in one store lock, and artifact finalization also treats any resident
   cancellation record for the run as non-schedulable, so a lagging run-status
@@ -90,15 +94,16 @@ behavior, then implemented minimal code to GREEN.
 
 ## Verification (all from repo root)
 
-- `scripts/run_tests.sh tests/sachima_supervisor` → **17 files, 624 tests passed, 0 failed**.
+- `scripts/run_tests.sh tests/sachima_supervisor` → **17 files, 625 tests passed, 0 failed**.
 - `python3 scripts/sachima_ai_flow_local_smoke.py --self-test` → exit `0`, 5/5 checks; no-arg → exit `2`.
 - `ruff check` (all WP4 source + script + `__init__.py`) → clean.
 - `python3 -m compileall` (all WP4 modules + script) → clean.
 - `git diff --check` → clean.
-- Forbidden-surface static scan → clean (no `subprocess`/`socket`/`acpx`/`npx`/
-  `requests`/`httpx`/`urllib`/Gateway/Feishu/Temporal imports or calls;
-  `agent_run_supervisor` appears only inside the approval-token string; the
-  remaining hits are docstring prose).
+- Forbidden-surface static scan → clean for runtime imports/calls (no
+  `subprocess`/`socket`/`requests`/`httpx`/`urllib`/Temporal imports or calls;
+  no Gateway/Feishu/acpx/npx execution path). Text hits are classified as
+  non-runtime boundary prose, non-approval flag keys, approval-token strings, or
+  pre-existing `__init__` exports.
 - Changed-file allowlist → only `sachima_supervisor/ai_flow_*.py`,
   `activity_ai_flow_orchestration.py`, `__init__.py`, the self-test script,
   tests, and docs. No Gateway/Feishu/platform/production-config/live surface.

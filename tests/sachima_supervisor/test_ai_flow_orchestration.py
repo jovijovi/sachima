@@ -422,6 +422,44 @@ def test_different_cancel_id_cannot_downgrade_active_run_watch() -> None:
     assert beta["status"] == "cancel_ambiguous"
 
 
+def test_different_active_run_cancel_id_cannot_downgrade_watch_even_if_confirmed() -> None:
+    """A later active-run confirmation with a different cancel_id must not
+    turn a prior ambiguous WATCH run into clean cancelled."""
+
+    store = AiFlowRunStore()
+    create_workflow_run(_run_request(), spec=_SPEC, store=store)
+    first = request_workflow_cancellation(
+        _cancel_request("active_run", step_id="architect", idempotency_key="idem_cancel_watch"),
+        store=store,
+    )
+    assert first.status == "cancel_ambiguous"
+    assert query_workflow_run(store, run_id="run_alpha").status == "ambiguous_fail_closed"
+
+    # Simulate the race that triggered the blocker: a resident in-progress step
+    # appears before a later active-run cancellation reports a verified cleanup.
+    _claim_in_progress(store, "architect")
+    confirmed = StepExecutionOutcome(
+        ok=False,
+        step_status="cancelled",
+        artifact_refs=(),
+        interrupted=True,
+        cleanup_verified=True,
+    )
+    second = request_workflow_cancellation(
+        _cancel_request(
+            "active_run",
+            cancel_id="cancel_beta",
+            step_id="architect",
+            idempotency_key="idem_cancel_beta",
+        ),
+        store=store,
+        interrupt_outcome=confirmed,
+    )
+    assert second.status == "cancel_ambiguous"
+    assert second.error_code == "active_run_cancellation_watch"
+    assert query_workflow_run(store, run_id="run_alpha").status == "ambiguous_fail_closed"
+
+
 # --------------------------------------------------------------------------- #
 # Codex blocker fix regressions
 # --------------------------------------------------------------------------- #

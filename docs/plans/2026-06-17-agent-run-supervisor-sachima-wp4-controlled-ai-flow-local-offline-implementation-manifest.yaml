@@ -90,16 +90,16 @@ tdd_tasks:
   - { task: T4, module: ai_flow_store.py, tests: 9, red: "module missing + reviewer cancellation/run-status interleaving blocker", green: "9 passed (incl. 32-thread CAS)" }
   - { task: T5, module: ai_flow_executor.py, tests: 3, red: "module missing", green: "3 passed (import isolation delta)" }
   - { task: T6, module: ai_flow_evidence.py, tests: 6, red: "module missing", green: "6 passed" }
-  - { task: T7_T8, module: activity_ai_flow_orchestration.py, tests: 24, red: "module missing + reviewer blocker regressions", green: "24 passed" }
+  - { task: T7_T8, module: activity_ai_flow_orchestration.py, tests: 25, red: "module missing + reviewer blocker regressions", green: "25 passed" }
   - { task: T9, module: scripts/sachima_ai_flow_local_smoke.py, tests: "self-test", green: "exit 0, 5/5 checks" }
 
 verification:
-  full_suite: "scripts/run_tests.sh tests/sachima_supervisor -q -> 17 files, 624 tests passed, 0 failed"
+  full_suite: "scripts/run_tests.sh tests/sachima_supervisor -q -> 17 files, 625 tests passed, 0 failed"
   self_test_smoke: "python3 scripts/sachima_ai_flow_local_smoke.py --self-test -> exit 0 (5/5 checks); no-arg -> exit 2"
   ruff: "clean on all WP4 source + script + __init__.py"
   compileall: "clean on all WP4 modules + script"
   git_diff_check: "clean"
-  forbidden_surface_scan: "clean (no subprocess/socket/acpx/npx/requests/httpx/urllib/Gateway/Feishu/Temporal imports or calls; agent_run_supervisor appears only inside the approval-token string; the 4 token hits are docstring prose)"
+  forbidden_surface_scan: "clean for runtime imports/calls (no subprocess/socket/requests/httpx/urllib/Temporal imports or calls; no Gateway/Feishu/acpx/npx execution path); text hits classified as non-runtime boundary prose, non-approval flag keys, approval-token strings, or pre-existing __init__ exports"
   changed_file_allowlist: "only sachima_supervisor/ai_flow_*.py + activity_ai_flow_orchestration.py + __init__.py + scripts/sachima_ai_flow_local_smoke.py + tests + docs; no Gateway/Feishu/platform/production-config/live surface"
 
 wp3b_active_run_cancellation_watch:
@@ -109,7 +109,9 @@ wp3b_active_run_cancellation_watch:
     cancelled only when interrupted=True and cleanup_verified=True; otherwise
     cancel_ambiguous / active_run_cancellation_watch with no artifact
     propagation and no relaunch; evidence always surfaces the WATCH marker;
-    same-cancel-id conflicts cannot downgrade a prior WATCH to clean cancelled.
+    no later cancellation request can downgrade a prior WATCH to clean cancelled
+    — neither a same-cancel-id replay nor a different-cancel-id request, including
+    a later active-run request that itself reports a confirmed interrupt.
 
 explicit_non_approvals:
   - "implementation_beyond_this_slice"
