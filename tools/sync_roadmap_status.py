@@ -81,7 +81,12 @@ def collect_snapshot(
     --snapshot-json and exercise rendering/sync behavior without network access.
     """
     workdir = cwd or Path.cwd()
-    upstream_ref = f"{base_remote}/{base_branch}"
+    upstream_ref = _resolve_base_ref(
+        repository=repository,
+        base_branch=base_branch,
+        preferred_remote=base_remote,
+        cwd=workdir,
+    )
     base_head = _ref_head(upstream_ref, workdir)
     open_prs = _gh_json(
         [
@@ -221,6 +226,58 @@ def _metadata_fence_index(document: str) -> int | None:
 def _line_start(document: str, index: int) -> int:
     previous = document.rfind("\n", 0, index)
     return 0 if previous == -1 else previous + 1
+
+
+def _resolve_base_ref(
+    *, repository: str, base_branch: str, preferred_remote: str, cwd: Path
+) -> str:
+    """Return a remote/base ref that actually belongs to the target repository.
+
+    Local Sachima worktrees keep ``origin`` pointed at upstream Hermes Agent and
+    ``sachima`` pointed at the fork. GitHub Actions checkouts usually have only
+    ``origin`` and it is the fork. Prefer the caller's remote when it has the
+    base ref; otherwise choose a remote whose URL matches the GitHub repository.
+    """
+
+    preferred_ref = f"{preferred_remote}/{base_branch}"
+    if _ref_exists(preferred_ref, cwd):
+        return preferred_ref
+    for remote in _repository_remotes(repository, cwd):
+        candidate = f"{remote}/{base_branch}"
+        if _ref_exists(candidate, cwd):
+            return candidate
+    return preferred_ref
+
+
+def _ref_exists(ref: str, cwd: Path) -> bool:
+    try:
+        _run_text(["git", "rev-parse", "--verify", f"{ref}^{{commit}}"], cwd=cwd)
+        return True
+    except subprocess.CalledProcessError:
+        return False
+
+
+def _repository_remotes(repository: str, cwd: Path) -> list[str]:
+    try:
+        remotes = _run_text(["git", "remote"], cwd=cwd).splitlines()
+    except subprocess.CalledProcessError:
+        return []
+    matches: list[str] = []
+    for remote in remotes:
+        try:
+            url = _run_text(["git", "remote", "get-url", remote], cwd=cwd)
+        except subprocess.CalledProcessError:
+            continue
+        if _remote_matches_repository(url, repository):
+            matches.append(remote)
+    return matches
+
+
+def _remote_matches_repository(url: str, repository: str) -> bool:
+    repo = repository.lower().removesuffix(".git").strip("/")
+    normalized = url.lower().strip().removesuffix(".git").rstrip("/")
+    normalized = normalized.replace(":", "/")
+    return normalized.endswith("/" + repo)
 
 
 def _ref_head(ref: str, cwd: Path) -> str:

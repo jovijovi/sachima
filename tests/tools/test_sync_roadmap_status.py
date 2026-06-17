@@ -114,6 +114,35 @@ def test_check_file_reports_stale_then_clean(tmp_path: Path) -> None:
     assert sync_roadmap_status.check_file(status_file, SNAPSHOT) is True
 
 
+def test_collect_snapshot_uses_repository_remote_when_default_origin_base_missing(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _git(tmp_path, "init", "-b", "release/sachima")
+    _git(tmp_path, "config", "user.name", "Test Bot")
+    _git(tmp_path, "config", "user.email", "test@example.invalid")
+    base_head = _commit(tmp_path, "docs: base", "base\n")
+    _git(tmp_path, "update-ref", "refs/remotes/sachima/release/sachima", base_head)
+    _git(tmp_path, "checkout", "-b", "feat/wp4")
+    feature_head = _commit(tmp_path, "feat: branch work", "feature\n")
+    _git(tmp_path, "remote", "add", "origin", "https://github.com/NousResearch/hermes-agent.git")
+    _git(tmp_path, "remote", "add", "sachima", "https://github.com/jovijovi/sachima.git")
+
+    def fake_gh_json(command, *, cwd):
+        return []
+
+    monkeypatch.setattr(sync_roadmap_status, "_gh_json", fake_gh_json)
+
+    snapshot = sync_roadmap_status.collect_snapshot(
+        repository="jovijovi/sachima",
+        base_branch="release/sachima",
+        base_remote="origin",
+        cwd=tmp_path,
+    )
+
+    assert feature_head != base_head
+    assert snapshot["base_head"] == base_head
+
+
 def test_ref_head_ignores_machine_status_sync_commit(tmp_path: Path) -> None:
     _git(tmp_path, "init", "-b", "release/sachima")
     _git(tmp_path, "config", "user.name", "Test Bot")
