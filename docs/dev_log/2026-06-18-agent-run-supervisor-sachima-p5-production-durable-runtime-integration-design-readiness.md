@@ -3,7 +3,7 @@
 **Date:** 2026-06-18
 **Branch:** `docs/p5-durable-runtime-readiness`
 **Base:** `release/sachima` at `41e645189aa4de889c95b97a61a6d4fbb76783cd` (latest non-status-sync base; branch tip is the status-sync self-commit `68a058dd3`)
-**Status:** Candidate docs-only design / readiness gate; PR pending; Codex primary review PASS / BLOCKERS None.
+**Status:** Candidate docs-only design / readiness gate; PR #147 open (`https://github.com/jovijovi/sachima/pull/147`); pending merge decision; Codex primary review PASS / BLOCKERS None.
 
 ## Approval boundary
 
@@ -104,7 +104,7 @@ generated_status_json_block_edited: false (tools/sync_roadmap_status.py --check:
 git_diff_check: ok
 manifest_yaml_parse: ok
 manifest_false_booleans_present: implementation/runtime_start/worker_start/controlled_ai_flow/gateway/feishu/live/production_config/real_delivery = false
-manifest_candidate_fields: codex_primary_review: "PASS / BLOCKERS: None"; pr_number: null; pr_url: null; merge_commit: null; merged_at: null
+manifest_candidate_fields: codex_primary_review: "PASS / BLOCKERS: None"; pr_number: 147; pr_url: https://github.com/jovijovi/sachima/pull/147; merge_commit: null; merged_at: null; ci_validated: false
 status_markers_present: true
 naming_clarification_present: true (P5 durable runtime != remaining-goals WP5 write roles)
 wp3b_active_run_cancellation_watch_preserved: true

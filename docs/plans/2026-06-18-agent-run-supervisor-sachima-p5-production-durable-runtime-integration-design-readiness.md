@@ -1,7 +1,7 @@
 # P5 — Production durable runtime integration design & readiness packet
 
 Date: 2026-06-18
-Status: **Candidate docs-only design / readiness packet** — PR pending. This document is not implementation approval and starts no runtime.
+Status: **Candidate docs-only design / readiness packet** — PR #147 open; pending merge decision. This document is not implementation approval and starts no runtime.
 Branch: `docs/p5-durable-runtime-readiness`
 Base: `release/sachima` at `41e645189aa4de889c95b97a61a6d4fbb76783cd` (latest non-status-sync base; branch tip is the status-sync self-commit `68a058dd3`)
 
@@ -479,7 +479,7 @@ WP3b (PR #140) merged a bounded cancellation bridge with verified deterministic 
 - [ ] WP3b active-run cancellation WATCH preserved and not overclaimed.
 - [ ] Scoring rubric, kill criteria, and implementation gates present.
 - [ ] Explicit non-approvals include implementation, runtime start, Worker start, controlled AI FLOW execution, write roles, Gateway-owned/auto-started lifecycle, external Temporal/Worker lifecycle, live, Feishu, production config, and real delivery.
-- [ ] Manifest is YAML-parseable with the required keys, false booleans for implementation/runtime start/controlled AI FLOW/Gateway/Feishu/live/production config/real delivery, `codex_primary_review` records the final review result once run, and `pr_number`/`pr_url`/`merge_commit`/`merged_at` remain null until PR transport / merge metadata exists.
+- [ ] Manifest is YAML-parseable with the required keys, false booleans for implementation/runtime start/controlled AI FLOW/Gateway/Feishu/live/production config/real delivery, `codex_primary_review` records the final review result once run, PR number/URL are set once opened, and `merge_commit`/`merged_at` remain null until merge metadata exists.
 - [ ] Changed-file allowlist is docs/status only (3 new docs + this roadmap update).
 - [ ] Secret-shaped / no-leak scan and forbidden implementation-surface scan pass.
 - [ ] Codex primary blocker review returns `BLOCKERS: None`.

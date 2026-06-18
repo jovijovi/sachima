@@ -2,16 +2,17 @@ phase_id: "agent-run-supervisor-sachima-p5-production-durable-runtime-integratio
 roadmap_phase: "P5"
 roadmap_phase_name: "Production durable runtime integration"
 level: "level-3-design-readiness"
-status: "candidate"
+status: "open-pr-candidate"
 status_meaning: >-
   Docs-only P5 production durable runtime integration design / readiness
-  candidate on branch docs/p5-durable-runtime-readiness; PR pending. Records the
-  caller-owned control surface, durable records, the cross-process transactional
-  claim store requirement, the no-throw boundary and failure taxonomy, the
-  runtime-history no-leak rules and scans, the required probes, and the
-  acceptance/scoring/kill/implementation gates. Does NOT approve implementation,
-  runtime start, Worker start, controlled AI FLOW execution, write roles, or any
-  live/Gateway/Feishu/production config/real delivery axis.
+  candidate on branch docs/p5-durable-runtime-readiness; PR #147 is open and
+  pending merge decision. Records the caller-owned control surface, durable
+  records, the cross-process transactional claim store requirement, the
+  no-throw boundary and failure taxonomy, the runtime-history no-leak rules and
+  scans, the required probes, and the acceptance/scoring/kill/implementation
+  gates. Does NOT approve implementation, runtime start, Worker start,
+  controlled AI FLOW execution, write roles, or any live/Gateway/Feishu/
+  production config/real delivery axis.
 repo: "jovijovi/sachima"
 base_branch: "release/sachima"
 base_head: "41e645189aa4de889c95b97a61a6d4fbb76783cd"
@@ -241,9 +242,12 @@ verification_required_before_pr:
 
 candidate_state:
   design_content_finalized: true
-  commit_push_pr_transport_pending_at_authoring: true
-  pr_number: null
-  pr_url: null
+  commit: "29e07cfef97bc653a55ad845f16f158b50a26c2a"
+  pushed_to_sachima_remote: true
+  pr_opened: true
+  pr_number: 147
+  pr_url: "https://github.com/jovijovi/sachima/pull/147"
+  head_sha_at_pr_open: "29e07cfef97bc653a55ad845f16f158b50a26c2a"
   merge_commit: null
   merged_at: null
   ci_validated: false
