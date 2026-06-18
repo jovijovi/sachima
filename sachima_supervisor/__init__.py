@@ -117,6 +117,10 @@ from sachima_supervisor.ai_flow_executor import (
     StepExecutionOutcome,
     StepExecutor,
 )
+from sachima_supervisor.p5_runtime_adapter import (
+    P5LocalOfflineRuntimeAdapter,
+    P5_RUNTIME_ADAPTER_IMPLEMENTATION_APPROVAL_TOKEN,
+)
 from sachima_supervisor.ai_flow_evidence import (
     FINAL_VERDICTS,
     AiFlowEvidenceError,
@@ -234,6 +238,8 @@ __all__ = [
     "step_fingerprint",
     "StepExecutionOutcome",
     "StepExecutor",
+    "P5LocalOfflineRuntimeAdapter",
+    "P5_RUNTIME_ADAPTER_IMPLEMENTATION_APPROVAL_TOKEN",
     "FINAL_VERDICTS",
     "AiFlowEvidenceError",
     "WorkflowEvidence",
