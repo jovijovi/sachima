@@ -1,0 +1,305 @@
+phase_id: "agent-run-supervisor-sachima-p5-production-durable-runtime-integration-design-readiness"
+roadmap_phase: "P5"
+roadmap_phase_name: "Production durable runtime integration"
+level: "level-3-design-readiness"
+status: "open-pr-candidate"
+status_meaning: >-
+  Docs-only P5 production durable runtime integration design / readiness
+  candidate on branch docs/p5-durable-runtime-readiness; PR #147 is open and
+  pending merge decision. Records the caller-owned control surface, durable
+  records, the cross-process transactional claim store requirement, the
+  no-throw boundary and failure taxonomy, the runtime-history no-leak rules and
+  scans, the required probes, and the acceptance/scoring/kill/implementation
+  gates. Does NOT approve implementation, runtime start, Worker start,
+  controlled AI FLOW execution, write roles, or any live/Gateway/Feishu/
+  production config/real delivery axis.
+repo: "jovijovi/sachima"
+base_branch: "release/sachima"
+base_head: "41e645189aa4de889c95b97a61a6d4fbb76783cd"
+base_head_note: >-
+  Latest non-status-sync base per the machine status block (PR #146). The working
+  branch tip including the latest status-sync self-commit is 68a058dd3; the
+  machine convention excludes status-sync self-commits from base_head.
+branch: "docs/p5-durable-runtime-readiness"
+created_at: "2026-06-18"
+owner_dri: "Hermes operator under Sachima governed task"
+
+naming_clarification:
+  roadmap_p5: "production durable runtime integration (this packet)"
+  remaining_goals_wp5: "write-capable roles + sandbox/rollback (NOT this packet; write roles unapproved)"
+  roadmap_p6: "controlled AI FLOW execution (blocked until P5 durable runtime evidence passes)"
+  note: >-
+    Topically P5 corresponds to the remaining-goals plan's WP6 durable-runtime
+    content. P5 introduces no write-capable roles.
+
+approval_gate:
+  approval_token: "approve_agent_run_supervisor_sachima_p5_production_durable_runtime_integration_design_readiness_docs_only_no_implementation_no_runtime_start_no_worker_start_no_controlled_ai_flow_execution_no_live_no_gateway_no_feishu_no_production_config_no_real_delivery"
+  approved_now: true
+  scope_note: >-
+    P5 design + readiness only; records the durable-runtime ownership,
+    control-surface, records, cross-process claim store, no-throw/no-leak rules,
+    probes, and gates. No implementation or execution approval.
+
+future_implementation_gate:
+  approval_token: "approve_agent_run_supervisor_sachima_p5_production_durable_runtime_integration_local_caller_owned_runtime_adapter_implementation_no_gateway_owned_lifecycle_no_worker_auto_start_no_controlled_ai_flow_execution_no_live_no_gateway_no_feishu_no_production_config_no_real_delivery"
+  approved_now: false
+
+external_temporal_or_worker_lifecycle_gate:
+  approval_token: "approve_external_temporal_service_or_worker_lifecycle_for_sachima_p5_runtime"
+  approved_now: false
+  note: "Separate token required; not granted and not implied by the implementation token."
+
+scope:
+  docs_only: true
+  design_only: true
+  readiness_only: true
+  implementation_approved: false
+  runtime_start_approved: false
+  worker_start_approved: false
+  worker_auto_start_approved: false
+  cross_process_claim_store_implementation_approved: false
+  durable_runtime_attach_approved: false
+  controlled_ai_flow_execution_approved: false
+  real_workflow_execution_approved: false
+  write_roles_approved: false
+  read_only_roles_only: true
+  additional_acpx_invocation_approved: false
+  additional_real_agent_execution_approved: false
+  npx_or_network_fetch_approved: false
+  local_offline_caller_owned_only: true
+  gateway_approved: false
+  gateway_owned_runtime_lifecycle_approved: false
+  external_temporal_service_or_worker_startup_approved: false
+  feishu_approved: false
+  live_or_default_on_approved: false
+  public_ingress_approved: false
+  production_config_approved: false
+  service_restart_or_reload_approved: false
+  platform_adapter_mutation_approved: false
+  real_delivery_approved: false
+
+runtime_ownership:
+  owner: "Sachima / FlowWeaver (the caller)"
+  owns:
+    - "durable runtime choice and lifecycle"
+    - "caller-supplied control surface"
+    - "durable run/workflow/activity/session/step state, leases, epochs, state_version"
+    - "idempotency, cross-process transactional claim store"
+    - "retry/update/cancel/recover/close policy, role mapping, business verdict"
+  supervisor_library: "calls the control surface via the existing executor Protocol seam; owns local internals/redacted evidence only; never owns the runtime lifecycle/claim store/verdict"
+  gateway: "NEVER a caller, runtime owner, lifecycle owner, Worker host, renderer, or delivery surface; never owns or auto-starts a Temporal/Worker/service/socket/subprocess lifecycle"
+  runtime_kind: "future caller-supplied abstraction (Temporal or equivalent); design label only; not started or owned here"
+
+control_surface_operations:
+  - { op: "start", result_codes: ["started", "idempotent_replay", "start_conflict"] }
+  - { op: "query", result_codes: ["query_ok", "not_found", "query_unavailable"] }
+  - { op: "update", result_codes: ["update_applied", "update_rejected", "stale", "not_found"] }
+  - { op: "cancel", result_codes: ["cancel_requested", "cancelled", "cancel_failed", "cancel_ambiguous"] }
+  - { op: "recover", result_codes: ["recovered", "recover_ambiguous", "not_found"] }
+  - { op: "close_terminalize", result_codes: ["closed", "already_terminal"] }
+
+durable_records:
+  - "RuntimeRunRecord (run_id / runtime_kind / workflow_type_ref / run_ref / status / state_version / lease / idempotency_key / attempt_count / artifact_ref_count / evidence_ref+digest / caller_verdict / error_code / retryable)"
+  - "WorkflowRecord (run_id / workflow_spec_digest / step ids+edges refs / bounds / status)"
+  - "ActivityRecord (activity_id / role_key / mode+phase / status / lease+epoch / idempotency / evidence_ref+digest / error_code)"
+  - "SessionRecord (design label only; persistent-session execution separately gated)"
+  - "StepAttemptRecord (append-only: step_id / attempt_index / idempotency_key / request_fingerprint / role_binding_digest / input_artifact_digests / outcome_status / error_code / evidence_ref / lease_epoch_at_launch)"
+  - "lease / epoch / state_version (cross-process ownership + optimistic concurrency)"
+  - "idempotency_key (exactly-once binding; cross-process duplicate-start convergence)"
+  - "QuerySnapshotRecord (snapshot_id / snapshot_version / run+step statuses / counts / refs+digests / cancellation+recovery markers / WATCH marker)"
+  - "CancellationRecord (cancel_id / target / operator_gate_ref / lease binding / idempotency / reason_code / status / active_run_watch marker)"
+  - "RecoveryRecord (recovery_id / run_ref / recovered_state_version / epoch_at_recovery / reconciliation_outcome / divergence_code / operator_gate_ref)"
+  - "ArtifactRef (artifact_id / producer_step_id / content_digest / artifact_kind / byte_count) claim-check only"
+
+cross_process_claim_store:
+  required_for_implementation: true
+  in_process_cas_sufficient: false
+  in_process_cas_reference: "sachima_supervisor/ai_flow_store.py (single-process, lock-guarded mutex CAS)"
+  requirements:
+    - "atomic claim / check-and-set across processes (not a thread mutex)"
+    - "durability across process restart"
+    - "isolation sufficient to serialize conflicting claims"
+    - "claim record bound to (run_id, idempotency_key, request_fingerprint, lease_epoch)"
+    - "fail-closed on conflict; identical concurrent starts launch exactly once"
+    - "recovery-safe reads before start/replay/recover"
+  rule: "the in-process CAS may not be presented as evidence of durable cross-process claim correctness (kill-criterion K2)"
+
+no_throw_boundary:
+  every_operation_no_throw: true
+  result_fields: ["status_code", "error_code", "run_ref", "snapshot_ref", "retryable"]
+  rule: "no exception/traceback/PID/backend detail crosses the boundary; raw detail collapses to a stable error_code"
+
+failure_taxonomy:
+  - "runtime_disabled"
+  - "runtime_approval_mismatch"
+  - "runtime_unsupported_op"
+  - "runtime_unknown_role"
+  - "runtime_unsafe_material"
+  - "runtime_idempotency_conflict"
+  - "runtime_stale_state"
+  - "runtime_lease_lost"
+  - "runtime_toctou_conflict"
+  - "runtime_claim_conflict"
+  - "runtime_retry_ambiguous"
+  - "runtime_recover_ambiguous"
+  - "runtime_cancel_not_confirmed"
+  - "runtime_precondition_unmet"
+  - "runtime_budget_exceeded"
+  - "runtime_backend_unavailable"
+  - "runtime_operation_timeout"
+  - "runtime_query_unavailable"
+  - "runtime_history_leak_detected"
+  - "runtime_not_found"
+  - "runtime_terminalized"
+
+runtime_history_no_leak:
+  allowed: "stable codes, mode/phase, caller-owned refs, role keys, claim-check refs+sha256 digests, artifact/evidence refs+digests, counts/indices/versions, sanitized lease_id/lease_epoch, caller verdict code, recovery/cancellation+WATCH markers"
+  forbidden: "raw prompt/context/model/tool output, raw acpx/ACP stdout, exception text/tracebacks, PIDs/thread ids/host names, platform private ids/card JSON/message ids, media bytes/private paths, tokens/credentials/secrets/connection strings/signed URLs, delivery payloads/IM bodies"
+  required_scans:
+    scan_1_json_projection: "sanitized durable records / query snapshots / evidence JSON contain only allowed fields"
+    scan_2_serialized_event_history_bytes: "the caller-supplied runtime's serialized event history / workflow-state bytes contain no forbidden material; a leak is runtime_history_leak_detected (kill-criterion K3)"
+
+required_probes:
+  - "duplicate_start"
+  - "retry"
+  - "timeout"
+  - "cancellation"
+  - "recovery"
+  - "restart_replay"
+  - "query_snapshot_consistency"
+probes_run_by_this_pr: false
+
+wp3b_active_run_cancellation_watch:
+  carried_forward: true
+  pr_number: 140
+  merge_commit: "3fe18ab9451d290a70036697da118351d604be27"
+  between_step_cancel: "may be deterministic"
+  active_run_cancel: "best-effort / WATCH; unconfirmed interruption held cancel_ambiguous with active_run_watch marker; never promoted to cancelled; no artifact propagation; no relaunch"
+  must_not_overclaim: true
+
+relationship:
+  wp4_design_pr: 142
+  wp4_design_merge_commit: "bb5e5d9bf707fde7934939cc473544511bd65ffd"
+  wp4_implementation_pr: 145
+  wp4_implementation_merge_commit: "c4ce77ce52020015f37710025d601a9ecf021a13"
+  wp4_meaning: "local/offline injected-fakes-only controlled AI FLOW orchestrator; in-process CAS; executor Protocol seam with no real runner"
+  p5_meaning: "produces durable runtime evidence (probes) by attaching a caller-supplied durable runtime behind the control surface; design/readiness only in this packet"
+  p6_meaning: "controlled AI FLOW execution; BLOCKED until P5 durable runtime evidence passes"
+
+scoring_rubric:
+  scale: "0 absent/unsafe, 1 partial, 2 complete & proven"
+  pass_threshold: ">= 18/20 AND no dimension at 0 AND no kill-criterion triggered"
+  dimensions:
+    - "runtime ownership boundary"
+    - "control-surface completeness"
+    - "cross-process claim correctness"
+    - "idempotency & replay"
+    - "recovery / restart"
+    - "query snapshot consistency"
+    - "cancellation honesty (WP3b WATCH)"
+    - "no-throw & failure taxonomy"
+    - "runtime-history no-leak (scan 1 + scan 2)"
+    - "evidence determinism"
+
+kill_criteria:
+  - "K1 Gateway/Worker/message-handling path owns or auto-starts a Temporal/Worker/service/socket/subprocess runtime lifecycle"
+  - "K2 durable claim relies on the in-process mutex CAS instead of a cross-process transactional claim store"
+  - "K3 raw material in durable records/snapshots/evidence OR serialized event/history bytes (scan 2 fails)"
+  - "K4 active-run cancellation recorded as clean cancelled without confirmed interruption (WP3b WATCH overclaimed)"
+  - "K5 restart/replay/duplicate start causes a second real execution (double-launch)"
+  - "K6 a control-surface operation raises across the boundary or leaks a backend exception/traceback"
+  - "K7 controlled AI FLOW execution / write roles / additional AGENT-acpx-npx / live / Gateway / Feishu / public ingress / production config / real delivery introduced under cover of P5"
+  - "K8 external Temporal/Worker service lifecycle started without its own separate approval token"
+
+implementation_gates:
+  - "G0 separate exact implementation approval token present; external Temporal/Worker lifecycle needs its own token"
+  - "G1 local caller-owned runtime adapter behind the executor Protocol seam; default-off; Gateway excluded"
+  - "G2 cross-process transactional claim store implemented and proven; in-process CAS retired for durable claims"
+  - "G3 control surface implemented as no-throw wrappers with the stable failure taxonomy"
+  - "G4 durable records + lease/epoch/state_version + idempotency + claim-check artifact refs persisted sanitized"
+  - "G5 runtime-history no-leak enforced by construction and verified by scan 1 + scan 2"
+  - "G6 all seven probes pass with deterministic sanitized evidence outside the repo"
+  - "G7 WP3b active-run cancellation WATCH preserved in records, probes, and evidence"
+  - "G8 local verification + Codex primary blocker review BLOCKERS: None; roadmap dashboard updated"
+
+changed_files_expected:
+  docs:
+    - "docs/plans/2026-06-18-agent-run-supervisor-sachima-p5-production-durable-runtime-integration-design-readiness.md"
+    - "docs/plans/2026-06-18-agent-run-supervisor-sachima-p5-production-durable-runtime-integration-design-readiness-manifest.yaml"
+    - "docs/dev_log/2026-06-18-agent-run-supervisor-sachima-p5-production-durable-runtime-integration-design-readiness.md"
+    - "docs/roadmap/current-status.md"
+  source: []
+  tests: []
+  scripts: []
+
+verification_required_before_pr:
+  - "git diff --check"
+  - "YAML parse of this manifest"
+  - "docs/status stale-phrase scan (no WP3b overclaim; no implementation/runtime-start approval)"
+  - "forbidden implementation-surface scan on changed files"
+  - "secret-shaped / no-leak scan"
+  - "Codex primary blocker review"
+
+candidate_state:
+  design_content_finalized: true
+  initial_design_commit: "29e07cfef97bc653a55ad845f16f158b50a26c2a"
+  pr_open_head_sha: "29e07cfef97bc653a55ad845f16f158b50a26c2a"
+  pushed_to_sachima_remote: true
+  pr_opened: true
+  pr_number: 147
+  pr_url: "https://github.com/jovijovi/sachima/pull/147"
+  ci_validation_source: "live GitHub PR checks on the latest pushed head; this static manifest does not freeze final CI state"
+  merge_commit: null
+  merged_at: null
+  codex_primary_review: "PASS / BLOCKERS: None"
+
+explicit_non_approvals:
+  - "implementation"
+  - "production_durable_runtime_code_implementation"
+  - "runtime_start_or_attach"
+  - "worker_start_or_auto_start"
+  - "cross_process_claim_store_implementation"
+  - "controlled_ai_flow_execution"
+  - "real_workflow_execution"
+  - "write_capable_claude_or_codex_roles"
+  - "additional_real_agent_execution"
+  - "additional_acpx_invocation"
+  - "npx_fallback_or_network_fetch"
+  - "real_local_exec"
+  - "persistent_session_execution"
+  - "additional_or_unbounded_cancellation_execution"
+  - "satine_or_hermes_profile_acp_execution"
+  - "gateway_owned_temporal_lifecycle"
+  - "gateway_owned_or_auto_started_worker_or_service_or_socket_or_subprocess"
+  - "external_temporal_service_or_worker_startup"
+  - "gateway_involvement_or_mutation"
+  - "gateway_restart_or_reload"
+  - "platform_adapter_mutation"
+  - "real_external_sachima_ingress"
+  - "public_webhook_exposure"
+  - "feishu_or_im_delivery"
+  - "real_external_delivery"
+  - "production_delivery_control"
+  - "production_config_write"
+  - "service_restart_or_reload"
+  - "live_or_default_on_behavior"
+  - "automatic_replies"
+  - "worker_auto_routing"
+  - "agent_to_agent_auto_routing"
+  - "at_all_fanout"
+  - "trusted_markdown_html_rendering"
+
+strongest_allowed_outcome: "agent_run_supervisor_sachima_p5_production_durable_runtime_integration_design_readiness_ready_for_separate_local_caller_owned_runtime_adapter_implementation_request"
+strongest_allowed_outcome_meaning: >-
+  After review and merge, a later local, caller-owned runtime-adapter
+  implementation may be requested with its own exact token. This packet approves
+  no implementation, runtime/Worker start, durable-backend attach, controlled AI
+  FLOW execution, external Temporal/Worker lifecycle, or any live/Gateway/Feishu/
+  production-config/real-delivery axis.
+
+next_allowed_request: "approve_agent_run_supervisor_sachima_p5_production_durable_runtime_integration_local_caller_owned_runtime_adapter_implementation_no_gateway_owned_lifecycle_no_worker_auto_start_no_controlled_ai_flow_execution_no_live_no_gateway_no_feishu_no_production_config_no_real_delivery"
+next_allowed_request_note: >-
+  Recommended mainline next step after this packet merges; still local,
+  caller-owned, no Gateway-owned lifecycle, no Worker auto-start, no controlled
+  AI FLOW execution, no live/Feishu/production/real delivery. Controlled AI FLOW
+  execution (P6) stays blocked until the P5 durable-runtime probes pass.
