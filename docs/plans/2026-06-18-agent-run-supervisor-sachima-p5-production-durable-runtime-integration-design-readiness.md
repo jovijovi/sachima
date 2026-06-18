@@ -1,7 +1,7 @@
 # P5 — Production durable runtime integration design & readiness packet
 
 Date: 2026-06-18
-Status: **Candidate docs-only design / readiness packet** — PR #147 open; pending merge decision. This document is not implementation approval and starts no runtime.
+Status: **Merged docs-only design / readiness packet** — merged in PR #147 (merge commit `6c11a40d4de3e66981c3ff27905c1785b1709e0a`, mergedAt 2026-06-18T03:36:51Z). This document is not implementation approval and starts no runtime. The next, narrower step is prepared in `docs/plans/2026-06-18-agent-run-supervisor-sachima-p5-local-offline-runtime-adapter-implementation-prep.md`.
 Branch: `docs/p5-durable-runtime-readiness`
 Base: `release/sachima` at `41e645189aa4de889c95b97a61a6d4fbb76783cd` (latest non-status-sync base; branch tip is the status-sync self-commit `68a058dd3`)
 
