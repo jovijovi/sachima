@@ -118,6 +118,7 @@ from sachima_supervisor.ai_flow_executor import (
     StepExecutor,
 )
 from sachima_supervisor.p5_runtime_adapter import (
+    P5LocalOfflineDurableClaimStore,
     P5LocalOfflineRuntimeAdapter,
     P5_RUNTIME_ADAPTER_IMPLEMENTATION_APPROVAL_TOKEN,
 )
@@ -238,6 +239,7 @@ __all__ = [
     "step_fingerprint",
     "StepExecutionOutcome",
     "StepExecutor",
+    "P5LocalOfflineDurableClaimStore",
     "P5LocalOfflineRuntimeAdapter",
     "P5_RUNTIME_ADAPTER_IMPLEMENTATION_APPROVAL_TOKEN",
     "FINAL_VERDICTS",

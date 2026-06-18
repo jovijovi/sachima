@@ -2,7 +2,7 @@
 
 Date: 2026-06-18
 Branch: `feat/p5-local-offline-runtime-adapter`
-Status: PR #149 open; live GitHub PR metadata, checks, and mergeability are authoritative.
+Status: merged in PR #149 (`58d1b9b87f6f68bd8099a2d7695edbacdaf6716e`, mergedAt 2026-06-18T08:11:31Z); live GitHub PR metadata remains authoritative.
 
 ## Scope
 
@@ -109,4 +109,4 @@ Codex repo-aware read-only blocker re-review on the current live diff returned `
 
 This is still an in-process local adapter. It does **not** satisfy the full P5 durable runtime gate's cross-process transactional claim-store requirement, restart/replay proof, or external durable-history reconciliation.
 
-If this PR passes review and merges, the next P5 request should be a separately scoped durable-claim-store / restart-recovery implementation gate, still local/offline first. P6 controlled AI FLOW execution remains blocked until durable runtime evidence is substantially stronger.
+After this PR merged, the next approved P5 request became the separately scoped durable-claim-store / restart-recovery implementation gate, still local/offline first. P6 controlled AI FLOW execution remains blocked until durable runtime evidence is substantially stronger.

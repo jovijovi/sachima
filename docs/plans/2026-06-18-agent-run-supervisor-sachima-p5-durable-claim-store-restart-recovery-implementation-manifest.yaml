@@ -1,0 +1,146 @@
+schema_version: sachima.plan_manifest.v1
+title: agent-run-supervisor x Sachima P5 durable claim-store restart-recovery local/offline implementation
+created_at: '2026-06-18T17:08:20+08:00'
+status: local_candidate_pr_not_opened
+repository: jovijovi/sachima
+base_branch: release/sachima
+branch: feat/p5-durable-claim-store-restart-recovery
+pr:
+  number: null
+  url: null
+  head_sha: null
+  merge_commit: null
+  merged_at: null
+  static_pr_metadata_policy: live GitHub PR metadata is authoritative after PR creation; update this manifest before approval-ready claims.
+prerequisite:
+  p5_runtime_adapter_pr:
+    number: 149
+    state: MERGED
+    url: https://github.com/jovijovi/sachima/pull/149
+    head_sha: e6654e766f1d4818e058280a2d1e58dd9fdb0cad
+    merge_commit: 58d1b9b87f6f68bd8099a2d7695edbacdaf6716e
+    merged_at: '2026-06-18T08:11:31Z'
+    release_sachima_contains_merge_commit: true
+implementation:
+  summary: >-
+    Adds a caller-supplied local/offline durable claim store for the P5 fake
+    runtime adapter. A fresh adapter can restore sanitized completed step records
+    from the store and replay/query/recover them without relaunching the fake
+    runtime; conflicts and dirty resident store state fail closed before launch.
+  files:
+    - sachima_supervisor/p5_runtime_adapter.py
+    - sachima_supervisor/__init__.py
+    - tests/sachima_supervisor/test_p5_runtime_adapter.py
+    - docs/plans/2026-06-18-agent-run-supervisor-sachima-p5-durable-claim-store-restart-recovery-implementation.md
+    - docs/plans/2026-06-18-agent-run-supervisor-sachima-p5-durable-claim-store-restart-recovery-implementation-manifest.yaml
+    - docs/dev_log/2026-06-18-agent-run-supervisor-sachima-p5-durable-claim-store-restart-recovery-implementation.md
+    - docs/roadmap/current-status.md
+runtime_surface:
+  adapter_type: deterministic_fake_injected_local_only
+  caller_owned: true
+  step_executor_drop_in: true
+  default_off: true
+  claim_store: local_json_file_caller_supplied
+  restart_recovery: sanitized_replay_without_fake_relaunch
+  production_durable_runtime: false
+  external_lifecycle_owned: false
+  real_runtime_or_worker_start: false
+controls:
+  execute: no_throw_step_execution_outcome
+  query: sanitized_snapshot_no_reinvoke
+  cancel: active_run_watch_preserving_no_throw_outcome
+  recover: sanitized_snapshot_only
+  close: sanitized_local_marker
+safety_properties:
+  duplicate_start_idempotency_after_restart: identical execute calls converge to stored sanitized outcome and zero relaunch in the restarted adapter
+  conflict_after_restart: incompatible replay fails closed with runtime_adapter_idempotency_conflict and zero relaunch
+  dirty_resident_store: malformed_or_unsafe_store_state_fails_closed_before_launch
+  no_leak_serialized_history_bytes: tested
+  no_leak_claim_store_file_bytes: tested
+  artifact_projection: claim_check_refs_only
+  cancellation_watch: unconfirmed active-run cancel returns cancel_ambiguous and active_run_cancellation_watch
+non_approvals:
+  real_runtime_start: false
+  worker_start: false
+  external_temporal_or_worker_lifecycle: false
+  controlled_ai_flow_execution_p6: false
+  write_capable_roles: false
+  gateway_owned_or_auto_started_lifecycle: false
+  live_gateway_feishu_or_im_behavior: false
+  production_config_write: false
+  public_ingress: false
+  real_delivery: false
+evidence:
+  red:
+    command: /home/ecs-user/.local/bin/pytest tests/sachima_supervisor/test_p5_runtime_adapter.py -q -k 'durable_claim_store'
+    result: 5 failed, 25 deselected in 0.26s
+    expected_failure: AttributeError for missing P5LocalOfflineDurableClaimStore
+  green_durable_focused:
+    command: /home/ecs-user/.local/bin/pytest tests/sachima_supervisor/test_p5_runtime_adapter.py -q -k 'durable_claim_store'
+    result: 9 passed, 25 deselected in 0.14s
+  green_focused:
+    command: /home/ecs-user/.local/bin/pytest tests/sachima_supervisor/test_p5_runtime_adapter.py -q
+    result: 34 passed in 0.20s
+  compatibility_focused:
+    command: /home/ecs-user/.local/bin/pytest tests/sachima_supervisor/test_p5_runtime_adapter.py tests/sachima_supervisor/test_ai_flow_orchestration.py tests/sachima_supervisor/test_ai_flow_store.py -q
+    result: 70 passed in 0.31s
+  static_compile:
+    commands:
+      - uv run --extra dev ruff check sachima_supervisor/p5_runtime_adapter.py tests/sachima_supervisor/test_p5_runtime_adapter.py sachima_supervisor/__init__.py
+      - python3 -m compileall -q sachima_supervisor tests/sachima_supervisor
+    results:
+      ruff: All checks passed
+      compileall: PASS
+  full_local_gates:
+    status: passed
+    commands:
+      - python3 tools/sync_roadmap_status.py --check --base-remote sachima
+      - /home/ecs-user/.local/bin/pytest tests/sachima_supervisor/test_p5_runtime_adapter.py -q -k 'durable_claim_store'
+      - /home/ecs-user/.local/bin/pytest tests/sachima_supervisor/test_p5_runtime_adapter.py -q
+      - /home/ecs-user/.local/bin/pytest tests/sachima_supervisor/test_p5_runtime_adapter.py tests/sachima_supervisor/test_ai_flow_orchestration.py tests/sachima_supervisor/test_ai_flow_store.py -q
+      - /home/ecs-user/.local/bin/pytest tests/sachima_supervisor -q
+      - uv run --extra dev ruff check sachima_supervisor/p5_runtime_adapter.py tests/sachima_supervisor/test_p5_runtime_adapter.py sachima_supervisor/__init__.py
+      - python3 -m compileall -q sachima_supervisor tests/sachima_supervisor
+      - git diff --check
+      - custom forbidden runtime surface, secret, and stale-status scans
+      - codegraph sync/status
+    results:
+      sync_roadmap_status: PASS
+      durable_focused: 9 passed, 25 deselected in 0.14s
+      p5_adapter_focused: 34 passed in 0.20s
+      compatibility_focused: 70 passed in 0.31s
+      supervisor_tests: 661 passed in 3.00s
+      ruff: All checks passed
+      compileall: PASS
+      git_diff_check: PASS
+      forbidden_runtime_surface_scan: PASS
+      secret_scan: PASS
+      stale_status_scan: PASS
+      codegraph: index up to date
+  codex_round_1_blockers_fixed:
+    status: fixed_before_pr
+    regression_command: /home/ecs-user/.local/bin/pytest tests/sachima_supervisor/test_p5_runtime_adapter.py -q -k 'write_failure or duplicate_step_records or dirty_history_event'
+    regression_result: 3 passed, 30 deselected in 0.11s
+    fixed_classes:
+      - durable write failure now fails closed before launch
+      - duplicate run_id/step_id resident records now invalidate store load
+      - dirty history events now fail closed
+      - roadmap next-allowed-request stale branch wording fixed
+  codex_round_2_blockers_fixed:
+    status: fixed_before_pr
+    regression_command: /home/ecs-user/.local/bin/pytest tests/sachima_supervisor/test_p5_runtime_adapter.py -q -k 'same_step_new_idempotency'
+    regression_result: 1 passed, 33 deselected in 0.11s
+    fixed_classes:
+      - restored same step with different idempotency key now fails closed before launch
+      - duplicate step records are not written by same-step/new-idempotency retry after restart
+  codex_blocker_review:
+    status: passed_before_pr
+    verdict: PASS
+    blockers: none
+    provenance: Codex repo-aware read-only final re-review on local candidate diff; reran P5 adapter tests, full supervisor suite, ruff, diff/status checks, and forbidden-source scan.
+  pr_ci:
+    status: pending_pr_creation
+next_gate_after_merge: >-
+  A separate future gate for any external durable backend, real runtime/Worker
+  lifecycle, P6 controlled AI FLOW execution, or live delivery. Those remain
+  unapproved by this local/offline restart-recovery slice.
