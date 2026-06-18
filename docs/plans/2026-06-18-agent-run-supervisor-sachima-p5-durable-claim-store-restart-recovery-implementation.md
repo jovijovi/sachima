@@ -2,7 +2,7 @@
 
 Date: 2026-06-18
 Branch: `feat/p5-durable-claim-store-restart-recovery`
-Status: local candidate; PR not opened yet.
+Status: PR #150 open (https://github.com/jovijovi/sachima/pull/150); live GitHub PR metadata, checks, and mergeability are authoritative.
 
 ## Scope
 
