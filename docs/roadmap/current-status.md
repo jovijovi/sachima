@@ -11,9 +11,20 @@
 ```json
 {
   "base_branch": "release/sachima",
-  "base_head": "6c11a40d4de3e66981c3ff27905c1785b1709e0a",
+  "base_head": "eaf4e51ede1e44f4fe1af32807b5f787991b757c",
   "base_head_note": "latest first-parent base commit excluding machine status-sync self-commits",
   "latest_merged_prs": [
+    {
+      "baseRefName": "release/sachima",
+      "headRefName": "docs/p5-runtime-adapter-implementation-prep",
+      "mergeCommit": {
+        "oid": "eaf4e51ede1e44f4fe1af32807b5f787991b757c"
+      },
+      "mergedAt": "2026-06-18T05:02:07Z",
+      "number": 148,
+      "title": "docs: prepare P5 runtime adapter implementation scope",
+      "url": "https://github.com/jovijovi/sachima/pull/148"
+    },
     {
       "baseRefName": "release/sachima",
       "headRefName": "docs/p5-durable-runtime-readiness",
@@ -57,17 +68,6 @@
       "number": 144,
       "title": "docs: prepare WP4 implementation gate",
       "url": "https://github.com/jovijovi/sachima/pull/144"
-    },
-    {
-      "baseRefName": "release/sachima",
-      "headRefName": "docs/wp4-merge-status-cleanup",
-      "mergeCommit": {
-        "oid": "6c045d26f936cf048dcf427f3e3a753c77c8147a"
-      },
-      "mergedAt": "2026-06-17T05:21:19Z",
-      "number": 143,
-      "title": "docs: sync WP4 design merge status",
-      "url": "https://github.com/jovijovi/sachima/pull/143"
     }
   ],
   "open_pr_count": 0,
