@@ -479,7 +479,7 @@ WP3b (PR #140) merged a bounded cancellation bridge with verified deterministic 
 - [ ] WP3b active-run cancellation WATCH preserved and not overclaimed.
 - [ ] Scoring rubric, kill criteria, and implementation gates present.
 - [ ] Explicit non-approvals include implementation, runtime start, Worker start, controlled AI FLOW execution, write roles, Gateway-owned/auto-started lifecycle, external Temporal/Worker lifecycle, live, Feishu, production config, and real delivery.
-- [ ] Manifest is YAML-parseable with the required keys, false booleans for implementation/runtime start/controlled AI FLOW/Gateway/Feishu/live/production config/real delivery, `codex_primary_review` records the final review result once run, PR number/URL are set once opened, and `merge_commit`/`merged_at` remain null until merge metadata exists.
+- [ ] Manifest is YAML-parseable with the required keys, false booleans for implementation/runtime start/controlled AI FLOW/Gateway/Feishu/live/production config/real delivery, `codex_primary_review` records PASS / BLOCKERS None, and PR #147 number/URL/head SHA/merge commit/mergedAt are recorded from live GitHub truth.
 - [ ] Changed-file allowlist is docs/status only (3 new docs + this roadmap update).
 - [ ] Secret-shaped / no-leak scan and forbidden implementation-surface scan pass.
 - [ ] Codex primary blocker review returns `BLOCKERS: None`.
@@ -603,7 +603,7 @@ This PR is docs/status only. The gates are documentation and governance gates; n
 - [ ] Approved design-scope token quoted verbatim; future implementation token + external Temporal/Worker lifecycle token quoted and marked not granted.
 - [ ] Goal trace complete; ownership decision excludes the Gateway as runtime owner/auto-starter.
 - [ ] Control surface, durable records, cross-process claim store, no-throw boundary, failure taxonomy, no-leak rules (incl. serialized history scan), probes, WP3b WATCH, acceptance checklist, scoring rubric, kill criteria, and implementation gates all present.
-- [ ] Manifest is YAML-parseable; false booleans for implementation/runtime start/controlled AI FLOW/Gateway/Feishu/live/production config/real delivery; `codex_primary_review` records the final review result once run; `pr_number`/`pr_url`/`merge_commit`/`merged_at` remain null until PR transport / merge metadata exists.
+- [ ] Manifest is YAML-parseable; false booleans for implementation/runtime start/controlled AI FLOW/Gateway/Feishu/live/production config/real delivery; `codex_primary_review` records PASS / BLOCKERS None; PR #147 number/URL/head SHA/merge commit/mergedAt are recorded from live GitHub truth.
 - [ ] Changed-file allowlist is docs/status only.
 - [ ] Secret-shaped / no-leak scan and forbidden implementation-surface scan pass.
 - [ ] Codex primary blocker review returns `BLOCKERS: None`.
