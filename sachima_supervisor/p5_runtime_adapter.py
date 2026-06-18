@@ -287,7 +287,37 @@ def _outcome_from_projection(value: Any) -> StepExecutionOutcome | None:
     )
 
 
+def _record_integrity_digest(
+    *,
+    idempotency_key: str,
+    run_id: str,
+    step_id: str,
+    fingerprint: str,
+    state: str,
+    snapshot_version: int,
+    outcome_projection: dict[str, Any],
+) -> str:
+    """Canonical record-integrity digest binding the outcome to its record.
+
+    Computed over the sanitized record payload so a persisted outcome cannot be
+    forged independently of the record fingerprint across a restart/replay.
+    """
+
+    return _digest_ref(
+        {
+            "idempotency_key": idempotency_key,
+            "run_id": run_id,
+            "step_id": step_id,
+            "fingerprint": fingerprint,
+            "state": state,
+            "snapshot_version": snapshot_version,
+            "outcome": outcome_projection,
+        }
+    )
+
+
 def _record_projection(record: _Record) -> dict[str, Any]:
+    outcome_projection = _outcome_projection(record.outcome)
     return {
         "idempotency_key": record.idempotency_key,
         "run_id": record.run_id,
@@ -295,7 +325,16 @@ def _record_projection(record: _Record) -> dict[str, Any]:
         "fingerprint": record.fingerprint,
         "state": record.state,
         "snapshot_version": record.snapshot_version,
-        "outcome": _outcome_projection(record.outcome),
+        "outcome": outcome_projection,
+        "record_digest": _record_integrity_digest(
+            idempotency_key=record.idempotency_key,
+            run_id=record.run_id,
+            step_id=record.step_id,
+            fingerprint=record.fingerprint,
+            state=record.state,
+            snapshot_version=record.snapshot_version,
+            outcome_projection=outcome_projection,
+        ),
     }
 
 
@@ -324,6 +363,20 @@ def _record_from_projection(value: Any) -> _Record | None:
         return None
     outcome = _outcome_from_projection(projection.get("outcome"))
     if outcome is None:
+        return None
+    record_digest = projection.get("record_digest")
+    if type(record_digest) is not str:
+        return None
+    expected_digest = _record_integrity_digest(
+        idempotency_key=idempotency_key,
+        run_id=run_id,
+        step_id=step_id,
+        fingerprint=fingerprint,
+        state=state,
+        snapshot_version=snapshot_version,
+        outcome_projection=_outcome_projection(outcome),
+    )
+    if record_digest != expected_digest:
         return None
     return _Record(
         idempotency_key=idempotency_key,
