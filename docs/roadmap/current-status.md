@@ -11,9 +11,20 @@
 ```json
 {
   "base_branch": "release/sachima",
-  "base_head": "eaf4e51ede1e44f4fe1af32807b5f787991b757c",
+  "base_head": "58d1b9b87f6f68bd8099a2d7695edbacdaf6716e",
   "base_head_note": "latest first-parent base commit excluding machine status-sync self-commits",
   "latest_merged_prs": [
+    {
+      "baseRefName": "release/sachima",
+      "headRefName": "feat/p5-local-offline-runtime-adapter",
+      "mergeCommit": {
+        "oid": "58d1b9b87f6f68bd8099a2d7695edbacdaf6716e"
+      },
+      "mergedAt": "2026-06-18T08:11:31Z",
+      "number": 149,
+      "title": "feat: add P5 local/offline runtime adapter",
+      "url": "https://github.com/jovijovi/sachima/pull/149"
+    },
     {
       "baseRefName": "release/sachima",
       "headRefName": "docs/p5-runtime-adapter-implementation-prep",
@@ -57,31 +68,10 @@
       "number": 145,
       "title": "feat: implement WP4 controlled AI FLOW slice",
       "url": "https://github.com/jovijovi/sachima/pull/145"
-    },
-    {
-      "baseRefName": "release/sachima",
-      "headRefName": "docs/wp4-controlled-ai-flow-implementation-gate",
-      "mergeCommit": {
-        "oid": "a30d365e5fadd791361abb3d2c631c5405ae3228"
-      },
-      "mergedAt": "2026-06-17T06:12:25Z",
-      "number": 144,
-      "title": "docs: prepare WP4 implementation gate",
-      "url": "https://github.com/jovijovi/sachima/pull/144"
     }
   ],
-  "open_pr_count": 1,
-  "open_prs": [
-    {
-      "baseRefName": "release/sachima",
-      "headRefName": "feat/p5-local-offline-runtime-adapter",
-      "isDraft": false,
-      "mergeStateStatus": "CLEAN",
-      "number": 149,
-      "title": "feat: add P5 local/offline runtime adapter",
-      "url": "https://github.com/jovijovi/sachima/pull/149"
-    }
-  ],
+  "open_pr_count": 0,
+  "open_prs": [],
   "repository": "jovijovi/sachima",
   "scope_note": "machine dynamic status only; approvals and phase meaning remain human-authored outside this block"
 }
