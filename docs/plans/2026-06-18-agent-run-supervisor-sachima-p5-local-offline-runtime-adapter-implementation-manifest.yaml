@@ -1,13 +1,13 @@
 schema_version: sachima.plan_manifest.v1
 title: agent-run-supervisor x Sachima P5 local/offline runtime adapter implementation
 created_at: '2026-06-18T13:30:34+08:00'
-status: candidate_implementation_pr_pending
+status: open_pr_pending_ci
 repository: jovijovi/sachima
 base_branch: release/sachima
 branch: feat/p5-local-offline-runtime-adapter
 pr:
-  number: null
-  url: null
+  number: 149
+  url: https://github.com/jovijovi/sachima/pull/149
   head_sha: null
   merge_commit: null
   merged_at: null
@@ -99,7 +99,7 @@ evidence:
     blockers: none
     provenance: Codex repo-aware read-only blocker re-review on current live diff; did not run tests or live/network surfaces.
   pr_ci:
-    status: pending_until_pr_opened
+    status: pending_live_github_checks
 next_gate_after_merge: >-
   A separately approved P5 durable-claim-store / restart-recovery local/offline
   gate. P6 controlled AI FLOW execution remains blocked.

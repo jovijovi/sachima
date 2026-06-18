@@ -2,7 +2,7 @@
 
 Date: 2026-06-18
 Branch: `feat/p5-local-offline-runtime-adapter`
-Status: candidate implementation branch; PR not opened yet.
+Status: PR #149 open; live GitHub PR metadata, checks, and mergeability are authoritative.
 
 ## Scope
 

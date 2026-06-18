@@ -2,7 +2,7 @@
 
 Date: 2026-06-18
 Branch: `feat/p5-local-offline-runtime-adapter`
-Status: candidate implementation branch; PR not opened yet.
+Status: PR #149 open; live GitHub PR metadata, checks, and mergeability are authoritative.
 
 ## User approval
 
@@ -130,8 +130,8 @@ codegraph sync/status
 # index up to date
 ```
 
-## Pending before PR
+## PR metadata
 
 - Codex repo-aware read-only blocker re-review returned `VERDICT: PASS` / `BLOCKERS: None` on the current live diff after the malformed resolved-input no-throw fix.
-- Update PR metadata only after opening PR.
+- PR #149 is open at `https://github.com/jovijovi/sachima/pull/149`.
 - Wait PR CI and send a head-SHA-bound Feishu approval card if clean.
