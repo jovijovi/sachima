@@ -242,15 +242,15 @@ verification_required_before_pr:
 
 candidate_state:
   design_content_finalized: true
-  commit: "29e07cfef97bc653a55ad845f16f158b50a26c2a"
+  initial_design_commit: "29e07cfef97bc653a55ad845f16f158b50a26c2a"
+  pr_open_head_sha: "29e07cfef97bc653a55ad845f16f158b50a26c2a"
   pushed_to_sachima_remote: true
   pr_opened: true
   pr_number: 147
   pr_url: "https://github.com/jovijovi/sachima/pull/147"
-  head_sha_at_pr_open: "29e07cfef97bc653a55ad845f16f158b50a26c2a"
+  ci_validation_source: "live GitHub PR checks on the latest pushed head; this static manifest does not freeze final CI state"
   merge_commit: null
   merged_at: null
-  ci_validated: false
   codex_primary_review: "PASS / BLOCKERS: None"
 
 explicit_non_approvals:

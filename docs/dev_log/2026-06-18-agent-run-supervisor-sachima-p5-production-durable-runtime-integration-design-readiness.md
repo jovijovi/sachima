@@ -104,7 +104,7 @@ generated_status_json_block_edited: false (tools/sync_roadmap_status.py --check:
 git_diff_check: ok
 manifest_yaml_parse: ok
 manifest_false_booleans_present: implementation/runtime_start/worker_start/controlled_ai_flow/gateway/feishu/live/production_config/real_delivery = false
-manifest_candidate_fields: codex_primary_review: "PASS / BLOCKERS: None"; pr_number: 147; pr_url: https://github.com/jovijovi/sachima/pull/147; merge_commit: null; merged_at: null; ci_validated: false
+manifest_candidate_fields: codex_primary_review: "PASS / BLOCKERS: None"; pr_number: 147; pr_url: https://github.com/jovijovi/sachima/pull/147; merge_commit: null; merged_at: null; ci_validation_source: live GitHub PR checks on the latest pushed head
 status_markers_present: true
 naming_clarification_present: true (P5 durable runtime != remaining-goals WP5 write roles)
 wp3b_active_run_cancellation_watch_preserved: true
