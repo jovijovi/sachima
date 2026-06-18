@@ -11,9 +11,20 @@
 ```json
 {
   "base_branch": "release/sachima",
-  "base_head": "41e645189aa4de889c95b97a61a6d4fbb76783cd",
+  "base_head": "6c11a40d4de3e66981c3ff27905c1785b1709e0a",
   "base_head_note": "latest first-parent base commit excluding machine status-sync self-commits",
   "latest_merged_prs": [
+    {
+      "baseRefName": "release/sachima",
+      "headRefName": "docs/p5-durable-runtime-readiness",
+      "mergeCommit": {
+        "oid": "6c11a40d4de3e66981c3ff27905c1785b1709e0a"
+      },
+      "mergedAt": "2026-06-18T03:36:51Z",
+      "number": 147,
+      "title": "docs: prepare P5 durable runtime readiness",
+      "url": "https://github.com/jovijovi/sachima/pull/147"
+    },
     {
       "baseRefName": "release/sachima",
       "headRefName": "docs/wp4-pr145-post-merge-status-sync",
@@ -57,31 +68,10 @@
       "number": 143,
       "title": "docs: sync WP4 design merge status",
       "url": "https://github.com/jovijovi/sachima/pull/143"
-    },
-    {
-      "baseRefName": "release/sachima",
-      "headRefName": "docs/ars-wp4-controlled-ai-flow-design",
-      "mergeCommit": {
-        "oid": "bb5e5d9bf707fde7934939cc473544511bd65ffd"
-      },
-      "mergedAt": "2026-06-17T03:57:14Z",
-      "number": 142,
-      "title": "docs: design WP4 controlled AI FLOW orchestration",
-      "url": "https://github.com/jovijovi/sachima/pull/142"
     }
   ],
-  "open_pr_count": 1,
-  "open_prs": [
-    {
-      "baseRefName": "release/sachima",
-      "headRefName": "docs/p5-durable-runtime-readiness",
-      "isDraft": false,
-      "mergeStateStatus": "CLEAN",
-      "number": 147,
-      "title": "docs: prepare P5 durable runtime readiness",
-      "url": "https://github.com/jovijovi/sachima/pull/147"
-    }
-  ],
+  "open_pr_count": 0,
+  "open_prs": [],
   "repository": "jovijovi/sachima",
   "scope_note": "machine dynamic status only; approvals and phase meaning remain human-authored outside this block"
 }
