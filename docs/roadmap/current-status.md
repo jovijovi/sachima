@@ -11,9 +11,20 @@
 ```json
 {
   "base_branch": "release/sachima",
-  "base_head": "c4ce77ce52020015f37710025d601a9ecf021a13",
+  "base_head": "41e645189aa4de889c95b97a61a6d4fbb76783cd",
   "base_head_note": "latest first-parent base commit excluding machine status-sync self-commits",
   "latest_merged_prs": [
+    {
+      "baseRefName": "release/sachima",
+      "headRefName": "docs/wp4-pr145-post-merge-status-sync",
+      "mergeCommit": {
+        "oid": "41e645189aa4de889c95b97a61a6d4fbb76783cd"
+      },
+      "mergedAt": "2026-06-18T01:32:44Z",
+      "number": 146,
+      "title": "docs: sync WP4 implementation merge status",
+      "url": "https://github.com/jovijovi/sachima/pull/146"
+    },
     {
       "baseRefName": "release/sachima",
       "headRefName": "feat/wp4-controlled-ai-flow-local-offline-implementation",
@@ -57,17 +68,6 @@
       "number": 142,
       "title": "docs: design WP4 controlled AI FLOW orchestration",
       "url": "https://github.com/jovijovi/sachima/pull/142"
-    },
-    {
-      "baseRefName": "release/sachima",
-      "headRefName": "fix/feishu-pr-approval-failure-notify",
-      "mergeCommit": {
-        "oid": "147cd4c726b6e446e5d1b791bca627c7763a8a34"
-      },
-      "mergedAt": "2026-06-16T02:10:03Z",
-      "number": 141,
-      "title": "fix: preserve Feishu PR approval failure notifications",
-      "url": "https://github.com/jovijovi/sachima/pull/141"
     }
   ],
   "open_pr_count": 0,
