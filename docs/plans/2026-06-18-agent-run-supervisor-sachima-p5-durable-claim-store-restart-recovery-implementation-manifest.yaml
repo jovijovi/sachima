@@ -1,17 +1,17 @@
 schema_version: sachima.plan_manifest.v1
 title: agent-run-supervisor x Sachima P5 durable claim-store restart-recovery local/offline implementation
 created_at: '2026-06-18T17:08:20+08:00'
-status: open_pr_pending_ci
+status: open_pr_live_github_authoritative
 repository: jovijovi/sachima
 base_branch: release/sachima
 branch: feat/p5-durable-claim-store-restart-recovery
 pr:
   number: 150
   url: https://github.com/jovijovi/sachima/pull/150
-  head_sha: b6706c92885f1520c9978a74faff1fcc15d5143d
+  head_sha: null
   merge_commit: null
   merged_at: null
-  static_pr_metadata_policy: live GitHub PR metadata is authoritative after PR creation; update this manifest before approval-ready claims.
+  static_pr_metadata_policy: live GitHub PR metadata, headRefOid, checks, and mergeability are authoritative while the PR is open; do not freeze branch head SHA in this manifest.
 prerequisite:
   p5_runtime_adapter_pr:
     number: 149

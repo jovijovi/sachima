@@ -133,5 +133,5 @@ codegraph sync/status
 ## PR metadata
 
 - Codex repo-aware read-only blocker re-review returned `VERDICT: PASS` / `BLOCKERS: None` on the current live diff after the malformed resolved-input no-throw fix.
-- PR #149 is open at `https://github.com/jovijovi/sachima/pull/149`.
-- Wait PR CI and send a head-SHA-bound Feishu approval card if clean.
+- PR #149 merged at `https://github.com/jovijovi/sachima/pull/149` (`58d1b9b87f6f68bd8099a2d7695edbacdaf6716e`, mergedAt 2026-06-18T08:11:31Z).
+- PR #149 CI/review/merge completed; the follow-on P5 durable claim-store / restart-recovery gate is tracked separately in PR #150.
