@@ -2,11 +2,12 @@ phase_id: "agent-run-supervisor-sachima-p5-production-durable-runtime-integratio
 roadmap_phase: "P5"
 roadmap_phase_name: "Production durable runtime integration"
 level: "level-3-design-readiness"
-status: "open-pr-candidate"
+status: "merged"
 status_meaning: >-
-  Docs-only P5 production durable runtime integration design / readiness
-  candidate on branch docs/p5-durable-runtime-readiness; PR #147 is open and
-  pending merge decision. Records the caller-owned control surface, durable
+  Docs-only P5 production durable runtime integration design / readiness packet
+  on branch docs/p5-durable-runtime-readiness; merged in PR #147 (merge commit
+  6c11a40d4de3e66981c3ff27905c1785b1709e0a, mergedAt 2026-06-18T03:36:51Z).
+  Records the caller-owned control surface, durable
   records, the cross-process transactional claim store requirement, the
   no-throw boundary and failure taxonomy, the runtime-history no-leak rules and
   scans, the required probes, and the acceptance/scoring/kill/implementation
@@ -249,8 +250,9 @@ candidate_state:
   pr_number: 147
   pr_url: "https://github.com/jovijovi/sachima/pull/147"
   ci_validation_source: "live GitHub PR checks on the latest pushed head; this static manifest does not freeze final CI state"
-  merge_commit: null
-  merged_at: null
+  merged_head_sha: "faaaf3391099443d08478906688dd3ea145ce1d4"
+  merge_commit: "6c11a40d4de3e66981c3ff27905c1785b1709e0a"
+  merged_at: "2026-06-18T03:36:51Z"
   codex_primary_review: "PASS / BLOCKERS: None"
 
 explicit_non_approvals:
