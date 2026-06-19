@@ -11,9 +11,20 @@
 ```json
 {
   "base_branch": "release/sachima",
-  "base_head": "58d1b9b87f6f68bd8099a2d7695edbacdaf6716e",
+  "base_head": "21f8c1647ac9e6007183cc1f458af38bcc57fa7e",
   "base_head_note": "latest first-parent base commit excluding machine status-sync self-commits",
   "latest_merged_prs": [
+    {
+      "baseRefName": "release/sachima",
+      "headRefName": "feat/p5-durable-claim-store-restart-recovery",
+      "mergeCommit": {
+        "oid": "21f8c1647ac9e6007183cc1f458af38bcc57fa7e"
+      },
+      "mergedAt": "2026-06-19T01:35:47Z",
+      "number": 150,
+      "title": "feat: add P5 durable claim store recovery",
+      "url": "https://github.com/jovijovi/sachima/pull/150"
+    },
     {
       "baseRefName": "release/sachima",
       "headRefName": "feat/p5-local-offline-runtime-adapter",
@@ -57,31 +68,10 @@
       "number": 146,
       "title": "docs: sync WP4 implementation merge status",
       "url": "https://github.com/jovijovi/sachima/pull/146"
-    },
-    {
-      "baseRefName": "release/sachima",
-      "headRefName": "feat/wp4-controlled-ai-flow-local-offline-implementation",
-      "mergeCommit": {
-        "oid": "c4ce77ce52020015f37710025d601a9ecf021a13"
-      },
-      "mergedAt": "2026-06-17T13:05:36Z",
-      "number": 145,
-      "title": "feat: implement WP4 controlled AI FLOW slice",
-      "url": "https://github.com/jovijovi/sachima/pull/145"
     }
   ],
-  "open_pr_count": 1,
-  "open_prs": [
-    {
-      "baseRefName": "release/sachima",
-      "headRefName": "feat/p5-durable-claim-store-restart-recovery",
-      "isDraft": false,
-      "mergeStateStatus": "CLEAN",
-      "number": 150,
-      "title": "feat: add P5 durable claim store recovery",
-      "url": "https://github.com/jovijovi/sachima/pull/150"
-    }
-  ],
+  "open_pr_count": 0,
+  "open_prs": [],
   "repository": "jovijovi/sachima",
   "scope_note": "machine dynamic status only; approvals and phase meaning remain human-authored outside this block"
 }
