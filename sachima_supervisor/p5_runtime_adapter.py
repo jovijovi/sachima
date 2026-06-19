@@ -13,6 +13,7 @@ import re
 import threading
 from collections.abc import Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from .ai_flow_executor import StepExecutionOutcome
@@ -31,6 +32,8 @@ P5_RUNTIME_ADAPTER_IMPLEMENTATION_APPROVAL_TOKEN = (
 
 _HISTORY_TYPE = "sachima.supervisor.p5_runtime_adapter_history.v1"
 _SNAPSHOT_TYPE = "sachima.supervisor.p5_runtime_adapter_snapshot.v1"
+_CLAIM_STORE_TYPE = "sachima.supervisor.p5_runtime_adapter_claim_store.v1"
+_CLAIM_STORE_SCHEMA_VERSION = 1
 
 _REF_RE = re.compile(r"^[a-z][a-z0-9_.:-]{0,127}$")
 _SHA256_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -54,6 +57,11 @@ _OUTPUT_CONTRACT_BY_STEP: dict[str, str] = {
     "programmer_candidate": "implementation_candidate_analysis",
     "reviewer": "blocker_review",
 }
+_ROLE_KEY_BY_STEP: dict[str, str] = {
+    "architect": "sachima.claude.read_only_reviewer",
+    "programmer_candidate": "sachima.claude.read_only_reviewer",
+    "reviewer": "sachima.codex.primary_reviewer",
+}
 _FINGERPRINT_FIELDS: tuple[str, ...] = (
     "artifact_id",
     "producer_step_id",
@@ -67,7 +75,11 @@ _JSON_SAFE_PRIMITIVE_TYPES = (str, int, bool, type(None))
 
 @dataclass(frozen=True)
 class _Record:
+    idempotency_key: str
+    run_id: str
+    step_id: str
     fingerprint: str
+    fingerprint_payload: dict[str, Any]
     outcome: StepExecutionOutcome
     state: str
     snapshot_version: int
@@ -176,16 +188,16 @@ def _normalize_attempt_index(value: Any) -> int | None:
     return value
 
 
-def _request_fingerprint(
+def _request_fingerprint_payload(
     request: Any,
     role_binding: Any,
     resolved_inputs: tuple[Mapping[str, Any], ...],
     *,
     input_artifact_digests: tuple[str, ...],
     attempt_index: int,
-) -> str:
+) -> dict[str, Any]:
     safe_inputs = [{field: item.get(field) for field in _FINGERPRINT_FIELDS} for item in resolved_inputs]
-    payload = {
+    return {
         "run_id": str(getattr(request, "run_id", None)),
         "step_id": str(getattr(request, "step_id", None)),
         "attempt_index": attempt_index,
@@ -196,7 +208,25 @@ def _request_fingerprint(
         "role_key": str(getattr(role_binding, "role_key", None)),
         "resolved_inputs": safe_inputs,
     }
-    return _digest_hex(payload)
+
+
+def _request_fingerprint(
+    request: Any,
+    role_binding: Any,
+    resolved_inputs: tuple[Mapping[str, Any], ...],
+    *,
+    input_artifact_digests: tuple[str, ...],
+    attempt_index: int,
+) -> str:
+    return _digest_hex(
+        _request_fingerprint_payload(
+            request,
+            role_binding,
+            resolved_inputs,
+            input_artifact_digests=input_artifact_digests,
+            attempt_index=attempt_index,
+        )
+    )
 
 
 def _failure(code: str, *, retryable: bool = False, ambiguous: bool = False) -> StepExecutionOutcome:
@@ -210,10 +240,478 @@ def _failure(code: str, *, retryable: bool = False, ambiguous: bool = False) -> 
     )
 
 
+def _outcome_projection(outcome: StepExecutionOutcome) -> dict[str, Any]:
+    return {
+        "ok": outcome.ok is True,
+        "step_status": outcome.step_status,
+        "artifact_refs": [dict(item) for item in outcome.artifact_refs],
+        "evidence_ref": outcome.evidence_ref,
+        "evidence_digest": outcome.evidence_digest,
+        "error_code": outcome.error_code,
+        "retryable": outcome.retryable is True,
+        "interrupted": outcome.interrupted is True,
+        "cleanup_verified": outcome.cleanup_verified is True,
+        "ambiguous": outcome.ambiguous is True,
+    }
+
+
+def _outcome_from_projection(value: Any) -> StepExecutionOutcome | None:
+    if not isinstance(value, Mapping):
+        return None
+    try:
+        projection = dict(value)
+    except Exception:
+        return None
+    ok = projection.get("ok")
+    if type(ok) is not bool:
+        return None
+    step_status = projection.get("step_status")
+    evidence_ref = projection.get("evidence_ref")
+    evidence_digest = projection.get("evidence_digest")
+    error_code = projection.get("error_code")
+    for optional_text in (step_status, evidence_ref, evidence_digest, error_code):
+        if optional_text is not None and type(optional_text) is not str:
+            return None
+    refs = projection.get("artifact_refs")
+    if not isinstance(refs, list):
+        return None
+    artifact_refs: list[Mapping[str, Any]] = []
+    for item in refs:
+        if not isinstance(item, Mapping):
+            return None
+        try:
+            ref = dict(item)
+        except Exception:
+            return None
+        if any(type(key) is not str for key in ref):
+            return None
+        if any(not _is_json_safe_primitive(item_value) for item_value in ref.values()):
+            return None
+        if _contains_unsafe_material(ref):
+            return None
+        artifact_refs.append(ref)
+    retryable = projection.get("retryable", False)
+    interrupted = projection.get("interrupted", False)
+    cleanup_verified = projection.get("cleanup_verified", False)
+    ambiguous = projection.get("ambiguous", False)
+    for boolean in (retryable, interrupted, cleanup_verified, ambiguous):
+        if type(boolean) is not bool:
+            return None
+    return StepExecutionOutcome(
+        ok=ok,
+        step_status=step_status,
+        artifact_refs=tuple(artifact_refs),
+        evidence_ref=evidence_ref,
+        evidence_digest=evidence_digest,
+        error_code=error_code,
+        retryable=retryable,
+        interrupted=interrupted,
+        cleanup_verified=cleanup_verified,
+        ambiguous=ambiguous,
+    )
+
+
+def _fingerprint_payload_from_projection(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, Mapping):
+        return None
+    try:
+        payload = dict(value)
+    except Exception:
+        return None
+    expected_keys = {
+        "run_id",
+        "step_id",
+        "attempt_index",
+        "workflow_spec_digest",
+        "role_binding_digest",
+        "input_artifact_digests",
+        "idempotency_key",
+        "role_key",
+        "resolved_inputs",
+    }
+    if set(payload) != expected_keys:
+        return None
+    for key in (
+        "run_id",
+        "step_id",
+        "workflow_spec_digest",
+        "role_binding_digest",
+        "idempotency_key",
+        "role_key",
+    ):
+        if type(payload.get(key)) is not str:
+            return None
+    attempt_index = _normalize_attempt_index(payload.get("attempt_index"))
+    input_digests = _normalize_input_digests(payload.get("input_artifact_digests"))
+    resolved_inputs = _normalize_resolved_inputs(payload.get("resolved_inputs"))
+    if attempt_index is None or input_digests is None or resolved_inputs is None:
+        return None
+    canonical = {
+        "run_id": payload["run_id"],
+        "step_id": payload["step_id"],
+        "attempt_index": attempt_index,
+        "workflow_spec_digest": payload["workflow_spec_digest"],
+        "role_binding_digest": payload["role_binding_digest"],
+        "input_artifact_digests": list(input_digests),
+        "idempotency_key": payload["idempotency_key"],
+        "role_key": payload["role_key"],
+        "resolved_inputs": [
+            {field: item.get(field) for field in _FINGERPRINT_FIELDS}
+            for item in resolved_inputs
+        ],
+    }
+    if _contains_unsafe_material(canonical):
+        return None
+    return canonical
+
+
+def _record_integrity_digest(
+    *,
+    idempotency_key: str,
+    run_id: str,
+    step_id: str,
+    fingerprint: str,
+    fingerprint_payload: dict[str, Any],
+    state: str,
+    snapshot_version: int,
+    outcome_projection: dict[str, Any],
+) -> str:
+    """Canonical consistency digest for the persisted record projection.
+
+    This catches accidental or partial dirty writes. Replay safety also validates
+    the outcome against the deterministic fake adapter output for the record.
+    """
+
+    return _digest_ref(
+        {
+            "idempotency_key": idempotency_key,
+            "run_id": run_id,
+            "step_id": step_id,
+            "fingerprint": fingerprint,
+            "fingerprint_payload": fingerprint_payload,
+            "state": state,
+            "snapshot_version": snapshot_version,
+            "outcome": outcome_projection,
+        }
+    )
+
+
+def _expected_completed_outcome_projection_for_record(
+    *,
+    run_id: str,
+    step_id: str,
+    fingerprint: str,
+    fingerprint_payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Rebuild the only accepted completed fake outcome for a stored record."""
+
+    attempt_index = fingerprint_payload["attempt_index"]
+    role_key = _safe_ref(fingerprint_payload["role_key"])
+    kind = _safe_artifact_kind(step_id)
+    body_digest_payload = {
+        "run_id": run_id,
+        "step_id": step_id,
+        "attempt_index": attempt_index,
+        "role_key": role_key,
+        "kind": kind,
+    }
+    artifact_id = _safe_ref(f"p5_artifact_{run_id}_{step_id}_{attempt_index}")
+    expected_ref = {
+        "artifact_id": artifact_id,
+        "producer_step_id": step_id,
+        "content_digest": _digest_ref(body_digest_payload),
+        "artifact_kind": kind,
+        "byte_count": len(json.dumps(body_digest_payload, sort_keys=True).encode("utf-8")),
+        "created_at_ref": "created_at_ref_p5_local_0001",
+    }
+    return {
+        "ok": True,
+        "step_status": "completed",
+        "artifact_refs": [expected_ref],
+        "evidence_ref": f"p5_evidence_{_digest_hex({'run_id': run_id, 'step_id': step_id})[:16]}",
+        "evidence_digest": _digest_ref(
+            {"run_id": run_id, "step_id": step_id, "fingerprint": fingerprint}
+        ),
+        "error_code": None,
+        "retryable": False,
+        "interrupted": False,
+        "cleanup_verified": False,
+        "ambiguous": False,
+    }
+
+
+def _completed_outcome_matches_record(
+    *,
+    run_id: str,
+    step_id: str,
+    fingerprint: str,
+    fingerprint_payload: dict[str, Any],
+    outcome_projection: dict[str, Any],
+) -> bool:
+    expected = _expected_completed_outcome_projection_for_record(
+        run_id=run_id,
+        step_id=step_id,
+        fingerprint=fingerprint,
+        fingerprint_payload=fingerprint_payload,
+    )
+    return outcome_projection == expected
+
+
+def _record_projection(record: _Record) -> dict[str, Any]:
+    outcome_projection = _outcome_projection(record.outcome)
+    return {
+        "idempotency_key": record.idempotency_key,
+        "run_id": record.run_id,
+        "step_id": record.step_id,
+        "fingerprint": record.fingerprint,
+        "fingerprint_payload": record.fingerprint_payload,
+        "state": record.state,
+        "snapshot_version": record.snapshot_version,
+        "outcome": outcome_projection,
+        "record_digest": _record_integrity_digest(
+            idempotency_key=record.idempotency_key,
+            run_id=record.run_id,
+            step_id=record.step_id,
+            fingerprint=record.fingerprint,
+            fingerprint_payload=record.fingerprint_payload,
+            state=record.state,
+            snapshot_version=record.snapshot_version,
+            outcome_projection=outcome_projection,
+        ),
+    }
+
+
+def _record_from_projection(value: Any) -> _Record | None:
+    if not isinstance(value, Mapping):
+        return None
+    try:
+        projection = dict(value)
+    except Exception:
+        return None
+    if _contains_unsafe_material(projection):
+        return None
+    idempotency_key = projection.get("idempotency_key")
+    run_id = projection.get("run_id")
+    step_id = projection.get("step_id")
+    fingerprint = projection.get("fingerprint")
+    state = projection.get("state")
+    snapshot_version = projection.get("snapshot_version")
+    if not (
+        type(idempotency_key) is str
+        and type(run_id) is str
+        and type(step_id) is str
+        and type(fingerprint) is str
+        and type(state) is str
+    ):
+        return None
+    if not all(_REF_RE.fullmatch(item) for item in (idempotency_key, run_id, step_id, state)):
+        return None
+    if re.fullmatch(r"[0-9a-f]{64}", fingerprint) is None:
+        return None
+    fingerprint_payload = _fingerprint_payload_from_projection(projection.get("fingerprint_payload"))
+    if fingerprint_payload is None:
+        return None
+    if _safe_ref(fingerprint_payload["idempotency_key"]) != idempotency_key:
+        return None
+    if _safe_ref(fingerprint_payload["run_id"]) != run_id:
+        return None
+    if _safe_ref(fingerprint_payload["step_id"]) != step_id:
+        return None
+    if _digest_hex(fingerprint_payload) != fingerprint:
+        return None
+    if type(snapshot_version) is not int or snapshot_version < 0:
+        return None
+    outcome = _outcome_from_projection(projection.get("outcome"))
+    if outcome is None:
+        return None
+    outcome_projection = _outcome_projection(outcome)
+    if state != "completed" or not _completed_outcome_matches_record(
+        run_id=run_id,
+        step_id=step_id,
+        fingerprint=fingerprint,
+        fingerprint_payload=fingerprint_payload,
+        outcome_projection=outcome_projection,
+    ):
+        return None
+    record_digest = projection.get("record_digest")
+    if type(record_digest) is not str:
+        return None
+    expected_digest = _record_integrity_digest(
+        idempotency_key=idempotency_key,
+        run_id=run_id,
+        step_id=step_id,
+        fingerprint=fingerprint,
+        fingerprint_payload=fingerprint_payload,
+        state=state,
+        snapshot_version=snapshot_version,
+        outcome_projection=outcome_projection,
+    )
+    if record_digest != expected_digest:
+        return None
+    return _Record(
+        idempotency_key=idempotency_key,
+        run_id=run_id,
+        step_id=step_id,
+        fingerprint=fingerprint,
+        fingerprint_payload=fingerprint_payload,
+        outcome=outcome,
+        state=state,
+        snapshot_version=snapshot_version,
+    )
+
+
+def _history_event_from_projection(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, Mapping):
+        return None
+    try:
+        event = dict(value)
+    except Exception:
+        return None
+    if _contains_unsafe_material(event):
+        return None
+    event_name = event.get("event")
+    if type(event_name) is not str or _REF_RE.fullmatch(event_name) is None:
+        return None
+    if type(event.get("sequence")) is not int or event["sequence"] < 1:
+        return None
+    for key in ("run_id", "step_id", "error_code"):
+        item = event.get(key)
+        if item is not None and (type(item) is not str or _REF_RE.fullmatch(item) is None):
+            return None
+    return event
+
+
+class P5LocalOfflineDurableClaimStore:
+    """Explicit local JSON claim store for restart/replay tests.
+
+    The store is caller-supplied, local/offline, and never starts or connects to
+    an external runtime. It persists sanitized projections only.
+    """
+
+    def __init__(self, path: str | Path) -> None:
+        self.path = Path(path)
+        self.load_error_code: str | None = None
+        self._records_by_idem: dict[str, _Record] = {}
+        self._history: list[dict[str, Any]] = []
+        self._lock = threading.RLock()
+        self._load()
+
+    def restore(
+        self,
+    ) -> tuple[dict[str, _Record], dict[tuple[str, str], _Record], list[dict[str, Any]]]:
+        with self._lock:
+            records_by_idem = dict(self._records_by_idem)
+            records_by_step = {
+                (record.run_id, record.step_id): record
+                for record in records_by_idem.values()
+            }
+            history = [dict(event) for event in self._history]
+            return records_by_idem, records_by_step, history
+
+    def persist(
+        self,
+        records_by_idem: Mapping[str, _Record],
+        history: list[dict[str, Any]],
+    ) -> None:
+        with self._lock:
+            records = [_record_projection(record) for _, record in sorted(records_by_idem.items())]
+            projection = {
+                "type": _CLAIM_STORE_TYPE,
+                "schema_version": _CLAIM_STORE_SCHEMA_VERSION,
+                "records": records,
+                "history": [dict(event) for event in history],
+            }
+            if _contains_unsafe_material(projection):
+                self.load_error_code = "runtime_adapter_store_invalid"
+                return
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            tmp_path = self.path.with_name(f".{self.path.name}.tmp")
+            tmp_path.write_text(
+                json.dumps(projection, sort_keys=True, separators=(",", ":")),
+                encoding="utf-8",
+            )
+            tmp_path.replace(self.path)
+            self._records_by_idem = dict(records_by_idem)
+            self._history = [dict(event) for event in history]
+
+    def serialized_bytes(self) -> bytes:
+        return json.dumps(
+            self._projection(), sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+
+    def _projection(self) -> dict[str, Any]:
+        return {
+            "type": _CLAIM_STORE_TYPE,
+            "schema_version": _CLAIM_STORE_SCHEMA_VERSION,
+            "load_error_code": self.load_error_code,
+            "records": [_record_projection(record) for record in self._records_by_idem.values()],
+            "history": [dict(event) for event in self._history],
+        }
+
+    def _load(self) -> None:
+        if not self.path.exists():
+            return
+        try:
+            raw = json.loads(self.path.read_text(encoding="utf-8"))
+        except Exception:
+            self.load_error_code = "runtime_adapter_store_invalid"
+            return
+        if not isinstance(raw, Mapping):
+            self.load_error_code = "runtime_adapter_store_invalid"
+            return
+        try:
+            projection = dict(raw)
+        except Exception:
+            self.load_error_code = "runtime_adapter_store_invalid"
+            return
+        if projection.get("type") != _CLAIM_STORE_TYPE:
+            self.load_error_code = "runtime_adapter_store_invalid"
+            return
+        if projection.get("schema_version") != _CLAIM_STORE_SCHEMA_VERSION:
+            self.load_error_code = "runtime_adapter_store_invalid"
+            return
+        if _contains_unsafe_material(projection):
+            self.load_error_code = "runtime_adapter_store_invalid"
+            return
+        records_raw = projection.get("records")
+        history_raw = projection.get("history")
+        if not isinstance(records_raw, list) or not isinstance(history_raw, list):
+            self.load_error_code = "runtime_adapter_store_invalid"
+            return
+        records_by_idem: dict[str, _Record] = {}
+        records_by_step: set[tuple[str, str]] = set()
+        for item in records_raw:
+            record = _record_from_projection(item)
+            if record is None:
+                self.load_error_code = "runtime_adapter_store_invalid"
+                return
+            step_key = (record.run_id, record.step_id)
+            if record.idempotency_key in records_by_idem or step_key in records_by_step:
+                self.load_error_code = "runtime_adapter_store_invalid"
+                return
+            records_by_idem[record.idempotency_key] = record
+            records_by_step.add(step_key)
+        history: list[dict[str, Any]] = []
+        for item in history_raw:
+            event = _history_event_from_projection(item)
+            if event is None:
+                self.load_error_code = "runtime_adapter_store_invalid"
+                return
+            history.append(event)
+        self._records_by_idem = records_by_idem
+        self._history = history
+
+
 class P5LocalOfflineRuntimeAdapter:
     """Deterministic fake StepExecutor with sanitized local control views."""
 
-    def __init__(self, *, approval_token: str = "", enabled: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        approval_token: str = "",
+        enabled: bool = False,
+        claim_store: P5LocalOfflineDurableClaimStore | None = None,
+    ) -> None:
         self.approval_token = approval_token
         self.enabled = enabled
         self.launch_count = 0
@@ -221,6 +719,12 @@ class P5LocalOfflineRuntimeAdapter:
         self._records_by_step: dict[tuple[str, str], _Record] = {}
         self._history: list[dict[str, Any]] = []
         self._lock = threading.RLock()
+        self._claim_store = claim_store
+        self._store_error_code = (
+            claim_store.load_error_code if claim_store is not None else None
+        )
+        if claim_store is not None and self._store_error_code is None:
+            self._records_by_idem, self._records_by_step, self._history = claim_store.restore()
 
     def execute(
         self,
@@ -238,6 +742,9 @@ class P5LocalOfflineRuntimeAdapter:
             if self.approval_token != P5_RUNTIME_ADAPTER_IMPLEMENTATION_APPROVAL_TOKEN:
                 self._record_event("execute_rejected", error_code="runtime_adapter_approval_mismatch")
                 return _failure("runtime_adapter_approval_mismatch")
+            if self._store_error_code is not None:
+                self._record_event("execute_rejected", error_code=self._store_error_code)
+                return _failure(self._store_error_code)
             normalized_inputs = _normalize_resolved_inputs(resolved_inputs)
             input_digests = _normalize_input_digests(
                 getattr(request, "input_artifact_digests", ())
@@ -262,13 +769,14 @@ class P5LocalOfflineRuntimeAdapter:
             idem = _safe_ref(str(getattr(request, "idempotency_key", "missing_idempotency_key")))
             run_id = _safe_ref(str(getattr(request, "run_id", "missing_run")))
             step_id = _safe_ref(str(getattr(request, "step_id", "missing_step")))
-            fingerprint = _request_fingerprint(
+            fingerprint_payload = _request_fingerprint_payload(
                 request,
                 role_binding,
                 normalized_inputs,
                 input_artifact_digests=input_digests,
                 attempt_index=attempt_index,
             )
+            fingerprint = _digest_hex(fingerprint_payload)
             existing = self._records_by_idem.get(idem)
             if existing is not None:
                 if existing.fingerprint != fingerprint:
@@ -279,31 +787,57 @@ class P5LocalOfflineRuntimeAdapter:
                         error_code="runtime_adapter_idempotency_conflict",
                     )
                     return _failure("runtime_adapter_idempotency_conflict")
-                self._record_event("execute_replayed", run_id=run_id, step_id=step_id)
+                expected_outcome = self._build_success_outcome(
+                    request=request,
+                    role_binding=role_binding,
+                    attempt_index=attempt_index,
+                    fingerprint=fingerprint,
+                )
+                if _outcome_projection(existing.outcome) != _outcome_projection(expected_outcome):
+                    self._store_error_code = "runtime_adapter_store_invalid"
+                    self._record_event(
+                        "execute_rejected",
+                        run_id=run_id,
+                        step_id=step_id,
+                        error_code="runtime_adapter_store_invalid",
+                    )
+                    return _failure("runtime_adapter_store_invalid")
+                if not self._record_event("execute_replayed", run_id=run_id, step_id=step_id):
+                    return _failure(self._store_error_code or "runtime_adapter_store_write_failed")
                 return existing.outcome
+            existing_step = self._records_by_step.get((run_id, step_id))
+            if existing_step is not None:
+                self._record_event(
+                    "execute_rejected",
+                    run_id=run_id,
+                    step_id=step_id,
+                    error_code="runtime_adapter_step_conflict",
+                )
+                return _failure("runtime_adapter_step_conflict")
 
-            self.launch_count += 1
-            artifact = self._build_artifact_ref(
-                request=request, role_binding=role_binding, attempt_index=attempt_index
-            )
-            outcome = StepExecutionOutcome(
-                ok=True,
-                step_status="completed",
-                artifact_refs=(artifact,),
-                evidence_ref=f"p5_evidence_{_digest_hex({'run_id': run_id, 'step_id': step_id})[:16]}",
-                evidence_digest=_digest_ref(
-                    {"run_id": run_id, "step_id": step_id, "fingerprint": fingerprint}
-                ),
+            outcome = self._build_success_outcome(
+                request=request,
+                role_binding=role_binding,
+                attempt_index=attempt_index,
+                fingerprint=fingerprint,
             )
             record = _Record(
+                idempotency_key=idem,
+                run_id=run_id,
+                step_id=step_id,
                 fingerprint=fingerprint,
+                fingerprint_payload=fingerprint_payload,
                 outcome=outcome,
                 state="completed",
                 snapshot_version=len(self._history) + 1,
             )
             self._records_by_idem[idem] = record
             self._records_by_step[(run_id, step_id)] = record
-            self._record_event("execute_completed", run_id=run_id, step_id=step_id)
+            if not self._record_event("execute_completed", run_id=run_id, step_id=step_id):
+                self._records_by_idem.pop(idem, None)
+                self._records_by_step.pop((run_id, step_id), None)
+                return _failure(self._store_error_code or "runtime_adapter_store_write_failed")
+            self.launch_count += 1
             return outcome
 
     def query(self, *, run_id: str, step_id: str) -> dict[str, Any]:
@@ -311,6 +845,16 @@ class P5LocalOfflineRuntimeAdapter:
 
         with self._lock:
             key = (_safe_ref(run_id), _safe_ref(step_id))
+            if self._store_error_code is not None:
+                return {
+                    "type": _SNAPSHOT_TYPE,
+                    "run_id": key[0],
+                    "step_id": key[1],
+                    "state": "store_invalid",
+                    "snapshot_version": len(self._history),
+                    "artifact_refs": [],
+                    "error_code": self._store_error_code,
+                }
             record = self._records_by_step.get(key)
             if record is None:
                 return {
@@ -414,6 +958,29 @@ class P5LocalOfflineRuntimeAdapter:
             self.history_projection(), sort_keys=True, separators=(",", ":")
         ).encode("utf-8")
 
+    def _build_success_outcome(
+        self,
+        *,
+        request: Any,
+        role_binding: Any,
+        attempt_index: int,
+        fingerprint: str,
+    ) -> StepExecutionOutcome:
+        run_id = _safe_ref(str(getattr(request, "run_id", "missing_run")))
+        step_id = _safe_ref(str(getattr(request, "step_id", "missing_step")))
+        artifact = self._build_artifact_ref(
+            request=request, role_binding=role_binding, attempt_index=attempt_index
+        )
+        return StepExecutionOutcome(
+            ok=True,
+            step_status="completed",
+            artifact_refs=(artifact,),
+            evidence_ref=f"p5_evidence_{_digest_hex({'run_id': run_id, 'step_id': step_id})[:16]}",
+            evidence_digest=_digest_ref(
+                {"run_id": run_id, "step_id": step_id, "fingerprint": fingerprint}
+            ),
+        )
+
     def _build_artifact_ref(
         self, *, request: Any, role_binding: Any, attempt_index: int
     ) -> dict[str, Any]:
@@ -446,7 +1013,7 @@ class P5LocalOfflineRuntimeAdapter:
         run_id: str | None = None,
         step_id: str | None = None,
         error_code: str | None = None,
-    ) -> None:
+    ) -> bool:
         projection = {
             "event": _safe_ref(event),
             "sequence": len(self._history) + 1,
@@ -463,9 +1030,26 @@ class P5LocalOfflineRuntimeAdapter:
                 "error_code": "runtime_unsafe_material",
             }
         self._history.append(projection)
+        return self._persist_state()
+
+    def _persist_state(self) -> bool:
+        if self._claim_store is None:
+            return True
+        if self._store_error_code is not None:
+            return False
+        try:
+            self._claim_store.persist(self._records_by_idem, self._history)
+        except Exception:
+            self._store_error_code = "runtime_adapter_store_write_failed"
+            return False
+        if self._claim_store.load_error_code is not None:
+            self._store_error_code = self._claim_store.load_error_code
+            return False
+        return True
 
 
 __all__ = [
     "P5_RUNTIME_ADAPTER_IMPLEMENTATION_APPROVAL_TOKEN",
+    "P5LocalOfflineDurableClaimStore",
     "P5LocalOfflineRuntimeAdapter",
 ]

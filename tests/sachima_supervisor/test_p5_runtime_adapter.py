@@ -401,7 +401,375 @@ def test_execute_is_no_throw_for_malformed_request_or_inputs(
 
 
 # --------------------------------------------------------------------------- #
-# 6 — active-run cancellation WATCH (WP3b): unconfirmed never promotes to clean
+# 6 — durable claim-store / restart-recovery: local/offline only
+# --------------------------------------------------------------------------- #
+def test_durable_claim_store_replays_after_adapter_restart(tmp_path) -> None:
+    mod = _adapter_module()
+    store_path = tmp_path / "p5_claim_store.json"
+    request = _step_request("architect")
+    binding = _binding_for("architect")
+
+    first_adapter = _make_adapter(
+        mod, claim_store=mod.P5LocalOfflineDurableClaimStore(store_path)
+    )
+    first = first_adapter.execute(request, role_binding=binding, resolved_inputs=())
+
+    restarted_adapter = _make_adapter(
+        mod, claim_store=mod.P5LocalOfflineDurableClaimStore(store_path)
+    )
+    replay = restarted_adapter.execute(request, role_binding=binding, resolved_inputs=())
+
+    assert first.ok is True
+    assert replay.ok is True
+    assert first.artifact_refs == replay.artifact_refs
+    assert first_adapter.launch_count == 1
+    # Recovered idempotent replay must not relaunch after process/object restart.
+    assert restarted_adapter.launch_count == 0
+    snapshot = restarted_adapter.query(run_id=request.run_id, step_id=request.step_id)
+    assert snapshot["state"] == "completed"
+    assert snapshot["artifact_refs"] == [dict(first.artifact_refs[0])]
+
+
+def test_durable_claim_store_forged_persisted_outcome_after_restart_fails_closed(tmp_path) -> None:
+    mod = _adapter_module()
+    store_path = tmp_path / "p5_claim_store.json"
+    request = _step_request("architect")
+    binding = _binding_for("architect")
+
+    first_adapter = _make_adapter(
+        mod, claim_store=mod.P5LocalOfflineDurableClaimStore(store_path)
+    )
+    first = first_adapter.execute(request, role_binding=binding, resolved_inputs=())
+    assert first.ok is True
+
+    data = json.loads(store_path.read_text(encoding="utf-8"))
+    data["records"][0]["outcome"]["artifact_refs"][0]["artifact_id"] = "p5_artifact_forged_safe_id"
+    data["records"][0]["outcome"]["artifact_refs"][0]["content_digest"] = "sha256:" + "b" * 64
+    store_path.write_text(json.dumps(data), encoding="utf-8")
+
+    restarted_adapter = _make_adapter(
+        mod, claim_store=mod.P5LocalOfflineDurableClaimStore(store_path)
+    )
+    replay = restarted_adapter.execute(request, role_binding=binding, resolved_inputs=())
+
+    assert replay.ok is False
+    assert replay.error_code == "runtime_adapter_store_invalid"
+    assert restarted_adapter.launch_count == 0
+    snapshot = restarted_adapter.query(run_id=request.run_id, step_id=request.step_id)
+    assert snapshot["state"] == "store_invalid"
+    assert snapshot["error_code"] == "runtime_adapter_store_invalid"
+
+
+def test_durable_claim_store_recomputed_digest_forged_outcome_fails_closed(tmp_path) -> None:
+    mod = _adapter_module()
+    store_path = tmp_path / "p5_claim_store.json"
+    request = _step_request("architect")
+    binding = _binding_for("architect")
+
+    first_adapter = _make_adapter(
+        mod, claim_store=mod.P5LocalOfflineDurableClaimStore(store_path)
+    )
+    first = first_adapter.execute(request, role_binding=binding, resolved_inputs=())
+    assert first.ok is True
+
+    data = json.loads(store_path.read_text(encoding="utf-8"))
+    record = data["records"][0]
+    record["outcome"]["artifact_refs"][0]["artifact_id"] = "p5_artifact_forged_safe_id"
+    record["outcome"]["artifact_refs"][0]["content_digest"] = "sha256:" + "c" * 64
+    record["record_digest"] = mod._record_integrity_digest(
+        idempotency_key=record["idempotency_key"],
+        run_id=record["run_id"],
+        step_id=record["step_id"],
+        fingerprint=record["fingerprint"],
+        fingerprint_payload=record["fingerprint_payload"],
+        state=record["state"],
+        snapshot_version=record["snapshot_version"],
+        outcome_projection=record["outcome"],
+    )
+    store_path.write_text(json.dumps(data, sort_keys=True, separators=(",", ":")), encoding="utf-8")
+
+    restarted_adapter = _make_adapter(
+        mod, claim_store=mod.P5LocalOfflineDurableClaimStore(store_path)
+    )
+    replay = restarted_adapter.execute(request, role_binding=binding, resolved_inputs=())
+
+    assert replay.ok is False
+    assert replay.error_code == "runtime_adapter_store_invalid"
+    assert restarted_adapter.launch_count == 0
+    snapshot = restarted_adapter.query(run_id=request.run_id, step_id=request.step_id)
+    assert snapshot["state"] == "store_invalid"
+    assert snapshot["error_code"] == "runtime_adapter_store_invalid"
+
+
+def test_durable_claim_store_deterministic_shape_forged_attempt_fails_closed(tmp_path) -> None:
+    mod = _adapter_module()
+    store_path = tmp_path / "p5_claim_store.json"
+    request = _step_request("architect")
+    binding = _binding_for("architect")
+
+    first_adapter = _make_adapter(
+        mod, claim_store=mod.P5LocalOfflineDurableClaimStore(store_path)
+    )
+    first = first_adapter.execute(request, role_binding=binding, resolved_inputs=())
+    assert first.ok is True
+
+    data = json.loads(store_path.read_text(encoding="utf-8"))
+    record = data["records"][0]
+    forged_payload = {
+        "run_id": "run_p5",
+        "step_id": "architect",
+        "attempt_index": 2,
+        "role_key": "sachima.claude.read_only_reviewer",
+        "kind": "architecture_packet",
+    }
+    forged_ref = record["outcome"]["artifact_refs"][0]
+    forged_ref["artifact_id"] = "p5_artifact_run_p5_architect_2"
+    forged_ref["content_digest"] = mod._digest_ref(forged_payload)
+    forged_ref["byte_count"] = len(json.dumps(forged_payload, sort_keys=True).encode("utf-8"))
+    record["record_digest"] = mod._record_integrity_digest(
+        idempotency_key=record["idempotency_key"],
+        run_id=record["run_id"],
+        step_id=record["step_id"],
+        fingerprint=record["fingerprint"],
+        fingerprint_payload=record["fingerprint_payload"],
+        state=record["state"],
+        snapshot_version=record["snapshot_version"],
+        outcome_projection=record["outcome"],
+    )
+    store_path.write_text(json.dumps(data, sort_keys=True, separators=(",", ":")), encoding="utf-8")
+
+    restarted_adapter = _make_adapter(
+        mod, claim_store=mod.P5LocalOfflineDurableClaimStore(store_path)
+    )
+    pre_replay_snapshot = restarted_adapter.query(run_id=request.run_id, step_id=request.step_id)
+    pre_replay_recovered = restarted_adapter.recover(run_id=request.run_id, step_id=request.step_id)
+    replay = restarted_adapter.execute(request, role_binding=binding, resolved_inputs=())
+
+    assert pre_replay_snapshot["state"] == "store_invalid"
+    assert pre_replay_snapshot["artifact_refs"] == []
+    assert pre_replay_snapshot["error_code"] == "runtime_adapter_store_invalid"
+    assert pre_replay_recovered["state"] == "store_invalid"
+    assert pre_replay_recovered["artifact_refs"] == []
+    assert replay.ok is False
+    assert replay.error_code == "runtime_adapter_store_invalid"
+    assert restarted_adapter.launch_count == 0
+    snapshot = restarted_adapter.query(run_id=request.run_id, step_id=request.step_id)
+    assert snapshot["state"] == "store_invalid"
+    assert snapshot["error_code"] == "runtime_adapter_store_invalid"
+
+
+def test_durable_claim_store_conflict_after_restart_fails_closed_no_launch(tmp_path) -> None:
+    mod = _adapter_module()
+    store_path = tmp_path / "p5_claim_store.json"
+    binding = _binding_for("architect")
+
+    first_adapter = _make_adapter(
+        mod, claim_store=mod.P5LocalOfflineDurableClaimStore(store_path)
+    )
+    first_adapter.execute(_step_request("architect"), role_binding=binding, resolved_inputs=())
+
+    restarted_adapter = _make_adapter(
+        mod, claim_store=mod.P5LocalOfflineDurableClaimStore(store_path)
+    )
+    conflict = restarted_adapter.execute(
+        _step_request("architect", attempt_index=2), role_binding=binding, resolved_inputs=()
+    )
+
+    assert conflict.ok is False
+    assert conflict.error_code == "runtime_adapter_idempotency_conflict"
+    assert restarted_adapter.launch_count == 0
+
+
+def test_durable_claim_store_same_step_new_idempotency_after_restart_fails_closed(tmp_path) -> None:
+    mod = _adapter_module()
+    store_path = tmp_path / "p5_claim_store.json"
+    binding = _binding_for("architect")
+
+    first_adapter = _make_adapter(
+        mod, claim_store=mod.P5LocalOfflineDurableClaimStore(store_path)
+    )
+    first = first_adapter.execute(_step_request("architect"), role_binding=binding, resolved_inputs=())
+    assert first.ok is True
+
+    restarted_adapter = _make_adapter(
+        mod, claim_store=mod.P5LocalOfflineDurableClaimStore(store_path)
+    )
+    conflict = restarted_adapter.execute(
+        _step_request("architect", idempotency_key="idem_architect_second"),
+        role_binding=binding,
+        resolved_inputs=(),
+    )
+
+    assert conflict.ok is False
+    assert conflict.error_code == "runtime_adapter_step_conflict"
+    assert restarted_adapter.launch_count == 0
+    assert mod.P5LocalOfflineDurableClaimStore(store_path).load_error_code is None
+    snapshot = restarted_adapter.query(run_id="run_p5", step_id="architect")
+    assert snapshot["state"] == "completed"
+    assert snapshot["artifact_refs"] == [dict(first.artifact_refs[0])]
+
+
+def test_durable_claim_store_recover_after_restart_no_reinvoke(tmp_path) -> None:
+    mod = _adapter_module()
+    store_path = tmp_path / "p5_claim_store.json"
+    request = _step_request("architect")
+    first_adapter = _make_adapter(
+        mod, claim_store=mod.P5LocalOfflineDurableClaimStore(store_path)
+    )
+    first_adapter.execute(request, role_binding=_binding_for("architect"), resolved_inputs=())
+
+    restarted_adapter = _make_adapter(
+        mod, claim_store=mod.P5LocalOfflineDurableClaimStore(store_path)
+    )
+    recovered = restarted_adapter.recover(run_id=request.run_id, step_id=request.step_id)
+
+    assert recovered["state"] == "completed"
+    assert restarted_adapter.launch_count == 0
+
+
+def test_durable_claim_store_dirty_resident_state_fails_closed_no_launch(tmp_path) -> None:
+    mod = _adapter_module()
+    store_path = tmp_path / "p5_claim_store.json"
+    store_path.write_text(
+        json.dumps(
+            {
+                "type": "sachima.supervisor.p5_runtime_adapter_claim_store.v1",
+                "schema_version": 1,
+                "records": [
+                    {
+                        "idempotency_key": "idem_architect",
+                        "run_id": "raw_prompt_secret",
+                        "step_id": "architect",
+                        "fingerprint": "f" * 64,
+                        "state": "completed",
+                        "snapshot_version": 1,
+                        "outcome": {"ok": True, "step_status": "completed", "artifact_refs": []},
+                    }
+                ],
+                "history": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    adapter = _make_adapter(mod, claim_store=mod.P5LocalOfflineDurableClaimStore(store_path))
+    outcome = adapter.execute(
+        _step_request("architect"), role_binding=_binding_for("architect"), resolved_inputs=()
+    )
+
+    assert outcome.ok is False
+    assert outcome.error_code == "runtime_adapter_store_invalid"
+    assert adapter.launch_count == 0
+    projection_json = json.dumps(adapter.history_projection())
+    assert "raw_prompt" not in projection_json
+
+
+def test_durable_claim_store_file_bytes_never_contain_unsafe_rejected_values(tmp_path) -> None:
+    mod = _adapter_module()
+    store_path = tmp_path / "p5_claim_store.json"
+    adapter = _make_adapter(mod, claim_store=mod.P5LocalOfflineDurableClaimStore(store_path))
+    unsafe_key = "raw_prompt"
+    canary = "leak" + "-canary-" + unsafe_key + "-" + "do-not-store"
+
+    outcome = adapter.execute(
+        _step_request("architect"),
+        role_binding=_binding_for("architect"),
+        resolved_inputs=({**_safe_input_ref(), unsafe_key: canary},),
+    )
+
+    assert outcome.ok is False
+    assert outcome.error_code == "runtime_unsafe_material"
+    assert canary.encode("utf-8") not in adapter.serialized_history_bytes()
+    assert canary.encode("utf-8") not in store_path.read_bytes()
+
+
+def test_durable_claim_store_write_failure_fails_closed_without_launch(tmp_path) -> None:
+    mod = _adapter_module()
+    blocked_parent = tmp_path / "blocked_parent"
+    blocked_parent.write_text("not a directory", encoding="utf-8")
+    store_path = blocked_parent / "p5_claim_store.json"
+    adapter = _make_adapter(mod, claim_store=mod.P5LocalOfflineDurableClaimStore(store_path))
+
+    outcome = adapter.execute(
+        _step_request("architect"), role_binding=_binding_for("architect"), resolved_inputs=()
+    )
+
+    assert outcome.ok is False
+    assert outcome.error_code == "runtime_adapter_store_write_failed"
+    assert adapter.launch_count == 0
+    snapshot = adapter.query(run_id="run_p5", step_id="architect")
+    assert snapshot["state"] == "store_invalid"
+    assert snapshot["error_code"] == "runtime_adapter_store_write_failed"
+
+
+def test_durable_claim_store_duplicate_step_records_fail_closed(tmp_path) -> None:
+    mod = _adapter_module()
+    store_path = tmp_path / "p5_claim_store.json"
+    adapter = _make_adapter(mod, claim_store=mod.P5LocalOfflineDurableClaimStore(store_path))
+    first = adapter.execute(
+        _step_request("architect"), role_binding=_binding_for("architect"), resolved_inputs=()
+    )
+    assert first.ok is True
+
+    data = json.loads(store_path.read_text(encoding="utf-8"))
+    duplicate = dict(data["records"][0])
+    duplicate["idempotency_key"] = "idem_architect_duplicate"
+    duplicate["fingerprint"] = "e" * 64
+    duplicate["outcome"] = dict(data["records"][0]["outcome"])
+    duplicate["outcome"]["artifact_refs"] = [
+        dict(data["records"][0]["outcome"]["artifact_refs"][0])
+    ]
+    duplicate["outcome"]["artifact_refs"][0]["artifact_id"] = "p5_artifact_run_p5_architect_2"
+    data["records"].append(duplicate)
+    store_path.write_text(json.dumps(data), encoding="utf-8")
+
+    dirty_store = mod.P5LocalOfflineDurableClaimStore(store_path)
+    assert dirty_store.load_error_code == "runtime_adapter_store_invalid"
+    restarted = _make_adapter(mod, claim_store=dirty_store)
+    outcome = restarted.execute(
+        _step_request("architect"), role_binding=_binding_for("architect"), resolved_inputs=()
+    )
+    assert outcome.ok is False
+    assert outcome.error_code == "runtime_adapter_store_invalid"
+    assert restarted.launch_count == 0
+
+
+def test_durable_claim_store_dirty_history_event_fails_closed(tmp_path) -> None:
+    mod = _adapter_module()
+    store_path = tmp_path / "p5_claim_store.json"
+    store_path.write_text(
+        json.dumps(
+            {
+                "type": "sachima.supervisor.p5_runtime_adapter_claim_store.v1",
+                "schema_version": 1,
+                "records": [],
+                "history": [
+                    {
+                        "event": "not a safe ref",
+                        "sequence": 1,
+                        "run_id": "run with spaces",
+                        "step_id": None,
+                        "error_code": None,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    dirty_store = mod.P5LocalOfflineDurableClaimStore(store_path)
+    assert dirty_store.load_error_code == "runtime_adapter_store_invalid"
+    adapter = _make_adapter(mod, claim_store=dirty_store)
+    outcome = adapter.execute(
+        _step_request("architect"), role_binding=_binding_for("architect"), resolved_inputs=()
+    )
+    assert outcome.ok is False
+    assert outcome.error_code == "runtime_adapter_store_invalid"
+    assert adapter.launch_count == 0
+
+
+# --------------------------------------------------------------------------- #
+# 7 — active-run cancellation WATCH (WP3b): unconfirmed never promotes to clean
 # --------------------------------------------------------------------------- #
 def test_unconfirmed_active_run_cancel_holds_watch_never_cancelled() -> None:
     mod = _adapter_module()
