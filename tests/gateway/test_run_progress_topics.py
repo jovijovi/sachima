@@ -228,6 +228,20 @@ class FeishuPatchFailureAdapter(FeishuProgressCardCaptureAdapter):
         return SendResult(success=False, error="temporary card patch failure")
 
 
+class FeishuRetryableIntermediatePatchFailureAdapter(FeishuProgressCardCaptureAdapter):
+    async def patch_interactive_card(self, chat_id, message_id, card, finalize=False) -> SendResult:
+        self.cards_patched.append(
+            {"chat_id": chat_id, "message_id": message_id, "card": card, "finalize": finalize}
+        )
+        if not finalize and not any(not call["finalize"] for call in self.cards_patched[:-1]):
+            return SendResult(
+                success=False,
+                error="[230020] update the single messages too frequently",
+                retryable=True,
+            )
+        return SendResult(success=True, message_id=message_id)
+
+
 def _assert_compact_card_failure_notice_only(text: str) -> None:
     assert "任务卡片更新失败" in text
     assert "Transaction" not in text
@@ -802,6 +816,44 @@ class TransactionPanelAgent:
         time.sleep(0.35)
         self.tool_progress_callback("tool.started", "search_files", "tool_progress", {"pattern": "tool_progress"})
         time.sleep(0.35)
+        return {
+            "final_response": "done",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+class BurstTaskTrackerProgressAgent:
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        for idx in range(12):
+            self.tool_progress_callback(
+                "tool.started",
+                "read_file",
+                f"gateway/run.py:{idx}",
+                {"path": "gateway/run.py", "idx": idx},
+            )
+        time.sleep(2.3)
+        return {
+            "final_response": "done",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+class RetryablePatchCatchupAgent:
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        self.tool_progress_callback("tool.started", "read_file", "gateway/run.py", {"path": "gateway/run.py"})
+        time.sleep(2.3)
+        self.tool_progress_callback("tool.started", "search_files", "tool_progress", {"pattern": "tool_progress"})
+        time.sleep(0.2)
         return {
             "final_response": "done",
             "messages": [],
@@ -1678,6 +1730,68 @@ async def test_feishu_task_tracker_card_mode_patch_failure_does_not_spam_chat(mo
     assert adapter.cards_patched
     assert len(adapter.sent) == 1
     _assert_compact_card_failure_notice_only(adapter.sent[0]["content"])
+
+
+@pytest.mark.asyncio
+async def test_feishu_task_tracker_card_mode_retryable_patch_failure_catches_up_at_final(
+    monkeypatch, tmp_path
+):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        RetryablePatchCatchupAgent,
+        session_id="sess-feishu-progress-card-retryable-patch-catchup",
+        platform=Platform.FEISHU,
+        chat_id="oc_1",
+        chat_type="dm",
+        thread_id=None,
+        adapter_cls=FeishuRetryableIntermediatePatchFailureAdapter,
+        config_data={
+            "display": {
+                "tool_progress": "all",
+                "task_tracker": {"enabled": True, "mode": "feishu_card", "max_operations": 8},
+            },
+        },
+    )
+
+    assert result["final_response"] == "done"
+    assert len(adapter.cards_sent) == 1
+    assert any(not call["finalize"] for call in adapter.cards_patched)
+    assert adapter.cards_patched[-1]["finalize"] is True
+    assert adapter.sent == []
+    rendered = json.dumps(adapter.cards_patched[-1]["card"], ensure_ascii=False)
+    assert "Completed" in rendered
+    assert "search_files" in rendered
+
+
+@pytest.mark.asyncio
+async def test_feishu_task_tracker_card_mode_coalesces_burst_render_signals(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        BurstTaskTrackerProgressAgent,
+        session_id="sess-feishu-progress-card-coalesce-burst",
+        platform=Platform.FEISHU,
+        chat_id="oc_1",
+        chat_type="dm",
+        thread_id=None,
+        adapter_cls=FeishuProgressCardCaptureAdapter,
+        config_data={
+            "display": {
+                "tool_progress": "all",
+                "task_tracker": {"enabled": True, "mode": "feishu_card", "max_operations": 8},
+            },
+        },
+    )
+
+    assert result["final_response"] == "done"
+    assert len(adapter.cards_sent) == 1
+    non_final_patches = [call for call in adapter.cards_patched if not call["finalize"]]
+    assert len(non_final_patches) <= 1
+    assert len(non_final_patches) < 12
+    assert adapter.cards_patched[-1]["finalize"] is True
+    rendered = json.dumps(adapter.cards_patched[-1]["card"], ensure_ascii=False)
+    assert "Completed" in rendered
 
 
 @pytest.mark.asyncio

@@ -2022,7 +2022,11 @@ class FeishuAdapter(BasePlatformAdapter):
                     result.message_id = message_id
                     return result
                 last_result = result
-                if not self._is_transient_feishu_response(response) or attempt >= _FEISHU_SEND_ATTEMPTS - 1:
+                is_transient = self._is_transient_feishu_response(response)
+                if not is_transient:
+                    return result
+                if attempt >= _FEISHU_SEND_ATTEMPTS - 1:
+                    result.retryable = True
                     return result
                 wait_seconds = 2 ** attempt
                 logger.warning(
@@ -2035,9 +2039,17 @@ class FeishuAdapter(BasePlatformAdapter):
                 await asyncio.sleep(wait_seconds)
             except Exception as exc:
                 last_error = exc
-                if not self._is_transient_feishu_exception(exc) or attempt >= _FEISHU_SEND_ATTEMPTS - 1:
+                is_transient = self._is_transient_feishu_exception(exc)
+                if not is_transient:
                     logger.error("[Feishu] Failed to patch interactive card %s: %s", message_id, exc, exc_info=True)
                     return SendResult(success=False, error=str(exc))
+                if attempt >= _FEISHU_SEND_ATTEMPTS - 1:
+                    logger.warning(
+                        "[Feishu] Patch interactive card %s exhausted transient retries: %s",
+                        message_id,
+                        exc,
+                    )
+                    return SendResult(success=False, error=str(exc), retryable=True)
                 wait_seconds = 2 ** attempt
                 logger.warning(
                     "[Feishu] Patch interactive card attempt %d/%d raised transiently; retrying in %ds: %s",
@@ -5043,6 +5055,8 @@ class FeishuAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _is_transient_feishu_exception(exc: Exception) -> bool:
+        if isinstance(exc, json.JSONDecodeError):
+            return True
         if isinstance(exc, (ConnectionError, OSError, TimeoutError)):
             return True
         text = str(exc).lower()
@@ -5053,8 +5067,11 @@ class FeishuAdapter(BasePlatformAdapter):
                 "timed out",
                 "temporar",
                 "rate limit",
+                "frequency limit",
                 "retry after",
                 "too many requests",
+                "too frequent",
+                "single messages too frequently",
                 "connection reset",
                 "connection aborted",
                 "server error",
@@ -5071,7 +5088,7 @@ class FeishuAdapter(BasePlatformAdapter):
             code_int = int(code)
         except (TypeError, ValueError):
             code_int = None
-        if code_int == 429 or (code_int is not None and 500 <= code_int < 600):
+        if code_int in {429, 230020} or (code_int is not None and 500 <= code_int < 600):
             return True
         msg = str(getattr(response, "msg", "") or "").lower()
         return any(
@@ -5081,8 +5098,11 @@ class FeishuAdapter(BasePlatformAdapter):
                 "timed out",
                 "temporar",
                 "rate limit",
+                "frequency limit",
                 "retry after",
                 "too many requests",
+                "too frequent",
+                "single messages too frequently",
                 "server error",
                 "internal error",
                 "bad gateway",

@@ -17298,6 +17298,24 @@ class GatewayRunner:
             progress_queue = queue.Queue()
         if progress_transaction is None and (progress_queue is not None or flowweaver_shadow_enabled):
             progress_transaction = {"queue": progress_queue}
+        _TASK_TRACKER_RENDER_SIGNAL = ("__render_task_tracker__",)
+        if isinstance(progress_transaction, dict):
+            task_tracker_render_pending = progress_transaction.get("task_tracker_render_pending")
+            if not isinstance(task_tracker_render_pending, list):
+                task_tracker_render_pending = [False]
+                progress_transaction["task_tracker_render_pending"] = task_tracker_render_pending
+        else:
+            task_tracker_render_pending = [False]
+
+        def _queue_task_tracker_render() -> None:
+            if progress_queue is None or not task_tracker_enabled:
+                return
+            if task_tracker_card_enabled:
+                if task_tracker_render_pending[0]:
+                    return
+                task_tracker_render_pending[0] = True
+            progress_queue.put(_TASK_TRACKER_RENDER_SIGNAL)
+
         last_tool = [None]  # Mutable container for tracking in closure
         last_progress_msg = [None]  # Track last message for dedup
         repeat_count = [0]  # How many times the same message repeated
@@ -17456,8 +17474,7 @@ class GatewayRunner:
             try:
                 account_lines = render_account_usage_lines(account_snapshot, markdown=False)
                 progress_tracker.update_display_metadata(account_limit_lines=account_lines)
-                if progress_queue is not None and task_tracker_enabled:
-                    progress_queue.put(("__render_task_tracker__",))
+                _queue_task_tracker_render()
             except Exception as account_render_err:
                 logger.debug("Task tracker account-limit rendering failed: %s", account_render_err)
 
@@ -17513,7 +17530,7 @@ class GatewayRunner:
                             except Exception as store_err:
                                 logger.debug("Task tracker event persistence error: %s", store_err)
                         if progress_queue is not None and task_tracker_enabled:
-                            progress_queue.put(("__render_task_tracker__",))
+                            _queue_task_tracker_render()
                             return
                 except Exception as cb_err:
                     logging.debug(f"Task tracker progress callback error: {cb_err}")
@@ -17686,7 +17703,7 @@ class GatewayRunner:
             card_progress_suppressed = False  # True after Feishu card mode fails closed
             card_fallback_notice_sent = False
             _last_edit_ts = 0.0      # Throttle edits to avoid Telegram flood control
-            _PROGRESS_EDIT_INTERVAL = 1.5  # Minimum seconds between edits
+            _PROGRESS_EDIT_INTERVAL = 2.0 if task_tracker_card_enabled else 1.5  # Minimum seconds between edits
             _FEISHU_CARD_FALLBACK_NOTICE = "⚠️ 任务卡片更新失败，后台进度仍已记录。"
 
             def _current_progress_text() -> str:
@@ -17871,6 +17888,12 @@ class GatewayRunner:
 
                     raw = progress_queue.get_nowait()
                     is_final_tracker_flush = raw is progress_final_flush_sentinel
+                    is_task_tracker_render_signal = (
+                        isinstance(raw, tuple)
+                        and raw == _TASK_TRACKER_RENDER_SIGNAL
+                    )
+                    if is_task_tracker_render_signal and task_tracker_card_enabled:
+                        task_tracker_render_pending[0] = False
 
                     # Drain silently when interrupted: events queued in the
                     # window between tool parse and interrupt processing
@@ -17969,6 +17992,13 @@ class GatewayRunner:
                         else:
                             _err = (getattr(result, "error", "") or "").lower()
                             if using_feishu_card:
+                                if getattr(result, "retryable", False) and not is_final_tracker_flush:
+                                    _last_edit_ts = time.monotonic()
+                                    logger.debug(
+                                        "[%s] Transient Feishu progress-card patch failure; keeping card editable",
+                                        adapter.name,
+                                    )
+                                    continue
                                 can_edit = False
                                 card_progress_suppressed = True
                                 await _send_compact_feishu_card_fallback_notice(
@@ -19762,7 +19792,11 @@ class GatewayRunner:
                 if task_tracker_enabled and progress_tracker is not None and not progress_task.done():
                     try:
                         progress_queue.put(progress_final_flush_sentinel)
-                        await asyncio.wait_for(progress_final_flushed.wait(), timeout=3.0)
+                        _progress_flush_timeout = 6.0 if task_tracker_card_enabled else 3.0
+                        await asyncio.wait_for(
+                            progress_final_flushed.wait(),
+                            timeout=_progress_flush_timeout,
+                        )
                     except asyncio.TimeoutError:
                         logger.warning(
                             "[%s] Timed out waiting for final task-tracker progress flush",
