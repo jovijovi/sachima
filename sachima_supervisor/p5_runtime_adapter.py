@@ -79,6 +79,7 @@ class _Record:
     run_id: str
     step_id: str
     fingerprint: str
+    fingerprint_payload: dict[str, Any]
     outcome: StepExecutionOutcome
     state: str
     snapshot_version: int
@@ -187,16 +188,16 @@ def _normalize_attempt_index(value: Any) -> int | None:
     return value
 
 
-def _request_fingerprint(
+def _request_fingerprint_payload(
     request: Any,
     role_binding: Any,
     resolved_inputs: tuple[Mapping[str, Any], ...],
     *,
     input_artifact_digests: tuple[str, ...],
     attempt_index: int,
-) -> str:
+) -> dict[str, Any]:
     safe_inputs = [{field: item.get(field) for field in _FINGERPRINT_FIELDS} for item in resolved_inputs]
-    payload = {
+    return {
         "run_id": str(getattr(request, "run_id", None)),
         "step_id": str(getattr(request, "step_id", None)),
         "attempt_index": attempt_index,
@@ -207,7 +208,25 @@ def _request_fingerprint(
         "role_key": str(getattr(role_binding, "role_key", None)),
         "resolved_inputs": safe_inputs,
     }
-    return _digest_hex(payload)
+
+
+def _request_fingerprint(
+    request: Any,
+    role_binding: Any,
+    resolved_inputs: tuple[Mapping[str, Any], ...],
+    *,
+    input_artifact_digests: tuple[str, ...],
+    attempt_index: int,
+) -> str:
+    return _digest_hex(
+        _request_fingerprint_payload(
+            request,
+            role_binding,
+            resolved_inputs,
+            input_artifact_digests=input_artifact_digests,
+            attempt_index=attempt_index,
+        )
+    )
 
 
 def _failure(code: str, *, retryable: bool = False, ambiguous: bool = False) -> StepExecutionOutcome:
@@ -292,12 +311,67 @@ def _outcome_from_projection(value: Any) -> StepExecutionOutcome | None:
     )
 
 
+def _fingerprint_payload_from_projection(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, Mapping):
+        return None
+    try:
+        payload = dict(value)
+    except Exception:
+        return None
+    expected_keys = {
+        "run_id",
+        "step_id",
+        "attempt_index",
+        "workflow_spec_digest",
+        "role_binding_digest",
+        "input_artifact_digests",
+        "idempotency_key",
+        "role_key",
+        "resolved_inputs",
+    }
+    if set(payload) != expected_keys:
+        return None
+    for key in (
+        "run_id",
+        "step_id",
+        "workflow_spec_digest",
+        "role_binding_digest",
+        "idempotency_key",
+        "role_key",
+    ):
+        if type(payload.get(key)) is not str:
+            return None
+    attempt_index = _normalize_attempt_index(payload.get("attempt_index"))
+    input_digests = _normalize_input_digests(payload.get("input_artifact_digests"))
+    resolved_inputs = _normalize_resolved_inputs(payload.get("resolved_inputs"))
+    if attempt_index is None or input_digests is None or resolved_inputs is None:
+        return None
+    canonical = {
+        "run_id": payload["run_id"],
+        "step_id": payload["step_id"],
+        "attempt_index": attempt_index,
+        "workflow_spec_digest": payload["workflow_spec_digest"],
+        "role_binding_digest": payload["role_binding_digest"],
+        "input_artifact_digests": list(input_digests),
+        "idempotency_key": payload["idempotency_key"],
+        "role_key": payload["role_key"],
+        "resolved_inputs": [
+            {field: item.get(field) for field in _FINGERPRINT_FIELDS}
+            for item in resolved_inputs
+        ],
+    }
+    if _contains_unsafe_material(canonical):
+        return None
+    return canonical
+
+
 def _record_integrity_digest(
     *,
     idempotency_key: str,
     run_id: str,
     step_id: str,
     fingerprint: str,
+    fingerprint_payload: dict[str, Any],
     state: str,
     snapshot_version: int,
     outcome_projection: dict[str, Any],
@@ -314,6 +388,7 @@ def _record_integrity_digest(
             "run_id": run_id,
             "step_id": step_id,
             "fingerprint": fingerprint,
+            "fingerprint_payload": fingerprint_payload,
             "state": state,
             "snapshot_version": snapshot_version,
             "outcome": outcome_projection,
@@ -326,33 +401,12 @@ def _expected_completed_outcome_projection_for_record(
     run_id: str,
     step_id: str,
     fingerprint: str,
-    outcome_projection: dict[str, Any],
-) -> dict[str, Any] | None:
+    fingerprint_payload: dict[str, Any],
+) -> dict[str, Any]:
     """Rebuild the only accepted completed fake outcome for a stored record."""
 
-    role_key = _ROLE_KEY_BY_STEP.get(step_id)
-    if role_key is None:
-        return None
-    refs = outcome_projection.get("artifact_refs")
-    if not isinstance(refs, list) or len(refs) != 1:
-        return None
-    ref = refs[0]
-    if not isinstance(ref, Mapping):
-        return None
-    try:
-        artifact_ref = dict(ref)
-    except Exception:
-        return None
-    if set(artifact_ref) != set(_FINGERPRINT_FIELDS):
-        return None
-    artifact_id = artifact_ref.get("artifact_id")
-    prefix = f"p5_artifact_{run_id}_{step_id}_"
-    if type(artifact_id) is not str or not artifact_id.startswith(prefix):
-        return None
-    attempt_text = artifact_id[len(prefix) :]
-    if re.fullmatch(r"[1-9][0-9]*", attempt_text) is None:
-        return None
-    attempt_index = int(attempt_text)
+    attempt_index = fingerprint_payload["attempt_index"]
+    role_key = _safe_ref(fingerprint_payload["role_key"])
     kind = _safe_artifact_kind(step_id)
     body_digest_payload = {
         "run_id": run_id,
@@ -361,6 +415,7 @@ def _expected_completed_outcome_projection_for_record(
         "role_key": role_key,
         "kind": kind,
     }
+    artifact_id = _safe_ref(f"p5_artifact_{run_id}_{step_id}_{attempt_index}")
     expected_ref = {
         "artifact_id": artifact_id,
         "producer_step_id": step_id,
@@ -390,15 +445,16 @@ def _completed_outcome_matches_record(
     run_id: str,
     step_id: str,
     fingerprint: str,
+    fingerprint_payload: dict[str, Any],
     outcome_projection: dict[str, Any],
 ) -> bool:
     expected = _expected_completed_outcome_projection_for_record(
         run_id=run_id,
         step_id=step_id,
         fingerprint=fingerprint,
-        outcome_projection=outcome_projection,
+        fingerprint_payload=fingerprint_payload,
     )
-    return expected is not None and outcome_projection == expected
+    return outcome_projection == expected
 
 
 def _record_projection(record: _Record) -> dict[str, Any]:
@@ -408,6 +464,7 @@ def _record_projection(record: _Record) -> dict[str, Any]:
         "run_id": record.run_id,
         "step_id": record.step_id,
         "fingerprint": record.fingerprint,
+        "fingerprint_payload": record.fingerprint_payload,
         "state": record.state,
         "snapshot_version": record.snapshot_version,
         "outcome": outcome_projection,
@@ -416,6 +473,7 @@ def _record_projection(record: _Record) -> dict[str, Any]:
             run_id=record.run_id,
             step_id=record.step_id,
             fingerprint=record.fingerprint,
+            fingerprint_payload=record.fingerprint_payload,
             state=record.state,
             snapshot_version=record.snapshot_version,
             outcome_projection=outcome_projection,
@@ -450,6 +508,17 @@ def _record_from_projection(value: Any) -> _Record | None:
         return None
     if re.fullmatch(r"[0-9a-f]{64}", fingerprint) is None:
         return None
+    fingerprint_payload = _fingerprint_payload_from_projection(projection.get("fingerprint_payload"))
+    if fingerprint_payload is None:
+        return None
+    if _safe_ref(fingerprint_payload["idempotency_key"]) != idempotency_key:
+        return None
+    if _safe_ref(fingerprint_payload["run_id"]) != run_id:
+        return None
+    if _safe_ref(fingerprint_payload["step_id"]) != step_id:
+        return None
+    if _digest_hex(fingerprint_payload) != fingerprint:
+        return None
     if type(snapshot_version) is not int or snapshot_version < 0:
         return None
     outcome = _outcome_from_projection(projection.get("outcome"))
@@ -460,6 +529,7 @@ def _record_from_projection(value: Any) -> _Record | None:
         run_id=run_id,
         step_id=step_id,
         fingerprint=fingerprint,
+        fingerprint_payload=fingerprint_payload,
         outcome_projection=outcome_projection,
     ):
         return None
@@ -471,6 +541,7 @@ def _record_from_projection(value: Any) -> _Record | None:
         run_id=run_id,
         step_id=step_id,
         fingerprint=fingerprint,
+        fingerprint_payload=fingerprint_payload,
         state=state,
         snapshot_version=snapshot_version,
         outcome_projection=outcome_projection,
@@ -482,6 +553,7 @@ def _record_from_projection(value: Any) -> _Record | None:
         run_id=run_id,
         step_id=step_id,
         fingerprint=fingerprint,
+        fingerprint_payload=fingerprint_payload,
         outcome=outcome,
         state=state,
         snapshot_version=snapshot_version,
@@ -697,13 +769,14 @@ class P5LocalOfflineRuntimeAdapter:
             idem = _safe_ref(str(getattr(request, "idempotency_key", "missing_idempotency_key")))
             run_id = _safe_ref(str(getattr(request, "run_id", "missing_run")))
             step_id = _safe_ref(str(getattr(request, "step_id", "missing_step")))
-            fingerprint = _request_fingerprint(
+            fingerprint_payload = _request_fingerprint_payload(
                 request,
                 role_binding,
                 normalized_inputs,
                 input_artifact_digests=input_digests,
                 attempt_index=attempt_index,
             )
+            fingerprint = _digest_hex(fingerprint_payload)
             existing = self._records_by_idem.get(idem)
             if existing is not None:
                 if existing.fingerprint != fingerprint:
@@ -753,6 +826,7 @@ class P5LocalOfflineRuntimeAdapter:
                 run_id=run_id,
                 step_id=step_id,
                 fingerprint=fingerprint,
+                fingerprint_payload=fingerprint_payload,
                 outcome=outcome,
                 state="completed",
                 snapshot_version=len(self._history) + 1,

@@ -481,6 +481,7 @@ def test_durable_claim_store_recomputed_digest_forged_outcome_fails_closed(tmp_p
         run_id=record["run_id"],
         step_id=record["step_id"],
         fingerprint=record["fingerprint"],
+        fingerprint_payload=record["fingerprint_payload"],
         state=record["state"],
         snapshot_version=record["snapshot_version"],
         outcome_projection=record["outcome"],
@@ -530,6 +531,7 @@ def test_durable_claim_store_deterministic_shape_forged_attempt_fails_closed(tmp
         run_id=record["run_id"],
         step_id=record["step_id"],
         fingerprint=record["fingerprint"],
+        fingerprint_payload=record["fingerprint_payload"],
         state=record["state"],
         snapshot_version=record["snapshot_version"],
         outcome_projection=record["outcome"],
@@ -539,8 +541,15 @@ def test_durable_claim_store_deterministic_shape_forged_attempt_fails_closed(tmp
     restarted_adapter = _make_adapter(
         mod, claim_store=mod.P5LocalOfflineDurableClaimStore(store_path)
     )
+    pre_replay_snapshot = restarted_adapter.query(run_id=request.run_id, step_id=request.step_id)
+    pre_replay_recovered = restarted_adapter.recover(run_id=request.run_id, step_id=request.step_id)
     replay = restarted_adapter.execute(request, role_binding=binding, resolved_inputs=())
 
+    assert pre_replay_snapshot["state"] == "store_invalid"
+    assert pre_replay_snapshot["artifact_refs"] == []
+    assert pre_replay_snapshot["error_code"] == "runtime_adapter_store_invalid"
+    assert pre_replay_recovered["state"] == "store_invalid"
+    assert pre_replay_recovered["artifact_refs"] == []
     assert replay.ok is False
     assert replay.error_code == "runtime_adapter_store_invalid"
     assert restarted_adapter.launch_count == 0
