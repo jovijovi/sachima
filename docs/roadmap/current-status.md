@@ -11,9 +11,20 @@
 ```json
 {
   "base_branch": "release/sachima",
-  "base_head": "3458c364929484bfcc82c93ab33f14e3a3674477",
+  "base_head": "1e84ed198340b1067d261f65381285181b4376b2",
   "base_head_note": "latest first-parent base commit excluding machine status-sync self-commits",
   "latest_merged_prs": [
+    {
+      "baseRefName": "release/sachima",
+      "headRefName": "fix/xai-edit-resolution-2k",
+      "mergeCommit": {
+        "oid": "1e84ed198340b1067d261f65381285181b4376b2"
+      },
+      "mergedAt": "2026-06-19T17:17:25Z",
+      "number": 153,
+      "title": "fix: honor xAI edit resolution config",
+      "url": "https://github.com/jovijovi/sachima/pull/153"
+    },
     {
       "baseRefName": "release/sachima",
       "headRefName": "feat/xai-imagine-api-refresh",
@@ -57,17 +68,6 @@
       "number": 149,
       "title": "feat: add P5 local/offline runtime adapter",
       "url": "https://github.com/jovijovi/sachima/pull/149"
-    },
-    {
-      "baseRefName": "release/sachima",
-      "headRefName": "docs/p5-runtime-adapter-implementation-prep",
-      "mergeCommit": {
-        "oid": "eaf4e51ede1e44f4fe1af32807b5f787991b757c"
-      },
-      "mergedAt": "2026-06-18T05:02:07Z",
-      "number": 148,
-      "title": "docs: prepare P5 runtime adapter implementation scope",
-      "url": "https://github.com/jovijovi/sachima/pull/148"
     }
   ],
   "open_pr_count": 0,
