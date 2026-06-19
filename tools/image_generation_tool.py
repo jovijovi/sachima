@@ -432,11 +432,15 @@ def _get_managed_fal_client(managed_gateway):
 
 def _submit_fal_request(model: str, arguments: Dict[str, Any]):
     """Submit a FAL request using direct credentials or the managed queue gateway."""
-    # Trigger the lazy import on first call. Idempotent.
-    _load_fal_client()
     request_headers = {"x-idempotency-key": str(uuid.uuid4())}
     managed_gateway = _resolve_managed_fal_gateway()
     if managed_gateway is None:
+        # Trigger the lazy import only for the direct FAL path. The managed
+        # path loads fal_client inside _get_managed_fal_client(), which keeps
+        # tests that inject a managed client from depending on local fal-client
+        # metadata and avoids eager lazy-install probes when the client is not
+        # needed by the call path.
+        _load_fal_client()
         return fal_client.submit(model, arguments=arguments, headers=request_headers)
 
     managed_client = _get_managed_fal_client(managed_gateway)

@@ -59,13 +59,16 @@ class TestXAIImageGenProvider:
         provider = XAIImageGenProvider()
         models = provider.list_models()
         assert len(models) >= 1
-        assert models[0]["id"] == "grok-imagine-image"
+        # FR1: quality model is listed first (current official recommendation).
+        assert models[0]["id"] == "grok-imagine-image-quality"
+        # The lower-cost/fast model stays selectable.
+        assert "grok-imagine-image" in {m["id"] for m in models}
 
     def test_default_model(self):
         from plugins.image_gen.xai import XAIImageGenProvider
 
         provider = XAIImageGenProvider()
-        assert provider.default_model() == "grok-imagine-image"
+        assert provider.default_model() == "grok-imagine-image-quality"
 
     def test_get_setup_schema(self):
         from plugins.image_gen.xai import XAIImageGenProvider
@@ -91,7 +94,7 @@ class TestConfig:
         from plugins.image_gen.xai import _resolve_model
 
         model_id, meta = _resolve_model()
-        assert model_id == "grok-imagine-image"
+        assert model_id == "grok-imagine-image-quality"
 
     def test_default_resolution(self):
         from plugins.image_gen.xai import _resolve_resolution
@@ -139,7 +142,7 @@ class TestGenerate:
         assert result["success"] is True
         assert result["image"] == "/tmp/test.png"
         assert result["provider"] == "xai"
-        assert result["model"] == "grok-imagine-image"
+        assert result["model"] == "grok-imagine-image-quality"
 
     def test_successful_url_response(self):
         """xAI URL response is cached locally — #26942 contract.
@@ -414,7 +417,7 @@ class TestEdit:
             result = provider.edit(prompt="make it blue", image="https://imgen.x.ai/a.png")
 
         payload = mock_post.call_args.kwargs.get("json") or mock_post.call_args[1].get("json")
-        assert payload["model"] == "grok-imagine-image"
+        assert payload["model"] == "grok-imagine-image-quality"
         assert payload["prompt"] == "make it blue"
         assert payload["response_format"] == "b64_json"
         assert payload["image"] == {
@@ -558,6 +561,571 @@ class TestEdit:
 
         payload = mock_post.call_args.kwargs.get("json") or mock_post.call_args[1].get("json")
         assert payload["response_format"] == "b64_json"
+
+
+# ---------------------------------------------------------------------------
+# FR1 — Model catalog and default
+# ---------------------------------------------------------------------------
+
+
+class TestModelCatalogFR1:
+    def test_default_model_constant_is_quality(self):
+        from plugins.image_gen import xai
+
+        assert xai.DEFAULT_MODEL == "grok-imagine-image-quality"
+
+    def test_resolve_model_default_is_quality(self):
+        from plugins.image_gen.xai import _resolve_model
+
+        model_id, meta = _resolve_model()
+        assert model_id == "grok-imagine-image-quality"
+        assert isinstance(meta, dict)
+
+    def test_explicit_env_selects_standard_model(self, monkeypatch):
+        monkeypatch.setenv("XAI_IMAGE_MODEL", "grok-imagine-image")
+        from plugins.image_gen.xai import _resolve_model
+
+        model_id, _ = _resolve_model()
+        assert model_id == "grok-imagine-image"
+
+    def test_deprecated_pro_model_falls_back_to_quality(self, monkeypatch):
+        # grok-imagine-image-pro is officially deprecated (2026-05-15); it must
+        # never resolve as the active model — fall back to the quality default.
+        monkeypatch.setenv("XAI_IMAGE_MODEL", "grok-imagine-image-pro")
+        from plugins.image_gen.xai import _resolve_model
+
+        model_id, _ = _resolve_model()
+        assert model_id == "grok-imagine-image-quality"
+
+    def test_unknown_model_falls_back_to_quality(self, monkeypatch):
+        monkeypatch.setenv("XAI_IMAGE_MODEL", "grok-imagine-image-9000")
+        from plugins.image_gen.xai import _resolve_model
+
+        model_id, _ = _resolve_model()
+        assert model_id == "grok-imagine-image-quality"
+
+    def test_pro_model_not_in_catalog(self):
+        # Deprecated model must not be offered as a selectable catalog entry.
+        from plugins.image_gen.xai import XAIImageGenProvider
+
+        ids = {m["id"] for m in XAIImageGenProvider().list_models()}
+        assert "grok-imagine-image-pro" not in ids
+
+
+# ---------------------------------------------------------------------------
+# FR2 — xAI aspect-ratio handling
+# ---------------------------------------------------------------------------
+
+
+class TestAspectResolverFR2:
+    @pytest.mark.parametrize(
+        "value,expected",
+        [
+            ("landscape", "16:9"),
+            ("portrait", "9:16"),
+            ("square", "1:1"),
+            ("4:3", "4:3"),
+            ("20:9", "20:9"),
+            ("9:19.5", "9:19.5"),
+            ("auto", "auto"),
+            ("AUTO", "auto"),
+            ("  16:9  ", "16:9"),
+        ],
+    )
+    def test_resolver_maps_aliases_and_official_values(self, value, expected):
+        from plugins.image_gen.xai import _resolve_xai_aspect_ratio
+
+        assert _resolve_xai_aspect_ratio(value) == expected
+
+    def test_resolver_invalid_soft_falls_back_to_default(self):
+        from plugins.image_gen.xai import _resolve_xai_aspect_ratio
+
+        # Invalid input must not crash; it falls back to the landscape default
+        # wire ratio rather than raising.
+        assert _resolve_xai_aspect_ratio("cinemascope") == "16:9"
+        assert _resolve_xai_aspect_ratio(None) == "16:9"
+        assert _resolve_xai_aspect_ratio(123) == "16:9"
+
+    def _post_mock(self):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = {"data": [{"b64_json": "dGVzdA=="}]}
+        return mock_resp
+
+    @pytest.mark.parametrize(
+        "requested,wire",
+        [("landscape", "16:9"), ("portrait", "9:16"), ("4:3", "4:3"), ("20:9", "20:9"), ("auto", "auto")],
+    )
+    def test_generate_payload_uses_official_wire_ratio(self, requested, wire):
+        from plugins.image_gen.xai import XAIImageGenProvider
+
+        with patch("plugins.image_gen.xai.requests.post", return_value=self._post_mock()) as mock_post, \
+             patch("plugins.image_gen.xai.save_b64_image", return_value="/tmp/x.png"):
+            XAIImageGenProvider().generate(prompt="t", aspect_ratio=requested)
+
+        payload = mock_post.call_args.kwargs.get("json") or mock_post.call_args[1].get("json")
+        assert payload["aspect_ratio"] == wire
+
+    def test_generate_echo_preserves_alias_for_backward_compat(self):
+        from plugins.image_gen.xai import XAIImageGenProvider
+
+        with patch("plugins.image_gen.xai.requests.post", return_value=self._post_mock()), \
+             patch("plugins.image_gen.xai.save_b64_image", return_value="/tmp/x.png"):
+            result = XAIImageGenProvider().generate(prompt="t", aspect_ratio="square")
+
+        # Echoed aspect_ratio keeps the caller's alias (FR10), even though the
+        # wire payload carried the official 1:1 ratio.
+        assert result["aspect_ratio"] == "square"
+
+
+# ---------------------------------------------------------------------------
+# FR3 — Multi-output generation and edit
+# ---------------------------------------------------------------------------
+
+
+class TestMultiOutputFR3:
+    def _multi_b64_mock(self):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = {
+            "data": [{"b64_json": "dGVzdA=="}, {"b64_json": "dGVzdDI="}],
+        }
+        return mock_resp
+
+    def test_generate_n_sets_payload_and_returns_all_outputs(self):
+        from plugins.image_gen.xai import XAIImageGenProvider
+
+        with patch("plugins.image_gen.xai.requests.post", return_value=self._multi_b64_mock()) as mock_post, \
+             patch(
+                 "plugins.image_gen.xai.save_b64_image",
+                 side_effect=["/tmp/a.png", "/tmp/b.png"],
+             ):
+            result = XAIImageGenProvider().generate(prompt="t", n=2)
+
+        payload = mock_post.call_args.kwargs.get("json") or mock_post.call_args[1].get("json")
+        assert payload["n"] == 2
+        # Backward compat: first output stays in result["image"].
+        assert result["image"] == "/tmp/a.png"
+        # FR3: every returned output is cached and reported in result["images"].
+        refs = [item["image"] for item in result["images"]]
+        assert refs == ["/tmp/a.png", "/tmp/b.png"]
+
+    def test_generate_default_has_no_n_and_no_images_list(self):
+        from plugins.image_gen.xai import XAIImageGenProvider
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = {"data": [{"b64_json": "dGVzdA=="}]}
+
+        with patch("plugins.image_gen.xai.requests.post", return_value=mock_resp) as mock_post, \
+             patch("plugins.image_gen.xai.save_b64_image", return_value="/tmp/a.png"):
+            result = XAIImageGenProvider().generate(prompt="t")
+
+        payload = mock_post.call_args.kwargs.get("json") or mock_post.call_args[1].get("json")
+        assert "n" not in payload
+        # Single output keeps the legacy shape — no "images" key.
+        assert "images" not in result
+
+    def test_edit_n_sets_payload_and_returns_all_outputs(self):
+        from plugins.image_gen.xai import XAIImageGenProvider
+
+        with patch("plugins.image_gen.xai.requests.post", return_value=self._multi_b64_mock()) as mock_post, \
+             patch(
+                 "plugins.image_gen.xai.save_b64_image",
+                 side_effect=["/tmp/e1.png", "/tmp/e2.png"],
+             ):
+            result = XAIImageGenProvider().edit(prompt="x", image="https://x/a.png", n=2)
+
+        payload = mock_post.call_args.kwargs.get("json") or mock_post.call_args[1].get("json")
+        assert payload["n"] == 2
+        assert result["image"] == "/tmp/e1.png"
+        assert [item["image"] for item in result["images"]] == ["/tmp/e1.png", "/tmp/e2.png"]
+
+
+# ---------------------------------------------------------------------------
+# FR5 / FR6 — File-id input and multi-image edit
+# ---------------------------------------------------------------------------
+
+
+class TestFileIdAndMultiImageFR56:
+    def _ok_mock(self):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = {"data": [{"b64_json": "dGVzdA=="}]}
+        return mock_resp
+
+    def test_single_file_id_uses_file_id_object(self):
+        from plugins.image_gen.xai import XAIImageGenProvider
+
+        with patch("plugins.image_gen.xai.requests.post", return_value=self._ok_mock()) as mock_post, \
+             patch("plugins.image_gen.xai.save_b64_image", return_value="/tmp/edited.png"):
+            result = XAIImageGenProvider().edit(prompt="x", image="file_abc123")
+
+        payload = mock_post.call_args.kwargs.get("json") or mock_post.call_args[1].get("json")
+        assert payload["image"] == {"file_id": "file_abc123"}
+        assert "url" not in payload["image"]
+        assert "images" not in payload
+        assert result["success"] is True
+
+    def test_multi_image_mixed_inputs_build_images_array(self, tmp_path):
+        from plugins.image_gen.xai import XAIImageGenProvider
+
+        src = tmp_path / "in.png"
+        src.write_bytes(_PNG_BYTES)
+        data_uri = "data:image/png;base64,dGVzdA=="
+
+        with patch("plugins.image_gen.xai.requests.post", return_value=self._ok_mock()) as mock_post, \
+             patch("plugins.image_gen.xai.save_b64_image", return_value="/tmp/edited.png"):
+            result = XAIImageGenProvider().edit(
+                prompt="combine",
+                images=[str(src), "file_xyz", "https://x/a.png", data_uri][:3],
+            )
+
+        payload = mock_post.call_args.kwargs.get("json") or mock_post.call_args[1].get("json")
+        assert "image" not in payload, "multi-image edit must not send a top-level image object"
+        imgs = payload["images"]
+        assert len(imgs) == 3
+        assert imgs[0]["type"] == "image_url"
+        assert imgs[0]["url"].startswith("data:image/png;base64,")
+        assert imgs[1] == {"file_id": "file_xyz"}
+        assert imgs[2] == {"url": "https://x/a.png", "type": "image_url"}
+        assert result["success"] is True
+
+    def test_both_image_and_images_is_invalid_input(self):
+        from plugins.image_gen.xai import XAIImageGenProvider
+
+        with patch("plugins.image_gen.xai.requests.post") as mock_post:
+            result = XAIImageGenProvider().edit(
+                prompt="x", image="https://x/a.png", images=["https://x/b.png"]
+            )
+        assert result["success"] is False
+        assert result["error_type"] == "invalid_input"
+        mock_post.assert_not_called()
+
+    def test_empty_images_list_is_invalid_input(self):
+        from plugins.image_gen.xai import XAIImageGenProvider
+
+        with patch("plugins.image_gen.xai.requests.post") as mock_post:
+            result = XAIImageGenProvider().edit(prompt="x", images=[])
+        assert result["success"] is False
+        assert result["error_type"] == "invalid_input"
+        mock_post.assert_not_called()
+
+    def test_more_than_three_images_is_invalid_input_before_network(self):
+        from plugins.image_gen.xai import XAIImageGenProvider
+
+        with patch("plugins.image_gen.xai.requests.post") as mock_post:
+            result = XAIImageGenProvider().edit(
+                prompt="x",
+                images=["https://x/1.png", "https://x/2.png", "https://x/3.png", "https://x/4.png"],
+            )
+        assert result["success"] is False
+        assert result["error_type"] == "invalid_input"
+        mock_post.assert_not_called()
+
+    def test_empty_file_id_is_invalid_input(self):
+        from plugins.image_gen.xai import XAIImageGenProvider
+
+        with patch("plugins.image_gen.xai.requests.post") as mock_post:
+            result = XAIImageGenProvider().edit(prompt="x", image="file_")
+        assert result["success"] is False
+        assert result["error_type"] == "invalid_input"
+        mock_post.assert_not_called()
+
+    def test_bad_local_path_in_images_is_invalid_input(self, tmp_path):
+        from plugins.image_gen.xai import XAIImageGenProvider
+
+        with patch("plugins.image_gen.xai.requests.post") as mock_post:
+            result = XAIImageGenProvider().edit(
+                prompt="x", images=["https://x/a.png", str(tmp_path / "nope.png")]
+            )
+        assert result["success"] is False
+        assert result["error_type"] == "invalid_input"
+        mock_post.assert_not_called()
+
+    def test_file_id_not_treated_as_local_path(self):
+        # A file id must never be probed on the local filesystem.
+        from plugins.image_gen.xai import XAIImageGenProvider
+
+        with patch("plugins.image_gen.xai.requests.post", return_value=self._ok_mock()) as mock_post, \
+             patch("plugins.image_gen.xai.local_image_to_data_uri") as mock_local, \
+             patch("plugins.image_gen.xai.save_b64_image", return_value="/tmp/edited.png"):
+            XAIImageGenProvider().edit(prompt="x", image="file_realid")
+
+        mock_local.assert_not_called()
+        payload = mock_post.call_args.kwargs.get("json") or mock_post.call_args[1].get("json")
+        assert payload["image"] == {"file_id": "file_realid"}
+
+
+# ---------------------------------------------------------------------------
+# FR7 — storage_options pass-through (default-off, no public URL by default)
+# ---------------------------------------------------------------------------
+
+
+class TestStorageOptionsFR7:
+    def _ok_mock(self):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = {"data": [{"b64_json": "dGVzdA=="}]}
+        return mock_resp
+
+    def test_no_storage_options_by_default(self):
+        from plugins.image_gen.xai import XAIImageGenProvider
+
+        with patch("plugins.image_gen.xai.requests.post", return_value=self._ok_mock()) as mock_post, \
+             patch("plugins.image_gen.xai.save_b64_image", return_value="/tmp/x.png"):
+            XAIImageGenProvider().generate(prompt="t")
+
+        payload = mock_post.call_args.kwargs.get("json") or mock_post.call_args[1].get("json")
+        assert "storage_options" not in payload
+
+    def test_valid_storage_options_pass_through(self):
+        from plugins.image_gen.xai import XAIImageGenProvider
+
+        opts = {"filename": "out.png", "expires_after": 7200, "public_url": True}
+        with patch("plugins.image_gen.xai.requests.post", return_value=self._ok_mock()) as mock_post, \
+             patch("plugins.image_gen.xai.save_b64_image", return_value="/tmp/x.png"):
+            XAIImageGenProvider().generate(prompt="t", storage_options=opts)
+
+        payload = mock_post.call_args.kwargs.get("json") or mock_post.call_args[1].get("json")
+        assert payload["storage_options"] == opts
+
+    def test_storage_options_does_not_inject_public_url(self):
+        from plugins.image_gen.xai import XAIImageGenProvider
+
+        opts = {"filename": "out.png"}
+        with patch("plugins.image_gen.xai.requests.post", return_value=self._ok_mock()) as mock_post, \
+             patch("plugins.image_gen.xai.save_b64_image", return_value="/tmp/x.png"):
+            XAIImageGenProvider().generate(prompt="t", storage_options=opts)
+
+        payload = mock_post.call_args.kwargs.get("json") or mock_post.call_args[1].get("json")
+        assert "public_url" not in payload["storage_options"]
+
+    @pytest.mark.parametrize(
+        "opts",
+        [
+            "notadict",
+            {"expires_after": 7200},  # missing filename
+            {"filename": "out.png", "expires_after": 60},  # below 3600
+            {"filename": "out.png", "expires_after": 2592001},  # above max
+            {"filename": "out.png", "expires_after": "lots"},  # wrong type
+            {"filename": "out.png", "public_url": "yes"},  # wrong public_url type
+            {"filename": "out.png", "public_url": {"expires_after": 1}},  # nested out of range
+        ],
+    )
+    def test_invalid_storage_options_rejected_before_network(self, opts):
+        from plugins.image_gen.xai import XAIImageGenProvider
+
+        with patch("plugins.image_gen.xai.requests.post") as mock_post:
+            result = XAIImageGenProvider().generate(prompt="t", storage_options=opts)
+        assert result["success"] is False
+        assert result["error_type"] == "invalid_input"
+        mock_post.assert_not_called()
+
+    def test_edit_valid_storage_options_pass_through(self):
+        from plugins.image_gen.xai import XAIImageGenProvider
+
+        opts = {"filename": "edit.png"}
+        with patch("plugins.image_gen.xai.requests.post", return_value=self._ok_mock()) as mock_post, \
+             patch("plugins.image_gen.xai.save_b64_image", return_value="/tmp/e.png"):
+            XAIImageGenProvider().edit(prompt="x", image="https://x/a.png", storage_options=opts)
+
+        payload = mock_post.call_args.kwargs.get("json") or mock_post.call_args[1].get("json")
+        assert payload["storage_options"] == opts
+
+
+# ---------------------------------------------------------------------------
+# FR8 — MIME-aware cache + response metadata preservation
+# ---------------------------------------------------------------------------
+
+
+class TestMimeAndMetadataFR8:
+    def test_webp_mime_selects_webp_extension(self):
+        from plugins.image_gen.xai import XAIImageGenProvider
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = {
+            "data": [{"b64_json": "dGVzdA==", "mime_type": "image/webp"}],
+        }
+
+        with patch("plugins.image_gen.xai.requests.post", return_value=mock_resp), \
+             patch("plugins.image_gen.xai.save_b64_image", return_value="/tmp/x.webp") as mock_save:
+            result = XAIImageGenProvider().generate(prompt="t")
+
+        _args, kwargs = mock_save.call_args
+        assert kwargs.get("extension") == "webp"
+        assert result["mime_type"] == "image/webp"
+
+    def test_jpeg_mime_selects_jpg_extension(self):
+        from plugins.image_gen.xai import XAIImageGenProvider
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = {
+            "data": [{"b64_json": "dGVzdA==", "mime_type": "image/jpeg"}],
+        }
+
+        with patch("plugins.image_gen.xai.requests.post", return_value=mock_resp), \
+             patch("plugins.image_gen.xai.save_b64_image", return_value="/tmp/x.jpg") as mock_save:
+            XAIImageGenProvider().generate(prompt="t")
+
+        assert mock_save.call_args.kwargs.get("extension") == "jpg"
+
+    def test_unknown_mime_defaults_to_png_extension(self):
+        from plugins.image_gen.xai import XAIImageGenProvider
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = {
+            "data": [{"b64_json": "dGVzdA==", "mime_type": "image/tiff"}],
+        }
+
+        with patch("plugins.image_gen.xai.requests.post", return_value=mock_resp), \
+             patch("plugins.image_gen.xai.save_b64_image", return_value="/tmp/x.png") as mock_save:
+            XAIImageGenProvider().generate(prompt="t")
+
+        assert mock_save.call_args.kwargs.get("extension") == "png"
+
+    def test_metadata_fields_preserved(self):
+        from plugins.image_gen.xai import XAIImageGenProvider
+
+        file_output = {
+            "file_id": "file_out1",
+            "filename": "out.png",
+            "expires_at": 1234567890,
+            "public_url_error": "rate_limited",
+        }
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = {
+            "data": [{"b64_json": "dGVzdA==", "mime_type": "image/png", "file_output": file_output}],
+            "storage_error": "quota",
+            "public_url_error": "blocked",
+            "usage": {"cost_in_usd_ticks": 42},
+        }
+
+        with patch("plugins.image_gen.xai.requests.post", return_value=mock_resp), \
+             patch("plugins.image_gen.xai.save_b64_image", return_value="/tmp/x.png"):
+            result = XAIImageGenProvider().generate(prompt="t")
+
+        assert result["file_output"] == file_output
+        assert result["storage_error"] == "quota"
+        assert result["public_url_error"] == "blocked"
+        assert result["usage"] == {"cost_in_usd_ticks": 42}
+
+    def test_per_image_mime_and_file_output_in_images_list(self):
+        from plugins.image_gen.xai import XAIImageGenProvider
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = {
+            "data": [
+                {"b64_json": "dGVzdA==", "mime_type": "image/png"},
+                {"b64_json": "dGVzdDI=", "mime_type": "image/webp", "file_output": {"file_id": "f2"}},
+            ],
+        }
+
+        with patch("plugins.image_gen.xai.requests.post", return_value=mock_resp), \
+             patch("plugins.image_gen.xai.save_b64_image", side_effect=["/tmp/a.png", "/tmp/b.webp"]):
+            result = XAIImageGenProvider().generate(prompt="t", n=2)
+
+        images = result["images"]
+        assert images[0]["mime_type"] == "image/png"
+        assert images[1]["mime_type"] == "image/webp"
+        assert images[1]["file_output"] == {"file_id": "f2"}
+
+
+# ---------------------------------------------------------------------------
+# FR9 — service_tier stays absent by default
+# ---------------------------------------------------------------------------
+
+
+class TestServiceTierAbsentFR9:
+    def _ok_mock(self):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = {"data": [{"b64_json": "dGVzdA=="}]}
+        return mock_resp
+
+    def test_generate_payload_has_no_service_tier(self):
+        from plugins.image_gen.xai import XAIImageGenProvider
+
+        with patch("plugins.image_gen.xai.requests.post", return_value=self._ok_mock()) as mock_post, \
+             patch("plugins.image_gen.xai.save_b64_image", return_value="/tmp/x.png"):
+            XAIImageGenProvider().generate(prompt="t")
+
+        payload = mock_post.call_args.kwargs.get("json") or mock_post.call_args[1].get("json")
+        assert "service_tier" not in payload
+
+    def test_edit_payload_has_no_service_tier(self):
+        from plugins.image_gen.xai import XAIImageGenProvider
+
+        with patch("plugins.image_gen.xai.requests.post", return_value=self._ok_mock()) as mock_post, \
+             patch("plugins.image_gen.xai.save_b64_image", return_value="/tmp/e.png"):
+            XAIImageGenProvider().edit(prompt="x", image="https://x/a.png")
+
+        payload = mock_post.call_args.kwargs.get("json") or mock_post.call_args[1].get("json")
+        assert "service_tier" not in payload
+
+
+# ---------------------------------------------------------------------------
+# FR10 — Backward compatibility of the simple success shape
+# ---------------------------------------------------------------------------
+
+
+class TestBackwardCompatFR10:
+    def test_simple_generate_shape_unchanged(self):
+        from plugins.image_gen.xai import XAIImageGenProvider
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = {"data": [{"b64_json": "dGVzdA=="}]}
+
+        with patch("plugins.image_gen.xai.requests.post", return_value=mock_resp), \
+             patch("plugins.image_gen.xai.save_b64_image", return_value="/abs/cache/path.png"):
+            result = XAIImageGenProvider().generate(prompt="A cat", aspect_ratio="square")
+
+        for key in ("success", "image", "model", "prompt", "aspect_ratio", "provider"):
+            assert key in result
+        assert result["success"] is True
+        assert result["image"] == "/abs/cache/path.png"
+        assert result["model"] == "grok-imagine-image-quality"
+        assert result["prompt"] == "A cat"
+        assert result["aspect_ratio"] == "square"
+        assert result["provider"] == "xai"
+
+    def test_simple_edit_shape_unchanged(self, tmp_path):
+        from plugins.image_gen.xai import XAIImageGenProvider
+
+        src = tmp_path / "input.png"
+        src.write_bytes(_PNG_BYTES)
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = {"data": [{"b64_json": "dGVzdA=="}]}
+
+        with patch("plugins.image_gen.xai.requests.post", return_value=mock_resp), \
+             patch("plugins.image_gen.xai.save_b64_image", return_value="/abs/cache/edit.png"):
+            result = XAIImageGenProvider().edit(prompt="make it blue", image=str(src))
+
+        assert result["success"] is True
+        assert result["image"] == "/abs/cache/edit.png"
+        assert result["provider"] == "xai"
+        assert result["model"] == "grok-imagine-image-quality"
 
 
 # ---------------------------------------------------------------------------
