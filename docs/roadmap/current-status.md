@@ -11,9 +11,20 @@
 ```json
 {
   "base_branch": "release/sachima",
-  "base_head": "7896a0e6952a850c828829abca79709ffb8974db",
+  "base_head": "3458c364929484bfcc82c93ab33f14e3a3674477",
   "base_head_note": "latest first-parent base commit excluding machine status-sync self-commits",
   "latest_merged_prs": [
+    {
+      "baseRefName": "release/sachima",
+      "headRefName": "feat/xai-imagine-api-refresh",
+      "mergeCommit": {
+        "oid": "3458c364929484bfcc82c93ab33f14e3a3674477"
+      },
+      "mergedAt": "2026-06-19T09:20:03Z",
+      "number": 152,
+      "title": "feat: refresh xAI Imagine image provider",
+      "url": "https://github.com/jovijovi/sachima/pull/152"
+    },
     {
       "baseRefName": "release/sachima",
       "headRefName": "fix/feishu-progress-card-patch-coalesce-retry",
@@ -57,17 +68,6 @@
       "number": 148,
       "title": "docs: prepare P5 runtime adapter implementation scope",
       "url": "https://github.com/jovijovi/sachima/pull/148"
-    },
-    {
-      "baseRefName": "release/sachima",
-      "headRefName": "docs/p5-durable-runtime-readiness",
-      "mergeCommit": {
-        "oid": "6c11a40d4de3e66981c3ff27905c1785b1709e0a"
-      },
-      "mergedAt": "2026-06-18T03:36:51Z",
-      "number": 147,
-      "title": "docs: prepare P5 durable runtime readiness",
-      "url": "https://github.com/jovijovi/sachima/pull/147"
     }
   ],
   "open_pr_count": 0,
