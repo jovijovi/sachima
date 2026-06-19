@@ -562,6 +562,24 @@ class TestEdit:
         payload = mock_post.call_args.kwargs.get("json") or mock_post.call_args[1].get("json")
         assert payload["response_format"] == "b64_json"
 
+    def test_edit_payload_uses_configured_resolution(self):
+        """Reference-image edits should honor image_gen.xai.resolution like generation."""
+        from plugins.image_gen.xai import XAIImageGenProvider
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = {"data": [{"b64_json": "dGVzdA=="}]}
+
+        with patch("plugins.image_gen.xai._load_xai_config", return_value={"resolution": "2k"}), \
+             patch("plugins.image_gen.xai.requests.post", return_value=mock_resp) as mock_post, \
+             patch("plugins.image_gen.xai.save_b64_image", return_value="/tmp/edited.png"):
+            result = XAIImageGenProvider().edit(prompt="x", image="https://x/a.png")
+
+        payload = mock_post.call_args.kwargs.get("json") or mock_post.call_args[1].get("json")
+        assert payload["resolution"] == "2k"
+        assert result["resolution"] == "2k"
+
 
 # ---------------------------------------------------------------------------
 # FR1 — Model catalog and default

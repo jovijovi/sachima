@@ -690,6 +690,8 @@ class XAIImageGenProvider(ImageGenProvider):
 
         model_id, _meta = _resolve_model()
         xai_ar = _resolve_xai_aspect_ratio(aspect_ratio)
+        resolution = _resolve_resolution()
+        xai_res = resolution if resolution in _XAI_RESOLUTIONS else DEFAULT_RESOLUTION
 
         payload: Dict[str, Any] = {
             "model": model_id,
@@ -698,6 +700,10 @@ class XAIImageGenProvider(ImageGenProvider):
             # first-input default for multi-image edits and ignores it where
             # single-image output must follow the input ratio.
             "aspect_ratio": xai_ar,
+            # xAI Imagine edits accept the same literal resolution values as
+            # generations ("1k" / "2k"). Honor image_gen.xai.resolution so
+            # reference-image edits do not silently downshift to service default.
+            "resolution": xai_res,
             # Prefer inline bytes over xAI's ephemeral imgen.x.ai URLs.
             "response_format": "b64_json",
         }
@@ -776,7 +782,7 @@ class XAIImageGenProvider(ImageGenProvider):
             prompt=prompt,
             aspect_ratio=aspect_echo,
             provider="xai",
-            extra=_build_response_extra(result, outputs, n=n),
+            extra=_build_response_extra(result, outputs, base_extra={"resolution": xai_res}, n=n),
         )
 
 
