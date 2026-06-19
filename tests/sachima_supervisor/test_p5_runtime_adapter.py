@@ -500,6 +500,55 @@ def test_durable_claim_store_recomputed_digest_forged_outcome_fails_closed(tmp_p
     assert snapshot["error_code"] == "runtime_adapter_store_invalid"
 
 
+def test_durable_claim_store_deterministic_shape_forged_attempt_fails_closed(tmp_path) -> None:
+    mod = _adapter_module()
+    store_path = tmp_path / "p5_claim_store.json"
+    request = _step_request("architect")
+    binding = _binding_for("architect")
+
+    first_adapter = _make_adapter(
+        mod, claim_store=mod.P5LocalOfflineDurableClaimStore(store_path)
+    )
+    first = first_adapter.execute(request, role_binding=binding, resolved_inputs=())
+    assert first.ok is True
+
+    data = json.loads(store_path.read_text(encoding="utf-8"))
+    record = data["records"][0]
+    forged_payload = {
+        "run_id": "run_p5",
+        "step_id": "architect",
+        "attempt_index": 2,
+        "role_key": "sachima.claude.read_only_reviewer",
+        "kind": "architecture_packet",
+    }
+    forged_ref = record["outcome"]["artifact_refs"][0]
+    forged_ref["artifact_id"] = "p5_artifact_run_p5_architect_2"
+    forged_ref["content_digest"] = mod._digest_ref(forged_payload)
+    forged_ref["byte_count"] = len(json.dumps(forged_payload, sort_keys=True).encode("utf-8"))
+    record["record_digest"] = mod._record_integrity_digest(
+        idempotency_key=record["idempotency_key"],
+        run_id=record["run_id"],
+        step_id=record["step_id"],
+        fingerprint=record["fingerprint"],
+        state=record["state"],
+        snapshot_version=record["snapshot_version"],
+        outcome_projection=record["outcome"],
+    )
+    store_path.write_text(json.dumps(data, sort_keys=True, separators=(",", ":")), encoding="utf-8")
+
+    restarted_adapter = _make_adapter(
+        mod, claim_store=mod.P5LocalOfflineDurableClaimStore(store_path)
+    )
+    replay = restarted_adapter.execute(request, role_binding=binding, resolved_inputs=())
+
+    assert replay.ok is False
+    assert replay.error_code == "runtime_adapter_store_invalid"
+    assert restarted_adapter.launch_count == 0
+    snapshot = restarted_adapter.query(run_id=request.run_id, step_id=request.step_id)
+    assert snapshot["state"] == "store_invalid"
+    assert snapshot["error_code"] == "runtime_adapter_store_invalid"
+
+
 def test_durable_claim_store_conflict_after_restart_fails_closed_no_launch(tmp_path) -> None:
     mod = _adapter_module()
     store_path = tmp_path / "p5_claim_store.json"

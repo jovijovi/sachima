@@ -714,6 +714,21 @@ class P5LocalOfflineRuntimeAdapter:
                         error_code="runtime_adapter_idempotency_conflict",
                     )
                     return _failure("runtime_adapter_idempotency_conflict")
+                expected_outcome = self._build_success_outcome(
+                    request=request,
+                    role_binding=role_binding,
+                    attempt_index=attempt_index,
+                    fingerprint=fingerprint,
+                )
+                if _outcome_projection(existing.outcome) != _outcome_projection(expected_outcome):
+                    self._store_error_code = "runtime_adapter_store_invalid"
+                    self._record_event(
+                        "execute_rejected",
+                        run_id=run_id,
+                        step_id=step_id,
+                        error_code="runtime_adapter_store_invalid",
+                    )
+                    return _failure("runtime_adapter_store_invalid")
                 if not self._record_event("execute_replayed", run_id=run_id, step_id=step_id):
                     return _failure(self._store_error_code or "runtime_adapter_store_write_failed")
                 return existing.outcome
@@ -727,17 +742,11 @@ class P5LocalOfflineRuntimeAdapter:
                 )
                 return _failure("runtime_adapter_step_conflict")
 
-            artifact = self._build_artifact_ref(
-                request=request, role_binding=role_binding, attempt_index=attempt_index
-            )
-            outcome = StepExecutionOutcome(
-                ok=True,
-                step_status="completed",
-                artifact_refs=(artifact,),
-                evidence_ref=f"p5_evidence_{_digest_hex({'run_id': run_id, 'step_id': step_id})[:16]}",
-                evidence_digest=_digest_ref(
-                    {"run_id": run_id, "step_id": step_id, "fingerprint": fingerprint}
-                ),
+            outcome = self._build_success_outcome(
+                request=request,
+                role_binding=role_binding,
+                attempt_index=attempt_index,
+                fingerprint=fingerprint,
             )
             record = _Record(
                 idempotency_key=idem,
@@ -874,6 +883,29 @@ class P5LocalOfflineRuntimeAdapter:
         return json.dumps(
             self.history_projection(), sort_keys=True, separators=(",", ":")
         ).encode("utf-8")
+
+    def _build_success_outcome(
+        self,
+        *,
+        request: Any,
+        role_binding: Any,
+        attempt_index: int,
+        fingerprint: str,
+    ) -> StepExecutionOutcome:
+        run_id = _safe_ref(str(getattr(request, "run_id", "missing_run")))
+        step_id = _safe_ref(str(getattr(request, "step_id", "missing_step")))
+        artifact = self._build_artifact_ref(
+            request=request, role_binding=role_binding, attempt_index=attempt_index
+        )
+        return StepExecutionOutcome(
+            ok=True,
+            step_status="completed",
+            artifact_refs=(artifact,),
+            evidence_ref=f"p5_evidence_{_digest_hex({'run_id': run_id, 'step_id': step_id})[:16]}",
+            evidence_digest=_digest_ref(
+                {"run_id": run_id, "step_id": step_id, "fingerprint": fingerprint}
+            ),
+        )
 
     def _build_artifact_ref(
         self, *, request: Any, role_binding: Any, attempt_index: int
