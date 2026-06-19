@@ -460,6 +460,46 @@ def test_durable_claim_store_forged_persisted_outcome_after_restart_fails_closed
     assert snapshot["error_code"] == "runtime_adapter_store_invalid"
 
 
+def test_durable_claim_store_recomputed_digest_forged_outcome_fails_closed(tmp_path) -> None:
+    mod = _adapter_module()
+    store_path = tmp_path / "p5_claim_store.json"
+    request = _step_request("architect")
+    binding = _binding_for("architect")
+
+    first_adapter = _make_adapter(
+        mod, claim_store=mod.P5LocalOfflineDurableClaimStore(store_path)
+    )
+    first = first_adapter.execute(request, role_binding=binding, resolved_inputs=())
+    assert first.ok is True
+
+    data = json.loads(store_path.read_text(encoding="utf-8"))
+    record = data["records"][0]
+    record["outcome"]["artifact_refs"][0]["artifact_id"] = "p5_artifact_forged_safe_id"
+    record["outcome"]["artifact_refs"][0]["content_digest"] = "sha256:" + "c" * 64
+    record["record_digest"] = mod._record_integrity_digest(
+        idempotency_key=record["idempotency_key"],
+        run_id=record["run_id"],
+        step_id=record["step_id"],
+        fingerprint=record["fingerprint"],
+        state=record["state"],
+        snapshot_version=record["snapshot_version"],
+        outcome_projection=record["outcome"],
+    )
+    store_path.write_text(json.dumps(data, sort_keys=True, separators=(",", ":")), encoding="utf-8")
+
+    restarted_adapter = _make_adapter(
+        mod, claim_store=mod.P5LocalOfflineDurableClaimStore(store_path)
+    )
+    replay = restarted_adapter.execute(request, role_binding=binding, resolved_inputs=())
+
+    assert replay.ok is False
+    assert replay.error_code == "runtime_adapter_store_invalid"
+    assert restarted_adapter.launch_count == 0
+    snapshot = restarted_adapter.query(run_id=request.run_id, step_id=request.step_id)
+    assert snapshot["state"] == "store_invalid"
+    assert snapshot["error_code"] == "runtime_adapter_store_invalid"
+
+
 def test_durable_claim_store_conflict_after_restart_fails_closed_no_launch(tmp_path) -> None:
     mod = _adapter_module()
     store_path = tmp_path / "p5_claim_store.json"

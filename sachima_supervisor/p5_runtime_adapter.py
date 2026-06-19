@@ -57,6 +57,11 @@ _OUTPUT_CONTRACT_BY_STEP: dict[str, str] = {
     "programmer_candidate": "implementation_candidate_analysis",
     "reviewer": "blocker_review",
 }
+_ROLE_KEY_BY_STEP: dict[str, str] = {
+    "architect": "sachima.claude.read_only_reviewer",
+    "programmer_candidate": "sachima.claude.read_only_reviewer",
+    "reviewer": "sachima.codex.primary_reviewer",
+}
 _FINGERPRINT_FIELDS: tuple[str, ...] = (
     "artifact_id",
     "producer_step_id",
@@ -297,10 +302,10 @@ def _record_integrity_digest(
     snapshot_version: int,
     outcome_projection: dict[str, Any],
 ) -> str:
-    """Canonical record-integrity digest binding the outcome to its record.
+    """Canonical consistency digest for the persisted record projection.
 
-    Computed over the sanitized record payload so a persisted outcome cannot be
-    forged independently of the record fingerprint across a restart/replay.
+    This catches accidental or partial dirty writes. Replay safety also validates
+    the outcome against the deterministic fake adapter output for the record.
     """
 
     return _digest_ref(
@@ -314,6 +319,86 @@ def _record_integrity_digest(
             "outcome": outcome_projection,
         }
     )
+
+
+def _expected_completed_outcome_projection_for_record(
+    *,
+    run_id: str,
+    step_id: str,
+    fingerprint: str,
+    outcome_projection: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Rebuild the only accepted completed fake outcome for a stored record."""
+
+    role_key = _ROLE_KEY_BY_STEP.get(step_id)
+    if role_key is None:
+        return None
+    refs = outcome_projection.get("artifact_refs")
+    if not isinstance(refs, list) or len(refs) != 1:
+        return None
+    ref = refs[0]
+    if not isinstance(ref, Mapping):
+        return None
+    try:
+        artifact_ref = dict(ref)
+    except Exception:
+        return None
+    if set(artifact_ref) != set(_FINGERPRINT_FIELDS):
+        return None
+    artifact_id = artifact_ref.get("artifact_id")
+    prefix = f"p5_artifact_{run_id}_{step_id}_"
+    if type(artifact_id) is not str or not artifact_id.startswith(prefix):
+        return None
+    attempt_text = artifact_id[len(prefix) :]
+    if re.fullmatch(r"[1-9][0-9]*", attempt_text) is None:
+        return None
+    attempt_index = int(attempt_text)
+    kind = _safe_artifact_kind(step_id)
+    body_digest_payload = {
+        "run_id": run_id,
+        "step_id": step_id,
+        "attempt_index": attempt_index,
+        "role_key": role_key,
+        "kind": kind,
+    }
+    expected_ref = {
+        "artifact_id": artifact_id,
+        "producer_step_id": step_id,
+        "content_digest": _digest_ref(body_digest_payload),
+        "artifact_kind": kind,
+        "byte_count": len(json.dumps(body_digest_payload, sort_keys=True).encode("utf-8")),
+        "created_at_ref": "created_at_ref_p5_local_0001",
+    }
+    return {
+        "ok": True,
+        "step_status": "completed",
+        "artifact_refs": [expected_ref],
+        "evidence_ref": f"p5_evidence_{_digest_hex({'run_id': run_id, 'step_id': step_id})[:16]}",
+        "evidence_digest": _digest_ref(
+            {"run_id": run_id, "step_id": step_id, "fingerprint": fingerprint}
+        ),
+        "error_code": None,
+        "retryable": False,
+        "interrupted": False,
+        "cleanup_verified": False,
+        "ambiguous": False,
+    }
+
+
+def _completed_outcome_matches_record(
+    *,
+    run_id: str,
+    step_id: str,
+    fingerprint: str,
+    outcome_projection: dict[str, Any],
+) -> bool:
+    expected = _expected_completed_outcome_projection_for_record(
+        run_id=run_id,
+        step_id=step_id,
+        fingerprint=fingerprint,
+        outcome_projection=outcome_projection,
+    )
+    return expected is not None and outcome_projection == expected
 
 
 def _record_projection(record: _Record) -> dict[str, Any]:
@@ -353,7 +438,13 @@ def _record_from_projection(value: Any) -> _Record | None:
     fingerprint = projection.get("fingerprint")
     state = projection.get("state")
     snapshot_version = projection.get("snapshot_version")
-    if not all(type(item) is str for item in (idempotency_key, run_id, step_id, fingerprint, state)):
+    if not (
+        type(idempotency_key) is str
+        and type(run_id) is str
+        and type(step_id) is str
+        and type(fingerprint) is str
+        and type(state) is str
+    ):
         return None
     if not all(_REF_RE.fullmatch(item) for item in (idempotency_key, run_id, step_id, state)):
         return None
@@ -363,6 +454,14 @@ def _record_from_projection(value: Any) -> _Record | None:
         return None
     outcome = _outcome_from_projection(projection.get("outcome"))
     if outcome is None:
+        return None
+    outcome_projection = _outcome_projection(outcome)
+    if state != "completed" or not _completed_outcome_matches_record(
+        run_id=run_id,
+        step_id=step_id,
+        fingerprint=fingerprint,
+        outcome_projection=outcome_projection,
+    ):
         return None
     record_digest = projection.get("record_digest")
     if type(record_digest) is not str:
@@ -374,7 +473,7 @@ def _record_from_projection(value: Any) -> _Record | None:
         fingerprint=fingerprint,
         state=state,
         snapshot_version=snapshot_version,
-        outcome_projection=_outcome_projection(outcome),
+        outcome_projection=outcome_projection,
     )
     if record_digest != expected_digest:
         return None
