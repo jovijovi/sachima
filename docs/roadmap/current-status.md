@@ -11,9 +11,20 @@
 ```json
 {
   "base_branch": "release/sachima",
-  "base_head": "21f8c1647ac9e6007183cc1f458af38bcc57fa7e",
+  "base_head": "7896a0e6952a850c828829abca79709ffb8974db",
   "base_head_note": "latest first-parent base commit excluding machine status-sync self-commits",
   "latest_merged_prs": [
+    {
+      "baseRefName": "release/sachima",
+      "headRefName": "fix/feishu-progress-card-patch-coalesce-retry",
+      "mergeCommit": {
+        "oid": "7896a0e6952a850c828829abca79709ffb8974db"
+      },
+      "mergedAt": "2026-06-19T04:04:14Z",
+      "number": 151,
+      "title": "fix: harden Feishu progress card patch retries",
+      "url": "https://github.com/jovijovi/sachima/pull/151"
+    },
     {
       "baseRefName": "release/sachima",
       "headRefName": "feat/p5-durable-claim-store-restart-recovery",
@@ -57,17 +68,6 @@
       "number": 147,
       "title": "docs: prepare P5 durable runtime readiness",
       "url": "https://github.com/jovijovi/sachima/pull/147"
-    },
-    {
-      "baseRefName": "release/sachima",
-      "headRefName": "docs/wp4-pr145-post-merge-status-sync",
-      "mergeCommit": {
-        "oid": "41e645189aa4de889c95b97a61a6d4fbb76783cd"
-      },
-      "mergedAt": "2026-06-18T01:32:44Z",
-      "number": 146,
-      "title": "docs: sync WP4 implementation merge status",
-      "url": "https://github.com/jovijovi/sachima/pull/146"
     }
   ],
   "open_pr_count": 0,
