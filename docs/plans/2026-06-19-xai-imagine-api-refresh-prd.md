@@ -39,25 +39,25 @@ Authority and live truth checked before drafting:
 
 Use these official sources as the product/API authority for this PR:
 
-1. Imagine Overview  
+1. Imagine Overview
    https://docs.x.ai/developers/model-capabilities/imagine
-2. Image Generation  
+2. Image Generation
    https://docs.x.ai/developers/model-capabilities/images/generation
-3. Image Editing  
+3. Image Editing
    https://docs.x.ai/developers/model-capabilities/images/editing
-4. Multi-Image Editing  
+4. Multi-Image Editing
    https://docs.x.ai/developers/model-capabilities/images/multi-image-editing
-5. REST API Reference — Images  
+5. REST API Reference — Images
    https://docs.x.ai/developers/rest-api-reference/inference/images
-6. Imagine Files API integration — inputs  
+6. Imagine Files API integration — inputs
    https://docs.x.ai/developers/model-capabilities/imagine/files/inputs
-7. Imagine Files API integration — outputs / `storage_options`  
+7. Imagine Files API integration — outputs / `storage_options`
    https://docs.x.ai/developers/model-capabilities/imagine/files/outputs
-8. Models / Imagine pricing  
+8. Models / Imagine pricing
    https://docs.x.ai/developers/models#imagine-pricing
-9. Release Notes  
+9. Release Notes
    https://docs.x.ai/developers/release-notes
-10. Priority Processing docs, for the unresolved `service_tier` note  
+10. Priority Processing docs, for the unresolved `service_tier` note
     https://docs.x.ai/developers/advanced-api-usage/priority-processing
 
 ## Official API facts extracted on 2026-06-19
