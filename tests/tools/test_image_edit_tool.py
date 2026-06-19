@@ -27,7 +27,7 @@ class _FakeEditProvider(ImageGenProvider):
     def generate(self, prompt, aspect_ratio="landscape", **kw):
         return {"success": True, "image": "/tmp/gen.png", "provider": "fakeedit"}
 
-    def edit(self, prompt, image, aspect_ratio="landscape", **kw):
+    def edit(self, prompt, image=None, aspect_ratio="landscape", *, images=None, **kw):
         return {
             "success": True,
             "image": "/tmp/edited.png",
@@ -36,6 +36,7 @@ class _FakeEditProvider(ImageGenProvider):
             "aspect_ratio": aspect_ratio,
             "provider": "fakeedit",
             "_received_image": image,
+            "_received_images": images,
         }
 
 
