@@ -70,8 +70,18 @@
       "url": "https://github.com/jovijovi/sachima/pull/150"
     }
   ],
-  "open_pr_count": 0,
-  "open_prs": [],
+  "open_pr_count": 1,
+  "open_prs": [
+    {
+      "baseRefName": "release/sachima",
+      "headRefName": "docs/p5-temporal-pr-b-predev-governance",
+      "isDraft": false,
+      "mergeStateStatus": "CLEAN",
+      "number": 155,
+      "title": "docs: prepare P5 Temporal PR B governance",
+      "url": "https://github.com/jovijovi/sachima/pull/155"
+    }
+  ],
   "repository": "jovijovi/sachima",
   "scope_note": "machine dynamic status only; approvals and phase meaning remain human-authored outside this block"
 }
@@ -166,7 +176,7 @@ latest_p5_temporal_production_runtime_enablement_slice_1_design_readiness: agent
 latest_p5_temporal_production_runtime_enablement_slice_1_design_readiness_doc: docs/plans/2026-06-20-agent-run-supervisor-sachima-p5-temporal-production-runtime-enablement-slice-1-design-readiness.md
 latest_p5_temporal_production_runtime_enablement_slice_1_design_readiness_manifest: docs/plans/2026-06-20-agent-run-supervisor-sachima-p5-temporal-production-runtime-enablement-slice-1-design-readiness-manifest.yaml
 latest_p5_temporal_production_runtime_enablement_slice_1_design_readiness_dev_log: docs/dev_log/2026-06-20-agent-run-supervisor-sachima-p5-temporal-production-runtime-enablement-slice-1-design-readiness.md
-latest_p5_temporal_pr_b_predev_governance: agent-run-supervisor × Sachima P5 Temporal PR B pre-development governance (current docs-only candidate branch `docs/p5-temporal-pr-b-predev-governance`; writes PRD, PRD quality review, Claude teach-back, no-code technical solution, technical review, and folds PR #154 post-merge docs-tail cleanup; starts no implementation, Temporal service/Worker, workflow/activity, acpx/npx/agent, Gateway/Feishu/live behavior, production config, or real delivery)
+latest_p5_temporal_pr_b_predev_governance: agent-run-supervisor × Sachima P5 Temporal PR B pre-development governance (current docs-only candidate PR #155, branch `docs/p5-temporal-pr-b-predev-governance`, head `2eb7114f8d351eb29ca34fc8c35f5fab999e19b7`; writes PRD, PRD quality review, Claude teach-back, no-code technical solution, technical review, and folds PR #154 post-merge docs-tail cleanup; starts no implementation, Temporal service/Worker, workflow/activity, acpx/npx/agent, Gateway/Feishu/live behavior, production config, or real delivery)
 latest_p5_temporal_pr_b_predev_governance_prd: docs/plans/2026-06-20-agent-run-supervisor-sachima-p5-temporal-pr-b-predev-governance-prd.md
 latest_p5_temporal_pr_b_predev_governance_manifest: docs/plans/2026-06-20-agent-run-supervisor-sachima-p5-temporal-pr-b-predev-governance-manifest.yaml
 latest_p5_temporal_pr_b_predev_governance_dev_log: docs/dev_log/2026-06-20-agent-run-supervisor-sachima-p5-temporal-pr-b-predev-governance.md
@@ -174,8 +184,8 @@ latest_protocol_repo: jovijovi/sachima-protocols
 latest_protocol_spec: https://github.com/jovijovi/sachima-protocols/blob/main/protocols/envelope/v1.md
 latest_protocol_implementation: P4 Sachima Envelope v1 local conformance implementation (Sachima-side)
 latest_protocol_implementation_doc: docs/dev_log/2026-05-13-sachima-envelope-v1-local-conformance-implementation.md
-current_position: P5 Temporal production runtime enablement Slice 1 design/readiness (PR A) is MERGED in PR #154 (`f465186cc96bc182eab00b1de039ed8258f06ac8`, mergedAt 2026-06-20T05:48:26Z). Current candidate work is the docs-only **P5 Temporal PR B pre-development governance** branch `docs/p5-temporal-pr-b-predev-governance`: it writes the PRD, performs PRD quality review, obtains Claude teach-back, produces/reviews the no-code technical solution, and fixes PR #154 post-merge docs tails. It starts no implementation or runtime. PR B implementation remains a later separately approved code-bearing PR under the hermetic-local + staging-only Temporal lifecycle grant; production cluster, production traffic, P6 real acpx/agent execution, Gateway-owned lifecycle, write roles, live/Gateway/Feishu/production config, and real delivery remain separate and unapproved; WP3b active-run cancellation WATCH remains.
-implementation_marker_note: no live / no Gateway / no real delivery; WP4 controlled AI FLOW local/offline injected-fakes implementation merged in PR #145; P5 design/readiness / prep / local-offline adapter / durable claim-store gates merged in PRs #147-#150; P5 Temporal Slice 1 design/readiness PR A merged in PR #154 (`f465186cc96bc182eab00b1de039ed8258f06ac8`, mergedAt 2026-06-20T05:48:26Z). Current candidate is this docs-only PR B pre-development governance branch `docs/p5-temporal-pr-b-predev-governance`. It approves no implementation, no Temporal/Worker start, no workflow/activity execution, no acpx/npx/agent invocation, no production cluster/traffic, no P6 real acpx/agent execution, no write roles, and no live/Gateway/Feishu/production/real delivery; WP3b active-run cancellation WATCH preserved.
+current_position: P5 Temporal production runtime enablement Slice 1 design/readiness (PR A) is MERGED in PR #154 (`f465186cc96bc182eab00b1de039ed8258f06ac8`, mergedAt 2026-06-20T05:48:26Z). Current candidate work is the docs-only **P5 Temporal PR B pre-development governance** PR #155 (`https://github.com/jovijovi/sachima/pull/155`) on branch `docs/p5-temporal-pr-b-predev-governance`: it writes the PRD, performs PRD quality review, obtains Claude teach-back, produces/reviews the no-code technical solution, and fixes PR #154 post-merge docs tails. It starts no implementation or runtime. PR B implementation remains a later separately approved code-bearing PR under the hermetic-local + staging-only Temporal lifecycle grant; production cluster, production traffic, P6 real acpx/agent execution, Gateway-owned lifecycle, write roles, live/Gateway/Feishu/production config, and real delivery remain separate and unapproved; WP3b active-run cancellation WATCH remains.
+implementation_marker_note: no live / no Gateway / no real delivery; WP4 controlled AI FLOW local/offline injected-fakes implementation merged in PR #145; P5 design/readiness / prep / local-offline adapter / durable claim-store gates merged in PRs #147-#150; P5 Temporal Slice 1 design/readiness PR A merged in PR #154 (`f465186cc96bc182eab00b1de039ed8258f06ac8`, mergedAt 2026-06-20T05:48:26Z). Current candidate is docs-only PR B pre-development governance PR #155 on branch `docs/p5-temporal-pr-b-predev-governance`. It approves no implementation, no Temporal/Worker start, no workflow/activity execution, no acpx/npx/agent invocation, no production cluster/traffic, no P6 real acpx/agent execution, no write roles, and no live/Gateway/Feishu/production/real delivery; WP3b active-run cancellation WATCH preserved.
 ```
 
 ## Canonical references
@@ -360,7 +370,7 @@ Runtime evidence stays outside PR payloads unless a phase explicitly approves ve
 | ROADMAP-NEXT-ARS-P5-RUNTIME-ADAPTER-IMPL | NEXT_PHASE | P5 local/offline runtime-adapter implementation required separate approval after PR #148. PR #149 added only a default-off, caller-owned, fake/injected adapter behind the WP4 executor Protocol seam. | No | No | N/A for the merged local/offline fake adapter slice; any durable backend attach, real runtime/Worker start, controlled AI FLOW execution (P6), or live/Gateway/Feishu/production/real-delivery request remains separately gated | PR #149 merge `58d1b9b87f6f68bd8099a2d7695edbacdaf6716e`; focused tests, no-leak JSON/history-byte scans, forbidden-surface static guard, Codex blocker review, PR CI | Closed by PR #149 |
 | ROADMAP-NEXT-ARS-P5-DURABLE-CLAIM-STORE-RESTART-RECOVERY | NEXT_PHASE | P5 durable claim-store / restart-recovery implementation requires separate approval after PR #149. The merged branch adds only a caller-supplied local/offline JSON claim store for the fake adapter and restart replay/query/recover proof. | No | Yes | Any external durable backend attach, real runtime/Worker start, external Temporal/Worker lifecycle, controlled AI FLOW execution (P6), or live/Gateway/Feishu/production/real-delivery request | Approval in chat for this gate; focused durable tests, full adapter tests, compatibility tests, full supervisor suite, sync/status check, forbidden-surface and no-leak scans, Codex blocker review, PR CI | Closed by PR #150 (merge commit `21f8c1647ac9e6007183cc1f458af38bcc57fa7e`, mergedAt 2026-06-19T01:35:47Z) |
 | ROADMAP-NEXT-ARS-P5-TEMPORAL-PRODUCTION-RUNTIME-SLICE-1 | NEXT_PHASE | P5 Temporal production runtime enablement Slice 1 PR A selected Temporal as the durable backend and recorded the GRANTED external Temporal service/Worker lifecycle token scoped to hermetic-local + staging namespace only and ops-owned. PR B implements the `sachima_supervisor/p5_temporal/` modules under that token only after pre-development governance and user approval. | No | No | N/A for PR A; PR B implementation remains separately approved | PR #154 merged (`f465186cc96bc182eab00b1de039ed8258f06ac8`, mergedAt 2026-06-20T05:48:26Z); docs/status-only PR A, no runtime started. Production cluster, production traffic, and P6 real agent execution remain separate gates. | Closed by PR #154 |
-| ROADMAP-NEXT-ARS-P5-TEMPORAL-PR-B-PREDEV-GOVERNANCE | NEXT_PHASE | P5 Temporal PR B must pass pre-development governance before implementation: PRD, PRD quality review, Claude teach-back, no-code technical solution, independent technical review, and PR #154 docs-tail cleanup. | No | Yes | Any PR B implementation, Worker/service start, hermetic-local/staging Temporal run, or P6/production expansion | This docs-only branch `docs/p5-temporal-pr-b-predev-governance`; PRD/review/teach-back/technical-solution artifacts; changed-file docs-only allowlist; `sync_roadmap_status --check`; no implementation/runtime starts | Open on `docs/p5-temporal-pr-b-predev-governance` |
+| ROADMAP-NEXT-ARS-P5-TEMPORAL-PR-B-PREDEV-GOVERNANCE | NEXT_PHASE | P5 Temporal PR B must pass pre-development governance before implementation: PRD, PRD quality review, Claude teach-back, no-code technical solution, independent technical review, and PR #154 docs-tail cleanup. | No | Yes | Any PR B implementation, Worker/service start, hermetic-local/staging Temporal run, or P6/production expansion | PR #155 (`https://github.com/jovijovi/sachima/pull/155`) on branch `docs/p5-temporal-pr-b-predev-governance`; PRD/review/teach-back/technical-solution artifacts; changed-file docs-only allowlist; `sync_roadmap_status --check`; no implementation/runtime starts | Open PR #155 |
 
 ## Explicit non-approvals
 
@@ -400,7 +410,7 @@ The agent-run-supervisor Sachima local/offline integration design packet additio
 
 ## Next allowed request
 
-PR #154 has merged as the P5 Temporal Slice 1 design/readiness PR A (`f465186cc96bc182eab00b1de039ed8258f06ac8`, mergedAt 2026-06-20T05:48:26Z). The next allowed mainline step is **not direct implementation yet**; it is this approved docs-only PR B pre-development governance gate:
+PR #154 has merged as the P5 Temporal Slice 1 design/readiness PR A (`f465186cc96bc182eab00b1de039ed8258f06ac8`, mergedAt 2026-06-20T05:48:26Z). The next allowed mainline step is **not direct implementation yet**; it is the now-open docs-only PR B pre-development governance PR #155 (`https://github.com/jovijovi/sachima/pull/155`):
 
 ```text
 P5 Temporal PR B pre-development governance:
