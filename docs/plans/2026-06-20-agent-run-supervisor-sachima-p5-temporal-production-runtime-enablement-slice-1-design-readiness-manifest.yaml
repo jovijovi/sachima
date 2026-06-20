@@ -22,6 +22,11 @@ base_head_note: >-
   status-sync convention the latest non-status-sync first-parent base is PR #153
   merge commit 1e84ed198340b1067d261f65381285181b4376b2.
 branch: docs/p5-temporal-production-runtime-enablement-slice-1
+pr_number: 154
+pr_url: https://github.com/jovijovi/sachima/pull/154
+pr_state: OPEN
+pr_opened_at: '2026-06-20T04:33:44Z'
+merge_commit: null
 created_at: '2026-06-20'
 owner_dri: Hermes operator under Sachima governed task
 architect_plan_ref: local_operator_claude_code_architect_plan_not_committed
@@ -294,7 +299,8 @@ pr_a_scope:
   runs_workflow_or_activity: false
   invokes_acpx_npx_agent: false
   writes_gateway_feishu_production_config: false
-  edits_machine_status_block: false
+  edits_machine_status_block: true
+  machine_status_block_reason: regenerated after PR open so current-status records PR #154 as the live open PR
   changed_files:
     - docs/plans/2026-06-20-agent-run-supervisor-sachima-p5-temporal-production-runtime-enablement-slice-1-design-readiness.md
     - docs/plans/2026-06-20-agent-run-supervisor-sachima-p5-temporal-production-runtime-enablement-slice-1-design-readiness-manifest.yaml
