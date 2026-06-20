@@ -2,9 +2,9 @@
 
 Date: 2026-06-20
 Branch: `docs/p5-temporal-production-runtime-enablement-slice-1`
-PR: [#154](https://github.com/jovijovi/sachima/pull/154) — OPEN
+PR: [#154](https://github.com/jovijovi/sachima/pull/154) — MERGED (`f465186cc96bc182eab00b1de039ed8258f06ac8`, mergedAt 2026-06-20T05:48:26Z)
 Base: `release/sachima` at `b92d259f3cb765f92b2250e06fd3ac9ba43ae5fe` (branch tip is a `[skip status-sync]` self-commit; latest non-status-sync base is PR #153 `1e84ed198340b1067d261f65381285181b4376b2`)
-Status: PR A — docs-only design/readiness. No runtime started by this PR.
+Status: MERGED PR A — docs-only design/readiness. No runtime started by this PR.
 
 ## Why the framing changed to production-facing
 
@@ -34,7 +34,7 @@ Docs only — four files:
 - `docs/plans/2026-06-20-agent-run-supervisor-sachima-p5-temporal-production-runtime-enablement-slice-1-design-readiness.md` — the design/readiness packet: executive verdict (go directly to Temporal), the granted lifecycle token + scope, the production architecture, ops/Gateway ownership split, the PR B module map (prototype→first-class), the data/no-leak policy, Temporal semantics, the PR B tests/gates, the rollout plan, health/kill-switch/rollback, open decisions, the PR A exact scope, and the PR B ready-to-implement criteria.
 - `docs/plans/2026-06-20-agent-run-supervisor-sachima-p5-temporal-production-runtime-enablement-slice-1-design-readiness-manifest.yaml` — the machine-readable manifest: approval token granted with scope, prerequisite PRs #147/#148/#149/#150 with states/merge commits, the proposed PR B files/modules, runtime-lifecycle ownership fields proving the Gateway owns neither Worker nor service, `non_approvals` all false, PR B tests/gates, and the PR #150 status-drift cleanup record.
 - `docs/dev_log/2026-06-20-agent-run-supervisor-sachima-p5-temporal-production-runtime-enablement-slice-1-design-readiness.md` — this log.
-- `docs/roadmap/current-status.md` — narrow prose/status-row update: record PR #150 as MERGED, retire the old open/candidate wording for that PR, set the new current candidate to this Slice 1 design/readiness branch, and regenerate the machine-owned status-sync block after PR open so it records PR #154 as the live open PR.
+- `docs/roadmap/current-status.md` — narrow prose/status-row update: record PR #150 as MERGED, retire the old open/candidate wording for that PR, record this Slice 1 design/readiness branch as merged in PR #154, and keep the machine-owned status-sync block aligned with PR #154's merge commit/time rather than any open/current-candidate claim.
 
 PR A adds no runtime source, starts no Temporal service or Worker, runs no workflow/activity, invokes no `acpx`/`npx`/AGENT, and writes no Gateway/Feishu/production config.
 
