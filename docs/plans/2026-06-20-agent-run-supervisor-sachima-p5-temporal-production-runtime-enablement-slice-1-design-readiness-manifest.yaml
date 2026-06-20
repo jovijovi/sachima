@@ -1,0 +1,348 @@
+schema_version: sachima.plan_manifest.v1
+title: agent-run-supervisor x Sachima P5 Temporal production runtime enablement Slice 1 design/readiness
+phase: P5 Temporal production runtime enablement Slice 1 design/readiness
+phase_id: agent-run-supervisor-sachima-p5-temporal-production-runtime-enablement-slice-1-design-readiness
+roadmap_phase: P5
+roadmap_phase_name: Temporal production runtime enablement
+level: level-3-design-readiness
+date: '2026-06-20'
+status: pr_a_docs_only_design_readiness
+status_meaning: >-
+  PR A docs-only design/readiness packet for Slice 1 of P5 Temporal production
+  runtime enablement. Selects Temporal as the durable backend, records the GRANTED
+  external Temporal service/Worker lifecycle token scoped to hermetic-local +
+  staging namespace only, fixes the PR B implementation (modules, tests, gates,
+  rollout, rollback), and cleans the stale PR #150 status drift. Production-facing.
+  PR A writes documentation only and starts no runtime.
+repository: jovijovi/sachima
+base_branch: release/sachima
+base_head: b92d259f3cb765f92b2250e06fd3ac9ba43ae5fe
+base_head_note: >-
+  Branch tip is the [skip status-sync] self-commit b92d259f3; per the machine
+  status-sync convention the latest non-status-sync first-parent base is PR #153
+  merge commit 1e84ed198340b1067d261f65381285181b4376b2.
+branch: docs/p5-temporal-production-runtime-enablement-slice-1
+created_at: '2026-06-20'
+owner_dri: Hermes operator under Sachima governed task
+architect_plan_ref: local_operator_claude_code_architect_plan_not_committed
+
+executive_verdict:
+  decision: go_directly_to_temporal_as_durable_backend
+  production_facing: true
+  rationale: >-
+    Prototypes (phase5b workflow/activity POC, phase5c runtime client + control
+    surface) and a green real-Worker integration harness (phase5h) already prove
+    the durable contract incl. SCAN 1 + SCAN 2 no-leak and duplicate-start; the
+    merged WP4 StepExecutor seam, the merged P5 ownership/no-leak contract (#147),
+    and the local/offline adapter + durable claim store (#149/#150) supply the
+    caller side; temporalio>=1.27 and a working host Temporal toolchain are
+    present. No interim bespoke runtime is warranted.
+
+approval:
+  token: approve_external_temporal_service_or_worker_lifecycle_for_sachima_p5_runtime
+  granted: true
+  scope: hermetic_local_and_staging_namespace_only
+  production_cluster: false
+  production_traffic: false
+  delta_from_pr147: >-
+    In PR #147 this same token was recorded approved_now=false; the user has now
+    granted it, limited to hermetic-local + staging namespace only.
+  note: >-
+    Authorizes PR B to run a hermetic-local Temporal dev server + real Worker
+    (namespace sachima-p5-local) and an ops-owned Worker against staging
+    (namespace sachima-p5-staging). Does not authorize a production cluster,
+    production traffic, Gateway-owned lifecycle, P6 real agent execution, write
+    roles, or any live/Gateway/Feishu/production-config/real-delivery axis.
+
+future_separate_gates:
+  production_cluster_and_traffic:
+    token: approve_sachima_p5_temporal_production_cluster_and_production_traffic_enablement
+    granted: false
+  p6_real_agent_execution:
+    token: approve_sachima_p6_controlled_ai_flow_real_agent_execution_in_step_activity
+    granted: false
+
+slice_1:
+  step_body: controlled_deterministic
+  real_acpx_or_agent_execution: false
+  real_agent_execution_phase: P6
+  sequencing: thin_design_readiness_pr_a_then_implementation_pr_b
+  pr_b_merge_evidence: hermetic_local_temporal_gates_block_pr_b_merge
+  staging_track: parallel_ops_canary_not_a_pr_b_merge_blocker
+
+temporal:
+  backend: temporal
+  sdk: temporalio>=1.27.0,<2
+  sdk_extra: flowweaver-temporal
+  sdk_pin_note: exclude-newer-package temporalio 2026-05-01 in pyproject.toml
+  python_requires: '>=3.11,<3.14'
+  host_toolchain: temporal CLI 1.7.2 / Server 1.31.1 / UI 2.49.1
+  task_queue: sachima-p5-step-runtime
+  namespaces:
+    local: sachima-p5-local
+    staging: sachima-p5-staging
+    prod: sachima-p5-prod
+  retention_days_staging_prod: 30
+  prod_namespace_enabled: false
+  workflow_id_convention: deterministic id bound to (run_id, step idempotency key); duplicate start reconciled via query snapshot
+
+prerequisite_prs:
+  - number: 147
+    title: P5 production durable runtime integration design/readiness
+    state: MERGED
+    merge_commit: 6c11a40d4de3e66981c3ff27905c1785b1709e0a
+    merged_at: '2026-06-18T03:36:51Z'
+    role: caller-owned runtime ownership, control surface, durable records, cross-process claim-store requirement, no-throw + no-leak (SCAN 1 + SCAN 2), probes, scoring/kill/implementation gates
+  - number: 148
+    title: P5 local/offline runtime adapter implementation prep
+    state: MERGED
+    merge_commit: eaf4e51ede1e44f4fe1af32807b5f787991b757c
+    merged_at: '2026-06-18T05:02:07Z'
+    role: docs-only scope charter for the fake/injected adapter slice shape and tests
+  - number: 149
+    title: P5 local/offline runtime adapter implementation
+    state: MERGED
+    merge_commit: 58d1b9b87f6f68bd8099a2d7695edbacdaf6716e
+    merged_at: '2026-06-18T08:11:31Z'
+    role: P5LocalOfflineRuntimeAdapter behind WP4 StepExecutor seam; default-off fake/injected; in-process only
+  - number: 150
+    title: P5 durable claim-store / restart-recovery local/offline implementation
+    state: MERGED
+    merge_commit: 21f8c1647ac9e6007183cc1f458af38bcc57fa7e
+    merged_at: '2026-06-19T01:35:47Z'
+    role: caller-supplied local JSON claim store; restart replay/query/recover without fake relaunch; dirty-store fail-closed; file-byte no-leak; was previously recorded OPEN in human prose (now corrected)
+prerequisite_chain_in_release_sachima: true
+
+pr_150_status_drift_cleanup:
+  previous_human_prose_state: open / current candidate
+  corrected_state: MERGED
+  merge_commit: 21f8c1647ac9e6007183cc1f458af38bcc57fa7e
+  merged_at: '2026-06-19T01:35:47Z'
+  machine_status_block_already_correct: true
+  edited_locations:
+    - current_position prose
+    - implementation_marker_note prose
+    - P5-durable phase-map row
+    - latest phase PRs note paragraph
+    - ROADMAP-NEXT-ARS-P5-DURABLE-CLAIM-STORE-RESTART-RECOVERY tail row
+    - Next allowed request prose
+  new_current_candidate: P5 Temporal production runtime enablement Slice 1 design/readiness on branch docs/p5-temporal-production-runtime-enablement-slice-1
+
+runtime_ownership:
+  owner: Sachima / FlowWeaver (the caller)
+  caller_owns:
+    - durable-runtime choice and namespace selection
+    - P5TemporalControlSurface (no-throw, sanitized)
+    - P5TemporalRuntimeClient (wraps a caller-supplied temporalio client)
+    - P5TemporalStepExecutor (implements the WP4 StepExecutor Protocol; default-off)
+    - durable records, lease/epoch/state_version, idempotency, retry/update/cancel/recover/close policy, role mapping, business verdict
+  worker_owner: ops_sre
+  worker_lifecycle: ops-started/stopped/scaled/drained via p5_temporal_worker.py launcher (systemd/container/CLI)
+  service_owner: ops_sre
+  gateway_owns_worker_lifecycle: false
+  gateway_owns_service_lifecycle: false
+  gateway_may_call_control_surface_only: true
+  gateway_can_start_or_hold_worker_or_service_or_subprocess_or_socket: false
+  message_handling_path_can_spawn_executor: false
+  kill_switch_default_off_executor: true
+  kill_switch_independent_of_gateway: true
+
+pr_b_implementation:
+  package: sachima_supervisor/p5_temporal/
+  no_existing_p5_temporal_symbols: true
+  modules:
+    - path: sachima_supervisor/p5_temporal/__init__.py
+      provides: package exports + P5_TEMPORAL_*_APPROVAL_TOKEN (default-off guard)
+    - path: sachima_supervisor/p5_temporal/contracts.py
+      provides: frozen sanitized dataclasses (RuntimeStartPayload, update/activity I/O, QuerySnapshot)
+      promoted_from: prototypes/flowweaver_phase5b_temporal_poc payloads + flowweaver_phase5c_runtime_client contracts
+    - path: sachima_supervisor/p5_temporal/workflow.py
+      provides: StepWorkflow (@workflow.defn) with @workflow.query snapshot and @workflow.update handlers (event-key idempotency)
+      promoted_from: prototypes/flowweaver_phase5b_temporal_poc/src/flowweaver_temporal_poc/workflows.py (FlowWeaverTransactionWorkflow)
+    - path: sachima_supervisor/p5_temporal/activities.py
+      provides: step_activity (@activity.defn) + claim-check validate/deliver activities; Slice 1 body controlled deterministic; refs only
+      promoted_from: prototypes/flowweaver_phase5b_temporal_poc/src/flowweaver_temporal_poc/activities.py
+    - path: sachima_supervisor/p5_temporal/runtime_client.py
+      provides: P5TemporalRuntimeClient (start/query/update/cancel/recover/close; duplicate-start reconcile)
+      promoted_from: prototypes/flowweaver_phase5c_runtime_client/src/flowweaver_runtime_client/runtime_client.py (FlowWeaverRuntimeClient)
+    - path: sachima_supervisor/p5_temporal/control_surface.py
+      provides: P5TemporalControlSurface (safe public dispatcher; sanitized result allowlist; no-throw)
+      promoted_from: prototypes/flowweaver_phase5c_runtime_client/src/flowweaver_runtime_client/control_surface.py (FlowWeaverRuntimeControlSurface)
+    - path: sachima_supervisor/p5_temporal/step_executor.py
+      provides: P5TemporalStepExecutor implementing execute(request, *, role_binding, resolved_inputs) -> StepExecutionOutcome; default-off; delegates to control surface
+      promoted_from: new bridge to sachima_supervisor/ai_flow_executor.py StepExecutor Protocol
+    - path: sachima_supervisor/p5_temporal/p5_temporal_worker.py
+      provides: ops-owned Worker launcher build_step_worker(...) + __main__; registers StepWorkflow + step_activity; polls sachima-p5-step-runtime; never imported by Gateway
+      promoted_from: prototypes/flowweaver_phase5b_temporal_poc client bootstrap + phase5h open_real_worker harness
+    - path: sachima_supervisor/__init__.py
+      provides: re-export new public symbols (modify)
+  tests:
+    - tests/sachima_supervisor/test_p5_temporal_runtime_client.py
+    - tests/sachima_supervisor/test_p5_temporal_step_executor.py
+    - tests/sachima_supervisor/test_p5_temporal_no_leak.py
+    - tests/sachima_supervisor/test_p5_temporal_gateway_boundary.py
+    - tests/sachima_supervisor/test_p5_temporal_determinism_replay.py
+    - tests/integration/test_p5_temporal_worker_hermetic_local.py
+
+data_no_leak_policy:
+  enforcement: claim_check_by_construction_at_the_contract_boundary
+  allowed_in_history: stable codes; mode/phase; caller-owned run/workflow/activity/step refs; role keys; claim-check refs + sha256 digests; artifact/evidence refs + digests; counts/indices/versions; sanitized lease_id/lease_epoch; caller verdict code; cancellation/recovery + active_run_watch markers
+  forbidden_in_history: raw prompt/context/model output; raw acpx/ACP/agent stdout; exception text/tracebacks; PIDs/thread ids/host names; platform private ids/card JSON/message ids; media bytes/private paths; tokens/credentials/secrets/connection strings/signed URLs; delivery payloads/IM bodies
+  scan_1_json_projection: sanitized durable records / query snapshots / evidence JSON contain only allowed fields
+  scan_2_serialized_event_history_bytes: real Temporal history scanned as history.to_json() AND each event SerializeToString(); any forbidden material is runtime_history_leak_detected (kill criterion)
+
+temporal_semantics:
+  start: temporalio start_workflow with deterministic workflow_id; WorkflowAlreadyStartedError -> query+reconcile -> idempotent_replay or start_conflict/invalid_start_payload
+  query: '@workflow.query snapshot; read-only deterministic; not_found/query_unavailable on miss'
+  update: '@workflow.update handlers with event-key idempotency; replay -> duplicate; stale/invalid -> stale/update_rejected'
+  cancel: between-step may be deterministic; active-run best-effort/WATCH held cancel_ambiguous + active_run_watch, never promoted to cancelled
+  recover: workflow resumes from durable history on next Worker poll; caller reattaches by workflow_id and reconciles; recover_ambiguous on doubt; no second execution
+  close: terminal -> closed; re-close -> already_terminal
+  duplicate_start: mismatched observable payload -> invalid_start_payload, no double-launch (phase5h proven)
+  restart_recovery: Worker drop + fresh Worker on same task queue resumes from history; no duplicate execution
+
+pr_b_tests_gates:
+  pr_b_merge_blocker: hermetic_local_temporal_suite
+  staging_is_merge_blocker: false
+  gates:
+    - unit (injected/time-skipping temporal client; no-throw; stable codes; default-off guard)
+    - static (ruff, compileall, git diff --check)
+    - integration_hermetic_local_real_worker (WorkflowEnvironment.start_time_skipping and/or temporal server start-dev; namespace sachima-p5-local)
+    - no_leak_scan_1_json_projection
+    - no_leak_scan_2_serialized_event_history_bytes
+    - duplicate_start (invalid_start_payload, no second execution; idempotent_replay on match)
+    - recovery_restart_replay (Worker drop + fresh Worker; no double-launch; consistent reattach snapshot)
+    - gateway_boundary_static_test (no Gateway/message-path import of p5_temporal_worker / Worker builder / service lifecycle / subprocess / socket)
+    - determinism_replay (Temporal Replayer/replay_workflow_history; non-determinism fails)
+    - wp3b_active_run_cancellation_watch_preserved
+    - full_supervisor_suite + sync_roadmap_status --check + forbidden-surface/secret/stale-status scans + Codex primary blocker review BLOCKERS None
+
+rollout_plan:
+  - stage: 0
+    name: pr_a_docs_only
+    namespace: none
+    runtime: none
+  - stage: 1
+    name: local_dev_and_ci_hermetic
+    namespace: sachima-p5-local
+    runtime: WorkflowEnvironment / temporal server start-dev; real Worker; controlled deterministic step body
+    pr_b_merge_gate: true
+  - stage: 2
+    name: staging_namespace
+    namespace: sachima-p5-staging
+    runtime: ops-owned Worker; 30-day retention; bounded controlled deterministic runs
+    track: parallel_ops_canary
+    pr_b_merge_gate: false
+  - stage: 3
+    name: production_shadow_canary
+    namespace: sachima-p5-prod
+    approval: separate_future_gate
+    enabled: false
+  - stage: 4
+    name: limited_enablement
+    approval: separate_future_gate
+    enabled: false
+
+health_kill_switch_rollback:
+  worker_health_signals:
+    - temporal task-queue describe --task-queue sachima-p5-step-runtime
+    - workflow/activity poll success + latency; sticky-cache hit rate; Worker build-id/identity
+    - pending-activity / pending-workflow-task counts; open vs closed workflow counts per namespace
+  kill_switch:
+    - default-off P5TemporalStepExecutor enable flag; off -> WP4 orchestrator falls back to P5LocalOfflineRuntimeAdapter; no Temporal call from caller
+    - ops stop/drain Worker; nothing executes even if a workflow is started
+    - gateway_cannot_defeat_kill_switch: true
+  rollback_commands_staging_only:
+    - SIGTERM to p5_temporal_worker.py launcher (graceful poll stop / drain)
+    - repoint caller executor to P5LocalOfflineRuntimeAdapter
+    - temporal workflow list/terminate/cancel --namespace sachima-p5-staging (scoped)
+    - redeploy prior Worker build-id
+    - production_namespace_never_touched: true
+  stable_failure_classes:
+    - runtime_disabled
+    - runtime_approval_mismatch
+    - runtime_backend_unavailable
+    - runtime_operation_timeout
+    - runtime_query_unavailable
+    - runtime_idempotency_conflict
+    - runtime_claim_conflict
+    - runtime_stale_state
+    - runtime_lease_lost
+    - runtime_toctou_conflict
+    - runtime_retry_ambiguous
+    - runtime_recover_ambiguous
+    - runtime_cancel_not_confirmed
+    - runtime_precondition_unmet
+    - runtime_budget_exceeded
+    - runtime_history_leak_detected
+    - runtime_not_found
+    - runtime_terminalized
+
+wp3b_active_run_cancellation_watch:
+  carried_forward: true
+  pr_number: 140
+  merge_commit: 3fe18ab9451d290a70036697da118351d604be27
+  between_step_cancel: may be deterministic
+  active_run_cancel: best-effort / WATCH; unconfirmed interruption held cancel_ambiguous + active_run_watch; never promoted to cancelled; no artifact propagation; no relaunch
+  must_not_overclaim: true
+
+pr_a_scope:
+  docs_only: true
+  adds_runtime_source: false
+  starts_temporal_service: false
+  starts_worker: false
+  runs_workflow_or_activity: false
+  invokes_acpx_npx_agent: false
+  writes_gateway_feishu_production_config: false
+  edits_machine_status_block: false
+  changed_files:
+    - docs/plans/2026-06-20-agent-run-supervisor-sachima-p5-temporal-production-runtime-enablement-slice-1-design-readiness.md
+    - docs/plans/2026-06-20-agent-run-supervisor-sachima-p5-temporal-production-runtime-enablement-slice-1-design-readiness-manifest.yaml
+    - docs/dev_log/2026-06-20-agent-run-supervisor-sachima-p5-temporal-production-runtime-enablement-slice-1-design-readiness.md
+    - docs/roadmap/current-status.md
+
+non_approvals:
+  production_cluster: false
+  production_traffic: false
+  gateway_owned_worker_lifecycle: false
+  live_gateway_feishu_im_behavior: false
+  real_delivery: false
+  p6_controlled_ai_flow_execution: false
+  real_acpx_agent_execution: false
+  write_roles: false
+  production_config_write: false
+  public_ingress: false
+  service_restart_or_reload_of_gateway: false
+  platform_adapter_mutation: false
+
+pr_b_ready_to_implement:
+  backend_selected_temporal: true
+  external_lifecycle_token_granted_hermetic_local_and_staging: true
+  module_map_fixed: true
+  no_symbol_collisions: true
+  temporalio_available: true
+  wp4_step_executor_seam_merged: true
+  in_process_baseline_merged: true
+  no_leak_and_probe_gates_specified: true
+  hermetic_local_gate_is_pr_b_merge_blocker: true
+  staging_is_parallel_ops_canary_track: true
+  wp3b_watch_preserved: true
+
+verification_pr_a:
+  - git diff --check
+  - YAML parse of this manifest
+  - docs/status stale-phrase scan (PR #150 MERGED; no old open/candidate residue)
+  - forbidden implementation-surface scan on changed files
+  - secret-shaped / no-leak scan
+  - tools/sync_roadmap_status.py --check
+  - Codex primary blocker review
+
+strongest_allowed_outcome: agent_run_supervisor_sachima_p5_temporal_production_runtime_enablement_slice_1_design_readiness_ready_for_pr_b_implementation_under_granted_hermetic_local_and_staging_lifecycle_token
+strongest_allowed_outcome_meaning: >-
+  After review and merge, PR B may implement the sachima_supervisor/p5_temporal/
+  modules and run hermetic-local + staging Workers under the granted lifecycle
+  token. This packet approves no production cluster, no production traffic, no P6
+  real agent execution, no Gateway-owned lifecycle, no write roles, and no
+  live/Gateway/Feishu/production-config/real-delivery axis.
+
+next_allowed_request: approve_agent_run_supervisor_sachima_p5_temporal_production_runtime_enablement_slice_1_pr_b_implementation_hermetic_local_and_staging_only_ops_owned_worker_no_gateway_owned_lifecycle_no_production_cluster_no_production_traffic_no_p6_real_agent_execution_no_write_roles_no_live_no_feishu_no_production_config_no_real_delivery
