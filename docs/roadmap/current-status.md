@@ -11,9 +11,20 @@
 ```json
 {
   "base_branch": "release/sachima",
-  "base_head": "f465186cc96bc182eab00b1de039ed8258f06ac8",
+  "base_head": "09308899652375c2b43c55c9de0e1d07ea0965ce",
   "base_head_note": "latest first-parent base commit excluding machine status-sync self-commits",
   "latest_merged_prs": [
+    {
+      "baseRefName": "release/sachima",
+      "headRefName": "docs/p5-temporal-pr-b-predev-governance",
+      "mergeCommit": {
+        "oid": "09308899652375c2b43c55c9de0e1d07ea0965ce"
+      },
+      "mergedAt": "2026-06-20T09:08:33Z",
+      "number": 155,
+      "title": "docs: prepare P5 Temporal PR B governance",
+      "url": "https://github.com/jovijovi/sachima/pull/155"
+    },
     {
       "baseRefName": "release/sachima",
       "headRefName": "docs/p5-temporal-production-runtime-enablement-slice-1",
@@ -57,31 +68,10 @@
       "number": 151,
       "title": "fix: harden Feishu progress card patch retries",
       "url": "https://github.com/jovijovi/sachima/pull/151"
-    },
-    {
-      "baseRefName": "release/sachima",
-      "headRefName": "feat/p5-durable-claim-store-restart-recovery",
-      "mergeCommit": {
-        "oid": "21f8c1647ac9e6007183cc1f458af38bcc57fa7e"
-      },
-      "mergedAt": "2026-06-19T01:35:47Z",
-      "number": 150,
-      "title": "feat: add P5 durable claim store recovery",
-      "url": "https://github.com/jovijovi/sachima/pull/150"
     }
   ],
-  "open_pr_count": 1,
-  "open_prs": [
-    {
-      "baseRefName": "release/sachima",
-      "headRefName": "docs/p5-temporal-pr-b-predev-governance",
-      "isDraft": false,
-      "mergeStateStatus": "CLEAN",
-      "number": 155,
-      "title": "docs: prepare P5 Temporal PR B governance",
-      "url": "https://github.com/jovijovi/sachima/pull/155"
-    }
-  ],
+  "open_pr_count": 0,
+  "open_prs": [],
   "repository": "jovijovi/sachima",
   "scope_note": "machine dynamic status only; approvals and phase meaning remain human-authored outside this block"
 }
