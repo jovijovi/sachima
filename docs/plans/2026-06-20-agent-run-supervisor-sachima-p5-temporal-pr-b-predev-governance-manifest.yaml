@@ -19,7 +19,8 @@ branch: docs/p5-temporal-pr-b-predev-governance
 pr_number: 155
 pr_url: https://github.com/jovijovi/sachima/pull/155
 pr_state: open
-pr_head_sha: 2eb7114f8d351eb29ca34fc8c35f5fab999e19b7
+pr_head_sha: null
+static_pr_metadata_policy: live GitHub headRefOid, checks, and mergeability are authoritative while PR #155 is open; do not freeze branch head SHA in this manifest.
 owner_dri: Hermes operator under Sachima governed task
 prerequisite_prs:
   - number: 154
