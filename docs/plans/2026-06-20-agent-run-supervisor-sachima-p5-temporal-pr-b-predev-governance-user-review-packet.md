@@ -1,13 +1,13 @@
 # P5 Temporal PR B — Governance user review packet
 
 Date: 2026-06-20
-Status: **Open as PR #155, pending CI.** Evidence artifacts and latest local docs-only gates pass; GitHub checks are tracked on the PR.
+Status: **Open as PR #155.** Evidence artifacts and latest local docs-only gates pass; GitHub checks are tracked live on the PR.
 Branch: `docs/p5-temporal-pr-b-predev-governance`
 PR: https://github.com/jovijovi/sachima/pull/155
 
 ## Current verdict
 
-Governance evidence is complete and the docs-only PR is open as PR #155, pending GitHub checks. This packet is **not** an implementation approval. PR B implementation remains a later separate approval after the governance PR is reviewed.
+Governance evidence is complete and the docs-only PR is open as PR #155. This packet is **not** an implementation approval. PR B implementation remains a later separate approval after the governance PR is reviewed.
 
 ## Required evidence checklist
 

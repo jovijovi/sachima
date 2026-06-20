@@ -6,7 +6,7 @@ roadmap_phase: P5
 roadmap_phase_name: Temporal production runtime enablement
 level: level-3-pre-development-governance
 date: '2026-06-20'
-status: open_pending_ci
+status: open
 status_meaning: >-
   Docs-only pre-development governance PR for the separate P5 Temporal PR B
   implementation. It has produced the PRD, PRD quality review, Claude
@@ -18,7 +18,7 @@ base_head: d6499e92106d47ec9c0ffe9232682c21acb0e8cf
 branch: docs/p5-temporal-pr-b-predev-governance
 pr_number: 155
 pr_url: https://github.com/jovijovi/sachima/pull/155
-pr_state: open_pending_ci
+pr_state: open
 pr_head_sha: 2eb7114f8d351eb29ca34fc8c35f5fab999e19b7
 owner_dri: Hermes operator under Sachima governed task
 prerequisite_prs:
