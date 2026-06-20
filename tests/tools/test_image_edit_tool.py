@@ -17,6 +17,9 @@ from agent.image_gen_provider import ImageGenProvider
 
 
 class _FakeEditProvider(ImageGenProvider):
+    def __init__(self):
+        self.last_kwargs = None
+
     @property
     def name(self) -> str:
         return "fakeedit"
@@ -28,6 +31,7 @@ class _FakeEditProvider(ImageGenProvider):
         return {"success": True, "image": "/tmp/gen.png", "provider": "fakeedit"}
 
     def edit(self, prompt, image=None, aspect_ratio="landscape", *, images=None, **kw):
+        self.last_kwargs = kw
         return {
             "success": True,
             "image": "/tmp/edited.png",
@@ -67,9 +71,11 @@ class TestSchema:
         assert "prompt" in props
         assert "image" in props
         assert "aspect_ratio" in props
+        assert "content_summary" in props
         required = IMAGE_EDIT_SCHEMA["parameters"]["required"]
         assert "prompt" in required
         assert "image" in required
+        assert "content_summary" not in required
         # Mask is intentionally omitted until xAI edit-mask semantics are clear.
         assert "mask" not in props
 
@@ -157,3 +163,47 @@ class TestHandler:
         assert result["success"] is False
         assert result["image"] is None
         assert result["error_type"] == "no_provider"
+
+    def test_records_manifest_without_passing_content_summary_to_provider(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("HERMES_PROFILE", "manifest-test")
+        provider = _FakeEditProvider()
+        _patch_active(monkeypatch, provider)
+
+        from tools.image_edit_tool import _handle_image_edit
+
+        result = json.loads(
+            _handle_image_edit(
+                {
+                    "prompt": "make it blue",
+                    "image": "https://cdn.example.test/input.png?token=secret",
+                    "aspect_ratio": "square",
+                    "content_summary": "blue product photo",
+                }
+            )
+        )
+
+        assert result["success"] is True
+        assert result["image"] == "/tmp/edited.png"
+        assert provider.last_kwargs == {}
+
+        manifest_path = tmp_path / "workspace" / "image-generation" / "manifest.jsonl"
+        records = [json.loads(line) for line in manifest_path.read_text(encoding="utf-8").splitlines()]
+        assert len(records) == 1
+        record = records[0]
+        assert record["profile"] == "manifest-test"
+        assert record["tool"] == "image_edit"
+        assert record["operation"] == "edit"
+        assert record["backend"] == {
+            "provider": "fakeedit",
+            "model": "fake-edit",
+            "endpoint_kind": "edit",
+        }
+        assert record["request"]["prompt"] == "make it blue"
+        assert record["request"]["content_summary"] == "blue product photo"
+        assert record["request"]["content_summary_source"] == "agent_supplied"
+        assert record["request"]["content_summary_verified"] is False
+        assert record["input_images"][0]["url"] == "https://cdn.example.test/input.png"
+        assert isinstance(record["result"]["duration_ms"], int)
+        assert record["result"]["outputs"] == [{"kind": "image", "ref": "/tmp/edited.png"}]
+        assert "token=secret" not in manifest_path.read_text(encoding="utf-8")

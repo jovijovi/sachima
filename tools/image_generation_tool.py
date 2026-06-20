@@ -25,6 +25,7 @@ import logging
 import os
 import datetime
 import threading
+import time
 import uuid
 from typing import Any, Dict, Optional
 
@@ -887,6 +888,7 @@ if __name__ == "__main__":
 # Registry
 # ---------------------------------------------------------------------------
 from tools.registry import registry, tool_error
+from tools.image_manifest import append_image_manifest_record
 
 IMAGE_GENERATE_SCHEMA = {
     "name": "image_generate",
@@ -909,6 +911,10 @@ IMAGE_GENERATE_SCHEMA = {
                 "enum": list(VALID_ASPECT_RATIOS),
                 "description": "The aspect ratio of the generated image. 'landscape' is 16:9 wide, 'portrait' is 16:9 tall, 'square' is 1:1.",
                 "default": DEFAULT_ASPECT_RATIO,
+            },
+            "content_summary": {
+                "type": "string",
+                "description": "Optional agent-supplied summary for local manifest logging only; it is not sent to image providers.",
             },
         },
         "required": ["prompt"],
@@ -1035,21 +1041,52 @@ def _dispatch_to_plugin_provider(prompt: str, aspect_ratio: str):
 
 
 def _handle_image_generate(args, **kw):
+    started_at = time.perf_counter()
     prompt = args.get("prompt", "")
     if not prompt:
-        return tool_error("prompt is required for image generation")
+        result = tool_error("prompt is required for image generation")
+        append_image_manifest_record(
+            tool="image_generate",
+            operation="generate",
+            backend=None,
+            args=args,
+            input_images=[],
+            response_text=result,
+            duration_ms=(time.perf_counter() - started_at) * 1000,
+        )
+        return result
     aspect_ratio = args.get("aspect_ratio", DEFAULT_ASPECT_RATIO)
+    configured_provider = _read_configured_image_provider()
 
     # Route to a plugin-registered provider if one is active (and it's
     # not the in-tree FAL path).
     dispatched = _dispatch_to_plugin_provider(prompt, aspect_ratio)
     if dispatched is not None:
+        append_image_manifest_record(
+            tool="image_generate",
+            operation="generate",
+            backend=configured_provider,
+            args=args,
+            input_images=[],
+            response_text=dispatched,
+            duration_ms=(time.perf_counter() - started_at) * 1000,
+        )
         return dispatched
 
-    return image_generate_tool(
+    result = image_generate_tool(
         prompt=prompt,
         aspect_ratio=aspect_ratio,
     )
+    append_image_manifest_record(
+        tool="image_generate",
+        operation="generate",
+        backend=configured_provider or "fal",
+        args=args,
+        input_images=[],
+        response_text=result,
+        duration_ms=(time.perf_counter() - started_at) * 1000,
+    )
+    return result
 
 
 registry.register(

@@ -20,6 +20,7 @@ any future edit-capable provider.
 
 import json
 import logging
+import time
 from typing import Any, Dict, Optional
 
 from agent.image_gen_provider import DEFAULT_ASPECT_RATIO, VALID_ASPECT_RATIOS
@@ -32,6 +33,7 @@ from agent.image_gen_provider import DEFAULT_ASPECT_RATIO, VALID_ASPECT_RATIOS
 # whenever no edit-capable provider is configured. Importing here guarantees the
 # generation tool anchors the shared toolset check regardless of import order.
 import tools.image_generation_tool  # noqa: F401
+from tools.image_manifest import append_image_manifest_record
 from tools.registry import registry, tool_error
 
 logger = logging.getLogger(__name__)
@@ -147,16 +149,44 @@ def _dispatch_image_edit(prompt: str, image: str, aspect_ratio: str) -> str:
 
 
 def _handle_image_edit(args: Dict[str, Any], **kw: Any) -> str:
+    started_at = time.perf_counter()
     prompt = args.get("prompt", "")
     if not prompt or not str(prompt).strip():
-        return tool_error("prompt is required for image edit")
+        result = tool_error("prompt is required for image edit")
+        append_image_manifest_record(
+            tool="image_edit",
+            operation="edit",
+            backend=None,
+            args=args,
+            response_text=result,
+            duration_ms=(time.perf_counter() - started_at) * 1000,
+        )
+        return result
 
     image = args.get("image", "")
     if not image or not str(image).strip():
-        return tool_error("image is required for image edit")
+        result = tool_error("image is required for image edit")
+        append_image_manifest_record(
+            tool="image_edit",
+            operation="edit",
+            backend=None,
+            args=args,
+            response_text=result,
+            duration_ms=(time.perf_counter() - started_at) * 1000,
+        )
+        return result
 
     aspect_ratio = args.get("aspect_ratio", DEFAULT_ASPECT_RATIO)
-    return _dispatch_image_edit(str(prompt), str(image), aspect_ratio)
+    result = _dispatch_image_edit(str(prompt), str(image), aspect_ratio)
+    append_image_manifest_record(
+        tool="image_edit",
+        operation="edit",
+        backend=None,
+        args=args,
+        response_text=result,
+        duration_ms=(time.perf_counter() - started_at) * 1000,
+    )
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -193,6 +223,10 @@ IMAGE_EDIT_SCHEMA = {
                 "enum": list(VALID_ASPECT_RATIOS),
                 "description": "Output aspect ratio. 'landscape' is 16:9 wide, 'portrait' is 16:9 tall, 'square' is 1:1.",
                 "default": DEFAULT_ASPECT_RATIO,
+            },
+            "content_summary": {
+                "type": "string",
+                "description": "Optional agent-supplied summary for local manifest logging only; it is not sent to image providers.",
             },
         },
         "required": ["prompt", "image"],

@@ -131,7 +131,7 @@ TOOLSETS = {
         # ``image_gen`` exposes image_edit regardless of registry-discovery
         # order. image_edit is still gated at schema-build time by its check_fn
         # (surfaces only with an edit-capable backend).
-        "tools": ["image_generate", "image_edit"],
+        "tools": ["image_generate", "image_edit", "image_history"],
         "includes": []
     },
 
