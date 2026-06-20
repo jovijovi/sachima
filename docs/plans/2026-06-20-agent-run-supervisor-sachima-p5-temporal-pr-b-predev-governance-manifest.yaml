@@ -1,0 +1,166 @@
+schema_version: sachima.plan_manifest.v1
+title: agent-run-supervisor x Sachima P5 Temporal PR B pre-development governance
+phase: P5 Temporal PR B pre-development governance
+phase_id: agent-run-supervisor-sachima-p5-temporal-pr-b-predev-governance
+roadmap_phase: P5
+roadmap_phase_name: Temporal production runtime enablement
+level: level-3-pre-development-governance
+date: '2026-06-20'
+status: ready_for_docs_only_pr_open
+status_meaning: >-
+  Docs-only pre-development governance PR for the separate P5 Temporal PR B
+  implementation. It has produced the PRD, PRD quality review, Claude
+  teach-back, no-code technical solution, independent technical-solution review,
+  and folds PR #154 post-merge documentation tail cleanup into the same branch.
+repository: jovijovi/sachima
+base_branch: release/sachima
+base_head: d6499e92106d47ec9c0ffe9232682c21acb0e8cf
+branch: docs/p5-temporal-pr-b-predev-governance
+pr_number: null
+pr_url: null
+pr_state: not_opened
+owner_dri: Hermes operator under Sachima governed task
+prerequisite_prs:
+  - number: 154
+    title: "docs: plan P5 Temporal runtime enablement"
+    state: MERGED
+    head_sha: d16afbc5f5e4af139b8752747b81b540a8c65930
+    merge_commit: f465186cc96bc182eab00b1de039ed8258f06ac8
+    merged_at: '2026-06-20T05:48:26Z'
+    role: >-
+      PR A docs-only design/readiness packet selecting Temporal as the durable
+      backend and granting external Temporal service/Worker lifecycle for
+      hermetic-local + staging namespace only.
+
+governance_artifacts:
+  prd: docs/plans/2026-06-20-agent-run-supervisor-sachima-p5-temporal-pr-b-predev-governance-prd.md
+  manifest: docs/plans/2026-06-20-agent-run-supervisor-sachima-p5-temporal-pr-b-predev-governance-manifest.yaml
+  dev_log: docs/dev_log/2026-06-20-agent-run-supervisor-sachima-p5-temporal-pr-b-predev-governance.md
+  user_review_packet: docs/plans/2026-06-20-agent-run-supervisor-sachima-p5-temporal-pr-b-predev-governance-user-review-packet.md
+  teach_back: docs/plans/2026-06-20-agent-run-supervisor-sachima-p5-temporal-pr-b-predev-governance-claude-teach-back.md
+  technical_solution: docs/plans/2026-06-20-agent-run-supervisor-sachima-p5-temporal-pr-b-predev-governance-technical-solution.md
+  prd_review: docs/plans/2026-06-20-agent-run-supervisor-sachima-p5-temporal-pr-b-predev-governance-prd-quality-review.md
+  technical_review: docs/plans/2026-06-20-agent-run-supervisor-sachima-p5-temporal-pr-b-predev-governance-technical-solution-review.md
+
+role_split:
+  hermes: PRD author, PM/controller, repo operator, deterministic gates, final arbiter
+  prd_quality_reviewer: fresh-context PRD review; no implementation
+  claude_code: architect teach-back and no-code technical solution; no implementation
+  codex_cli: primary independent technical-solution blocker review; no implementation
+
+docs_only_scope:
+  allowed_paths:
+    - docs/plans/2026-06-20-agent-run-supervisor-sachima-p5-temporal-pr-b-predev-governance-prd.md
+    - docs/plans/2026-06-20-agent-run-supervisor-sachima-p5-temporal-pr-b-predev-governance-manifest.yaml
+    - docs/plans/2026-06-20-agent-run-supervisor-sachima-p5-temporal-pr-b-predev-governance-user-review-packet.md
+    - docs/plans/2026-06-20-agent-run-supervisor-sachima-p5-temporal-pr-b-predev-governance-claude-teach-back.md
+    - docs/plans/2026-06-20-agent-run-supervisor-sachima-p5-temporal-pr-b-predev-governance-technical-solution.md
+    - docs/plans/2026-06-20-agent-run-supervisor-sachima-p5-temporal-pr-b-predev-governance-prd-quality-review.md
+    - docs/plans/2026-06-20-agent-run-supervisor-sachima-p5-temporal-pr-b-predev-governance-technical-solution-review.md
+    - docs/dev_log/2026-06-20-agent-run-supervisor-sachima-p5-temporal-pr-b-predev-governance.md
+    - docs/roadmap/current-status.md
+    - docs/plans/2026-06-20-agent-run-supervisor-sachima-p5-temporal-production-runtime-enablement-slice-1-design-readiness.md
+    - docs/plans/2026-06-20-agent-run-supervisor-sachima-p5-temporal-production-runtime-enablement-slice-1-design-readiness-manifest.yaml
+    - docs/dev_log/2026-06-20-agent-run-supervisor-sachima-p5-temporal-production-runtime-enablement-slice-1-design-readiness.md
+  source_code_implementation: false
+  runtime_tests_that_start_temporal: false
+  starts_temporal_service: false
+  starts_worker: false
+  runs_workflow_or_activity: false
+  invokes_acpx_npx_agent: false
+  gateway_or_feishu_changes: false
+  production_config_write: false
+
+future_pr_b_scope_prepared:
+  package: sachima_supervisor/p5_temporal/
+  step_body: controlled_deterministic
+  hermetic_local_temporal_gate_blocks_merge: true
+  staging_track_parallel_ops_canary: true
+  production_cluster: false
+  production_traffic: false
+  p6_real_agent_execution: false
+  gateway_owned_lifecycle: false
+
+required_reviews:
+  prd_quality_review:
+    required: true
+    pass_score_min: 90
+    critical_blockers_allowed: false
+  claude_teach_back:
+    required: true
+    pass_score_min: 90
+    p0_p1_questions_allowed: false
+  technical_solution_review:
+    required: true
+    primary_reviewer: Codex CLI
+    pass_score_min: 90
+    blockers_allowed: false
+
+review_results:
+  prd_quality_review:
+    verdict: PASS
+    score: 94
+    critical_blockers: 0
+    artifact: docs/plans/2026-06-20-agent-run-supervisor-sachima-p5-temporal-pr-b-predev-governance-prd-quality-review.md
+  claude_teach_back:
+    verdict: PASS
+    score: 96
+    p0_p1_questions: 0
+    artifact: docs/plans/2026-06-20-agent-run-supervisor-sachima-p5-temporal-pr-b-predev-governance-claude-teach-back.md
+  technical_solution_review:
+    verdict: PASS
+    score: 96
+    critical_blockers: 0
+    final_focused_re_review: PASS
+    artifact: docs/plans/2026-06-20-agent-run-supervisor-sachima-p5-temporal-pr-b-predev-governance-technical-solution-review.md
+
+acceptance_gates:
+  - git diff --check
+  - YAML parse of this manifest
+  - docs/status stale-phrase scan: PR #154 must be recorded MERGED, not open/current candidate
+  - changed-file allowlist: docs/plans + docs/dev_log + docs/roadmap only
+  - forbidden implementation-surface scan: no runtime source/test/script/config changes
+  - secret-shaped / no-leak scan over added lines
+  - tools/sync_roadmap_status.py --check
+  - PRD review PASS
+  - Claude teach-back PASS
+  - technical-solution review PASS
+
+local_verification:
+  latest_run_utc: '2026-06-20T07:43:44Z'
+  result: PASS
+  gates:
+    - git diff --check
+    - YAML parse of governance and PR A manifests
+    - tools/sync_roadmap_status.py --check
+    - changed-file allowlist
+    - forbidden implementation-surface scan
+    - stale PR #154 status scan
+    - secret/no-leak added-lines scan
+    - review artifact PASS-marker checks
+
+non_approvals:
+  source_code_implementation: false
+  temporal_service_startup: false
+  temporal_worker_startup: false
+  workflow_or_activity_execution: false
+  real_agent_execution: false
+  acpx_invocation: false
+  npx_invocation: false
+  controlled_ai_flow_execution: false
+  p6_real_step_activity_execution: false
+  write_capable_roles: false
+  gateway_involvement_or_mutation: false
+  gateway_restart_or_reload: false
+  feishu_or_im_delivery: false
+  platform_adapter_mutation: false
+  public_ingress: false
+  production_cluster_enablement: false
+  production_traffic: false
+  production_config_write: false
+  real_delivery: false
+
+post_merge_cleanup:
+  pr154_tail_fixed_in_this_branch: true
+  pr154_merge_commit: f465186cc96bc182eab00b1de039ed8258f06ac8
+  pr154_merged_at: '2026-06-20T05:48:26Z'
