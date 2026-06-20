@@ -90,52 +90,52 @@ Existing tools:
 
 **7. Bite-Sized TDD Implementation Tasks**
 
-1. Policy parsing/defaults  
-RED: add tests for explicit policy winning over legacy, lowercase/bare extension normalization, allowlist/denylist/all, FR-4 defaults plus `.csv` compatibility, optional `.svg/.psd/.tiff` excluded.  
-Expected failure: media extensions rejected or helper/schema missing.  
-GREEN: add `FileTypePolicy` and policy helpers; wire existing list/read/search through policy.  
+1. Policy parsing/defaults
+RED: add tests for explicit policy winning over legacy, lowercase/bare extension normalization, allowlist/denylist/all, FR-4 defaults plus `.csv` compatibility, optional `.svg/.psd/.tiff` excluded.
+Expected failure: media extensions rejected or helper/schema missing.
+GREEN: add `FileTypePolicy` and policy helpers; wire existing list/read/search through policy.
 Verify: `uv run --extra dev python -m pytest tests/tools/test_workspace_file_tool.py -q`.
 
-2. Text/media read/search/stat  
-RED: tests for `workspace_stat`, binary `workspace_read` metadata-only, `workspace_search` skips media with count.  
-Expected failure: `workspace_stat` import missing; binary read dumps replacement text or errors.  
-GREEN: add metadata helpers, `workspace_stat`, update read/search behavior.  
+2. Text/media read/search/stat
+RED: tests for `workspace_stat`, binary `workspace_read` metadata-only, `workspace_search` skips media with count.
+Expected failure: `workspace_stat` import missing; binary read dumps replacement text or errors.
+GREEN: add metadata helpers, `workspace_stat`, update read/search behavior.
 Verify focused file.
 
-3. Shared source/destination safety  
-RED: tests every new mutating op rejects absolute paths, `..`, `.` segments, symlinked source, symlinked destination parent, directories, and same src/dst.  
-Expected failure: functions missing.  
-GREEN: add `_resolve_workspace_source`, `_resolve_workspace_destination`, `_require_regular_file`; reuse in later ops.  
+3. Shared source/destination safety
+RED: tests every new mutating op rejects absolute paths, `..`, `.` segments, symlinked source, symlinked destination parent, directories, and same src/dst.
+Expected failure: functions missing.
+GREEN: add `_resolve_workspace_source`, `_resolve_workspace_destination`, `_require_regular_file`; reuse in later ops.
 Verify focused file.
 
-4. Copy  
-RED: tests copy defaults `overwrite=false`, explicit overwrite, destination extension guard, size guard, text scan on copied `.md`, binary copy no content output.  
-Expected failure: `workspace_copy` missing.  
-GREEN: implement `workspace_copy` with atomic binary copy and optional backup on overwrite.  
+4. Copy
+RED: tests copy defaults `overwrite=false`, explicit overwrite, destination extension guard, size guard, text scan on copied `.md`, binary copy no content output.
+Expected failure: `workspace_copy` missing.
+GREEN: implement `workspace_copy` with atomic binary copy and optional backup on overwrite.
 Verify focused file.
 
-5. Move  
-RED: tests move preserves bytes, removes source only after successful destination write, rejects overwrite by default, rejects oversized source before unlink, honors read-only mode.  
-Expected failure: `workspace_move` missing.  
-GREEN: implement validated copy-then-unlink semantics.  
+5. Move
+RED: tests move preserves bytes, removes source only after successful destination write, rejects overwrite by default, rejects oversized source before unlink, honors read-only mode.
+Expected failure: `workspace_move` missing.
+GREEN: implement validated copy-then-unlink semantics.
 Verify focused file.
 
-6. Delete  
-RED: tests default trash path, collision-safe trash names, metadata-only output, permanent rejected by default, permanent allowed only with `delete.allow_permanent: true`, read-only mode blocks, symlinked `.trash`/trash-parent escape is rejected before source unlink.  
-Expected failure: `workspace_delete` missing.  
-GREEN: implement trash helper and delete policy parser.  
+6. Delete
+RED: tests default trash path, collision-safe trash names, metadata-only output, permanent rejected by default, permanent allowed only with `delete.allow_permanent: true`, read-only mode blocks, symlinked `.trash`/trash-parent escape is rejected before source unlink.
+Expected failure: `workspace_delete` missing.
+GREEN: implement trash helper and delete policy parser.
 Verify focused file.
 
-7. Import roots  
-RED: tests unknown source root rejects, import-root config escape outside `HERMES_HOME` rejects, symlinked import root/parent rejects, source traversal rejects, source-root policy + workspace policy intersection, text import scan, binary import allowed by policy, no source mutation.  
-Expected failure: `workspace_import` missing.  
-GREEN: implement import root resolver and import copy path.  
+7. Import roots
+RED: tests unknown source root rejects, import-root config escape outside `HERMES_HOME` rejects, symlinked import root/parent rejects, source traversal rejects, source-root policy + workspace policy intersection, text import scan, binary import allowed by policy, no source mutation.
+Expected failure: `workspace_import` missing.
+GREEN: implement import root resolver and import copy path.
 Verify focused file.
 
-8. Registration/docs  
-RED: update registration test to expect existing five plus new five tools; assert dynamic `resolve_toolset("workspace_file")` sees registry names and none are in `_HERMES_CORE_TOOLS`; docs test optional via simple path/content assertion if project pattern accepts it.  
-Expected failure: toolset lacks names.  
-GREEN: add schemas/register calls and minimal runbook; avoid `toolsets.py` unless a real static-registration gap is proven.  
+8. Registration/docs
+RED: update registration test to expect existing five plus new five tools; assert dynamic `resolve_toolset("workspace_file")` sees registry names and none are in `_HERMES_CORE_TOOLS`; docs test optional via simple path/content assertion if project pattern accepts it.
+Expected failure: toolset lacks names.
+GREEN: add schemas/register calls and minimal runbook; avoid `toolsets.py` unless a real static-registration gap is proven.
 Verify focused file plus static scans.
 
 **8. Verification Gates**
