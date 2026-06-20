@@ -11,9 +11,20 @@
 ```json
 {
   "base_branch": "release/sachima",
-  "base_head": "09308899652375c2b43c55c9de0e1d07ea0965ce",
+  "base_head": "ed4d76dbf74aa8d38dd4898467b633379f878a74",
   "base_head_note": "latest first-parent base commit excluding machine status-sync self-commits",
   "latest_merged_prs": [
+    {
+      "baseRefName": "release/sachima",
+      "headRefName": "docs/workspace-file-predev-governance",
+      "mergeCommit": {
+        "oid": "ed4d76dbf74aa8d38dd4898467b633379f878a74"
+      },
+      "mergedAt": "2026-06-20T12:17:09Z",
+      "number": 156,
+      "title": "docs: add workspace file predevelopment governance",
+      "url": "https://github.com/jovijovi/sachima/pull/156"
+    },
     {
       "baseRefName": "release/sachima",
       "headRefName": "docs/p5-temporal-pr-b-predev-governance",
@@ -57,17 +68,6 @@
       "number": 152,
       "title": "feat: refresh xAI Imagine image provider",
       "url": "https://github.com/jovijovi/sachima/pull/152"
-    },
-    {
-      "baseRefName": "release/sachima",
-      "headRefName": "fix/feishu-progress-card-patch-coalesce-retry",
-      "mergeCommit": {
-        "oid": "7896a0e6952a850c828829abca79709ffb8974db"
-      },
-      "mergedAt": "2026-06-19T04:04:14Z",
-      "number": 151,
-      "title": "fix: harden Feishu progress card patch retries",
-      "url": "https://github.com/jovijovi/sachima/pull/151"
     }
   ],
   "open_pr_count": 0,
