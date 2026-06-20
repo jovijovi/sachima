@@ -11,9 +11,20 @@
 ```json
 {
   "base_branch": "release/sachima",
-  "base_head": "1e84ed198340b1067d261f65381285181b4376b2",
+  "base_head": "f465186cc96bc182eab00b1de039ed8258f06ac8",
   "base_head_note": "latest first-parent base commit excluding machine status-sync self-commits",
   "latest_merged_prs": [
+    {
+      "baseRefName": "release/sachima",
+      "headRefName": "docs/p5-temporal-production-runtime-enablement-slice-1",
+      "mergeCommit": {
+        "oid": "f465186cc96bc182eab00b1de039ed8258f06ac8"
+      },
+      "mergedAt": "2026-06-20T05:48:26Z",
+      "number": 154,
+      "title": "docs: plan P5 Temporal runtime enablement",
+      "url": "https://github.com/jovijovi/sachima/pull/154"
+    },
     {
       "baseRefName": "release/sachima",
       "headRefName": "fix/xai-edit-resolution-2k",
@@ -57,31 +68,10 @@
       "number": 150,
       "title": "feat: add P5 durable claim store recovery",
       "url": "https://github.com/jovijovi/sachima/pull/150"
-    },
-    {
-      "baseRefName": "release/sachima",
-      "headRefName": "feat/p5-local-offline-runtime-adapter",
-      "mergeCommit": {
-        "oid": "58d1b9b87f6f68bd8099a2d7695edbacdaf6716e"
-      },
-      "mergedAt": "2026-06-18T08:11:31Z",
-      "number": 149,
-      "title": "feat: add P5 local/offline runtime adapter",
-      "url": "https://github.com/jovijovi/sachima/pull/149"
     }
   ],
-  "open_pr_count": 1,
-  "open_prs": [
-    {
-      "baseRefName": "release/sachima",
-      "headRefName": "docs/p5-temporal-production-runtime-enablement-slice-1",
-      "isDraft": false,
-      "mergeStateStatus": "CLEAN",
-      "number": 154,
-      "title": "docs: plan P5 Temporal runtime enablement",
-      "url": "https://github.com/jovijovi/sachima/pull/154"
-    }
-  ],
+  "open_pr_count": 0,
+  "open_prs": [],
   "repository": "jovijovi/sachima",
   "scope_note": "machine dynamic status only; approvals and phase meaning remain human-authored outside this block"
 }
