@@ -15,11 +15,15 @@ def _reset_registry():
 
 
 class _FakeCodexProvider(ImageGenProvider):
+    def __init__(self):
+        self.last_kwargs = None
+
     @property
     def name(self) -> str:
         return "codex"
 
     def generate(self, prompt, aspect_ratio="landscape", **kwargs):
+        self.last_kwargs = kwargs
         return {
             "success": True,
             "image": "/tmp/codex-test.png",
@@ -97,3 +101,51 @@ class TestPluginDispatch:
         assert payload["success"] is True
         assert payload["provider"] == "codex"
         assert payload["aspect_ratio"] == "portrait"
+
+    def test_handler_records_manifest_without_passing_content_summary_to_provider(self, monkeypatch, tmp_path):
+        from tools import image_generation_tool
+        from agent import image_gen_registry as registry_module
+        from hermes_cli import plugins as plugins_module
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("HERMES_PROFILE", "manifest-test")
+        provider = _FakeCodexProvider()
+
+        monkeypatch.setattr(image_generation_tool, "_read_configured_image_provider", lambda: "codex")
+        monkeypatch.setattr(image_generation_tool, "_read_configured_image_model", lambda: None)
+        monkeypatch.setattr(plugins_module, "_ensure_plugins_discovered", lambda *a, **k: None)
+        monkeypatch.setattr(registry_module, "get_provider", lambda name: provider if name == "codex" else None)
+
+        payload = json.loads(
+            image_generation_tool._handle_image_generate(
+                {
+                    "prompt": "draw a lighthouse",
+                    "aspect_ratio": "portrait",
+                    "content_summary": "stormy lighthouse concept",
+                }
+            )
+        )
+
+        assert payload["success"] is True
+        assert payload["image"] == "/tmp/codex-test.png"
+        assert provider.last_kwargs == {}
+
+        manifest_path = tmp_path / "workspace" / "image-generation" / "manifest.jsonl"
+        records = [json.loads(line) for line in manifest_path.read_text(encoding="utf-8").splitlines()]
+        assert len(records) == 1
+        record = records[0]
+        assert record["profile"] == "manifest-test"
+        assert record["tool"] == "image_generate"
+        assert record["operation"] == "generate"
+        assert record["backend"] == {
+            "provider": "codex",
+            "model": "gpt-5.2-codex",
+            "endpoint_kind": "generate",
+        }
+        assert record["request"]["prompt"] == "draw a lighthouse"
+        assert record["request"]["content_summary"] == "stormy lighthouse concept"
+        assert record["request"]["content_summary_source"] == "agent_supplied"
+        assert record["request"]["content_summary_verified"] is False
+        assert record["input_images"] == []
+        assert isinstance(record["result"]["duration_ms"], int)
+        assert record["result"]["outputs"] == [{"kind": "image", "ref": "codex-test.png"}]
