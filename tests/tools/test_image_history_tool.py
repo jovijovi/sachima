@@ -100,6 +100,59 @@ def test_image_history_filters_by_tool_success_and_content_search(monkeypatch, t
     assert payload["records"][0]["error_type"] == "ValueError"
 
 
+def test_image_history_sanitizes_legacy_records_on_read(monkeypatch, tmp_path):
+    _write_manifest(
+        monkeypatch,
+        tmp_path,
+        [
+            {
+                "schema_version": 1,
+                "record_id": "legacy-leaky",
+                "ts": "2026-06-20T04:00:00Z",
+                "profile": "default",
+                "tool": "image_generate",
+                "operation": "generate",
+                "backend": {
+                    "provider": "https://user:pass@provider.example.test/api?token=secret",
+                    "api_key": "abc123",
+                },
+                "request": {
+                    "prompt": "use https://user:pass@cdn.example.test/ref.png?token=secret",
+                    "content_summary": "data:image/png;base64,AAAASECRETDATA",
+                    "aspect_ratio": "square",
+                    "normalized_args": {"aspect_ratio": "square"},
+                },
+                "input_images": [],
+                "result": {
+                    "success": True,
+                    "duration_ms": 12,
+                    "outputs": [{"kind": "image", "ref": "/home/user/private/out.png"}],
+                },
+                "error": {
+                    "error_type": "provider_exception",
+                    "message": "Authorization: Bearer *** token=def456",
+                },
+            }
+        ],
+    )
+
+    from tools.image_history_tool import _handle_image_history
+
+    payload = json.loads(_handle_image_history({"latest": True, "limit": 1}))
+
+    assert payload["success"] is True
+    assert payload["records"][0]["image"] == "out.png"
+    text = json.dumps(payload, sort_keys=True)
+    assert "user:pass" not in text
+    assert "@cdn.example.test" not in text
+    assert "token=secret" not in text
+    assert "AAAASECRETDATA" not in text
+    assert "/home/" not in text
+    assert "private" not in text
+    assert "abc123" not in text
+    assert "def456" not in text
+
+
 def test_image_history_registered_under_image_gen_toolset():
     import tools.image_history_tool  # noqa: F401
     from tools.registry import registry

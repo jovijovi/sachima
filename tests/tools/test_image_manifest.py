@@ -162,7 +162,7 @@ def test_input_image_metadata_redacts_data_uri_and_signed_url_query(monkeypatch)
 def test_url_userinfo_is_redacted_from_request_input_and_output(monkeypatch):
     monkeypatch.setenv("HERMES_PROFILE", "unit-profile")
 
-    from tools.image_manifest import build_image_manifest_record
+    from tools.image_manifest import build_image_manifest_record, sanitize_input_image_metadata
 
     record = build_image_manifest_record(
         tool="image_edit",
@@ -201,6 +201,17 @@ def test_url_userinfo_is_redacted_from_request_input_and_output(monkeypatch):
     assert "@cdn.example.test" not in text
     assert "token=secret" not in text
     assert "X-Amz-Signature" not in text
+
+    assert sanitize_input_image_metadata(
+        "https://user:pass@cdn.example.test/input-no-query.png"
+    ) == {
+        "kind": "url",
+        "scheme": "https",
+        "host": "cdn.example.test",
+        "path": "/input-no-query.png",
+        "url": "https://cdn.example.test/input-no-query.png",
+        "query_redacted": True,
+    }
 
 
 def test_absolute_output_paths_are_reduced_to_safe_file_names(monkeypatch):

@@ -21,18 +21,23 @@ DEFAULT_LIMIT = 10
 MAX_LIMIT = 50
 
 _FORBIDDEN_KEYS = {
+    "api_key",
+    "apikey",
     "auth",
     "authorization",
     "base64",
     "digest",
     "hash",
     "headers",
+    "password",
     "provider_raw_response",
     "raw",
     "raw_response",
+    "secret",
     "session_id",
     "sha256",
     "source",
+    "token",
     "tool_call_id",
 }
 
@@ -150,7 +155,7 @@ def sanitize_input_image_metadata(image: Any) -> dict[str, Any] | None:
 
     parsed = urlsplit(image_text)
     if parsed.scheme in {"http", "https"} and parsed.netloc:
-        safe_netloc, _ = _safe_url_netloc(parsed.netloc)
+        safe_netloc, userinfo_redacted = _safe_url_netloc(parsed.netloc)
         clean = urlunsplit((parsed.scheme, safe_netloc, parsed.path, "", ""))
         return {
             "kind": "url",
@@ -158,7 +163,7 @@ def sanitize_input_image_metadata(image: Any) -> dict[str, Any] | None:
             "host": safe_netloc,
             "path": parsed.path or "/",
             "url": clean,
-            "query_redacted": bool(parsed.query or parsed.fragment),
+            "query_redacted": bool(parsed.query or parsed.fragment or userinfo_redacted),
         }
 
     path = Path(image_text)
@@ -482,25 +487,27 @@ def _compact_record(record: Mapping[str, Any]) -> dict[str, Any]:
     outputs_raw = result.get("outputs")
     outputs: list[Any] = outputs_raw if isinstance(outputs_raw, list) else []
     compact: dict[str, Any] = {
-        "record_id": record.get("record_id"),
-        "ts": record.get("ts"),
-        "tool": record.get("tool"),
-        "operation": record.get("operation"),
-        "backend": record.get("backend"),
+        "record_id": _sanitize_string(record.get("record_id"), max_chars=200),
+        "ts": _sanitize_string(record.get("ts"), max_chars=100),
+        "tool": _sanitize_string(record.get("tool"), max_chars=100),
+        "operation": _sanitize_string(record.get("operation"), max_chars=100),
+        "backend": _sanitize_manifest_value(record.get("backend")),
         "success": _record_success(record),
-        "prompt": request.get("prompt"),
-        "aspect_ratio": request.get("aspect_ratio"),
+        "prompt": _sanitize_string(request.get("prompt"), max_chars=8000),
+        "aspect_ratio": _sanitize_string(request.get("aspect_ratio"), max_chars=100),
     }
     if request.get("content_summary"):
-        compact["content_summary"] = request.get("content_summary")
+        compact["content_summary"] = _sanitize_string(request.get("content_summary"), max_chars=2000)
     for output in outputs:
         if isinstance(output, Mapping) and output.get("ref"):
-            compact["image"] = output.get("ref")
-            break
+            image_ref = _sanitize_image_ref(output.get("ref"))
+            if image_ref:
+                compact["image"] = image_ref
+                break
     if error.get("error_type"):
-        compact["error_type"] = error.get("error_type")
+        compact["error_type"] = _sanitize_string(error.get("error_type"), max_chars=200)
     if error.get("message"):
-        compact["error"] = error.get("message")
+        compact["error"] = _sanitize_string(error.get("message"), max_chars=1000)
     return compact
 
 
