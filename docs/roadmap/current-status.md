@@ -11,9 +11,20 @@
 ```json
 {
   "base_branch": "release/sachima",
-  "base_head": "ed4d76dbf74aa8d38dd4898467b633379f878a74",
+  "base_head": "8dc1e5ac9f7b2fb4b6f8cc04a69069acecbeb2bf",
   "base_head_note": "latest first-parent base commit excluding machine status-sync self-commits",
   "latest_merged_prs": [
+    {
+      "baseRefName": "release/sachima",
+      "headRefName": "feat/image-manifest-history",
+      "mergeCommit": {
+        "oid": "8dc1e5ac9f7b2fb4b6f8cc04a69069acecbeb2bf"
+      },
+      "mergedAt": "2026-06-21T03:38:47Z",
+      "number": 157,
+      "title": "feat: add image manifest history",
+      "url": "https://github.com/jovijovi/sachima/pull/157"
+    },
     {
       "baseRefName": "release/sachima",
       "headRefName": "docs/workspace-file-predev-governance",
@@ -57,17 +68,6 @@
       "number": 153,
       "title": "fix: honor xAI edit resolution config",
       "url": "https://github.com/jovijovi/sachima/pull/153"
-    },
-    {
-      "baseRefName": "release/sachima",
-      "headRefName": "feat/xai-imagine-api-refresh",
-      "mergeCommit": {
-        "oid": "3458c364929484bfcc82c93ab33f14e3a3674477"
-      },
-      "mergedAt": "2026-06-19T09:20:03Z",
-      "number": 152,
-      "title": "feat: refresh xAI Imagine image provider",
-      "url": "https://github.com/jovijovi/sachima/pull/152"
     }
   ],
   "open_pr_count": 0,
