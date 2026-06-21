@@ -51,6 +51,13 @@ _SECRET_KV_RE = re.compile(
     r"\b(api[_-]?key|token|secret)\s*([:=])\s*([^\s,;]+)",
     re.IGNORECASE,
 )
+_UNIX_PRIVATE_PATH_RE = re.compile(
+    r"(?P<prefix>^|[\s=:(\[])(?P<path>/(?:home|Users|root|tmp|var/tmp|data/agents)(?:/[^\s,;'\"<>\]\)]+)+)"
+)
+_WINDOWS_ABS_PATH_RE = re.compile(
+    r"(?P<prefix>^|[\s=:(\[])(?P<path>[A-Za-z]:[\\/][^\s,;'\"<>\]\)]+)"
+)
+_WINDOWS_ABS_START_RE = re.compile(r"^[A-Za-z]:[\\/]")
 
 
 def default_manifest_path() -> Path:
@@ -108,10 +115,22 @@ def _strip_embedded_url(match: re.Match[str]) -> str:
     return clean
 
 
+def _path_name(path_text: str) -> str:
+    if _WINDOWS_ABS_START_RE.match(path_text):
+        return PureWindowsPath(path_text).name or "[REDACTED_PATH]"
+    return Path(path_text).name or "[REDACTED_PATH]"
+
+
+def _redact_embedded_path(match: re.Match[str]) -> str:
+    return f"{match.group('prefix')}{_path_name(match.group('path'))}"
+
+
 def _sanitize_string(value: Any, *, max_chars: int = 2000) -> str:
     text = str(value)
     clean = _DATA_URI_RE.sub(_redact_data_uri, text)
     clean = _EMBEDDED_URL_RE.sub(_strip_embedded_url, clean)
+    clean = _WINDOWS_ABS_PATH_RE.sub(_redact_embedded_path, clean)
+    clean = _UNIX_PRIVATE_PATH_RE.sub(_redact_embedded_path, clean)
     clean = _AUTH_HEADER_RE.sub(lambda m: f"{m.group(1)}[REDACTED]", clean)
     clean = _SECRET_KV_RE.sub(lambda m: f"{m.group(1)}{m.group(2)}[REDACTED]", clean)
     if len(clean) > max_chars:
@@ -127,11 +146,11 @@ def _sanitize_image_ref(value: Any) -> str | None:
     if parsed.scheme in {"http", "https"} and parsed.netloc:
         clean, _ = _strip_url_query(image_text)
         return _sanitize_string(clean, max_chars=2000)
-    if image_text.startswith("data:"):
+    if image_text.lower().startswith("data:"):
         return _sanitize_string(image_text, max_chars=2000)
     if Path(image_text).is_absolute():
         return Path(image_text).name or None
-    if re.match(r"^[A-Za-z]:[\\/]", image_text):
+    if _WINDOWS_ABS_START_RE.match(image_text):
         return PureWindowsPath(image_text).name or None
     return _sanitize_string(image_text, max_chars=2000)
 
@@ -144,7 +163,7 @@ def sanitize_input_image_metadata(image: Any) -> dict[str, Any] | None:
     if not image_text.strip():
         return None
 
-    if image_text.startswith("data:"):
+    if image_text.lower().startswith("data:"):
         header = image_text.split(",", 1)[0]
         mime_type = header[5:].split(";", 1)[0] or "application/octet-stream"
         return {
@@ -164,6 +183,15 @@ def sanitize_input_image_metadata(image: Any) -> dict[str, Any] | None:
             "path": parsed.path or "/",
             "url": clean,
             "query_redacted": bool(parsed.query or parsed.fragment or userinfo_redacted),
+        }
+
+    if _WINDOWS_ABS_START_RE.match(image_text):
+        path = PureWindowsPath(image_text)
+        return {
+            "kind": "file",
+            "name": path.name,
+            "suffix": path.suffix,
+            "is_absolute": True,
         }
 
     path = Path(image_text)

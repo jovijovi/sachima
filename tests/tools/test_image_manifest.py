@@ -158,6 +158,46 @@ def test_input_image_metadata_redacts_data_uri_and_signed_url_query(monkeypatch)
     assert "X-Amz-Signature" not in text
     assert "token=secret" not in text
 
+    upper_data_record = build_image_manifest_record(
+        tool="image_edit",
+        operation="edit",
+        backend="xai",
+        args={
+            "prompt": "make it red",
+            "image": "DATA:image/png;base64,UPPERCASESECRETDATA",
+            "aspect_ratio": "square",
+        },
+        duration_ms=3,
+        result_payload={"success": False, "error": "provider rejected input"},
+    )
+    assert upper_data_record["input_images"] == [
+        {
+            "kind": "data_uri",
+            "mime_type": "image/png",
+            "length_chars": len("DATA:image/png;base64,UPPERCASESECRETDATA"),
+        }
+    ]
+    assert "UPPERCASESECRETDATA" not in _json_text(upper_data_record)
+
+    windows_path_record = build_image_manifest_record(
+        tool="image_edit",
+        operation="edit",
+        backend="xai",
+        args={
+            "prompt": "make it red",
+            "image": "C:\\Users\\alice\\Pictures\\secret.png",
+            "aspect_ratio": "square",
+        },
+        duration_ms=3,
+        result_payload={"success": False, "error": "provider rejected input"},
+    )
+    assert windows_path_record["input_images"] == [
+        {"kind": "file", "name": "secret.png", "suffix": ".png", "is_absolute": True}
+    ]
+    text = _json_text(windows_path_record)
+    assert "C:\\Users" not in text
+    assert "alice" not in text
+
 
 def test_url_userinfo_is_redacted_from_request_input_and_output(monkeypatch):
     monkeypatch.setenv("HERMES_PROFILE", "unit-profile")
@@ -290,9 +330,9 @@ def test_request_text_redacts_embedded_data_uri_and_signed_url(monkeypatch):
         operation="generate",
         backend="fal",
         args={
-            "prompt": "use data:image/png;base64,AAAASECRETDATA and https://cdn.example.test/ref.png?token=secret",
+            "prompt": "use data:image/png;base64,AAAASECRETDATA and https://cdn.example.test/ref.png?token=secret and /home/alice/private/ref.png",
             "aspect_ratio": "square",
-            "content_summary": "ref https://cdn.example.test/ref.png?X-Amz-Signature=secret",
+            "content_summary": "ref https://cdn.example.test/ref.png?X-Amz-Signature=secret and C:\\Users\\alice\\Pictures\\ref.png",
         },
         input_images=[],
         duration_ms=2,
@@ -303,9 +343,13 @@ def test_request_text_redacts_embedded_data_uri_and_signed_url(monkeypatch):
     assert "AAAASECRETDATA" not in text
     assert "token=secret" not in text
     assert "X-Amz-Signature" not in text
+    assert "/home/" not in text
+    assert "C:\\Users" not in text
+    assert "alice" not in text
     assert "data:image/png;redacted" in record["request"]["prompt"]
     assert "https://cdn.example.test/ref.png" in record["request"]["prompt"]
-    assert record["request"]["content_summary"] == "ref https://cdn.example.test/ref.png"
+    assert "ref.png" in record["request"]["prompt"]
+    assert record["request"]["content_summary"] == "ref https://cdn.example.test/ref.png and ref.png"
 
 
 def test_error_message_redacts_auth_and_secret_material(monkeypatch):

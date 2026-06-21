@@ -117,8 +117,8 @@ def test_image_history_sanitizes_legacy_records_on_read(monkeypatch, tmp_path):
                     "api_key": "abc123",
                 },
                 "request": {
-                    "prompt": "use https://user:pass@cdn.example.test/ref.png?token=secret",
-                    "content_summary": "data:image/png;base64,AAAASECRETDATA",
+                    "prompt": "use https://user:pass@cdn.example.test/ref.png?token=secret and /home/alice/private/ref.png",
+                    "content_summary": "data:image/png;base64,AAAASECRETDATA and C:\\Users\\alice\\Pictures\\ref.png",
                     "aspect_ratio": "square",
                     "normalized_args": {"aspect_ratio": "square"},
                 },
@@ -130,7 +130,7 @@ def test_image_history_sanitizes_legacy_records_on_read(monkeypatch, tmp_path):
                 },
                 "error": {
                     "error_type": "provider_exception",
-                    "message": "Authorization: Bearer *** token=def456",
+                    "message": "Authorization: Bearer *** token=def456 path=/tmp/private/fail.png",
                 },
             }
         ],
@@ -148,6 +148,9 @@ def test_image_history_sanitizes_legacy_records_on_read(monkeypatch, tmp_path):
     assert "token=secret" not in text
     assert "AAAASECRETDATA" not in text
     assert "/home/" not in text
+    assert "/tmp/" not in text
+    assert "C:\\Users" not in text
+    assert "alice" not in text
     assert "private" not in text
     assert "abc123" not in text
     assert "def456" not in text
