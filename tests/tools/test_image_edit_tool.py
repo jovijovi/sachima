@@ -205,5 +205,5 @@ class TestHandler:
         assert record["request"]["content_summary_verified"] is False
         assert record["input_images"][0]["url"] == "https://cdn.example.test/input.png"
         assert isinstance(record["result"]["duration_ms"], int)
-        assert record["result"]["outputs"] == [{"kind": "image", "ref": "/tmp/edited.png"}]
+        assert record["result"]["outputs"] == [{"kind": "image", "ref": "edited.png"}]
         assert "token=secret" not in manifest_path.read_text(encoding="utf-8")

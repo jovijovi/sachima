@@ -148,4 +148,4 @@ class TestPluginDispatch:
         assert record["request"]["content_summary_verified"] is False
         assert record["input_images"] == []
         assert isinstance(record["result"]["duration_ms"], int)
-        assert record["result"]["outputs"] == [{"kind": "image", "ref": "/tmp/codex-test.png"}]
+        assert record["result"]["outputs"] == [{"kind": "image", "ref": "codex-test.png"}]

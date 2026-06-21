@@ -159,6 +159,84 @@ def test_input_image_metadata_redacts_data_uri_and_signed_url_query(monkeypatch)
     assert "token=secret" not in text
 
 
+def test_url_userinfo_is_redacted_from_request_input_and_output(monkeypatch):
+    monkeypatch.setenv("HERMES_PROFILE", "unit-profile")
+
+    from tools.image_manifest import build_image_manifest_record
+
+    record = build_image_manifest_record(
+        tool="image_edit",
+        operation="edit",
+        backend="xai",
+        args={
+            "prompt": "use https://user:pass@cdn.example.test/ref.png?token=secret",
+            "content_summary": "ref https://user:pass@cdn.example.test/ref.png#frag",
+            "image": "https://user:pass@cdn.example.test/input.png?X-Amz-Signature=secret",
+            "aspect_ratio": "square",
+        },
+        duration_ms=11,
+        result_payload={
+            "success": True,
+            "image": "https://user:pass@cdn.example.test/out.png?token=secret#frag",
+        },
+    )
+
+    assert record["request"]["prompt"] == "use https://cdn.example.test/ref.png"
+    assert record["request"]["content_summary"] == "ref https://cdn.example.test/ref.png"
+    assert record["input_images"] == [
+        {
+            "kind": "url",
+            "scheme": "https",
+            "host": "cdn.example.test",
+            "path": "/input.png",
+            "url": "https://cdn.example.test/input.png",
+            "query_redacted": True,
+        }
+    ]
+    assert record["result"]["outputs"] == [
+        {"kind": "image", "ref": "https://cdn.example.test/out.png"}
+    ]
+    text = _json_text(record)
+    assert "user:pass" not in text
+    assert "@cdn.example.test" not in text
+    assert "token=secret" not in text
+    assert "X-Amz-Signature" not in text
+
+
+def test_absolute_output_paths_are_reduced_to_safe_file_names(monkeypatch):
+    monkeypatch.setenv("HERMES_PROFILE", "unit-profile")
+
+    from tools.image_manifest import build_image_manifest_record
+
+    record = build_image_manifest_record(
+        tool="image_generate",
+        operation="generate",
+        backend="fal",
+        args={"prompt": "draw", "aspect_ratio": "square"},
+        input_images=[],
+        duration_ms=5,
+        result_payload={
+            "success": True,
+            "image": "/home/user/private/out.png",
+            "images": [
+                {"url": "/tmp/cache/edited.png"},
+                "C:\\Users\\alice\\Pictures\\portrait.png",
+            ],
+        },
+    )
+
+    assert record["result"]["outputs"] == [
+        {"kind": "image", "ref": "out.png"},
+        {"kind": "image", "ref": "edited.png"},
+        {"kind": "image", "ref": "portrait.png"},
+    ]
+    text = _json_text(record)
+    assert "/home/" not in text
+    assert "/tmp/" not in text
+    assert "C:\\Users" not in text
+    assert "private" not in text
+
+
 def test_explicit_input_images_are_sanitized_before_recording(monkeypatch):
     monkeypatch.setenv("HERMES_PROFILE", "unit-profile")
 

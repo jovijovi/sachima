@@ -8,7 +8,7 @@ import logging
 import os
 import re
 import uuid
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any, Iterable, Mapping
 from urllib.parse import urlsplit, urlunsplit
 
@@ -77,12 +77,20 @@ def _is_forbidden_key(key: str) -> bool:
     return lowered in _FORBIDDEN_KEYS or lowered.endswith("_hash")
 
 
+def _safe_url_netloc(netloc: str) -> tuple[str, bool]:
+    """Return URL netloc without userinfo plus whether credentials were present."""
+    if "@" not in netloc:
+        return netloc, False
+    return netloc.rsplit("@", 1)[1], True
+
+
 def _strip_url_query(value: str) -> tuple[str, bool]:
     parsed = urlsplit(value)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         return value, False
-    clean = urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
-    return clean, bool(parsed.query or parsed.fragment)
+    safe_netloc, userinfo_redacted = _safe_url_netloc(parsed.netloc)
+    clean = urlunsplit((parsed.scheme, safe_netloc, parsed.path, "", ""))
+    return clean, bool(parsed.query or parsed.fragment or userinfo_redacted)
 
 
 def _redact_data_uri(match: re.Match[str]) -> str:
@@ -109,7 +117,18 @@ def _sanitize_string(value: Any, *, max_chars: int = 2000) -> str:
 def _sanitize_image_ref(value: Any) -> str | None:
     if value is None:
         return None
-    return _sanitize_string(value, max_chars=2000)
+    image_text = str(value)
+    parsed = urlsplit(image_text)
+    if parsed.scheme in {"http", "https"} and parsed.netloc:
+        clean, _ = _strip_url_query(image_text)
+        return _sanitize_string(clean, max_chars=2000)
+    if image_text.startswith("data:"):
+        return _sanitize_string(image_text, max_chars=2000)
+    if Path(image_text).is_absolute():
+        return Path(image_text).name or None
+    if re.match(r"^[A-Za-z]:[\\/]", image_text):
+        return PureWindowsPath(image_text).name or None
+    return _sanitize_string(image_text, max_chars=2000)
 
 
 def sanitize_input_image_metadata(image: Any) -> dict[str, Any] | None:
@@ -131,11 +150,12 @@ def sanitize_input_image_metadata(image: Any) -> dict[str, Any] | None:
 
     parsed = urlsplit(image_text)
     if parsed.scheme in {"http", "https"} and parsed.netloc:
-        clean = urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
+        safe_netloc, _ = _safe_url_netloc(parsed.netloc)
+        clean = urlunsplit((parsed.scheme, safe_netloc, parsed.path, "", ""))
         return {
             "kind": "url",
             "scheme": parsed.scheme,
-            "host": parsed.netloc,
+            "host": safe_netloc,
             "path": parsed.path or "/",
             "url": clean,
             "query_redacted": bool(parsed.query or parsed.fragment),
