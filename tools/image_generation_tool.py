@@ -27,6 +27,7 @@ import datetime
 import threading
 import time
 import uuid
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 # fal_client is imported lazily — see _load_fal_client(). Pulling it
@@ -783,9 +784,24 @@ def _agent_visible_cache_path(host_path: str, env: Any) -> str | None:
     try:
         from tools.credential_files import map_cache_path_to_container
 
-        return map_cache_path_to_container(host_path, container_base=cache_base)
+        mapped = map_cache_path_to_container(host_path, container_base=cache_base)
+        if mapped:
+            return mapped
     except Exception as exc:  # noqa: BLE001
         logger.debug("Could not translate image cache path for backend: %s", exc)
+
+    # Fallback for freshly-created image cache files in tests or early startup:
+    # map_cache_path_to_container() depends on get_hermes_dir() discovery, which
+    # can lag a just-patched HERMES_HOME. The image tool itself writes under the
+    # canonical HERMES_HOME/cache/... layout, so map that path directly.
+    try:
+        from hermes_constants import get_hermes_home
+        import posixpath
+
+        rel = Path(host_path).resolve().relative_to((get_hermes_home() / "cache").resolve())
+        return posixpath.join(cache_base.rstrip("/"), "cache", rel.as_posix())
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Could not fallback-map image cache path for backend: %s", exc)
     return None
 
 

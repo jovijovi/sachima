@@ -161,5 +161,3 @@ class TestSessionStoreProfileResolution:
         s = _src(chat_id="99", chat_type="dm")
         with patch("hermes_cli.profiles.get_active_profile_name", return_value="default"):
             assert store._generate_session_key(s) == "agent:main:telegram:dm:99"
-
-

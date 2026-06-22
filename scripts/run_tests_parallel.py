@@ -217,7 +217,7 @@ def _kill_tree(proc: "subprocess.Popen", pgid: int | None = None) -> None:
 
     if sys.platform == "win32":
         try:
-            
+
             subprocess.run(
                 ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
                 stdout=subprocess.DEVNULL,
@@ -275,7 +275,7 @@ def _run_one_file(
     bound a pathologically slow or hung file as a whole.
     """
     cmd = [sys.executable, "-m", "pytest", str(file), *pytest_args]
-    
+
     subproc_start = time.monotonic()
     # launch the pytest process
     proc = subprocess.Popen(

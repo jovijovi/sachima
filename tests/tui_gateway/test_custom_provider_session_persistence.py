@@ -350,5 +350,3 @@ class TestBareCustomNoBaseUrlHealsFromConfig:
 
         persisted = captured.get("model_config") or {}
         assert persisted.get("provider") == "custom:mimo-v2.5-pro"
-
-

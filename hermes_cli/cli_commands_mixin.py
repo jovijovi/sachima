@@ -997,11 +997,11 @@ class CLICommandsMixin:
         """Handle the /personality command to set predefined personalities."""
         from cli import save_config_value
         parts = cmd.split(maxsplit=1)
-        
+
         if len(parts) > 1:
             # Set personality
             personality_name = parts[1].strip().lower()
-            
+
             if personality_name in {"none", "default", "neutral"}:
                 self.system_prompt = ""
                 self.agent = None  # Force re-init

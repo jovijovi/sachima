@@ -164,4 +164,3 @@ def test_load_memory_notifications_normalization(server, monkeypatch, raw, expec
     display = {} if raw is None else {"memory_notifications": raw}
     monkeypatch.setattr(server, "_load_cfg", lambda: {"display": display})
     assert server._load_memory_notifications() == expected
-

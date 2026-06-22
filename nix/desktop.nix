@@ -51,7 +51,7 @@ let
           # stage node-pty native binaries into build/native-deps for the final nix output
           npm rebuild node-pty --build-from-source
           node scripts/stage-native-deps.cjs
-          
+
           npm exec tsc -b
           npm exec vite build
         popd
@@ -68,13 +68,13 @@ let
 
           # validate staged node-pty native binary is present
           STAGED_PTY_NODE="./build/native-deps/node-pty/build/Release/pty.node"
-          
+
           if [ ! -f "$STAGED_PTY_NODE" ]; then
             echo "FATAL: Missing staged node-pty native binary at $STAGED_PTY_NODE"
             echo "node-pty must be compiled natively"
             exit 1
           fi
-          
+
         popd
 
         runHook postCheck

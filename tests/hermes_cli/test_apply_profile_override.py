@@ -322,4 +322,3 @@ class TestSupervisedChildIgnoresStickyProfile:
         result = os.environ.get("HERMES_HOME")
         assert result is not None
         assert result.endswith("coder")
-

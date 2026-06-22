@@ -1263,6 +1263,7 @@ _PORT_BINDING_PLATFORM_VALUES = frozenset({
     "wecom_callback",
     "bluebubbles",
     "sms",
+    "sachima",
 })
 
 

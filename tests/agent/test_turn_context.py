@@ -258,4 +258,3 @@ def test_between_turns_refresh_no_churn_when_unchanged():
         _build(agent)
 
     assert agent.tools is same  # not replaced → no churn
-

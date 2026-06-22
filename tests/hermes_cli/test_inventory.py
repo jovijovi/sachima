@@ -724,4 +724,3 @@ def test_list_authenticated_providers_refresh_busts_cache():
         assert clear.call_count == 0
         model_switch.list_authenticated_providers(refresh=True)
         assert clear.call_count == 1
-

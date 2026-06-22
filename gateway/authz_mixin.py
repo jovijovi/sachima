@@ -176,7 +176,7 @@ class GatewayAuthorizationMixin:
     def _is_user_authorized(self, source: SessionSource) -> bool:
         """
         Check if a user is authorized to use the bot.
-        
+
         Checks in order:
         1. Per-platform allow-all flag (e.g., DISCORD_ALLOW_ALL_USERS=true)
         2. Environment variable allowlists (TELEGRAM_ALLOWED_USERS, etc.)

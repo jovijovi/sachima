@@ -64,7 +64,7 @@ class GatewaySlashCommandsMixin:
     async def _handle_reset_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
         """Handle /new or /reset command."""
         source = event.source
-        
+
         # Get existing session key
         session_key = self._session_key_for_source(source)
         self._invalidate_session_run_generation(session_key, reason="session_reset")
@@ -1625,7 +1625,7 @@ class GatewaySlashCommandsMixin:
         source = event.source
         session_entry = self.session_store.get_or_create_session(source)
         history = self.session_store.load_transcript(session_entry.session_id)
-        
+
         # Find the last user message
         last_user_msg = None
         last_user_idx = None
@@ -1634,16 +1634,16 @@ class GatewaySlashCommandsMixin:
                 last_user_msg = history[i].get("content", "")
                 last_user_idx = i
                 break
-        
+
         if not last_user_msg:
             return t("gateway.retry.no_previous")
-        
+
         # Truncate history to before the last user message and persist
         truncated = history[:last_user_idx]
         self.session_store.rewrite_transcript(session_entry.session_id, truncated)
         # Reset stored token count — transcript was truncated
         session_entry.last_prompt_tokens = 0
-        
+
         # Re-send by creating a fake text event with the old message
         retry_event = MessageEvent(
             text=last_user_msg,
@@ -1652,7 +1652,7 @@ class GatewaySlashCommandsMixin:
             raw_message=event.raw_message,
             channel_prompt=event.channel_prompt,
         )
-        
+
         # Let the normal message handler process it
         return await self._handle_message(retry_event)
 
