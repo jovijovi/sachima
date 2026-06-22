@@ -181,6 +181,28 @@ def test_image_history_latest_uses_file_order_for_legacy_same_timestamp_records(
     assert [record["record_id"] for record in payload["records"]] == ["legacy-new", "legacy-old"]
 
 
+def test_image_history_latest_uses_file_order_as_duplicate_sequence_tiebreaker(monkeypatch, tmp_path):
+    same_ts = "2026-06-20T04:00:00Z"
+    _write_manifest(
+        monkeypatch,
+        tmp_path,
+        [
+            _record("duplicate-old", ts=same_ts, tool="image_generate", success=True, prompt="old", sequence=5),
+            _record("duplicate-new", ts=same_ts, tool="image_generate", success=True, prompt="new", sequence=5),
+        ],
+    )
+
+    from tools.image_history_tool import _handle_image_history
+
+    payload = json.loads(_handle_image_history({"latest": True, "limit": 2}))
+
+    assert payload["success"] is True
+    assert [record["record_id"] for record in payload["records"]] == [
+        "duplicate-new",
+        "duplicate-old",
+    ]
+
+
 def test_image_history_sanitizes_legacy_records_on_read(monkeypatch, tmp_path):
     _write_manifest(
         monkeypatch,

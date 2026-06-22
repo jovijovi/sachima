@@ -629,6 +629,7 @@ def query_image_history(
             key=lambda item: (
                 str(item[1].get("ts") or ""),
                 _record_sort_sequence(item[1], item[0]),
+                item[0],
             ),
             reverse=True,
         )
