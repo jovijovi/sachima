@@ -89,7 +89,9 @@ def test_build_record_shape_and_redaction(monkeypatch):
     assert record["result"] == {
         "success": True,
         "duration_ms": 42,
-        "outputs": [{"kind": "image", "ref": "https://cdn.example.test/out.png"}],
+        "outputs": [
+            {"output_index": 1, "kind": "image", "ref": "https://cdn.example.test/out.png"}
+        ],
     }
     assert record["error"] is None
 
@@ -234,7 +236,7 @@ def test_url_userinfo_is_redacted_from_request_input_and_output(monkeypatch):
         }
     ]
     assert record["result"]["outputs"] == [
-        {"kind": "image", "ref": "https://cdn.example.test/out.png"}
+        {"output_index": 1, "kind": "image", "ref": "https://cdn.example.test/out.png"}
     ]
     text = _json_text(record)
     assert "user:pass" not in text
@@ -277,9 +279,9 @@ def test_absolute_output_paths_are_reduced_to_safe_file_names(monkeypatch):
     )
 
     assert record["result"]["outputs"] == [
-        {"kind": "image", "ref": "out.png"},
-        {"kind": "image", "ref": "edited.png"},
-        {"kind": "image", "ref": "portrait.png"},
+        {"output_index": 1, "kind": "image", "ref": "out.png"},
+        {"output_index": 2, "kind": "image", "ref": "edited.png"},
+        {"output_index": 3, "kind": "image", "ref": "portrait.png"},
     ]
     text = _json_text(record)
     assert "/home/" not in text
@@ -367,7 +369,7 @@ def test_error_message_redacts_auth_and_secret_material(monkeypatch):
         result_payload={
             "success": False,
             "error_type": "provider_exception",
-            "error": "Authorization: Bearer sk-secret-token api_key=abc123 token=def456",
+            "error": "Authorization: Bearer sk-secret-token api_key=abc123 token=def456 password=hunter2",
         },
     )
 
@@ -375,9 +377,11 @@ def test_error_message_redacts_auth_and_secret_material(monkeypatch):
     assert "sk-secret-token" not in message
     assert "abc123" not in message
     assert "def456" not in message
+    assert "hunter2" not in message
     assert "Authorization: Bearer [REDACTED]" in message
     assert "api_key=[REDACTED]" in message
     assert "token=[REDACTED]" in message
+    assert "password=[REDACTED]" in message
 
 
 def test_append_manifest_record_is_best_effort(monkeypatch, tmp_path):
@@ -422,3 +426,44 @@ def test_append_manifest_record_writes_one_json_line(monkeypatch, tmp_path):
     record = json.loads(lines[0])
     assert record["tool"] == "image_generate"
     assert record["profile"] == "unit-profile"
+
+
+def test_append_manifest_record_assigns_sequence_and_output_indices(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_PROFILE", "unit-profile")
+    from tools.image_manifest import append_image_manifest_record
+
+    manifest_path = tmp_path / "manifest.jsonl"
+
+    append_image_manifest_record(
+        tool="image_generate",
+        operation="generate",
+        backend="fal",
+        args={"prompt": "draw first", "aspect_ratio": "square"},
+        input_images=[],
+        duration_ms=3,
+        result_payload={"success": True, "image": "/tmp/first.png"},
+        manifest_path=manifest_path,
+    )
+    append_image_manifest_record(
+        tool="image_generate",
+        operation="generate",
+        backend="fal",
+        args={"prompt": "draw second", "aspect_ratio": "square"},
+        input_images=[],
+        duration_ms=4,
+        result_payload={
+            "success": True,
+            "images": ["/tmp/second-a.png", "/tmp/second-b.png"],
+        },
+        manifest_path=manifest_path,
+    )
+
+    records = [json.loads(line) for line in manifest_path.read_text(encoding="utf-8").splitlines()]
+    assert [record["sequence"] for record in records] == [1, 2]
+    assert records[0]["result"]["outputs"] == [
+        {"output_index": 1, "kind": "image", "ref": "first.png"}
+    ]
+    assert records[1]["result"]["outputs"] == [
+        {"output_index": 1, "kind": "image", "ref": "second-a.png"},
+        {"output_index": 2, "kind": "image", "ref": "second-b.png"},
+    ]

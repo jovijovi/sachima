@@ -191,6 +191,7 @@ class TestHandler:
         records = [json.loads(line) for line in manifest_path.read_text(encoding="utf-8").splitlines()]
         assert len(records) == 1
         record = records[0]
+        assert record["sequence"] == 1
         assert record["profile"] == "manifest-test"
         assert record["tool"] == "image_edit"
         assert record["operation"] == "edit"
@@ -205,5 +206,7 @@ class TestHandler:
         assert record["request"]["content_summary_verified"] is False
         assert record["input_images"][0]["url"] == "https://cdn.example.test/input.png"
         assert isinstance(record["result"]["duration_ms"], int)
-        assert record["result"]["outputs"] == [{"kind": "image", "ref": "edited.png"}]
+        assert record["result"]["outputs"] == [
+            {"output_index": 1, "kind": "image", "ref": "edited.png"}
+        ]
         assert "token=secret" not in manifest_path.read_text(encoding="utf-8")
