@@ -134,6 +134,7 @@ class TestPluginDispatch:
         records = [json.loads(line) for line in manifest_path.read_text(encoding="utf-8").splitlines()]
         assert len(records) == 1
         record = records[0]
+        assert record["sequence"] == 1
         assert record["profile"] == "manifest-test"
         assert record["tool"] == "image_generate"
         assert record["operation"] == "generate"
@@ -148,4 +149,6 @@ class TestPluginDispatch:
         assert record["request"]["content_summary_verified"] is False
         assert record["input_images"] == []
         assert isinstance(record["result"]["duration_ms"], int)
-        assert record["result"]["outputs"] == [{"kind": "image", "ref": "codex-test.png"}]
+        assert record["result"]["outputs"] == [
+            {"output_index": 1, "kind": "image", "ref": "codex-test.png"}
+        ]

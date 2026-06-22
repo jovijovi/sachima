@@ -252,19 +252,19 @@ def _coerce_duration_ms(duration_ms: int | float | None) -> int:
         return 0
 
 
-def _image_output(ref: Any) -> dict[str, str] | None:
+def _image_output(ref: Any, *, output_index: int) -> dict[str, Any] | None:
     sanitized = _sanitize_image_ref(ref)
     if not sanitized:
         return None
-    return {"kind": "image", "ref": sanitized}
+    return {"output_index": output_index, "kind": "image", "ref": sanitized}
 
 
-def _outputs_from_payload(payload: Mapping[str, Any]) -> list[dict[str, str]]:
-    outputs: list[dict[str, str]] = []
+def _outputs_from_payload(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
+    outputs: list[dict[str, Any]] = []
     seen: set[str] = set()
 
     def add(ref: Any) -> None:
-        item = _image_output(ref)
+        item = _image_output(ref, output_index=len(outputs) + 1)
         if not item:
             return
         ref_text = item["ref"]
@@ -380,6 +380,7 @@ def build_image_manifest_record(
     response_text: str | None = None,
     result_payload: Mapping[str, Any] | None = None,
     duration_ms: int | float | None = None,
+    sequence: int | None = None,
 ) -> dict[str, Any]:
     """Build a sanitized v1 manifest record for an image tool call."""
     payload = _parse_payload(response_text, result_payload)
@@ -398,7 +399,7 @@ def build_image_manifest_record(
         request["content_summary_source"] = "agent_supplied"
         request["content_summary_verified"] = False
 
-    return {
+    record: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "record_id": str(uuid.uuid4()),
         "ts": _utc_now(),
@@ -411,12 +412,41 @@ def build_image_manifest_record(
         "result": _result_from_payload(payload, duration_ms),
         "error": _error_from_payload(payload),
     }
+    if sequence is not None:
+        record["sequence"] = sequence
+    return record
 
 
 def _write_jsonl_record(path: Path, record: Mapping[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
+
+
+def _next_manifest_sequence(path: Path) -> int:
+    """Return the next 1-based sequence number for a manifest file."""
+    if not path.exists():
+        return 1
+    max_sequence = 0
+    valid_records = 0
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            try:
+                parsed = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(parsed, Mapping) or parsed.get("schema_version") != SCHEMA_VERSION:
+                continue
+            valid_records += 1
+            try:
+                max_sequence = max(max_sequence, int(parsed.get("sequence") or 0))
+            except (TypeError, ValueError):
+                continue
+    except OSError:
+        return 1
+    return max(max_sequence, valid_records) + 1
 
 
 def append_image_manifest_record(
@@ -433,6 +463,7 @@ def append_image_manifest_record(
 ) -> None:
     """Append one sanitized image manifest record, best-effort."""
     try:
+        path = Path(manifest_path) if manifest_path else default_manifest_path()
         record = build_image_manifest_record(
             tool=tool,
             operation=operation,
@@ -442,8 +473,9 @@ def append_image_manifest_record(
             response_text=response_text,
             result_payload=result_payload,
             duration_ms=duration_ms,
+            sequence=_next_manifest_sequence(path),
         )
-        _write_jsonl_record(Path(manifest_path) if manifest_path else default_manifest_path(), record)
+        _write_jsonl_record(path, record)
     except Exception as exc:
         logger.debug("Image manifest append failed: %s", exc)
 
@@ -514,6 +546,7 @@ def _compact_record(record: Mapping[str, Any]) -> dict[str, Any]:
     error: Mapping[str, Any] = error_raw if isinstance(error_raw, Mapping) else {}
     outputs_raw = result.get("outputs")
     outputs: list[Any] = outputs_raw if isinstance(outputs_raw, list) else []
+    compact_outputs: list[dict[str, Any]] = []
     compact: dict[str, Any] = {
         "record_id": _sanitize_string(record.get("record_id"), max_chars=200),
         "ts": _sanitize_string(record.get("ts"), max_chars=100),
@@ -524,19 +557,44 @@ def _compact_record(record: Mapping[str, Any]) -> dict[str, Any]:
         "prompt": _sanitize_string(request.get("prompt"), max_chars=8000),
         "aspect_ratio": _sanitize_string(request.get("aspect_ratio"), max_chars=100),
     }
+    sequence_raw = record.get("sequence")
+    try:
+        sequence = int(sequence_raw) if sequence_raw is not None else None
+    except (TypeError, ValueError):
+        sequence = None
+    if sequence is not None:
+        compact["sequence"] = sequence
     if request.get("content_summary"):
         compact["content_summary"] = _sanitize_string(request.get("content_summary"), max_chars=2000)
-    for output in outputs:
+    for fallback_index, output in enumerate(outputs, start=1):
         if isinstance(output, Mapping) and output.get("ref"):
             image_ref = _sanitize_image_ref(output.get("ref"))
-            if image_ref:
+            if not image_ref:
+                continue
+            try:
+                output_index = int(output.get("output_index") or fallback_index)
+            except (TypeError, ValueError):
+                output_index = fallback_index
+            compact_outputs.append(
+                {"output_index": output_index, "kind": "image", "ref": image_ref}
+            )
+            if "image" not in compact:
                 compact["image"] = image_ref
-                break
+    if compact_outputs:
+        compact["outputs"] = compact_outputs
     if error.get("error_type"):
         compact["error_type"] = _sanitize_string(error.get("error_type"), max_chars=200)
     if error.get("message"):
         compact["error"] = _sanitize_string(error.get("message"), max_chars=1000)
     return compact
+
+
+def _record_sort_sequence(record: Mapping[str, Any], fallback: int) -> int:
+    sequence_raw = record.get("sequence")
+    try:
+        return int(sequence_raw) if sequence_raw is not None else fallback
+    except (TypeError, ValueError):
+        return fallback
 
 
 def query_image_history(
@@ -556,17 +614,23 @@ def query_image_history(
     limit_int = max(1, min(limit_int, MAX_LIMIT))
 
     records = _read_records(manifest_path)
-    filtered: list[dict[str, Any]] = []
-    for record in records:
+    filtered: list[tuple[int, dict[str, Any]]] = []
+    for ordinal, record in enumerate(records, start=1):
         if tool and record.get("tool") != tool:
             continue
         if success is not None and _record_success(record) is not success:
             continue
         if not _matches_content(record, content_search):
             continue
-        filtered.append(record)
+        filtered.append((ordinal, record))
 
     if latest:
-        filtered.sort(key=lambda item: str(item.get("ts") or ""), reverse=True)
+        filtered.sort(
+            key=lambda item: (
+                str(item[1].get("ts") or ""),
+                _record_sort_sequence(item[1], item[0]),
+            ),
+            reverse=True,
+        )
 
-    return [_compact_record(record) for record in filtered[:limit_int]]
+    return [_compact_record(record) for _, record in filtered[:limit_int]]
