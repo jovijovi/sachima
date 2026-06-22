@@ -11,9 +11,20 @@
 ```json
 {
   "base_branch": "release/sachima",
-  "base_head": "8dc1e5ac9f7b2fb4b6f8cc04a69069acecbeb2bf",
+  "base_head": "dbe86f2731cbc5a3efdf8a26c499b559258c6a66",
   "base_head_note": "latest first-parent base commit excluding machine status-sync self-commits",
   "latest_merged_prs": [
+    {
+      "baseRefName": "release/sachima",
+      "headRefName": "feat/image-manifest-sequence",
+      "mergeCommit": {
+        "oid": "dbe86f2731cbc5a3efdf8a26c499b559258c6a66"
+      },
+      "mergedAt": "2026-06-22T01:50:09Z",
+      "number": 158,
+      "title": "feat: add image manifest sequence indices",
+      "url": "https://github.com/jovijovi/sachima/pull/158"
+    },
     {
       "baseRefName": "release/sachima",
       "headRefName": "feat/image-manifest-history",
@@ -57,31 +68,10 @@
       "number": 154,
       "title": "docs: plan P5 Temporal runtime enablement",
       "url": "https://github.com/jovijovi/sachima/pull/154"
-    },
-    {
-      "baseRefName": "release/sachima",
-      "headRefName": "fix/xai-edit-resolution-2k",
-      "mergeCommit": {
-        "oid": "1e84ed198340b1067d261f65381285181b4376b2"
-      },
-      "mergedAt": "2026-06-19T17:17:25Z",
-      "number": 153,
-      "title": "fix: honor xAI edit resolution config",
-      "url": "https://github.com/jovijovi/sachima/pull/153"
     }
   ],
-  "open_pr_count": 1,
-  "open_prs": [
-    {
-      "baseRefName": "release/sachima",
-      "headRefName": "feat/image-manifest-sequence",
-      "isDraft": false,
-      "mergeStateStatus": "CLEAN",
-      "number": 158,
-      "title": "feat: add image manifest sequence indices",
-      "url": "https://github.com/jovijovi/sachima/pull/158"
-    }
-  ],
+  "open_pr_count": 0,
+  "open_prs": [],
   "repository": "jovijovi/sachima",
   "scope_note": "machine dynamic status only; approvals and phase meaning remain human-authored outside this block"
 }
