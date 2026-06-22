@@ -11,9 +11,20 @@
 ```json
 {
   "base_branch": "release/sachima",
-  "base_head": "dbe86f2731cbc5a3efdf8a26c499b559258c6a66",
+  "base_head": "0a55f782f00d1f096847e3acd5ff0814583bbf18",
   "base_head_note": "latest first-parent base commit excluding machine status-sync self-commits",
   "latest_merged_prs": [
+    {
+      "baseRefName": "release/sachima",
+      "headRefName": "merge/upstream-v2026.6.19-into-release-sachima",
+      "mergeCommit": {
+        "oid": "0a55f782f00d1f096847e3acd5ff0814583bbf18"
+      },
+      "mergedAt": "2026-06-22T10:33:16Z",
+      "number": 159,
+      "title": "Merge upstream Hermes Agent v2026.6.19 into Sachima release",
+      "url": "https://github.com/jovijovi/sachima/pull/159"
+    },
     {
       "baseRefName": "release/sachima",
       "headRefName": "feat/image-manifest-sequence",
@@ -57,17 +68,6 @@
       "number": 155,
       "title": "docs: prepare P5 Temporal PR B governance",
       "url": "https://github.com/jovijovi/sachima/pull/155"
-    },
-    {
-      "baseRefName": "release/sachima",
-      "headRefName": "docs/p5-temporal-production-runtime-enablement-slice-1",
-      "mergeCommit": {
-        "oid": "f465186cc96bc182eab00b1de039ed8258f06ac8"
-      },
-      "mergedAt": "2026-06-20T05:48:26Z",
-      "number": 154,
-      "title": "docs: plan P5 Temporal runtime enablement",
-      "url": "https://github.com/jovijovi/sachima/pull/154"
     }
   ],
   "open_pr_count": 0,
