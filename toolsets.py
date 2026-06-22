@@ -38,8 +38,11 @@ _HERMES_CORE_TOOLS = [
     "read_terminal",
     # File manipulation
     "read_file", "write_file", "patch", "search_files",
-    # Vision + image generation
-    "vision_analyze", "image_generate",
+    # Vision + image generation / editing.
+    # image_edit is gated at schema-build time by its check_fn (surfaces only
+    # when an edit-capable, available backend like xAI is configured); it must
+    # still live in the core list so platforms can resolve it at all.
+    "vision_analyze", "image_generate", "image_edit",
     # Skills
     "skills_list", "skill_view", "skill_manage",
     # Browser automation
@@ -59,6 +62,8 @@ _HERMES_CORE_TOOLS = [
     "execute_code", "delegate_task",
     # Cronjob management
     "cronjob",
+    # Cross-platform messaging (gated on gateway running via check_fn)
+    "send_message", "github_pr_approval_card",
     # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
     "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
     # Kanban multi-agent coordination — only in schema when the agent is
@@ -124,8 +129,12 @@ TOOLSETS = {
     },
     
     "image_gen": {
-        "description": "Creative generation tools (images)",
-        "tools": ["image_generate"],
+        "description": "Creative generation and editing tools (images)",
+        # Both tools ship statically so a profile that narrowly enables only
+        # ``image_gen`` exposes image_edit regardless of registry-discovery
+        # order. image_edit is still gated at schema-build time by its check_fn
+        # (surfaces only with an edit-capable backend).
+        "tools": ["image_generate", "image_edit", "image_history"],
         "includes": []
     },
 
@@ -186,6 +195,11 @@ TOOLSETS = {
         "includes": []
     },
     
+    "messaging": {
+        "description": "Cross-platform messaging: send messages to Telegram, Discord, Slack, SMS, etc.",
+        "tools": ["send_message", "github_pr_approval_card"],
+        "includes": []
+    },
 
     "file": {
         "description": "File manipulation tools: read, write, patch (with fuzzy matching), and search (content + files)",
@@ -208,6 +222,54 @@ TOOLSETS = {
     "memory": {
         "description": "Persistent memory across sessions (personal notes + user profile)",
         "tools": ["memory"],
+        "includes": []
+    },
+
+    "memory_palace": {
+        "description": "Profile-scoped markdown memory palace notes under the active HERMES_HOME",
+        "tools": [
+            "palace_list", "palace_read", "palace_search",
+            "palace_write", "palace_patch",
+        ],
+        "includes": []
+    },
+
+    "workspace_file": {
+        "description": "Restricted profile-scoped file tools rooted under the active HERMES_HOME/workspace",
+        "tools": [
+            "workspace_list", "workspace_read", "workspace_search",
+            "workspace_write", "workspace_patch",
+        ],
+        "includes": []
+    },
+
+    "media_fetch": {
+        "description": "Restricted profile-scoped HTTPS media download/cache tools for images and videos",
+        "tools": ["media_fetch_url", "media_list", "media_delete"],
+        "includes": []
+    },
+
+    "clock": {
+        "description": "Narrow read-only current time/date lookup for companion profiles",
+        "tools": ["clock_now"],
+        "includes": []
+    },
+
+    "calendar": {
+        "description": "Narrow holiday/calendar lookup including Chinese lunar and common Western holidays",
+        "tools": ["calendar_lookup"],
+        "includes": []
+    },
+
+    "weather": {
+        "description": "Narrow weather lookup that emits weather rich results for platform cards",
+        "tools": ["weather_query"],
+        "includes": []
+    },
+
+    "journal": {
+        "description": "Profile-scoped journal append tool backed by the memory palace",
+        "tools": ["journal_write"],
         "includes": []
     },
 
@@ -530,6 +592,12 @@ TOOLSETS = {
         "includes": []
     },
 
+    "hermes-sachima": {
+        "description": "Sachima custom IM toolset - webhook/send-API messaging channel (full access)",
+        "tools": _HERMES_CORE_TOOLS,
+        "includes": []
+    },
+
     "hermes-wecom": {
         "description": "WeCom bot toolset - enterprise WeChat messaging (full access)",
         "tools": _HERMES_CORE_TOOLS,
@@ -570,7 +638,7 @@ TOOLSETS = {
     "hermes-gateway": {
         "description": "Gateway toolset - union of all messaging platform tools",
         "tools": [],
-        "includes": ["hermes-telegram", "hermes-discord", "hermes-whatsapp", "hermes-slack", "hermes-signal", "hermes-bluebubbles", "hermes-homeassistant", "hermes-email", "hermes-sms", "hermes-mattermost", "hermes-matrix", "hermes-dingtalk", "hermes-feishu", "hermes-wecom", "hermes-wecom-callback", "hermes-weixin", "hermes-qqbot", "hermes-webhook", "hermes-yuanbao"]
+        "includes": ["hermes-telegram", "hermes-discord", "hermes-whatsapp", "hermes-slack", "hermes-signal", "hermes-bluebubbles", "hermes-homeassistant", "hermes-email", "hermes-sms", "hermes-mattermost", "hermes-matrix", "hermes-dingtalk", "hermes-feishu", "hermes-wecom", "hermes-wecom-callback", "hermes-weixin", "hermes-qqbot", "hermes-sachima", "hermes-webhook", "hermes-yuanbao"]
     }
 }
 

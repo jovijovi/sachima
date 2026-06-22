@@ -1,0 +1,251 @@
+phase_id: "agent-run-supervisor-sachima-p5-local-offline-runtime-adapter-implementation-prep"
+roadmap_phase: "P5"
+roadmap_phase_name: "Production durable runtime integration (local/offline runtime-adapter implementation prep)"
+level: "level-3-implementation-prep"
+status: "implementation-prep-charter"
+status_meaning: >-
+  Docs-only P5 local/offline runtime-adapter implementation-prep / scope charter
+  on branch docs/p5-runtime-adapter-implementation-prep. Fixes the shape,
+  boundaries, preserved safety constraints, allowed code shape, and required
+  tests of the NEXT P5 implementation slice (a local/offline, caller-owned,
+  fake/injected runtime adapter behind the existing WP4 executor Protocol seam,
+  default-off, no real runtime/Worker start). Also folds the stale PR #147
+  pre-merge wording to merged truth in the same PR (no standalone status-only
+  PR). Does NOT approve implementation, runtime start, Worker start, controlled
+  AI FLOW execution (P6), write roles, external Temporal/Worker lifecycle, or any
+  live/Gateway/Feishu/production config/real delivery axis.
+
+repo: "jovijovi/sachima"
+base_branch: "release/sachima"
+base_head: "6c11a40d4de3e66981c3ff27905c1785b1709e0a"
+base_head_note: >-
+  PR #147 merge commit; latest non-status-sync base per the machine status block.
+  The working branch tip including the latest status-sync self-commit is bba90c0e3.
+branch: "docs/p5-runtime-adapter-implementation-prep"
+created_at: "2026-06-18"
+owner_dri: "Hermes operator under Sachima governed task"
+
+predecessor_p5_design_readiness:
+  pr_number: 147
+  pr_url: "https://github.com/jovijovi/sachima/pull/147"
+  pr_head_sha: "faaaf3391099443d08478906688dd3ea145ce1d4"
+  merge_commit: "6c11a40d4de3e66981c3ff27905c1785b1709e0a"
+  merged_at: "2026-06-18T03:36:51Z"
+  state: "MERGED"
+  doc: "docs/plans/2026-06-18-agent-run-supervisor-sachima-p5-production-durable-runtime-integration-design-readiness.md"
+  note: >-
+    Authoritative P5 contract (ownership, control surface, durable records,
+    cross-process claim store, no-throw boundary, failure taxonomy, no-leak
+    SCAN 1 + SCAN 2, probes, scoring rubric, kill criteria K1-K8, gates G0-G8).
+    This charter references it; it does not repeat it.
+
+naming_clarification:
+  roadmap_p5: "production durable runtime integration (this charter preps its first implementation slice)"
+  remaining_goals_wp5: "write-capable roles + sandbox/rollback (NOT this packet; write roles unapproved)"
+  roadmap_p6: "controlled AI FLOW execution (blocked until P5 durable runtime evidence passes)"
+
+approval_gate:
+  approval_token: "approve_agent_run_supervisor_sachima_p5_local_offline_runtime_adapter_implementation_prep_docs_only_no_implementation_no_runtime_start_no_worker_start_no_controlled_ai_flow_execution_no_live_no_gateway_no_feishu_no_production_config_no_real_delivery"
+  approved_now: true
+  scope_note: >-
+    Implementation-prep / scope charter only. Fixes the next slice's shape and
+    required tests and folds the stale PR #147 status. No implementation or
+    execution approval.
+
+future_implementation_gate:
+  approval_token: "approve_agent_run_supervisor_sachima_p5_local_offline_caller_owned_runtime_adapter_implementation_fake_or_injected_runtime_only_behind_executor_protocol_seam_default_off_no_real_runtime_start_no_worker_auto_start_no_gateway_owned_lifecycle_no_controlled_ai_flow_execution_no_live_no_gateway_no_feishu_no_production_config_no_real_delivery"
+  approved_now: false
+  note: >-
+    Strongest allowed next PR after this charter: a local/offline, caller-owned,
+    fake/injected runtime adapter behind the WP4 executor Protocol seam,
+    default-off, no real external runtime/Worker/service/socket/subprocess start.
+
+external_temporal_or_worker_lifecycle_gate:
+  approval_token: "approve_external_temporal_service_or_worker_lifecycle_for_sachima_p5_runtime"
+  approved_now: false
+  note: "Separate token required; not granted and not implied by the implementation token."
+
+scope:
+  docs_only: true
+  implementation_prep_only: true
+  scope_charter_only: true
+  source_implementation_approved: false
+  runtime_start_approved: false
+  worker_start_approved: false
+  worker_auto_start_approved: false
+  fake_or_injected_runtime_only_for_next_pr: true
+  cross_process_claim_store_implementation_approved: false
+  durable_runtime_attach_approved: false
+  controlled_ai_flow_execution_approved: false
+  real_workflow_execution_approved: false
+  write_roles_approved: false
+  read_only_roles_only: true
+  additional_acpx_invocation_approved: false
+  additional_real_agent_execution_approved: false
+  npx_or_network_fetch_approved: false
+  local_offline_caller_owned_only: true
+  gateway_approved: false
+  gateway_owned_runtime_lifecycle_approved: false
+  external_temporal_service_or_worker_startup_approved: false
+  feishu_approved: false
+  live_or_default_on_approved: false
+  public_ingress_approved: false
+  production_config_approved: false
+  service_restart_or_reload_approved: false
+  platform_adapter_mutation_approved: false
+  real_delivery_approved: false
+
+strongest_allowed_next_pr:
+  description: >-
+    A local/offline, caller-owned runtime adapter implementation behind the
+    existing WP4 executor Protocol seam (StepExecutor in
+    sachima_supervisor/ai_flow_executor.py), default-off / injected, binding a
+    deterministic fake/injected runtime for tests only.
+  seam: "sachima_supervisor/ai_flow_executor.py (StepExecutor Protocol)"
+  default_off: true
+  fake_or_injected_runtime_only: true
+  no_real_runtime_or_worker_start: true
+  no_new_approval_surface_beyond_implementation_token: true
+
+boundaries_carried_into_next_pr:
+  - "no live / default-on behavior"
+  - "no Gateway-owned lifecycle and no Gateway involvement or mutation"
+  - "no Feishu/IM delivery, public ingress, production config, service restart/reload, platform adapter mutation, or real delivery"
+  - "no controlled AI FLOW real execution (P6 stays blocked until P5 durable-runtime evidence passes)"
+  - "no write-capable roles (read-only role keys only)"
+  - "no additional AGENT/acpx/npx real invocation"
+  - "external Temporal/Worker lifecycle remains separately unapproved"
+
+preserved_p5_safety_constraints_from_pr147:
+  - "caller-owned control surface; Gateway never owns/auto-starts a runtime/Worker/service/socket/subprocess"
+  - "cross-process transactional claim store required for durable claims; in-process CAS (AiFlowRunStore in ai_flow_store.py) insufficient (kill-criterion K2)"
+  - "no-throw stable result/error taxonomy; backend exceptions collapse to a stable error_code, never crossing the boundary"
+  - "runtime-history no-leak: SCAN 1 (sanitized JSON projection) AND SCAN 2 (serialized event/history bytes); payloads cross the seam by claim-check ref/digest only"
+  - "probes: duplicate-start, retry, timeout, cancellation, recovery, restart/replay, query-snapshot consistency"
+  - "WP3b active-run cancellation WATCH must not be overclaimed; unconfirmed active-run interruption held cancel_ambiguous + active_run_watch marker, never promoted to cancelled, no artifact propagation, no relaunch"
+
+allowed_future_code_shape_design_labels_only:
+  - "small caller-owned adapter API / module behind the StepExecutor Protocol seam (a StepExecutor binding plus a thin adapter entry), default-off and injected"
+  - "sanitized request/result dataclasses or equivalent (aligned with the existing frozen StepExecutionOutcome: stable codes/refs/digests/counts; never raw bodies; no executor-set business verdict)"
+  - "transactional claim-store abstraction with a deterministic local/offline fake implementation for tests only, mirroring the AiFlowRunStore check-and-set / validate-on-read contract while modeling the cross-process claim semantics PR #147 requires"
+  - "query/recovery/cancel/close wrappers that return stable codes and never throw across the boundary, reusing the WP3b-aligned cancellation channel (interrupted / cleanup_verified / ambiguous)"
+
+required_future_implementation_tests:
+  - "exact approval token: wrong/missing implementation token fails closed"
+  - "duplicate start: two identical starts converge to one run (idempotent_replay)"
+  - "idempotent replay: compatible repeat returns the stored projection with no second executor call"
+  - "conflict fail-closed: incompatible repeat / conflicting starter fails closed (no double-launch)"
+  - "unsafe material rejection: platform/private/secret/raw/card/media material rejected (runtime_unsafe_material)"
+  - "resident dirty state rejection / sanitization: hostile resident record can never be projected (validate-on-read)"
+  - "lease / epoch / state_version TOCTOU: drift between validation and durable apply fails closed before mutation"
+  - "active-run cancellation WATCH: unconfirmed active-run interruption held cancel_ambiguous + WATCH, never cancelled"
+  - "no-leak scans: SCAN 1 (JSON projection) AND SCAN 2 (serialized event/history bytes)"
+  - "forbidden-surface static guard: the adapter imports/starts no real runtime/Worker/subprocess/socket/acpx/npx surface"
+
+governance_posture:
+  safety_governance: "strong (next PR carries its own scope manifest, guard tests, both no-leak scans, forbidden-surface scan, independent blocker review)"
+  status_governance: "light"
+  status_reduction_rules:
+    - "no standalone PR opened merely to record merge status"
+    - "full non-approval paragraphs are not duplicated across every doc; they live authoritatively in PR #147 and GOAL.md and are referenced"
+    - "stale status fixes (the PR #147 pre-merge wording) fold into a same-scope PR (this one)"
+
+pr147_status_fold:
+  folded_here: true
+  standalone_status_pr_opened: false
+  patched_fields:
+    - "design-readiness plan doc Status line: candidate/pre-merge -> merged (merge commit + mergedAt)"
+    - "design-readiness manifest status: pre-merge candidate -> merged; status_meaning pre-merge -> merged; merge_commit/merged_at filled"
+    - "design-readiness dev log Status line + manifest_candidate_fields snapshot: pre-merge and bare nulls -> merged (post-merge)"
+    - "current-status.md human-authored P5 keys, phase-map row, bridge-PR table, open-tails row, current_position prose: candidate/pre-merge -> merged + next prep candidate recorded"
+  machine_status_block_untouched: true
+  machine_status_block_note: >-
+    The sachima-status-sync block already reflects PR #147 merged
+    (mergeCommit 6c11a40d4de3e66981c3ff27905c1785b1709e0a, mergedAt
+    2026-06-18T03:36:51Z, open_pr_count 0); it is machine-owned and not edited here.
+
+changed_files_expected:
+  docs:
+    - "docs/plans/2026-06-18-agent-run-supervisor-sachima-p5-local-offline-runtime-adapter-implementation-prep.md"
+    - "docs/plans/2026-06-18-agent-run-supervisor-sachima-p5-local-offline-runtime-adapter-implementation-prep-manifest.yaml"
+    - "docs/dev_log/2026-06-18-agent-run-supervisor-sachima-p5-local-offline-runtime-adapter-implementation-prep.md"
+    - "docs/roadmap/current-status.md"
+  pr147_status_patches:
+    - "docs/plans/2026-06-18-agent-run-supervisor-sachima-p5-production-durable-runtime-integration-design-readiness.md"
+    - "docs/plans/2026-06-18-agent-run-supervisor-sachima-p5-production-durable-runtime-integration-design-readiness-manifest.yaml"
+    - "docs/dev_log/2026-06-18-agent-run-supervisor-sachima-p5-production-durable-runtime-integration-design-readiness.md"
+  source: []
+  tests: []
+  scripts: []
+
+verification_required_before_pr:
+  - "YAML parse of this manifest"
+  - "git diff --check"
+  - "tools/sync_roadmap_status.py --check (machine status block already up to date; not edited here)"
+  - "changed-file allowlist (docs/status only)"
+  - "stale PR #147 status scan (no remaining pre-merge PR #147 status markers or null merge fields for PR #147 in human-authored docs)"
+  - "forbidden live/Gateway/Worker/Feishu/runtime-start surface scan on changed files (non-approval prose allowed)"
+  - "secret-shaped / no-leak scan"
+  - "Codex blocker-only review on the final diff"
+
+static_pr_metadata_policy:
+  freeze_current_pr_number_in_docs: false
+  reason: >-
+    To reduce status-governance churn, this prep manifest does not freeze its own
+    future PR number, URL, CI state, merge commit, or merge timestamp. Those facts
+    remain live GitHub / PR-body truth unless a later same-scope edit needs them.
+  predecessor_pr147_merge_recorded_here: true
+
+review_evidence:
+  codex_blocker_review: "PASS / BLOCKERS: None"
+  review_mode: "repo-aware read-only review of local uncommitted diff before commit/PR"
+  reviewer: "Codex CLI gpt-5.5 / xhigh"
+  note: >-
+    If the branch changes after this review, rerun a narrow blocker-only review on
+    the final pushed head before any approval card.
+
+explicit_non_approvals_note: >-
+  The authoritative non-approval list lives in PR #147's packet and GOAL.md and
+  is referenced, not re-expanded here (status governance reduction rule). The
+  key non-approvals carried into the next PR are listed below.
+
+explicit_non_approvals:
+  - "source_implementation_of_any_kind"
+  - "runtime_start_or_attach"
+  - "worker_start_or_auto_start"
+  - "cross_process_claim_store_as_a_real_service"
+  - "controlled_ai_flow_execution"
+  - "real_workflow_execution"
+  - "write_capable_claude_or_codex_roles"
+  - "additional_real_agent_execution"
+  - "additional_acpx_invocation"
+  - "npx_fallback_or_network_fetch"
+  - "real_local_exec"
+  - "persistent_session_execution"
+  - "additional_or_unbounded_cancellation_execution"
+  - "gateway_owned_or_auto_started_runtime_worker_service_socket_subprocess"
+  - "external_temporal_service_or_worker_startup"
+  - "gateway_involvement_or_mutation"
+  - "platform_adapter_mutation"
+  - "real_external_sachima_ingress"
+  - "public_webhook_exposure"
+  - "feishu_or_im_delivery"
+  - "real_external_delivery"
+  - "production_config_write"
+  - "service_restart_or_reload"
+  - "live_or_default_on_behavior"
+
+strongest_allowed_outcome: "agent_run_supervisor_sachima_p5_local_offline_runtime_adapter_implementation_prep_ready_for_separate_local_offline_caller_owned_fake_or_injected_runtime_adapter_implementation_request"
+strongest_allowed_outcome_meaning: >-
+  After review and merge, the next local/offline, caller-owned, fake/injected
+  runtime-adapter implementation may be requested with its own exact token. This
+  charter approves no source implementation, runtime/Worker start, durable-backend
+  attach, controlled AI FLOW execution (P6), external Temporal/Worker lifecycle,
+  or any live/Gateway/Feishu/production-config/real-delivery axis.
+
+next_allowed_request: "approve_agent_run_supervisor_sachima_p5_local_offline_caller_owned_runtime_adapter_implementation_fake_or_injected_runtime_only_behind_executor_protocol_seam_default_off_no_real_runtime_start_no_worker_auto_start_no_gateway_owned_lifecycle_no_controlled_ai_flow_execution_no_live_no_gateway_no_feishu_no_production_config_no_real_delivery"
+next_allowed_request_note: >-
+  Recommended mainline next step after this charter merges; still local,
+  caller-owned, fake/injected runtime only behind the WP4 executor Protocol seam,
+  default-off, no real runtime/Worker start, no Gateway-owned lifecycle, no
+  controlled AI FLOW execution, no live/Feishu/production/real delivery.

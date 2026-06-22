@@ -1,0 +1,201 @@
+phase_id: "agent-run-supervisor-sachima-local-offline-integration-design"
+level: "level-3"
+design_only: true
+owner_dri: "Hermes operator with Dog Brother approval"
+status: "design_packet_ready_for_pr"
+
+created_at: "2026-06-03T19:34:00+08:00"
+repo: "jovijovi/sachima"
+base_branch: "release/sachima"
+base_sha: "c36e27631a315039e87fcfb37188d853cbdc8db4"
+worktree: "/home/ecs-user/workspace/hermes/worktrees/sachima/docs-agent-run-supervisor-local-offline-design"
+branch: "docs/agent-run-supervisor-local-offline-design"
+
+received_approval_text:
+  - "approve_agent_run_supervisor_sachima_local_offline_integration_design_no_live_no_gateway_no_real_delivery"
+approval_interpretation: "local/offline integration design only; docs-only design packet for using agent-run-supervisor as a local supervisor library under a Sachima/FlowWeaver caller; does not approve implementation, live behavior, Gateway involvement, or real delivery"
+
+status_markers:
+  - "DESIGN_ONLY"
+  - "IMPLEMENTATION_NOT_APPROVED"
+  - "LIVE_NOT_APPROVED"
+  - "GATEWAY_NOT_APPROVED"
+  - "REAL_DELIVERY_NOT_APPROVED"
+
+goal_refs:
+  - "GOAL.md"
+gap_refs:
+  - "docs/sachima-final-goal-gap-analysis.md"
+phase_plan_refs:
+  - "docs/plans/2026-05-11-sachima-final-goal-phase-development-plan.md"
+  - "docs/plans/2026-05-12-flowweaver-pe2-design-packet.md"
+  - "docs/plans/2026-05-12-sachima-envelope-v1-agentic-ui-p4-design-packet.md"
+roadmap_ref: "docs/roadmap/current-status.md"
+
+cross_repo_authority_facts:
+  - "agent-run-supervisor is an independent local Python library + dev CLI; not Sachima, not a Gateway plugin, not an IM adapter, not a daemon"
+  - "agent-run-supervisor owns AgentRoleSpec, acpx/ACP invocation compilation, local run/session lifecycle, observed stdout/event parsing, status classification, redacted local artifacts/audit evidence"
+  - "caller projects own product/business intent, business verdict interpretation, rendering/progress/delivery/platform integration"
+  - "I1 generic caller boundary: src/agent_run_supervisor/caller.py with CallerInvocationSpec, CallerResult, invoke_caller; CallerResult.business_verdict remains None/null"
+  - "L2 local/offline Hermes caller: src/agent_run_supervisor/hermes_caller/ with offline Feishu view-model/payload dicts; no Feishu SDK/API, no IM delivery, no public ingress, no Gateway/Sachima behavior, no automatic replies, no live/default-on behavior"
+
+approved_scope:
+  - "docs-only local/offline integration design packet"
+  - "define the caller boundary mapping between a Sachima/FlowWeaver/Hermes controller and agent-run-supervisor I1/L2"
+  - "define caller-owned input contract, output contract, mode mapping, and FlowWeaver integration seam"
+  - "define safety/no-leak boundaries and explicit non-approvals"
+  - "create docs-only manifest and dev log; narrowly update the roadmap dashboard"
+  - "run docs, changed-file, and no-leak gates plus independent reviews"
+
+design_decision: "concrete caller is a local Sachima/FlowWeaver/Hermes controller or Activity wrapper, not the Gateway; agent-run-supervisor stays a local library/evidence layer"
+
+allowed_changed_files:
+  - "docs/plans/2026-06-03-agent-run-supervisor-sachima-local-offline-integration-design.md"
+  - "docs/plans/2026-06-03-agent-run-supervisor-sachima-local-offline-integration-design-manifest.yaml"
+  - "docs/dev_log/2026-06-03-agent-run-supervisor-sachima-local-offline-integration-design.md"
+  - "docs/roadmap/current-status.md"
+
+forbidden_changes_without_separate_approval:
+  - "any code, test, config, or runtime file"
+  - "gateway/ and gateway/platforms/ adapters"
+  - "hermes config files"
+  - "agent-run-supervisor source (caller.py, hermes_caller/, role specs)"
+  - "any file outside docs/plans/, docs/dev_log/, docs/roadmap/current-status.md"
+
+explicit_non_approvals:
+  - "real_external_sachima_ingress"
+  - "real_external_delivery"
+  - "production_delivery_control"
+  - "production_agent_tool_execution_expansion"
+  - "production_config_write"
+  - "gateway_restart_or_reload"
+  - "platform_adapter_mutation"
+  - "gateway_owned_temporal_lifecycle"
+  - "real_send_api_or_external_im_call"
+  - "external_temporal_service_or_worker_startup"
+  - "live_or_default_on_behavior"
+  - "public_webhook_exposure"
+  - "automatic_replies"
+  - "worker_auto_routing"
+  - "agent_to_agent_auto_routing"
+  - "@all_fanout"
+  - "trusted_markdown_html_rendering"
+
+no_leak_boundaries:
+  - "raw prompts"
+  - "platform ids"
+  - "card JSON"
+  - "media bytes or paths"
+  - "tool output"
+  - "tokens / credentials / secrets / raw signatures"
+  - "raw acpx stdout"
+  - "raw exceptions / tracebacks"
+
+mode_mapping:
+  exec: "one-shot exec invocation; in scope for later local/offline implementation"
+  session: "persistent caller-driven session; in scope for later local/offline implementation"
+  dry_run_config_preview: "compile role spec to planned acpx/ACP invocation without executing; preferred first concrete step later"
+  status_close: "caller may query status and close; in scope for later local/offline implementation"
+  cancel_rollback: "future implementation concern; not designed-to-completion and not approved here"
+
+flowweaver_integration:
+  packaging: "local/offline Activity or controller seam, not a runtime owner"
+  inputs: "claim-check refs and sanitized labels only"
+  error_handling: "no-throw wrappers map errors to stable status + error code; no raw exception text in durable history"
+  durable_query_update_cancel: "deferred to P5 durable-runtime ownership decision; not approved here"
+  strongest_allowed_probe_later: "default-off local dry-run/config-preview + offline view-model construction with sanitized local evidence"
+
+blast_radius:
+  environments:
+    - "docs-only git worktree"
+  max_users: 0
+  max_requests: 0
+  max_runtime_minutes: 0
+  max_delivery_attempts: 0
+  allowed_data_categories:
+    - "sanitized documentation references"
+    - "cross-repo authority facts and contract field names"
+    - "existing evidence markers and counts"
+  rollback_authority: "Hermes operator"
+  rollback_method: "git revert or PR close; no runtime/config rollback needed for docs-only packet"
+
+verification_gates:
+  - "git status --short (review changed files only under allowed_changed_files)"
+  - "git diff --check (no whitespace/conflict errors)"
+  - "changed-file allowlist enforced against allowed_changed_files"
+  - "no-secret / no-token / no-raw-log scan of the three docs and the roadmap edit"
+  - "required status markers present in the design packet"
+  - "consistency / phase-gate review with zero blockers"
+  - "security / low-intrusion review with zero blockers"
+  - "independent Codex primary review with zero blockers"
+
+strongest_allowed_outcome: "agent_run_supervisor_sachima_local_offline_integration_design_ready_for_separate_local_offline_implementation_request"
+strongest_allowed_outcome_meaning: "may request the next, separately named local/offline implementation approval only; does not authorize implementation, live behavior, Gateway involvement, real ingress, real delivery, config writes, or controlled AI FLOW execution"
+
+next_approval_text: "approve_agent_run_supervisor_sachima_local_offline_integration_implementation_no_live_no_gateway_no_real_delivery"
+later_separate_approval_texts:
+  - "approve_sachima_controlled_ai_flow_supervised_local_agent_execution_no_live_no_real_delivery"
+  - "separate live / Gateway presentation-surface approval after a fresh threat model"
+
+score_categories:
+  - name: "scope clarity and non-approval separation"
+    points: 20
+  - name: "ownership-split accuracy (caller vs supervisor library; business_verdict stays None)"
+    points: 20
+  - name: "contract and mode-mapping completeness"
+    points: 20
+  - name: "no-leak / claim-check / no-throw boundary quality"
+    points: 20
+  - name: "goal-trace, evidence-input accuracy, and handoff quality"
+    points: 20
+
+score:
+  total: 100
+  threshold: 92
+  critical_boundary_violation: false
+  status: "passed_docs_gate_and_codex_primary_review"
+
+tail_items:
+  - id: "ARS-NEXT-LOCAL-OFFLINE-IMPL-APPROVAL"
+    class: "NEXT_PHASE"
+    description: "Local/offline supervisor integration implementation is not approved by this design packet."
+    risk: "Treating design readiness as implementation approval would violate GOAL.md per-axis approval discipline."
+    owner_dri: "Dog Brother approval required"
+    blocks_current_phase: false
+    blocks_next_phase: true
+    required_before: "any local/offline integration implementation code"
+    acceptance_method: "exact approval approve_agent_run_supervisor_sachima_local_offline_integration_implementation_no_live_no_gateway_no_real_delivery"
+    status: "open"
+  - id: "ARS-NEXT-CONTROLLED-AI-FLOW"
+    class: "NEXT_PHASE"
+    description: "Controlled AI FLOW execution from Sachima via a supervised local AGENT remains a later, separate phase (P6 direction)."
+    risk: "Production agent/tool execution expansion requires claim-check inputs, approvals, and the P5 runtime-ownership decision first."
+    owner_dri: "Dog Brother approval required"
+    blocks_current_phase: false
+    blocks_next_phase: false
+    required_before: "any controlled AI FLOW execution claim"
+    acceptance_method: "separate packet and approval after local/offline implementation evidence and P5 runtime design"
+    status: "open"
+  - id: "ARS-PARKED-GATEWAY-PRESENTATION"
+    class: "PARKED"
+    description: "Naming the Gateway as a caller, presentation, ingress, or delivery surface is out of scope."
+    risk: "Coupling agent execution to the live Gateway before a threat model would violate low-intrusion and live-not-approved boundaries."
+    owner_dri: "Dog Brother approval required"
+    blocks_current_phase: false
+    blocks_next_phase: false
+    required_before: "any Gateway presentation/ingress/delivery role"
+    acceptance_method: "separate threat model and explicitly named approval"
+    status: "parked"
+  - id: "ARS-PARKED-REAL-DELIVERY"
+    class: "PARKED"
+    description: "Real IM/Feishu delivery and real send APIs remain parked; offline view-model dicts are not delivery."
+    risk: "Building a view model is not delivery; conflating them would imply real-delivery approval."
+    owner_dri: "Dog Brother approval required"
+    blocks_current_phase: false
+    blocks_next_phase: false
+    required_before: "any real outbound IM/Feishu delivery"
+    acceptance_method: "separate delivery approval after local/offline implementation and runtime evidence"
+    status: "parked"
+
+next_phase_allowed: true
+next_phase_allowed_meaning: "may request the local/offline implementation approval only; does not authorize implementation, live behavior, Gateway involvement, real ingress, real delivery, config writes, platform mutation, runtime lifecycle ownership, or controlled AI FLOW execution"

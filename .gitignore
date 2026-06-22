@@ -137,3 +137,9 @@ RELEASE_v*.md
 # Desktop demo-run scratch output (hermes writes demo/*.txt during recorded
 # walkthroughs). Throwaway artifacts, never part of the app.
 apps/desktop/demo/
+
+# Sachima Phase D: untracked local-only role overlays carrying an operator's
+# host-private pinned acpx binary path. Generated out of band for a separately
+# approved smoke and deleted after evidence capture; the committed role config
+# stays acpx_binary:null and portable. Host-local paths must never enter git.
+sachima_supervisor/roles/local/

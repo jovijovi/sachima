@@ -133,6 +133,24 @@ from gateway.platforms.helpers import ThreadParticipationTracker
 
 logger = logging.getLogger(__name__)
 
+
+def _matrix_enum_member(type_name: str, member: str, fallback: Any) -> Any:
+    current = globals().get(type_name)
+    if current is not None and hasattr(current, member):
+        return getattr(current, member)
+    try:
+        import mautrix.types as runtime_types
+        current = getattr(runtime_types, type_name)
+    except Exception:
+        return fallback
+    return getattr(current, member, fallback)
+
+
+def _matrix_event_type(name: str, fallback: str) -> Any:
+    """Return a Matrix EventType member even if module globals were imported before mautrix was patched in."""
+    return _matrix_enum_member("EventType", name, fallback)
+
+
 _MATRIX_BANG_COMMAND_RE = re.compile(
     r"^!([A-Za-z][A-Za-z0-9_-]*)(?=$|\s)(.*)$",
     re.DOTALL,
@@ -1139,6 +1157,7 @@ class MatrixAdapter(BasePlatformAdapter):
         from mautrix.api import HTTPAPI
         from mautrix.client import Client
         from mautrix.client.state_store import MemoryStateStore, MemorySyncStore
+        from mautrix.types import TrustState as RuntimeTrustState, UserID as RuntimeUserID
 
         if not self._homeserver:
             logger.error("Matrix: homeserver URL not configured")
@@ -1159,7 +1178,7 @@ class MatrixAdapter(BasePlatformAdapter):
         state_store = MemoryStateStore()
         sync_store = MemorySyncStore()
         client = Client(
-            mxid=UserID(self._user_id) if self._user_id else UserID(""),
+            mxid=RuntimeUserID(self._user_id) if self._user_id else RuntimeUserID(""),
             device_id=self._device_id or None,
             api=api,
             state_store=state_store,
@@ -1179,7 +1198,7 @@ class MatrixAdapter(BasePlatformAdapter):
                 resolved_device_id = getattr(resp, "device_id", "")
                 if resolved_user_id:
                     self._user_id = str(resolved_user_id)
-                    client.mxid = UserID(self._user_id)
+                    client.mxid = RuntimeUserID(self._user_id)
 
                 # Prefer user-configured device_id for stable E2EE identity.
                 effective_device_id = self._device_id or resolved_device_id
@@ -1406,8 +1425,8 @@ class MatrixAdapter(BasePlatformAdapter):
         # Without this the INVITE handler below never fires.
         client.add_dispatcher(MembershipEventDispatcher)
 
-        client.add_event_handler(EventType.ROOM_MESSAGE, self._on_room_message)
-        client.add_event_handler(EventType.REACTION, self._on_reaction)
+        client.add_event_handler(_matrix_event_type("ROOM_MESSAGE", "m.room.message"), self._on_room_message)
+        client.add_event_handler(_matrix_event_type("REACTION", "m.reaction"), self._on_reaction)
         client.add_event_handler(IntEvt.INVITE, self._on_invite)
 
         # Initial sync to catch up, then start background sync.
@@ -1527,7 +1546,7 @@ class MatrixAdapter(BasePlatformAdapter):
                 event_id = await asyncio.wait_for(
                     self._client.send_message_event(
                         RoomID(chat_id),
-                        EventType.ROOM_MESSAGE,
+                        _matrix_event_type("ROOM_MESSAGE", "m.room.message"),
                         msg_content,
                     ),
                     timeout=45,
@@ -1542,7 +1561,7 @@ class MatrixAdapter(BasePlatformAdapter):
                         event_id = await asyncio.wait_for(
                             self._client.send_message_event(
                                 RoomID(chat_id),
-                                EventType.ROOM_MESSAGE,
+                                _matrix_event_type("ROOM_MESSAGE", "m.room.message"),
                                 msg_content,
                             ),
                             timeout=45,
@@ -1667,7 +1686,7 @@ class MatrixAdapter(BasePlatformAdapter):
         try:
             event_id = await self._client.send_message_event(
                 RoomID(chat_id),
-                EventType.ROOM_MESSAGE,
+                _matrix_event_type("ROOM_MESSAGE", "m.room.message"),
                 msg_content,
             )
             return SendResult(success=True, message_id=str(event_id))
@@ -2118,7 +2137,7 @@ class MatrixAdapter(BasePlatformAdapter):
         try:
             event_id = await self._client.send_message_event(
                 RoomID(room_id),
-                EventType.ROOM_MESSAGE,
+                _matrix_event_type("ROOM_MESSAGE", "m.room.message"),
                 msg_content,
             )
             return SendResult(success=True, message_id=str(event_id))
@@ -2938,7 +2957,7 @@ class MatrixAdapter(BasePlatformAdapter):
         try:
             resp_event_id = await self._client.send_message_event(
                 RoomID(room_id),
-                EventType.REACTION,
+                _matrix_event_type("REACTION", "m.reaction"),
                 content,
             )
             logger.debug("Matrix: sent reaction %s to %s", emoji, event_id)
@@ -3402,10 +3421,12 @@ class MatrixAdapter(BasePlatformAdapter):
             return None
         try:
             preset_enum = {
-                "private_chat": RoomCreatePreset.PRIVATE,
-                "public_chat": RoomCreatePreset.PUBLIC,
-                "trusted_private_chat": RoomCreatePreset.TRUSTED_PRIVATE,
-            }.get(preset, RoomCreatePreset.PRIVATE)
+                "private_chat": _matrix_enum_member("RoomCreatePreset", "PRIVATE", "private_chat"),
+                "public_chat": _matrix_enum_member("RoomCreatePreset", "PUBLIC", "public_chat"),
+                "trusted_private_chat": _matrix_enum_member(
+                    "RoomCreatePreset", "TRUSTED_PRIVATE", "trusted_private_chat"
+                ),
+            }.get(preset, _matrix_enum_member("RoomCreatePreset", "PRIVATE", "private_chat"))
             invitees = [UserID(u) for u in (invite or [])]
             room_id = await self._client.create_room(
                 name=name or None,
@@ -3506,9 +3527,9 @@ class MatrixAdapter(BasePlatformAdapter):
             return False
         try:
             presence_map = {
-                "online": PresenceState.ONLINE,
-                "offline": PresenceState.OFFLINE,
-                "unavailable": PresenceState.UNAVAILABLE,
+                "online": _matrix_enum_member("PresenceState", "ONLINE", "online"),
+                "offline": _matrix_enum_member("PresenceState", "OFFLINE", "offline"),
+                "unavailable": _matrix_enum_member("PresenceState", "UNAVAILABLE", "unavailable"),
             }
             await self._client.set_presence(
                 presence=presence_map[state],
@@ -3539,7 +3560,7 @@ class MatrixAdapter(BasePlatformAdapter):
         try:
             event_id = await self._client.send_message_event(
                 RoomID(chat_id),
-                EventType.ROOM_MESSAGE,
+                _matrix_event_type("ROOM_MESSAGE", "m.room.message"),
                 msg_content,
             )
             return SendResult(success=True, message_id=str(event_id))

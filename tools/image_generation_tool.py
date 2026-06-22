@@ -25,6 +25,7 @@ import logging
 import os
 import datetime
 import threading
+import time
 import uuid
 from typing import Any, Dict, Optional
 
@@ -488,11 +489,15 @@ def _get_managed_fal_client(managed_gateway):
 
 def _submit_fal_request(model: str, arguments: Dict[str, Any]):
     """Submit a FAL request using direct credentials or the managed queue gateway."""
-    # Trigger the lazy import on first call. Idempotent.
-    _load_fal_client()
     request_headers = {"x-idempotency-key": str(uuid.uuid4())}
     managed_gateway = _resolve_managed_fal_gateway()
     if managed_gateway is None:
+        # Trigger the lazy import only for the direct FAL path. The managed
+        # path loads fal_client inside _get_managed_fal_client(), which keeps
+        # tests that inject a managed client from depending on local fal-client
+        # metadata and avoids eager lazy-install probes when the client is not
+        # needed by the call path.
+        _load_fal_client()
         return fal_client.submit(model, arguments=arguments, headers=request_headers)
 
     managed_client = _get_managed_fal_client(managed_gateway)
@@ -1155,6 +1160,7 @@ if __name__ == "__main__":
 # Registry
 # ---------------------------------------------------------------------------
 from tools.registry import registry, tool_error
+from tools.image_manifest import append_image_manifest_record
 
 IMAGE_GENERATE_SCHEMA = {
     "name": "image_generate",
@@ -1214,6 +1220,10 @@ IMAGE_GENERATE_SCHEMA = {
                     "image-to-image edit. Supported only by some models and "
                     "capped per-model; the description above indicates the max."
                 ),
+            },
+            "content_summary": {
+                "type": "string",
+                "description": "Optional agent-supplied summary for local manifest logging only; it is not sent to image providers.",
             },
         },
         "required": ["prompt"],
@@ -1391,13 +1401,30 @@ def _dispatch_to_plugin_provider(
 
 
 def _handle_image_generate(args, **kw):
+    started_at = time.perf_counter()
     prompt = args.get("prompt", "")
     if not prompt:
-        return tool_error("prompt is required for image generation")
+        result = tool_error("prompt is required for image generation")
+        append_image_manifest_record(
+            tool="image_generate",
+            operation="generate",
+            backend=None,
+            args=args,
+            input_images=[],
+            response_text=result,
+            duration_ms=(time.perf_counter() - started_at) * 1000,
+        )
+        return result
     aspect_ratio = args.get("aspect_ratio", DEFAULT_ASPECT_RATIO)
     image_url = args.get("image_url")
     reference_image_urls = args.get("reference_image_urls")
     task_id = kw.get("task_id")
+    configured_provider = _read_configured_image_provider()
+    input_images = []
+    if isinstance(image_url, str) and image_url.strip():
+        input_images.append(image_url.strip())
+    if isinstance(reference_image_urls, (list, tuple)):
+        input_images.extend(ref.strip() for ref in reference_image_urls if isinstance(ref, str) and ref.strip())
 
     # Route to a plugin-registered provider if one is active (and it's
     # not the in-tree FAL path).
@@ -1407,7 +1434,17 @@ def _handle_image_generate(args, **kw):
         reference_image_urls=reference_image_urls,
     )
     if dispatched is not None:
-        return _postprocess_image_generate_result(dispatched, task_id=task_id)
+        result = _postprocess_image_generate_result(dispatched, task_id=task_id)
+        append_image_manifest_record(
+            tool="image_generate",
+            operation="generate",
+            backend=configured_provider,
+            args=args,
+            input_images=input_images,
+            response_text=result,
+            duration_ms=(time.perf_counter() - started_at) * 1000,
+        )
+        return result
 
     raw = image_generate_tool(
         prompt=prompt,
@@ -1415,7 +1452,17 @@ def _handle_image_generate(args, **kw):
         image_url=image_url,
         reference_image_urls=reference_image_urls,
     )
-    return _postprocess_image_generate_result(raw, task_id=task_id)
+    result = _postprocess_image_generate_result(raw, task_id=task_id)
+    append_image_manifest_record(
+        tool="image_generate",
+        operation="generate",
+        backend=configured_provider or "fal",
+        args=args,
+        input_images=input_images,
+        response_text=result,
+        duration_ms=(time.perf_counter() - started_at) * 1000,
+    )
+    return result
 
 
 # ---------------------------------------------------------------------------

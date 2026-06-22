@@ -1,0 +1,145 @@
+phase_id: "agent-run-supervisor-sachima-supervised-local-activity-durable-state-preflight-implementation"
+level: "level-3"
+design_only: false
+implementation_approved: true
+local_execution_approved: false
+real_agent_execution_approved: false
+controlled_ai_flow_execution_approved: false
+live_approved: false
+gateway_approved: false
+real_delivery_approved: false
+owner_dri: "Hermes operator with Dog Brother approval"
+status: "merged"
+pr_number: 107
+pr_url: "https://github.com/jovijovi/sachima/pull/107"
+merge_commit: "6795da2930324cde1448586e71ff8d80bc6e9ae1"
+created_at: "2026-06-08T03:21:10+08:00"
+repo: "jovijovi/sachima"
+base_branch: "release/sachima"
+base_sha: "db84704da896eb7b42ee66fc0ef60d9ba0025f6a"
+branch: "feature/ars-durable-state-preflight"
+worktree: "/data/agents/workspace/hermes/worktrees/sachima/feature-ars-durable-state-preflight"
+
+received_approval_text:
+  - "approve_agent_run_supervisor_sachima_supervised_local_activity_durable_state_preflight_implementation_no_live_no_gateway_no_real_delivery_no_real_agent_execution_no_controlled_ai_flow_execution"
+approval_interpretation: "local/offline durable-state preflight implementation only; sanitized durable state, lease/state-version/idempotency/operator-gate/budget/precondition checks; no real local exec, no persistent sessions, no cancellation execution, no real AGENT execution, no controlled AI FLOW execution, no live/default-on behavior, no Gateway, no real delivery"
+
+prior_evidence:
+  pr_99:
+    title: "supervised local Activity wrapper (exec_dry_run, injected supervisor)"
+    merge_commit: "8152d09ee0f847d335a76e2ef90459642fb72e9d"
+  pr_100:
+    title: "supervised local Activity controlled dry-run evidence"
+    merge_commit: "3fea6e2e8ee836e924c3e0eef1b3ff3a2b930c59"
+  pr_101:
+    title: "supervised local Activity dry-run evidence status closure"
+    merge_commit: "3b917eeff1c782cea2075909061037816c4eff93"
+  pr_102:
+    title: "supervised local Activity durable runtime ownership & controlled local execution design"
+    merge_commit: "e49709d6e960b8e11f8e220fa087488132f64f93"
+
+approved_scope:
+  - "sachima_supervisor durable-state preflight API"
+  - "exec_dry_run preflight only"
+  - "prior controlled dry-run evidence digest precondition"
+  - "role-map allowlist validation"
+  - "sanitized claim-check ref validation"
+  - "lease id / epoch / holder validation"
+  - "state-version TOCTOU validation"
+  - "idempotency replay/conflict validation"
+  - "operator gate"
+  - "budget bounds"
+  - "sanitized durable state and query projection"
+  - "no-leak and forbidden-surface tests"
+  - "roadmap/current-status update"
+
+allowed_changed_paths:
+  - "sachima_supervisor/activity_preflight.py"
+  - "sachima_supervisor/__init__.py"
+  - "tests/sachima_supervisor/test_activity_durable_state_preflight.py"
+  - "docs/plans/2026-06-08-agent-run-supervisor-sachima-supervised-local-activity-durable-state-preflight-implementation.md"
+  - "docs/plans/2026-06-08-agent-run-supervisor-sachima-supervised-local-activity-durable-state-preflight-implementation-manifest.yaml"
+  - "docs/dev_log/2026-06-08-agent-run-supervisor-sachima-supervised-local-activity-durable-state-preflight-implementation.md"
+  - "docs/roadmap/current-status.md"
+
+implemented_modes:
+  - "exec_dry_run"
+
+blocked_modes:
+  - "exec"
+  - "session_create"
+  - "session_send"
+  - "session_status"
+  - "session_close"
+  - "cancel"
+  - "rollback"
+
+preflight_preconditions:
+  - "exact approval token"
+  - "enabled true"
+  - "prior controlled dry-run evidence digest"
+  - "role allowlist"
+  - "sanitized refs"
+  - "current lease"
+  - "expected state version"
+  - "idempotency fingerprint"
+  - "operator gate"
+  - "budget limits"
+  - "no platform ids, secrets, raw prompts, raw context, card/media material"
+  - "no Gateway and no delivery surface"
+
+failure_taxonomy:
+  - "activity_disabled"
+  - "activity_approval_mismatch"
+  - "activity_unsupported_mode"
+  - "activity_unknown_role"
+  - "activity_unsafe_material"
+  - "activity_idempotency_conflict"
+  - "activity_stale_state"
+  - "activity_lease_lost"
+  - "activity_toctou_conflict"
+  - "activity_precondition_unmet"
+  - "activity_budget_exceeded"
+  - "activity_not_found"
+
+explicit_non_approvals:
+  - "production_durable_runtime_code_implementation"
+  - "real_local_exec"
+  - "persistent_sessions"
+  - "cancellation_execution"
+  - "real_external_sachima_ingress"
+  - "real_external_delivery"
+  - "production_delivery_control"
+  - "production_agent_tool_execution_expansion"
+  - "production_config_write"
+  - "gateway_restart_or_reload"
+  - "platform_adapter_mutation"
+  - "gateway_owned_temporal_lifecycle"
+  - "gateway_as_caller_or_renderer_or_delivery_surface"
+  - "external_temporal_service_or_worker_startup"
+  - "real_send_api_or_external_im_call"
+  - "live_or_default_on_behavior"
+  - "public_webhook_exposure"
+  - "automatic_replies"
+  - "worker_auto_routing"
+  - "agent_to_agent_auto_routing"
+  - "@all_fanout"
+  - "trusted_markdown_html_rendering"
+  - "real_agent_execution"
+  - "controlled_ai_flow_execution"
+
+strongest_allowed_outcome: "agent_run_supervisor_sachima_supervised_local_activity_durable_state_preflight_implemented_local_offline_only"
+strongest_allowed_outcome_meaning: "Sachima has a local/offline durable-state preflight API and sanitized query projection for supervised local Activity requests; it validates approval, mode, role, prior evidence digest, lease, state version, idempotency, operator gate, budgets, and no-leak refs; real local exec, sessions, cancellation, live/Gateway/real-delivery, real AGENT execution, and controlled AI FLOW execution remain blocked"
+
+next_allowed_request: null
+
+verification_gates:
+  - "focused Activity + controlled dry-run evidence + durable preflight tests"
+  - "py_compile / compileall"
+  - "git diff --check"
+  - "changed-file allowlist"
+  - "secret-shaped scan"
+  - "forbidden-surface scan"
+  - "CodeGraph sync/status"
+  - "Codex primary review from a fresh review-only context"
+  - "GitHub PR CI"

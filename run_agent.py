@@ -40,6 +40,8 @@ import logging
 logger = logging.getLogger(__name__)
 import os
 import re
+import shlex
+import ssl
 import sys
 import tempfile
 import time
@@ -137,6 +139,7 @@ from agent.error_classifier import FailoverReason
 from agent.redact import redact_sensitive_text
 from agent.model_metadata import (
     estimate_request_tokens_rough,  # noqa: F401  # re-exported for tests that mock.patch("run_agent.estimate_request_tokens_rough")
+    get_next_probe_tier,
     is_local_endpoint,
 )
 from agent.usage_pricing import normalize_usage
@@ -198,6 +201,118 @@ from agent.tool_dispatch_helpers import (
 )
 from utils import atomic_json_write, base_url_host_matches, base_url_hostname, is_truthy_value, model_forces_max_completion_tokens
 
+
+
+def _resolve_context_overflow_context_length(
+    *,
+    old_ctx: int,
+    parsed_limit: Optional[int],
+    minimax_delta_only_overflow: bool,
+    config_context_length: Optional[int],
+    preserve_explicit_context_length: bool,
+) -> SimpleNamespace:
+    """Resolve context-length changes after a context-overflow error.
+
+    A user-provided ``model.context_length`` is an explicit capability claim.
+    When the provider reports only a generic overflow, compression should retry
+    at that configured window instead of blindly stepping down to the next probe
+    tier. If the provider gives a concrete lower limit, the provider wins.
+    """
+    if parsed_limit and parsed_limit < old_ctx:
+        return SimpleNamespace(
+            context_length=parsed_limit,
+            should_update_context_length=True,
+            persistable=True,
+            reason="parsed_limit",
+        )
+
+    if minimax_delta_only_overflow:
+        return SimpleNamespace(
+            context_length=old_ctx,
+            should_update_context_length=False,
+            persistable=False,
+            reason="provider_delta_only_overflow",
+        )
+
+    if preserve_explicit_context_length:
+        explicit_ctx = (
+            config_context_length
+            if isinstance(config_context_length, int) and config_context_length > 0
+            else None
+        )
+        return SimpleNamespace(
+            context_length=old_ctx,
+            should_update_context_length=False,
+            persistable=False,
+            reason=(
+                "preserve_explicit_context_length"
+                if explicit_ctx is not None and old_ctx == explicit_ctx
+                else "no_provider_limit"
+            ),
+        )
+
+    probe_ctx = get_next_probe_tier(old_ctx)
+    return SimpleNamespace(
+        context_length=probe_ctx,
+        should_update_context_length=bool(probe_ctx and probe_ctx < old_ctx),
+        persistable=False,
+        reason="probe_tier" if probe_ctx else "minimum_tier",
+    )
+
+
+_WEATHER_HELPER_PATH = "/home/ubuntu/workspace/hermes/skills/productivity/weather-query/scripts/weather_query.py"
+_FEISHU_RICH_PLATFORMS = {"feishu", "lark"}
+_WEATHER_RICH_SHELL_OPERATOR_RE = re.compile(r"[;&|<>`$#]|[\x00-\x1f\x7f]")
+
+
+def _normalize_weather_rich_terminal_args(
+    platform: str | None,
+    function_name: str,
+    function_args: dict,
+    *,
+    enabled: bool = False,
+) -> dict:
+    """Force Feishu/Lark direct weather helper terminal calls to emit rich JSON when opted in."""
+    if not enabled:
+        return function_args
+    if function_name != "terminal":
+        return function_args
+    if str(platform or "").strip().lower() not in _FEISHU_RICH_PLATFORMS:
+        return function_args
+    if not isinstance(function_args, dict):
+        return function_args
+
+    command = function_args.get("command")
+    if not isinstance(command, str) or not command.strip():
+        return function_args
+    if _WEATHER_RICH_SHELL_OPERATOR_RE.search(command):
+        return function_args
+
+    try:
+        parts = shlex.split(command)
+    except ValueError:
+        return function_args
+
+    if len(parts) < 2 or parts[0] not in {"python", "python3"} or parts[1] != _WEATHER_HELPER_PATH:
+        return function_args
+
+    normalized_parts: list[str] = []
+    idx = 0
+    while idx < len(parts):
+        part = parts[idx]
+        if part == "--format":
+            idx += 2 if idx + 1 < len(parts) else 1
+            continue
+        if part.startswith("--format="):
+            idx += 1
+            continue
+        normalized_parts.append(part)
+        idx += 1
+    normalized_parts.extend(["--format", "hermes-json"])
+
+    normalized = dict(function_args)
+    normalized["command"] = shlex.join(normalized_parts)
+    return normalized
 
 
 _MAX_TOOL_WORKERS = 8

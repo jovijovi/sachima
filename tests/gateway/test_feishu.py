@@ -417,6 +417,235 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
         )
 
     @patch.dict(os.environ, {}, clear=True)
+    def test_send_interactive_card_uses_interactive_msg_type(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._client = SimpleNamespace()
+        calls = []
+
+        async def _fake_send_with_retry(**kwargs):
+            calls.append(kwargs)
+            return SimpleNamespace(success=lambda: True, data=SimpleNamespace(message_id="om_card_1"))
+
+        adapter._feishu_send_with_retry = _fake_send_with_retry
+
+        result = asyncio.run(
+            adapter.send_interactive_card(
+                "oc_chat",
+                {"config": {"wide_screen_mode": True}, "elements": []},
+                reply_to="om_parent",
+                metadata={"purpose": "progress"},
+            )
+        )
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.message_id, "om_card_1")
+        self.assertEqual(calls[0]["chat_id"], "oc_chat")
+        self.assertEqual(calls[0]["msg_type"], "interactive")
+        self.assertEqual(calls[0]["reply_to"], "om_parent")
+        self.assertEqual(calls[0]["metadata"], {"purpose": "progress"})
+        self.assertEqual(json.loads(calls[0]["payload"])["config"], {"wide_screen_mode": True})
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_patch_interactive_card_uses_message_patch_not_update(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {"patch": None, "update_called": False}
+
+        class _MessageAPI:
+            def patch(self, request):
+                captured["patch"] = request
+                return SimpleNamespace(success=lambda: True)
+
+            def update(self, request):
+                captured["update_called"] = True
+                return SimpleNamespace(success=lambda: True)
+
+        adapter._client = SimpleNamespace(im=SimpleNamespace(v1=SimpleNamespace(message=_MessageAPI())))
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        card = {"config": {"wide_screen_mode": True}, "elements": []}
+        with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+            result = asyncio.run(adapter.patch_interactive_card("oc_chat", "om_card_1", card, finalize=True))
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.message_id, "om_card_1")
+        self.assertFalse(captured["update_called"])
+        self.assertEqual(captured["patch"].message_id, "om_card_1")
+        self.assertEqual(json.loads(captured["patch"].request_body.content)["config"], {"wide_screen_mode": True})
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_patch_interactive_card_retries_transient_failure(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {"attempts": 0}
+        sleeps = []
+
+        class _MessageAPI:
+            def patch(self, request):
+                captured["attempts"] += 1
+                captured["request"] = request
+                if captured["attempts"] == 1:
+                    raise OSError("temporary patch failure")
+                return SimpleNamespace(success=lambda: True)
+
+        adapter._client = SimpleNamespace(im=SimpleNamespace(v1=SimpleNamespace(message=_MessageAPI())))
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        async def _sleep(delay):
+            sleeps.append(delay)
+
+        with (
+            patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct),
+            patch("gateway.platforms.feishu.asyncio.sleep", side_effect=_sleep),
+        ):
+            result = asyncio.run(adapter.patch_interactive_card("oc_chat", "om_card_1", {"elements": []}))
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.message_id, "om_card_1")
+        self.assertEqual(captured["attempts"], 2)
+        self.assertEqual(sleeps, [1])
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_patch_interactive_card_retries_frequency_limit_230020_response(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {"attempts": 0}
+        sleeps = []
+
+        class _MessageAPI:
+            def patch(self, request):
+                captured["attempts"] += 1
+                if captured["attempts"] == 1:
+                    return SimpleNamespace(
+                        success=lambda: False,
+                        code=230020,
+                        msg="This operation triggers the frequency limit for updating single messages too frequently",
+                    )
+                return SimpleNamespace(success=lambda: True)
+
+        adapter._client = SimpleNamespace(im=SimpleNamespace(v1=SimpleNamespace(message=_MessageAPI())))
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        async def _sleep(delay):
+            sleeps.append(delay)
+
+        with (
+            patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct),
+            patch("gateway.platforms.feishu.asyncio.sleep", side_effect=_sleep),
+        ):
+            result = asyncio.run(adapter.patch_interactive_card("oc_chat", "om_card_1", {"elements": []}))
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.message_id, "om_card_1")
+        self.assertEqual(captured["attempts"], 2)
+        self.assertEqual(sleeps, [1])
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_patch_interactive_card_retries_empty_json_sdk_response(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {"attempts": 0}
+        sleeps = []
+
+        class _MessageAPI:
+            def patch(self, request):
+                captured["attempts"] += 1
+                if captured["attempts"] == 1:
+                    raise json.JSONDecodeError("Expecting value", "", 0)
+                return SimpleNamespace(success=lambda: True)
+
+        adapter._client = SimpleNamespace(im=SimpleNamespace(v1=SimpleNamespace(message=_MessageAPI())))
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        async def _sleep(delay):
+            sleeps.append(delay)
+
+        with (
+            patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct),
+            patch("gateway.platforms.feishu.asyncio.sleep", side_effect=_sleep),
+        ):
+            result = asyncio.run(adapter.patch_interactive_card("oc_chat", "om_card_1", {"elements": []}))
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.message_id, "om_card_1")
+        self.assertEqual(captured["attempts"], 2)
+        self.assertEqual(sleeps, [1])
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_patch_interactive_card_does_not_retry_structural_failure(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {"attempts": 0}
+        sleeps = []
+
+        class _MessageAPI:
+            def patch(self, request):
+                captured["attempts"] += 1
+                return SimpleNamespace(success=lambda: False, code=230001, msg="invalid msg_type")
+
+        adapter._client = SimpleNamespace(im=SimpleNamespace(v1=SimpleNamespace(message=_MessageAPI())))
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        async def _sleep(delay):
+            sleeps.append(delay)
+
+        with (
+            patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct),
+            patch("gateway.platforms.feishu.asyncio.sleep", side_effect=_sleep),
+        ):
+            result = asyncio.run(adapter.patch_interactive_card("oc_chat", "om_card_1", {"elements": []}))
+
+        self.assertFalse(result.success)
+        self.assertIn("invalid msg_type", result.error)
+        self.assertEqual(captured["attempts"], 1)
+        self.assertEqual(sleeps, [])
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_patch_interactive_card_returns_failure_without_raising(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+
+        class _MessageAPI:
+            def patch(self, request):
+                return SimpleNamespace(success=lambda: False, code=230001, msg="invalid msg_type")
+
+        adapter._client = SimpleNamespace(im=SimpleNamespace(v1=SimpleNamespace(message=_MessageAPI())))
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+            result = asyncio.run(adapter.patch_interactive_card("oc_chat", "om_card_1", {"elements": []}))
+
+        self.assertFalse(result.success)
+        self.assertIn("invalid msg_type", result.error)
+
+    @patch.dict(os.environ, {}, clear=True)
     def test_get_chat_info_uses_real_feishu_chat_api(self):
         from gateway.config import PlatformConfig
         from gateway.platforms.feishu import FeishuAdapter
@@ -2033,18 +2262,19 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertTrue(captured["request"].request_body.reply_in_thread)
 
     @patch.dict(os.environ, {}, clear=True)
-    def test_send_retries_transient_failure(self):
+    def test_send_retries_transient_failure_with_stable_uuid(self):
         from gateway.config import PlatformConfig
         from gateway.platforms.feishu import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
-        captured = {"attempts": 0}
+        captured = {"attempts": 0, "uuids": []}
         sleeps = []
 
         class _MessageAPI:
             def create(self, request):
                 captured["attempts"] += 1
                 captured["request"] = request
+                captured["uuids"].append(request.request_body.uuid)
                 if captured["attempts"] == 1:
                     raise OSError("temporary send failure")
                 return SimpleNamespace(
@@ -2066,15 +2296,70 @@ class TestAdapterBehavior(unittest.TestCase):
         async def _sleep(delay):
             sleeps.append(delay)
 
+        uuid_values = iter(["stable-send-uuid", "different-retry-uuid"])
         with (
             patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct),
             patch("gateway.platforms.feishu.asyncio.sleep", side_effect=_sleep),
+            patch("gateway.platforms.feishu.uuid.uuid4", side_effect=lambda: next(uuid_values)),
         ):
             result = asyncio.run(adapter.send(chat_id="oc_chat", content="hello retry"))
 
         self.assertTrue(result.success)
         self.assertEqual(result.message_id, "om_retry")
         self.assertEqual(captured["attempts"], 2)
+        self.assertEqual(sleeps, [1])
+        self.assertEqual(captured["uuids"], ["stable-send-uuid", "stable-send-uuid"])
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_send_interactive_card_retry_uses_stable_uuid(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {"attempts": 0, "uuids": [], "msg_types": []}
+        sleeps = []
+
+        class _MessageAPI:
+            def create(self, request):
+                captured["attempts"] += 1
+                captured["uuids"].append(request.request_body.uuid)
+                captured["msg_types"].append(request.request_body.msg_type)
+                if captured["attempts"] == 1:
+                    raise OSError("temporary interactive send failure")
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(message_id="om_card_retry"),
+                )
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(
+                v1=SimpleNamespace(
+                    message=_MessageAPI(),
+                )
+            )
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        async def _sleep(delay):
+            sleeps.append(delay)
+
+        uuid_values = iter(["stable-card-uuid", "different-card-retry-uuid"])
+        with (
+            patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct),
+            patch("gateway.platforms.feishu.asyncio.sleep", side_effect=_sleep),
+            patch("gateway.platforms.feishu.uuid.uuid4", side_effect=lambda: next(uuid_values)),
+        ):
+            result = asyncio.run(
+                adapter.send_interactive_card("oc_chat", {"config": {"wide_screen_mode": True}, "elements": []})
+            )
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.message_id, "om_card_retry")
+        self.assertEqual(captured["attempts"], 2)
+        self.assertEqual(captured["uuids"], ["stable-card-uuid", "stable-card-uuid"])
+        self.assertEqual(captured["msg_types"], ["interactive", "interactive"])
         self.assertEqual(sleeps, [1])
 
     @patch.dict(os.environ, {}, clear=True)
@@ -4944,3 +5229,85 @@ class TestChatLockEviction(unittest.TestCase):
                 held.release()
 
         asyncio.run(_run())
+
+
+@unittest.skipUnless(_HAS_LARK_OAPI, "lark_oapi not installed")
+class TestFeishuLazyRebindPatchClasses(unittest.TestCase):
+    """Regression: the lazy-install rebind in check_feishu_requirements() must
+    include PatchMessageRequest/PatchMessageRequestBody.
+
+    When lark_oapi is absent at module import and installed lazily, a missing
+    rebind leaves the Patch globals unset, so _build_patch_message_request()
+    silently falls back to SimpleNamespace. The real SDK's message.patch()
+    runs verify(), which reads request.token_types — absent on SimpleNamespace
+    — so every interactive-card patch (task/progress cards) fails.
+    """
+
+    _PATCH_GLOBALS = ("PatchMessageRequest", "PatchMessageRequestBody")
+
+    def _lazy_rebind_context(self):
+        """Simulate startup without lark_oapi followed by lazy install+rebind.
+
+        Pops the Patch globals (as if the top-level import never ran) and
+        forces FEISHU_AVAILABLE=False, then lets check_feishu_requirements()
+        run its real _import()/bind step with ensure() stubbed out (lark_oapi
+        is already installed in the test env, so no install should happen).
+        """
+        import contextlib
+
+        import gateway.platforms.feishu as feishu_mod
+
+        @contextlib.contextmanager
+        def _ctx():
+            sentinel = object()
+            saved = {
+                name: feishu_mod.__dict__.pop(name, sentinel)
+                for name in self._PATCH_GLOBALS
+            }
+            try:
+                with patch.object(feishu_mod, "FEISHU_AVAILABLE", False), \
+                        patch("tools.lazy_deps.ensure", return_value=None):
+                    self.assertTrue(feishu_mod.check_feishu_requirements())
+                    yield feishu_mod
+            finally:
+                for name, value in saved.items():
+                    if value is sentinel:
+                        feishu_mod.__dict__.pop(name, None)
+                    else:
+                        feishu_mod.__dict__[name] = value
+
+        return _ctx()
+
+    def test_lazy_rebind_binds_patch_message_classes(self):
+        from lark_oapi.api.im.v1 import PatchMessageRequest, PatchMessageRequestBody
+
+        with self._lazy_rebind_context() as feishu_mod:
+            self.assertIs(
+                getattr(feishu_mod, "PatchMessageRequest", None),
+                PatchMessageRequest,
+                "check_feishu_requirements() must rebind PatchMessageRequest",
+            )
+            self.assertIs(
+                getattr(feishu_mod, "PatchMessageRequestBody", None),
+                PatchMessageRequestBody,
+                "check_feishu_requirements() must rebind PatchMessageRequestBody",
+            )
+
+    def test_patch_request_uses_sdk_builder_after_lazy_rebind(self):
+        from gateway.platforms.feishu import FeishuAdapter
+
+        with self._lazy_rebind_context():
+            body = FeishuAdapter._build_patch_message_body(content='{"key": "v"}')
+            request = FeishuAdapter._build_patch_message_request(
+                message_id="om_test", request_body=body
+            )
+            self.assertNotIsInstance(
+                request,
+                SimpleNamespace,
+                "patch request must come from the SDK builder, not the "
+                "SimpleNamespace fallback",
+            )
+            # The real SDK's message.patch() calls verify(), which reads
+            # request.token_types before anything else.
+            self.assertTrue(getattr(request, "token_types", None))
+            self.assertEqual(request.body.content, '{"key": "v"}')

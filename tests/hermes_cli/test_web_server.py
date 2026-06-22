@@ -11,6 +11,12 @@ from unittest.mock import patch, MagicMock
 import pytest
 import yaml
 
+
+def _write_progress_record(path: Path, record: dict) -> None:
+    existing = path.read_text() if path.exists() else ""
+    path.write_text(existing + json.dumps(record, ensure_ascii=False) + "\n")
+
+
 from hermes_cli.config import (
     reload_env,
     redact_key,
@@ -481,6 +487,140 @@ class TestWebServerEndpoints:
         config = load_config()
         assert config["dashboard"]["theme"] == "ember"
         assert config["dashboard"]["font"] == "jetbrains-mono"
+
+    def test_progress_transactions_requires_session_token(self):
+        from starlette.testclient import TestClient
+        from hermes_cli.web_server import app
+
+        unauth_client = TestClient(app)
+        resp = unauth_client.get("/api/progress/transactions")
+
+        assert resp.status_code == 401
+
+    def test_get_progress_transactions_reads_configured_jsonl_store(self, monkeypatch, tmp_path):
+        import hermes_cli.web_server as web_server
+
+        store_path = tmp_path / "progress" / "events.jsonl"
+        store_path.parent.mkdir(parents=True)
+        _write_progress_record(
+            store_path,
+            {
+                "schema_version": 1,
+                "record_type": "progress.operation",
+                "written_at": 10,
+                "transaction": {
+                    "id": "tx-web",
+                    "title": "Dashboard task Authorization: Bearer fake-token-123",
+                    "status": "running",
+                    "started_at": 1,
+                    "updated_at": 10,
+                    "completed_at": None,
+                },
+                "operation": {
+                    "id": "op-web",
+                    "event_type": "tool_call",
+                    "tool_name": "terminal",
+                    "status": "completed",
+                    "preview": "curl https://example.test?access_token=fake-token-123",
+                    "args_preview": "OPENAI_API_KEY=fake-token-123 pytest",
+                    "started_at": 2,
+                    "updated_at": 9,
+                    "completed_at": 9,
+                    "duration": 7,
+                    "is_error": False,
+                    "metadata": {"api_key": "fake-token-123"},
+                },
+            },
+        )
+        monkeypatch.setattr(
+            web_server,
+            "load_config",
+            lambda: {
+                "display": {
+                    "task_tracker": {
+                        "persist_events": True,
+                        "event_store": "jsonl",
+                        "event_store_path": str(store_path),
+                    }
+                }
+            },
+        )
+
+        resp = self.client.get("/api/progress/transactions?limit=10")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["enabled"] is True
+        assert data["transactions"][0]["id"] == "tx-web"
+        assert data["transactions"][0]["last_operation"]["tool_name"] == "terminal"
+        assert "fake-token-123" not in json.dumps(data, ensure_ascii=False)
+
+    def test_get_progress_transaction_events_returns_bounded_timeline(self, monkeypatch, tmp_path):
+        import hermes_cli.web_server as web_server
+
+        store_path = tmp_path / "progress" / "events.jsonl"
+        store_path.parent.mkdir(parents=True)
+        for idx in range(3):
+            _write_progress_record(
+                store_path,
+                {
+                    "schema_version": 1,
+                    "record_type": "progress.operation",
+                    "written_at": idx,
+                    "transaction": {
+                        "id": "tx-detail",
+                        "title": "Detail task",
+                        "status": "running",
+                        "started_at": 1,
+                        "updated_at": idx,
+                        "completed_at": None,
+                    },
+                    "operation": {
+                        "id": f"op-{idx}",
+                        "event_type": "tool_call",
+                        "tool_name": "read_file",
+                        "status": "completed",
+                        "preview": f"step {idx}",
+                        "args_preview": None,
+                        "started_at": idx,
+                        "updated_at": idx,
+                        "completed_at": idx,
+                        "duration": 0,
+                        "is_error": False,
+                        "metadata": {},
+                    },
+                },
+            )
+        monkeypatch.setattr(
+            web_server,
+            "load_config",
+            lambda: {
+                "display": {
+                    "task_tracker": {
+                        "persist_events": True,
+                        "event_store": "jsonl",
+                        "event_store_path": str(store_path),
+                    }
+                }
+            },
+        )
+
+        resp = self.client.get("/api/progress/transactions/tx-detail/events?limit=2")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["transaction"]["id"] == "tx-detail"
+        assert [event["operation"]["id"] for event in data["events"]] == ["op-1", "op-2"]
+
+    def test_progress_transactions_return_empty_when_persistence_disabled(self, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.setattr(web_server, "load_config", lambda: {"display": {"task_tracker": {"persist_events": False}}})
+
+        resp = self.client.get("/api/progress/transactions")
+
+        assert resp.status_code == 200
+        assert resp.json() == {"enabled": False, "transactions": [], "skipped_lines": 0}
 
     def test_get_sessions_uses_only_persisted_cwd(self, monkeypatch):
         """Session rows without persisted cwd must not inherit TERMINAL_CWD.

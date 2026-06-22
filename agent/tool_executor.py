@@ -277,6 +277,15 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             function_args = {}
         if not isinstance(function_args, dict):
             function_args = {}
+        try:
+            function_args = _ra()._normalize_weather_rich_terminal_args(
+                getattr(agent, "platform", None),
+                function_name,
+                function_args,
+                enabled=bool(getattr(agent, "_weather_rich_terminal_normalization_enabled", False)),
+            )
+        except Exception:
+            pass
 
         # ── Tool Search unwrap ────────────────────────────────────────
         # When the model invokes the tool_call bridge, peel it open so
@@ -797,6 +806,15 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             function_args = {}
         if not isinstance(function_args, dict):
             function_args = {}
+        try:
+            function_args = _ra()._normalize_weather_rich_terminal_args(
+                getattr(agent, "platform", None),
+                function_name,
+                function_args,
+                enabled=bool(getattr(agent, "_weather_rich_terminal_normalization_enabled", False)),
+            )
+        except Exception:
+            pass
 
         # Tool Search unwrap — see execute_tool_calls_concurrent for full
         # rationale, including the scope gate (the unwrap dispatches the

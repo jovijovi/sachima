@@ -1,0 +1,86 @@
+phase_id: "agent-run-supervisor-sachima-local-offline-integration-implementation"
+level: "level-3"
+design_only: false
+implementation_only: true
+owner_dri: "Hermes operator with Dog Brother approval"
+status: "implementation_candidate"
+created_at: "2026-06-03T21:04:10+08:00"
+repo: "jovijovi/sachima"
+base_branch: "release/sachima"
+base_sha: "9305dd29b407cc2b8ddb1ba7ad6508abf5d619da"
+branch: "feat/agent-run-supervisor-local-offline-integration"
+worktree: "/home/ecs-user/workspace/hermes/worktrees/sachima/feat-agent-run-supervisor-local-offline-integration"
+
+received_approval_text:
+  - "approve_agent_run_supervisor_sachima_local_offline_integration_implementation_no_live_no_gateway_no_real_delivery"
+approval_interpretation: "default-off local/offline implementation only; caller is a Sachima/FlowWeaver/Hermes controller, not Gateway; no live behavior, real ingress, real delivery, or Gateway involvement"
+
+approved_scope:
+  - "new non-Gateway sachima_supervisor local/offline seam package"
+  - "default-off exact approval gate"
+  - "CallerInvocationSpec construction through agent-run-supervisor public caller fields"
+  - "lazy optional agent_run_supervisor import"
+  - "offline caller-owned view model and sanitized evidence JSON"
+  - "tests and docs for local/offline boundary"
+
+allowed_changed_paths:
+  - "sachima_supervisor/**"
+  - "tests/sachima_supervisor/**"
+  - "pyproject.toml"
+  - "docs/plans/2026-06-03-agent-run-supervisor-sachima-local-offline-integration-implementation.md"
+  - "docs/plans/2026-06-03-agent-run-supervisor-sachima-local-offline-integration-implementation-manifest.yaml"
+  - "docs/dev_log/2026-06-03-agent-run-supervisor-sachima-local-offline-integration-implementation.md"
+  - "docs/roadmap/current-status.md"
+
+mode_allowlist:
+  - "exec_dry_run"
+  - "exec"
+  - "session_create"
+  - "session_send"
+  - "session_status"
+  - "session_close"
+
+explicit_non_approvals:
+  - "real_external_sachima_ingress"
+  - "real_external_delivery"
+  - "production_delivery_control"
+  - "production_agent_tool_execution_expansion"
+  - "production_config_write"
+  - "gateway_restart_or_reload"
+  - "platform_adapter_mutation"
+  - "gateway_owned_temporal_lifecycle"
+  - "real_send_api_or_external_im_call"
+  - "external_temporal_service_or_worker_startup"
+  - "live_or_default_on_behavior"
+  - "public_webhook_exposure"
+  - "automatic_replies"
+  - "worker_auto_routing"
+  - "agent_to_agent_auto_routing"
+  - "@all_fanout"
+  - "trusted_markdown_html_rendering"
+
+no_leak_boundaries:
+  - "raw prompts"
+  - "platform ids"
+  - "card JSON"
+  - "media bytes or paths"
+  - "tool output"
+  - "tokens / credentials / secrets / raw signatures"
+  - "raw acpx stdout"
+  - "raw exceptions / tracebacks"
+
+verification_gates:
+  - "python3 -m pytest tests/sachima_supervisor/test_local_offline.py -q -o 'addopts='"
+  - "python3 -m py_compile sachima_supervisor/*.py tests/sachima_supervisor/test_local_offline.py"
+  - "focused Sachima local/fake-surface pytest set"
+  - "git diff --check"
+  - "changed-file allowlist"
+  - "secret/no-leak/static forbidden-surface scan"
+  - "Codex primary review"
+
+strongest_allowed_outcome: "agent_run_supervisor_sachima_local_offline_integration_implementation_ready_for_pr_review"
+strongest_allowed_outcome_meaning: "local/offline implementation candidate only; does not authorize controlled AI FLOW execution, live behavior, Gateway, real ingress, real delivery, or production config changes"
+
+next_separate_approval_texts:
+  - "approve_sachima_controlled_ai_flow_supervised_local_agent_execution_no_live_no_real_delivery"
+  - "separate live / Gateway presentation-surface approval after a fresh threat model"

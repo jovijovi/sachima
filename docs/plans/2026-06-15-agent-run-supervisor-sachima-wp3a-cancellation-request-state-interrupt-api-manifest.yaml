@@ -1,0 +1,179 @@
+phase_id: "agent-run-supervisor-sachima-wp3a-cancellation-request-state-interrupt-api"
+level: "level-3-implementation"
+status: "merged"
+status_meaning: "Merged in PR #138 on 2026-06-15 after local gates, final Codex blocker-only re-review, and PR CI passed."
+repo: "jovijovi/sachima"
+base_branch: "release/sachima"
+base_head: "8c50110fe720ad4990b737d8604eb852bbbc409b"
+branch: "feature/ars-wp3a-cancellation-interrupt-api"
+created_at: "2026-06-15"
+owner_dri: "Hermes operator under Sachima governed task"
+
+scope:
+  docs_only: false
+  local_offline_only: true
+  injected_fake_interrupt_only: true
+  cancellation_request_state_machine: true
+  supervisor_interrupt_api_seam: true
+  real_interrupt: false
+  real_cancellation_execution: false
+  real_session_launch: false
+  real_agent_or_acpx_or_npx: false
+  controlled_ai_flow: false
+  write_capable_roles: false
+  gateway: false
+  feishu_or_im: false
+  live_or_default_on: false
+  public_ingress: false
+  production_config_write: false
+  real_delivery: false
+
+approval_gate:
+  constant_name: "SESSION_INTERRUPT_API_APPROVAL_TOKEN"
+  literal_value_recorded: false
+  scope_note: "request-state + API-seam only; approves injected-fake-driven cancellation request-state transitions; does NOT approve a real interrupt or real cancellation execution"
+
+changed_files:
+  production:
+    - "sachima_supervisor/activity_session_lifecycle.py"
+  tests:
+    - "tests/sachima_supervisor/test_activity_session_lifecycle.py"
+
+added_surface:
+  approval_gate_constant: "SESSION_INTERRUPT_API_APPROVAL_TOKEN"
+  dataclasses:
+    - "SessionInterruptRequest"
+    - "SessionInterruptOutcome"
+  store_field: "SessionLifecycleStore._interrupt_idem"
+  public_function: "apply_session_interrupt(request, *, store, apply_interrupt)"
+  cancel_statuses_added:
+    - "cancel_interrupting"
+    - "cancelled"
+    - "cancel_failed"
+    - "cancel_ambiguous"
+  cancel_terminal_statuses:
+    - "rejected"
+    - "cancelled"
+    - "cancel_failed"
+    - "cancel_ambiguous"
+  helpers:
+    - "_check_interrupt_enabled_and_approved"
+    - "_interrupt_fingerprint"
+    - "_cancel_with"
+    - "_store_interrupt_cancel"
+    - "_check_interrupt_cancel_target"
+    - "_cancel_from_interrupt_outcome"
+    - "_safe_interrupt_call"
+
+state_machine:
+  precondition: "prior cancel_requested record from request_cancellation() for the same cancel_id and same interrupt target"
+  missing_or_mismatched_prior_cancel_record: "activity_not_found before fake; zero fake calls"
+  finalization_guard: "re-read resident cancel before finalizing; changed/ambiguous in-flight state stays activity_cancel_ambiguous"
+  same_cancel_id_new_cancellation_idempotency: "matching fingerprint replays existing durable record; cannot reopen cancelled/cancel_ambiguous"
+  outcome_mapping:
+    interrupted_true_and_cleanup_verified_true: "cancelled (ok=true; evidence carried; no error_code)"
+    interrupted_false: "cancel_failed / activity_supervisor_failed"
+    interrupted_true_cleanup_unverified: "cancel_ambiguous / activity_cancel_ambiguous (held fail-closed)"
+    ambiguous_flag_set: "cancel_ambiguous / activity_cancel_ambiguous (held fail-closed)"
+    unsafe_or_unsanitizable_outcome: "cancel_ambiguous / activity_cancel_ambiguous (held fail-closed)"
+    fake_raised_exception_none_outcome: "cancel_ambiguous / activity_cancel_ambiguous (held fail-closed)"
+  idempotency:
+    map: "SessionLifecycleStore._interrupt_idem"
+    same_fingerprint_replay: "returns existing terminal state"
+    fingerprint_mismatch: "activity_idempotency_conflict"
+    replay_on_in_progress_cancel_interrupting: "activity_cancel_ambiguous fail-closed"
+
+non_real_interrupt_posture:
+  default_real_path: false
+  module_signals_real_process: false
+  session_lifecycle_modified_by_interrupt: false
+  execute_real_cancellation_still_rejects: "activity_cancel_not_approved"
+
+tests_added:
+  - "test_apply_session_interrupt_stops_run_and_records_cancelled"
+  - "test_apply_session_interrupt_not_stopped_records_cancel_failed"
+  - "test_apply_session_interrupt_cleanup_unverified_is_ambiguous"
+  - "test_apply_session_interrupt_idempotent_replay_fires_fake_once"
+  - "test_apply_session_interrupt_replay_during_fake_keeps_ambiguous"
+  - "test_apply_session_interrupt_prior_cancel_must_match_target"
+  - "test_apply_session_interrupt_without_prior_cancel_record_fails_before_fake"
+  - "test_request_cancellation_same_cancel_id_cannot_reopen_cancelled_record"
+  - "test_request_cancellation_same_cancel_id_cannot_reopen_ambiguous_record"
+
+verification:
+  focused_interrupt_or_cancel: "22 passed, 93 deselected"
+  lifecycle_plus_real_execution: "164 passed"
+  ruff_check_changed_files: "All checks passed"
+  compileall: "exit 0"
+  full_sachima_supervisor_suite: "518 passed"
+  git_diff_check: "exit 0"
+  added_line_secret_scan: "0"
+  forbidden_runtime_surface_scan: "0"
+  codegraph_status: "up to date"
+
+verification_gates:
+  - "uv run --frozen --extra dev pytest -q -o 'addopts=' tests/sachima_supervisor/test_activity_session_lifecycle.py -k 'interrupt or cancel'"
+  - "uv run --frozen --extra dev pytest -q -o 'addopts=' tests/sachima_supervisor/test_activity_session_lifecycle.py tests/sachima_supervisor/test_activity_session_real_execution.py"
+  - "uv run --frozen --extra dev ruff check sachima_supervisor/activity_session_lifecycle.py tests/sachima_supervisor/test_activity_session_lifecycle.py"
+  - "uv run --frozen --extra dev python -m compileall -q sachima_supervisor tests/sachima_supervisor"
+  - "uv run --frozen --extra dev pytest -q -o 'addopts=' tests/sachima_supervisor"
+  - "git diff --check"
+  - "added-line secret scan"
+  - "forbidden runtime surface scan"
+  - "codegraph status"
+
+worker_history:
+  architecture_packet: "Claude Code (Opus/max)"
+  red_tests: "Claude Code (stalled during GREEN)"
+  green_and_narrow_fix: "Codex CLI (temporary substitute main programmer)"
+  codex_primary_review_round_1: "BLOCKED: stale in-flight replay finalization; missing prior-cancel target binding"
+  blocker_regressions: "added RED first, then fixed GREEN"
+  codex_final_full_diff_review_round_2: "BLOCKED: same cancel_id/new cancellation idempotency could reopen terminal cancel records"
+  blocker3_regressions: "added RED first, then fixed GREEN"
+  fresh_review: "final blocker-only re-review PASS"
+
+candidate_state:
+  committed: true
+  pushed: true
+  pr_number: 138
+  pr_url: "https://github.com/jovijovi/sachima/pull/138"
+  merge_commit: "c74c2302129d2e9e1409910966c1075b4b19fabf"
+  merged_at: "2026-06-15T05:02:52Z"
+  ci_validated: true
+  fresh_review_completed: true
+
+non_approvals_held:
+  real_interrupt: true
+  real_cancellation_execution_wp3b: true
+  additional_real_local_smoke_execution: true
+  additional_real_agent_execution: true
+  additional_acpx_invocation: true
+  npx_fallback_or_network_fetch: true
+  write_capable_claude_or_codex_roles: true
+  satine_or_hermes_profile_acp_execution: true
+  controlled_ai_flow_execution: true
+  gateway_involvement_or_mutation: true
+  feishu_or_im_delivery: true
+  live_or_default_on_behavior: true
+  public_ingress: true
+  production_config_write: true
+  real_delivery: true
+
+explicit_non_approvals:
+  - "real_interrupt"
+  - "real_cancellation_execution_wp3b"
+  - "additional_real_local_smoke_execution"
+  - "additional_real_agent_execution"
+  - "additional_acpx_invocation"
+  - "npx_fallback_or_network_fetch"
+  - "write_capable_claude_or_codex_roles"
+  - "satine_or_hermes_profile_acp_execution"
+  - "controlled_ai_flow_execution"
+  - "gateway_involvement_or_mutation"
+  - "feishu_or_im_delivery"
+  - "live_or_default_on_behavior"
+  - "public_ingress"
+  - "production_config_write"
+  - "real_delivery"
+
+next_gate: "WP3b bounded real cancellation execution — separately gated; not approved by WP3a"

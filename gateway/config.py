@@ -165,6 +165,8 @@ class Platform(Enum):
     QQBOT = "qqbot"
     YUANBAO = "yuanbao"
     RELAY = "relay"  # generic relay adapter fronted by the connector (EXPERIMENTAL)
+    SACHIMA = "sachima"
+
     @classmethod
     def _missing_(cls, value):
         """Accept unknown platform names only for known plugin adapters.
@@ -489,6 +491,7 @@ _PLATFORM_CONNECTED_CHECKERS: dict[Platform, Callable[[PlatformConfig], bool]] =
     Platform.YUANBAO: lambda cfg: bool(
         cfg.extra.get("app_id") and cfg.extra.get("app_secret")
     ),
+    Platform.SACHIMA: lambda cfg: True,
     Platform.DINGTALK: lambda cfg: bool(
         (cfg.extra.get("client_id") or os.getenv("DINGTALK_CLIENT_ID"))
         and (cfg.extra.get("client_secret") or os.getenv("DINGTALK_CLIENT_SECRET"))
@@ -1524,6 +1527,43 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             name=os.getenv("WHATSAPP_CLOUD_HOME_CHANNEL_NAME", "Home"),
             thread_id=os.getenv("WHATSAPP_CLOUD_HOME_CHANNEL_THREAD_ID") or None,
         )
+
+    # Sachima custom IM channel
+    sachima_enabled = os.getenv("SACHIMA_ENABLED", "").lower() in ("true", "1", "yes")
+    if sachima_enabled:
+        if Platform.SACHIMA not in config.platforms:
+            config.platforms[Platform.SACHIMA] = PlatformConfig()
+        sachima_config = config.platforms[Platform.SACHIMA]
+        sachima_config.enabled = True
+        webhook_secret = os.getenv("SACHIMA_WEBHOOK_SECRET", "").strip()
+        if webhook_secret:
+            sachima_config.extra["webhook_secret"] = webhook_secret
+        webhook_host = os.getenv("SACHIMA_WEBHOOK_HOST", "").strip()
+        if webhook_host:
+            sachima_config.extra["webhook_host"] = webhook_host
+        webhook_port = os.getenv("SACHIMA_WEBHOOK_PORT", "").strip()
+        if webhook_port:
+            try:
+                sachima_config.extra["webhook_port"] = int(webhook_port)
+            except ValueError:
+                logger.warning("Invalid SACHIMA_WEBHOOK_PORT=%r; ignoring", webhook_port)
+        webhook_path = os.getenv("SACHIMA_WEBHOOK_PATH", "").strip()
+        if webhook_path:
+            sachima_config.extra["webhook_path"] = webhook_path if webhook_path.startswith("/") else f"/{webhook_path}"
+        delivery_url = os.getenv("SACHIMA_DELIVERY_URL", "").strip()
+        if delivery_url:
+            sachima_config.extra["delivery_url"] = delivery_url
+        send_url = os.getenv("SACHIMA_SEND_URL", "").strip()
+        if send_url:
+            sachima_config.extra["send_url"] = send_url
+        allowed_users = os.getenv("SACHIMA_ALLOWED_USERS", "").strip()
+        if allowed_users:
+            sachima_config.extra["allowed_users"] = [
+                user.strip() for user in allowed_users.split(",") if user.strip()
+            ]
+        sachima_config.extra["allow_all_users"] = os.getenv(
+            "SACHIMA_ALLOW_ALL_USERS", ""
+        ).lower() in ("true", "1", "yes")
 
     # Slack
     slack_token = os.getenv("SLACK_BOT_TOKEN")

@@ -87,6 +87,36 @@ def test_gui_toolset_label_strips_leading_emoji():
     assert gui_toolset_label("Terminal & Processes") == "Terminal & Processes"
 
 
+def test_configurable_toolsets_include_messaging():
+    assert any(ts_key == "messaging" for ts_key, _, _ in CONFIGURABLE_TOOLSETS)
+
+
+def test_configurable_toolsets_include_companion_life_tools():
+    keys = {ts_key for ts_key, _, _ in CONFIGURABLE_TOOLSETS}
+    assert {"clock", "calendar", "weather", "journal"}.issubset(keys)
+
+
+def test_samiya_style_life_tool_config_does_not_enable_broad_web_or_execution_tools():
+    config = {
+        "platform_toolsets": {
+            "feishu": [
+                "memory", "skills", "clarify", "tts", "vision", "cronjob",
+                "image_gen", "memory_palace", "clock", "calendar", "weather", "journal",
+            ]
+        },
+        "agent": {
+            "disabled_toolsets": [
+                "terminal", "file", "browser", "web", "search", "code_execution", "delegation",
+            ]
+        },
+    }
+
+    enabled = _get_platform_tools(config, "feishu")
+
+    assert {"clock", "calendar", "weather", "journal"}.issubset(enabled)
+    assert enabled.isdisjoint({"terminal", "file", "browser", "web", "search", "code_execution", "delegation"})
+
+
 def test_configurable_toolsets_include_context_engine():
     assert any(ts_key == "context_engine" for ts_key, _, _ in CONFIGURABLE_TOOLSETS)
 
@@ -1199,7 +1229,7 @@ def test_get_platform_tools_recovers_non_configurable_toolsets_from_composite():
     }
     fake_toolsets["hermes-_test_platform"] = {
         "description": "test composite",
-        "tools": ["web_search", "web_extract", "terminal", "process", "_test_special_tool"],
+        "tools": ["web_search", "web_extract", "terminal", "process", "read_terminal", "_test_special_tool"],
         "includes": [],
     }
 
@@ -1540,5 +1570,3 @@ def test_real_configurable_changes_still_reported_in_diff():
     # User adds 'vision' (configurable) — must still report as added.
     new_enabled2 = (current - {"kanban"}) | {"vision"}
     assert ((new_enabled2 - current) & universe) == {"vision"}
-
-

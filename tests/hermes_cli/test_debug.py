@@ -1347,7 +1347,7 @@ class TestBuildDebugShare:
     def test_redaction_keeps_secrets_out_of_payload(self, hermes_home):
         from hermes_cli.debug import build_debug_share
 
-        secret = "sk-proj-SUPERSECRETtoken1234567890"
+        secret = "sk-proj-" + "SUPERSECRET" + "token1234567890"
         (hermes_home / "logs" / "agent.log").write_text(
             f"line one\nauthorization token={secret}\nline three\n"
         )

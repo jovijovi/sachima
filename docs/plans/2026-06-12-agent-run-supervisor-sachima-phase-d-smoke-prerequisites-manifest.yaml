@@ -1,0 +1,145 @@
+phase_id: "agent-run-supervisor-sachima-phase-d-smoke-prerequisites-implementation"
+level: "level-3"
+prerequisites_preparation_only: true
+real_local_smoke_approved: false
+real_local_smoke_run: false
+real_agent_execution_approved: false
+acpx_invoked: false
+npx_invoked: false
+controlled_ai_flow_execution_approved: false
+live_approved: false
+gateway_approved: false
+real_delivery_approved: false
+production_config_write_approved: false
+owner_dri: "Hermes operator with Dog Brother approval"
+status: "merged_pr_119_post_merge_verification_passed"
+repo: "jovijovi/sachima"
+base_branch: "release/sachima"
+base_merge: "PR #118 (b36dfb5f40d62334e94fbb2163eed4b9ee36abd6)"
+branch: "feat/phase-d-smoke-prerequisites"
+pr: 119
+pr_url: "https://github.com/jovijovi/sachima/pull/119"
+merged_at: "2026-06-12T12:48:15Z"
+merge_commit: "0c9e4342e2befe1db6ecf5774c51b313c8bb5f5b"
+created_at: "2026-06-12"
+
+received_approval_text:
+  - "批准准备 Phase D smoke prerequisites：实现并验证 pinned local acpx provenance、prompt materialization、agent_run_supervisor 安装/固定方案；不执行真实 smoke，不启动 AGENT，不接入 Gateway/Feishu/live，不写生产配置。遵循 AGENT 分工。"
+
+agent_split:
+  hermes: "PM / controller / verifier; owns git, PR, and merge"
+  claude_code: "architect + main programmer + documentation engineer (this slice)"
+  codex_cli: "independent primary review (separate fresh-context gate)"
+
+approved_scope:
+  - "pinned local acpx provenance verification helper (injected version probe; no invocation)"
+  - "deterministic prompt materialization fixture/builder + explicit controlled-exec materializer seam"
+  - "agent_run_supervisor availability / exact-pin checker (injected probes; no install)"
+  - "gitignore guard for untracked local-only role overlays"
+  - "implementation plan / manifest / dev log / roadmap status updates"
+
+explicit_non_approvals:
+  - "real_local_smoke_execution"
+  - "real_agent_process_launch"
+  - "acpx_invocation"
+  - "codex_or_claude_invocation_through_acpx"
+  - "npx_fallback_or_network_fetch_evidence"
+  - "persistent_session_execution"
+  - "cancellation_execution"
+  - "write_capable_claude_or_codex_roles"
+  - "satine_or_hermes_profile_acp_execution"
+  - "controlled_ai_flow_execution"
+  - "gateway_involvement_or_mutation"
+  - "feishu_or_im_delivery"
+  - "live_or_default_on_behavior"
+  - "public_ingress"
+  - "production_durable_runtime_code_implementation"
+  - "production_config_write"
+  - "service_restart_or_reload"
+  - "platform_adapter_mutation"
+
+changed_files:
+  code:
+    - "sachima_supervisor/activity_controlled_exec.py"
+    - "sachima_supervisor/smoke_prompt.py"
+    - "sachima_supervisor/supervisor_library.py"
+    - "sachima_supervisor/__init__.py"
+  fixtures:
+    - "tests/fixtures/sachima_supervisor/phase_d_smoke_prompt.v1.txt"
+  tests:
+    - "tests/sachima_supervisor/test_activity_controlled_exec.py"
+    - "tests/sachima_supervisor/test_smoke_prompt.py"
+    - "tests/sachima_supervisor/test_supervisor_library.py"
+  guards:
+    - ".gitignore"
+  docs:
+    - "docs/plans/2026-06-12-agent-run-supervisor-sachima-phase-d-smoke-prerequisites-implementation.md"
+    - "docs/plans/2026-06-12-agent-run-supervisor-sachima-phase-d-smoke-prerequisites-manifest.yaml"
+    - "docs/dev_log/2026-06-12-agent-run-supervisor-sachima-phase-d-smoke-prerequisites.md"
+    - "docs/roadmap/current-status.md"
+
+prerequisite_layers:
+  pinned_acpx_provenance:
+    api: "verify_pinned_local_acpx_binary(binary_path, *, version_probe, expected_version=0.10.0) -> PinnedLocalAcpxProvenance"
+    checks: "absolute whitespace-free path; basename rejected by the shared _is_forbidden_runner_basename predicate (case-insensitive FORBIDDEN_RUNNER_BASENAMES membership — npx/npm/pnpm/yarn/bunx/bun/corepack/sh/bash/zsh/dash/ksh/fish/env/node — plus npx-prefix rule), the same predicate the start_controlled_local_exec launch gate enforces; regular executable file; sha256 of executable bytes; injected probe returns sanitized bounded single-line text carrying 0.10.0 as an exact standalone version token (substring hits like 10.10.0 and pre-release/build variants like 0.10.0-dev rejected); expected_version must equal _REQUIRED_ACPX_VERSION"
+    failure: "stable activity_runner_provenance_unverified; no raw exception/probe detail"
+    invariants: "module never executes the binary; committed role config stays acpx_binary null and untouched; no host path committed"
+  prompt_materialization:
+    builder: "sachima_supervisor/smoke_prompt.py::build_phase_d_smoke_prompt (deterministic; prompt_ref phase_d_smoke_prompt_v1; sha256 digest; bounded; safety-screened)"
+    fixture: "tests/fixtures/sachima_supervisor/phase_d_smoke_prompt.v1.txt (byte-for-byte mirror of the builder prompt)"
+    seam: "start_controlled_local_exec(..., prompt_materializer=None); default keeps Phase C prompt=None; injected materializer runs after acquired claim and before the single supervisor call; screened output lives only in the in-memory seam request"
+    failure: "raising/non-str/empty/oversized/unsafe materialization finalizes failed_terminal with stable activity_prompt_materialization_failed and zero supervisor invocations"
+    invariants: "_CLAIM_STATE_KEYS unchanged; raw prompt never in durable state/fingerprint/query; replay never rematerializes or relaunches"
+  supervisor_library_pin:
+    api: "check_supervisor_library_pin(*, expected_version=0.0.0, import_probe=None, version_probe=None) -> SupervisorLibraryPinStatus"
+    expected_pin: "0.0.0 (current agent-run-supervisor repo pyproject version)"
+    failure_codes:
+      - "supervisor_library_expected_version_invalid"
+      - "supervisor_library_unavailable"
+      - "supervisor_library_version_unknown"
+      - "supervisor_library_version_mismatch"
+    invariants: "never raises; unsanitary observed versions dropped, not echoed; injected probes in tests; agent-run-supervisor deliberately NOT added to pyproject dependencies — install/pin stays an operator provisioning step under the repo exact-pin policy"
+
+remaining_execution_blockers:
+  - id: "no_pinned_local_acpx"
+    detail: "still no pinned local acpx executable on this host; this slice ships the verifier only; committed role config stays acpx_binary null and fails closed"
+  - id: "local_role_overlay_not_generated"
+    detail: "untracked local-only role overlay is an operator step for a later approved smoke; this slice ships only the .gitignore guard for sachima_supervisor/roles/local/"
+  - id: "supervisor_library_absent"
+    detail: "agent_run_supervisor still not importable on this host; this slice ships the pin checker only"
+  - id: "separate_smoke_approval_required"
+    detail: "real Phase D smoke still requires the full Definition of Ready plus a separate named user approval (see readiness PRD recommended text)"
+
+verification_run:
+  - "python -m pytest -q tests/sachima_supervisor/ (325 passed after Codex review round 1 fixes — was 304 before, +21 RED-first review-fix tests; includes test_activity_controlled_exec.py, test_local_offline.py, test_activity_controlled_dry_run_evidence.py, test_activity_durable_state_preflight.py, test_activity.py, test_smoke_prompt.py, test_supervisor_library.py)"
+  - "python3 -m compileall -q sachima_supervisor tests/sachima_supervisor"
+  - "git diff --check (clean)"
+  - "static scans over changed files: no forbidden execution/delivery surface, no smoke-run claim, no Gateway/Feishu/live/production-config approval claim, no secrets/host-private paths"
+
+review_gates:
+  claude_architecture_implementation_docs:
+    role: "architect + main programmer + documentation engineer"
+    status: "complete_local_verification_passed"
+  codex_primary_review:
+    role: "primary review (fresh context, review-only)"
+    status: "round_1_BLOCK_two_blockers_fixed_blocker_only_rereview_PASS_no_blockers"
+    round_1_blockers_fixed:
+      - "verify_pinned_local_acpx_binary used substring version match (acpx 10.10.0 / 0.10.0-dev wrongly passed the 0.10.0 pin) — fixed with _probe_text_has_exact_version exact-token regex + negative tests"
+      - "_check_runner_provenance launch gate only rejected npx-prefixed basenames (node/npm/etc. could bypass) — fixed with shared _is_forbidden_runner_basename predicate used by both the launch gate and the standalone verifier + start-path failure tests"
+    blocker_only_rereview: "VERDICT: PASS; BLOCKERS: None"
+  hermes_pr_ci:
+    role: "PM / controller / verifier; git + PR + CI"
+    status: "PR #119 merged; PR checks passed; canonical release/sachima fast-forwarded; post-merge local verification passed"
+  user_approval:
+    role: "Dog Brother"
+    status: "approved_merge_pr_119"
+
+post_merge_verification:
+  - "gh pr view 119 --repo jovijovi/sachima: MERGED; merge commit 0c9e4342e2befe1db6ecf5774c51b313c8bb5f5b"
+  - "git pull --ff-only sachima release/sachima: canonical release/sachima at 0c9e4342e2befe1db6ecf5774c51b313c8bb5f5b"
+  - "pytest -q tests/sachima_supervisor (325 passed)"
+  - "python3 -m compileall -q sachima_supervisor tests/sachima_supervisor"
+  - "git diff --check (clean)"
+
+strongest_allowed_outcome: "phase_d_smoke_prerequisites_merged_no_smoke_no_agent_launch"
+strongest_allowed_outcome_meaning: "the three smoke prerequisite layers are implemented and locally verified with injected fakes only; no acpx/npx/agent/supervisor was invoked; real smoke remains BLOCKED on host provisioning, Definition of Ready, and a separate named approval"

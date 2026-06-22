@@ -3007,7 +3007,7 @@ def run_conversation(
                     # exceeds the context window", keep the configured window
                     # and try compression; guessing probe tiers can incorrectly
                     # turn a user-configured 1M window into 256K/128K/64K.
-                    new_ctx = get_context_length_from_provider_error(error_msg, old_ctx)
+                    parsed_ctx = get_context_length_from_provider_error(error_msg, old_ctx)
                     _provider_lower = (getattr(agent, "provider", "") or "").lower()
                     _base_lower = (getattr(agent, "base_url", "") or "").rstrip("/").lower()
                     is_minimax_provider = (
@@ -3019,12 +3019,23 @@ def run_conversation(
                     )
                     minimax_delta_only_overflow = (
                         is_minimax_provider
-                        and new_ctx is None
+                        and parsed_ctx is None
                         and "context window exceeds limit (" in error_msg
                     )
+                    resolution = _ra()._resolve_context_overflow_context_length(
+                        old_ctx=old_ctx,
+                        parsed_limit=parsed_ctx,
+                        minimax_delta_only_overflow=minimax_delta_only_overflow,
+                        config_context_length=getattr(agent, "_config_context_length", None),
+                        preserve_explicit_context_length=getattr(
+                            agent, "_preserve_explicit_context_length", True
+                        ),
+                    )
+                    new_ctx = resolution.context_length
 
-                    if new_ctx is not None:
-                        agent._buffer_vprint(f"Context limit detected from API: {new_ctx:,} tokens (was {old_ctx:,})")
+                    if resolution.should_update_context_length:
+                        if resolution.reason == "parsed_limit":
+                            agent._buffer_vprint(f"Context limit detected from API: {new_ctx:,} tokens (was {old_ctx:,})")
                         compressor.update_model(
                             model=agent.model,
                             context_length=new_ctx,
@@ -3034,15 +3045,23 @@ def run_conversation(
                             api_mode=agent.api_mode,
                         )
                         # Context probing flags — only set on built-in
-                        # compressor (plugin engines manage their own).  This
-                        # value came from the provider, so it is safe to cache.
+                        # compressor (plugin engines manage their own).  Only
+                        # provider-reported concrete limits are safe to cache.
                         if hasattr(compressor, "_context_probed"):
                             compressor._context_probed = True
-                            compressor._context_probe_persistable = True
-                        agent._buffer_vprint(f"⚠️  Context length exceeded — using provider limit: {old_ctx:,} → {new_ctx:,} tokens")
-                    elif minimax_delta_only_overflow:
+                            compressor._context_probe_persistable = bool(resolution.persistable)
+                        if resolution.reason == "parsed_limit":
+                            agent._buffer_vprint(f"⚠️  Context length exceeded — using provider limit: {old_ctx:,} → {new_ctx:,} tokens")
+                        else:
+                            agent._buffer_vprint(f"⚠️  Context length exceeded — using probe tier: {old_ctx:,} → {new_ctx:,} tokens")
+                    elif resolution.reason == "provider_delta_only_overflow":
                         agent._buffer_vprint(
                             f"Provider reported overflow amount only; "
+                            f"keeping context_length at {old_ctx:,} tokens and compressing."
+                        )
+                    elif resolution.reason == "preserve_explicit_context_length":
+                        agent._buffer_vprint(
+                            f"⚠️  Context length exceeded, but model.context_length is explicitly configured; "
                             f"keeping context_length at {old_ctx:,} tokens and compressing."
                         )
                     else:

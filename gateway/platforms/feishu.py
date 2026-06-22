@@ -103,6 +103,11 @@ try:
         UpdateMessageRequest,
         UpdateMessageRequestBody,
     )
+    try:
+        from lark_oapi.api.im.v1 import PatchMessageRequest, PatchMessageRequestBody
+    except ImportError:
+        PatchMessageRequest = None  # type: ignore[assignment]
+        PatchMessageRequestBody = None  # type: ignore[assignment]
     from lark_oapi.core import AccessTokenType, HttpMethod
     from lark_oapi.core.const import FEISHU_DOMAIN, LARK_DOMAIN
     from lark_oapi.core.model import BaseRequest
@@ -145,6 +150,33 @@ from hermes_constants import get_hermes_home
 from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
+
+_ACTIVE_FEISHU_ADAPTER_LOCK = threading.Lock()
+_ACTIVE_FEISHU_ADAPTER: Optional[Any] = None
+
+
+def _set_active_adapter(adapter: Any) -> None:
+    with _ACTIVE_FEISHU_ADAPTER_LOCK:
+        global _ACTIVE_FEISHU_ADAPTER
+        _ACTIVE_FEISHU_ADAPTER = adapter
+
+
+def _clear_active_adapter(adapter: Any) -> None:
+    with _ACTIVE_FEISHU_ADAPTER_LOCK:
+        global _ACTIVE_FEISHU_ADAPTER
+        if _ACTIVE_FEISHU_ADAPTER is adapter:
+            _ACTIVE_FEISHU_ADAPTER = None
+
+
+def get_active_adapter() -> Optional[Any]:
+    """Return the currently connected Feishu adapter in this process, if any."""
+    with _ACTIVE_FEISHU_ADAPTER_LOCK:
+        adapter = _ACTIVE_FEISHU_ADAPTER
+    if adapter is None:
+        return None
+    if not getattr(adapter, "_client", None):
+        return None
+    return adapter
 
 # ---------------------------------------------------------------------------
 # Regex patterns
@@ -227,6 +259,67 @@ _APPROVAL_LABEL_MAP: Dict[str, str] = {
     "always": "Approved permanently",
     "deny": "Denied",
 }
+_GITHUB_PR_APPROVAL_ACTIONS = frozenset({"approve", "reject", "ignore"})
+_GITHUB_PR_APPROVAL_LOCALE_ALIASES: Dict[str, str] = {
+    "": "zh-CN",
+    "auto": "zh-CN",
+    "zh": "zh-CN",
+    "zh-cn": "zh-CN",
+    "zh_cn": "zh-CN",
+    "cn": "zh-CN",
+    "en": "en",
+    "en-us": "en",
+    "en_us": "en",
+}
+_GITHUB_PR_APPROVAL_I18N: Dict[str, Dict[str, str]] = {
+    "zh-CN": {
+        "initial_title": "GitHub PR #{pr_number} 合并审批",
+        "repo": "仓库",
+        "title": "标题",
+        "author": "作者",
+        "base": "目标分支",
+        "head": "源分支",
+        "head_sha": "Head SHA",
+        "url": "URL",
+        "initial_notice": "点击 **批准** 只会把审批送回 Hermes；Hermes 仍必须重新检查 PR 状态、head SHA、CI 和 mergeability 后才可合并。",
+        "approve_button": "✅ 批准",
+        "reject_button": "❌ 拒绝",
+        "ignore_button": "忽略",
+        "approve_label": "已批准",
+        "reject_label": "已拒绝",
+        "ignore_label": "已忽略",
+        "approve_detail": "已回传给 Hermes；Hermes 会先重新检查 PR 状态、head SHA、CI 和 mergeability，再按受控流程处理。",
+        "reject_detail": "合并审批已拒绝。未触发合并请求。",
+        "ignore_detail": "审批卡已忽略。未触发合并请求。",
+        "operator": "操作人",
+    },
+    "en": {
+        "initial_title": "GitHub PR #{pr_number} merge approval",
+        "repo": "Repo",
+        "title": "Title",
+        "author": "Author",
+        "base": "Base",
+        "head": "Head",
+        "head_sha": "Head SHA",
+        "url": "URL",
+        "initial_notice": "Clicking **Approve** only sends the approval back to Hermes. Hermes will still re-check PR state, head SHA, CI, and mergeability before any merge.",
+        "approve_button": "✅ Approve",
+        "reject_button": "❌ Reject",
+        "ignore_button": "Ignore",
+        "approve_label": "Approved for gated merge",
+        "reject_label": "Rejected",
+        "ignore_label": "Ignored",
+        "approve_detail": "Approval sent back to Hermes. Hermes will run fresh pre-merge checks before any merge.",
+        "reject_detail": "Merge approval rejected. No merge request was routed.",
+        "ignore_detail": "Approval card ignored. No merge request was routed.",
+        "operator": "Operator",
+    },
+}
+
+
+def _normalize_github_pr_approval_locale(locale: str = "auto") -> str:
+    normalized = str(locale or "auto").strip().lower()
+    return _GITHUB_PR_APPROVAL_LOCALE_ALIASES.get(normalized, "zh-CN")
 _FEISHU_BOT_MSG_TRACK_SIZE = 512                   # LRU size for tracking sent message IDs
 _FEISHU_REPLY_FALLBACK_CODES = frozenset({230011, 231003})  # reply target withdrawn/missing → create fallback
 
@@ -1365,6 +1458,13 @@ def check_feishu_requirements() -> bool:
             ReplyMessageRequest, ReplyMessageRequestBody,
             UpdateMessageRequest, UpdateMessageRequestBody,
         )
+        # Mirror the guarded top-level import: older lark-oapi releases do not
+        # export the Patch message classes.
+        try:
+            from lark_oapi.api.im.v1 import PatchMessageRequest, PatchMessageRequestBody
+        except ImportError:
+            PatchMessageRequest = None
+            PatchMessageRequestBody = None
         from lark_oapi.core import AccessTokenType, HttpMethod
         from lark_oapi.core.const import FEISHU_DOMAIN, LARK_DOMAIN
         from lark_oapi.core.model import BaseRequest
@@ -1390,6 +1490,8 @@ def check_feishu_requirements() -> bool:
             "ReplyMessageRequestBody": ReplyMessageRequestBody,
             "UpdateMessageRequest": UpdateMessageRequest,
             "UpdateMessageRequestBody": UpdateMessageRequestBody,
+            "PatchMessageRequest": PatchMessageRequest,
+            "PatchMessageRequestBody": PatchMessageRequestBody,
             "AccessTokenType": AccessTokenType,
             "HttpMethod": HttpMethod,
             "FEISHU_DOMAIN": FEISHU_DOMAIN,
@@ -1467,6 +1569,9 @@ class FeishuAdapter(BasePlatformAdapter):
         # Exec approval button state (approval_id → {session_key, message_id, chat_id})
         self._approval_state: Dict[int, Dict[str, str]] = {}
         self._approval_counter = itertools.count(1)
+        # GitHub PR approval card state (approval_id → PR metadata + message/chat ids)
+        self._github_pr_approval_state: Dict[int, Dict[str, str]] = {}
+        self._github_pr_approval_counter = itertools.count(1)
         # Update prompt button state (prompt_id → {session_key, message_id, chat_id})
         self._update_prompt_state: Dict[int, Dict[str, str]] = {}
         self._update_prompt_counter = itertools.count(1)
@@ -1681,6 +1786,7 @@ class FeishuAdapter(BasePlatformAdapter):
             self._loop = asyncio.get_running_loop()
             await self._connect_with_retry()
             self._mark_connected()
+            _set_active_adapter(self)
             logger.info("[Feishu] Connected in %s mode (%s)", self._connection_mode, self._domain_name)
             return True
         except Exception as exc:
@@ -1731,6 +1837,7 @@ class FeishuAdapter(BasePlatformAdapter):
         self._event_handler = None
         self._persist_seen_message_ids()
         await self._release_app_lock()
+        _clear_active_adapter(self)
 
         self._mark_disconnected()
         logger.info("[Feishu] Disconnected")
@@ -1863,6 +1970,101 @@ class FeishuAdapter(BasePlatformAdapter):
             logger.error("[Feishu] Failed to edit message %s: %s", message_id, exc, exc_info=True)
             return SendResult(success=False, error=str(exc))
 
+    async def send_interactive_card(
+        self,
+        chat_id: str,
+        card: Dict[str, Any],
+        *,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a Feishu interactive card without routing through text formatting."""
+        if not self._client:
+            return SendResult(success=False, error="Not connected")
+
+        try:
+            payload = json.dumps(card, ensure_ascii=False)
+            response = await self._feishu_send_with_retry(
+                chat_id=chat_id,
+                msg_type="interactive",
+                payload=payload,
+                reply_to=reply_to,
+                metadata=metadata,
+            )
+            return self._finalize_send_result(response, "interactive card send failed")
+        except Exception as exc:
+            logger.error("[Feishu] Failed to send interactive card: %s", exc, exc_info=True)
+            return SendResult(success=False, error=str(exc))
+
+    async def patch_interactive_card(
+        self,
+        chat_id: str,
+        message_id: str,
+        card: Dict[str, Any],
+        *,
+        finalize: bool = False,
+    ) -> SendResult:
+        """Patch a sent Feishu interactive card via im.v1.message.patch.
+
+        Feishu rejects interactive card edits through ordinary message.update.
+        """
+        if not self._client:
+            return SendResult(success=False, error="Not connected")
+
+        payload = json.dumps(card, ensure_ascii=False)
+        body = self._build_patch_message_body(content=payload)
+        request = self._build_patch_message_request(message_id=message_id, request_body=body)
+        last_error: Optional[Exception] = None
+        last_result: Optional[SendResult] = None
+        for attempt in range(_FEISHU_SEND_ATTEMPTS):
+            try:
+                response = await asyncio.to_thread(self._client.im.v1.message.patch, request)
+                result = self._finalize_send_result(response, "interactive card patch failed")
+                if result.success:
+                    result.message_id = message_id
+                    return result
+                last_result = result
+                is_transient = self._is_transient_feishu_response(response)
+                if not is_transient:
+                    return result
+                if attempt >= _FEISHU_SEND_ATTEMPTS - 1:
+                    result.retryable = True
+                    return result
+                wait_seconds = 2 ** attempt
+                logger.warning(
+                    "[Feishu] Patch interactive card attempt %d/%d failed transiently; retrying in %ds: %s",
+                    attempt + 1,
+                    _FEISHU_SEND_ATTEMPTS,
+                    wait_seconds,
+                    result.error or "unknown error",
+                )
+                await asyncio.sleep(wait_seconds)
+            except Exception as exc:
+                last_error = exc
+                is_transient = self._is_transient_feishu_exception(exc)
+                if not is_transient:
+                    logger.error("[Feishu] Failed to patch interactive card %s: %s", message_id, exc, exc_info=True)
+                    return SendResult(success=False, error=str(exc))
+                if attempt >= _FEISHU_SEND_ATTEMPTS - 1:
+                    logger.warning(
+                        "[Feishu] Patch interactive card %s exhausted transient retries: %s",
+                        message_id,
+                        exc,
+                    )
+                    return SendResult(success=False, error=str(exc), retryable=True)
+                wait_seconds = 2 ** attempt
+                logger.warning(
+                    "[Feishu] Patch interactive card attempt %d/%d raised transiently; retrying in %ds: %s",
+                    attempt + 1,
+                    _FEISHU_SEND_ATTEMPTS,
+                    wait_seconds,
+                    exc,
+                )
+                await asyncio.sleep(wait_seconds)
+        if last_result is not None:
+            return last_result
+        return SendResult(success=False, error=str(last_error or "interactive card patch failed"))
+
     async def send_exec_approval(
         self, chat_id: str, command: str, session_key: str,
         description: str = "dangerous command",
@@ -1931,6 +2133,156 @@ class FeishuAdapter(BasePlatformAdapter):
             return result
         except Exception as exc:
             logger.warning("[Feishu] send_exec_approval failed: %s", exc)
+            return SendResult(success=False, error=str(exc))
+
+    @staticmethod
+    def _build_github_pr_detail_content(*, state: Dict[str, str], locale: str) -> str:
+        text = _GITHUB_PR_APPROVAL_I18N[_normalize_github_pr_approval_locale(locale)]
+
+        def _line(label: str, value: str) -> str:
+            return f"**{label}:** {value}" if value else ""
+
+        detail_lines = [
+            _line(text["repo"], state.get("repo", "")),
+            _line(text["title"], state.get("title", "")),
+            _line(text["author"], state.get("author", "")),
+            _line(text["base"], state.get("base_ref", "")),
+            _line(text["head"], state.get("head_ref", "")),
+            _line(text["head_sha"], state.get("head_sha", "")),
+            _line(text["url"], state.get("pr_url", "")),
+        ]
+        return "\n".join(line for line in detail_lines if line)
+
+    @staticmethod
+    def _build_github_pr_approval_card(
+        *,
+        approval_id: int,
+        repo: str,
+        pr_number: str,
+        title: str = "",
+        pr_url: str = "",
+        author: str = "",
+        head_sha: str = "",
+        base_ref: str = "",
+        head_ref: str = "",
+        locale: str = "auto",
+    ) -> Dict[str, Any]:
+        locale = _normalize_github_pr_approval_locale(locale)
+        text = _GITHUB_PR_APPROVAL_I18N[locale]
+        state = {
+            "repo": repo,
+            "title": title,
+            "author": author,
+            "base_ref": base_ref,
+            "head_ref": head_ref,
+            "head_sha": head_sha,
+            "pr_url": pr_url,
+        }
+        detail_content = FeishuAdapter._build_github_pr_detail_content(state=state, locale=locale)
+        content = "\n\n".join(part for part in (detail_content, text["initial_notice"]) if part)
+
+        def _btn(label: str, action_name: str, btn_type: str = "default") -> dict:
+            return {
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": label},
+                "type": btn_type,
+                "value": {
+                    "hermes_github_pr_action": action_name,
+                    "github_pr_approval_id": approval_id,
+                },
+            }
+
+        return {
+            "config": {"wide_screen_mode": True},
+            "header": {
+                "title": {
+                    "content": text["initial_title"].format(pr_number=pr_number),
+                    "tag": "plain_text",
+                },
+                "template": "blue",
+            },
+            "elements": [
+                {"tag": "markdown", "content": content},
+                {
+                    "tag": "action",
+                    "actions": [
+                        _btn(text["approve_button"], "approve", "primary"),
+                        _btn(text["reject_button"], "reject", "danger"),
+                        _btn(text["ignore_button"], "ignore"),
+                    ],
+                },
+            ],
+        }
+
+    async def send_github_pr_approval_card(
+        self,
+        chat_id: str,
+        repo: str,
+        pr_number: int | str,
+        *,
+        title: str = "",
+        pr_url: str = "",
+        author: str = "",
+        head_sha: str = "",
+        base_ref: str = "",
+        head_ref: str = "",
+        locale: str = "auto",
+        session_key: str = "",
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a Feishu GitHub PR approval card with approve/reject/ignore buttons."""
+        if not self._client:
+            return SendResult(success=False, error="Not connected")
+        if not str(repo or "").strip() or not str(pr_number or "").strip() or not str(head_sha or "").strip():
+            return SendResult(success=False, error="repo, pr_number, and head_sha are required")
+
+        try:
+            approval_id = next(self._github_pr_approval_counter)
+            pr_number_text = str(pr_number).strip()
+            locale_text = _normalize_github_pr_approval_locale(locale)
+            state = {
+                "chat_id": str(chat_id or ""),
+                "message_id": "",
+                "repo": str(repo or ""),
+                "pr_number": pr_number_text,
+                "title": str(title or ""),
+                "pr_url": str(pr_url or ""),
+                "author": str(author or ""),
+                "head_sha": str(head_sha or ""),
+                "base_ref": str(base_ref or ""),
+                "head_ref": str(head_ref or ""),
+                "locale": locale_text,
+                "session_key": str(session_key or ""),
+            }
+            payload = json.dumps(
+                self._build_github_pr_approval_card(
+                    approval_id=approval_id,
+                    repo=state["repo"],
+                    pr_number=state["pr_number"],
+                    title=state["title"],
+                    pr_url=state["pr_url"],
+                    author=state["author"],
+                    head_sha=state["head_sha"],
+                    base_ref=state["base_ref"],
+                    head_ref=state["head_ref"],
+                    locale=state["locale"],
+                ),
+                ensure_ascii=False,
+            )
+            response = await self._feishu_send_with_retry(
+                chat_id=chat_id,
+                msg_type="interactive",
+                payload=payload,
+                reply_to=None,
+                metadata=metadata,
+            )
+            result = self._finalize_send_result(response, "send_github_pr_approval_card failed")
+            if result.success:
+                state["message_id"] = result.message_id or ""
+                self._github_pr_approval_state[approval_id] = state
+            return result
+        except Exception as exc:
+            logger.warning("[Feishu] send_github_pr_approval_card failed: %s", exc)
             return SendResult(success=False, error=str(exc))
 
     @staticmethod
@@ -2016,6 +2368,51 @@ class FeishuAdapter(BasePlatformAdapter):
                 {
                     "tag": "markdown",
                     "content": f"{icon} **{label}** by {user_name}",
+                },
+            ],
+        }
+
+    @staticmethod
+    def _build_resolved_github_pr_approval_card(
+        *,
+        action: str,
+        state: Dict[str, str],
+        user_name: str,
+    ) -> Dict[str, Any]:
+        pr_number = state.get("pr_number", "")
+        locale = _normalize_github_pr_approval_locale(state.get("locale", "auto"))
+        text = _GITHUB_PR_APPROVAL_I18N[locale]
+        if action == "approve":
+            icon = "✅"
+            template = "green"
+            label = text["approve_label"]
+            detail = text["approve_detail"]
+        elif action == "reject":
+            icon = "❌"
+            template = "red"
+            label = text["reject_label"]
+            detail = text["reject_detail"]
+        else:
+            icon = "⏭️"
+            template = "grey"
+            label = text["ignore_label"]
+            detail = text["ignore_detail"]
+        detail_content = FeishuAdapter._build_github_pr_detail_content(state=state, locale=locale)
+        content_parts = [
+            f"{icon} **{label}**\n\n{detail}",
+            f"**{text['operator']}:** {user_name}" if user_name else "",
+            detail_content,
+        ]
+        return {
+            "config": {"wide_screen_mode": True},
+            "header": {
+                "title": {"content": f"{icon} PR #{pr_number} {label}", "tag": "plain_text"},
+                "template": template,
+            },
+            "elements": [
+                {
+                    "tag": "markdown",
+                    "content": "\n\n".join(part for part in content_parts if part),
                 },
             ],
         }
@@ -2540,11 +2937,21 @@ class FeishuAdapter(BasePlatformAdapter):
             action_value.get("hermes_update_prompt_action")
             if isinstance(action_value, dict) else None
         )
+        github_pr_action = (
+            action_value.get("hermes_github_pr_action")
+            if isinstance(action_value, dict) else None
+        )
 
         if hermes_action:
             return self._handle_approval_card_action(event=event, action_value=action_value, loop=loop)
         if update_prompt_action:
             return self._handle_update_prompt_card_action(
+                event=event,
+                action_value=action_value,
+                loop=loop,
+            )
+        if github_pr_action:
+            return self._handle_github_pr_approval_card_action(
                 event=event,
                 action_value=action_value,
                 loop=loop,
@@ -2599,8 +3006,11 @@ class FeishuAdapter(BasePlatformAdapter):
         operator = getattr(event, "operator", None)
         open_id = str(getattr(operator, "open_id", "") or "")
         sender_id = SimpleNamespace(open_id=open_id, user_id=str(getattr(operator, "user_id", "") or ""))
-        if not self._allow_group_message(sender_id, state.get("chat_id", ""), is_bot=False):
+        if not self._is_interactive_operator_authorized(open_id):
             logger.warning("[Feishu] Unauthorized approval click by %s", open_id or "<unknown>")
+            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+        if not self._allow_group_message(sender_id, state.get("chat_id", ""), is_bot=False):
+            logger.warning("[Feishu] Approval click rejected by group policy for %s", open_id or "<unknown>")
             return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
 
         callback_chat_id = str(getattr(getattr(event, "context", None), "open_chat_id", "") or "")
@@ -2640,6 +3050,79 @@ class FeishuAdapter(BasePlatformAdapter):
             response.card = card
         return response
 
+    def _handle_github_pr_approval_card_action(self, *, event: Any, action_value: Dict[str, Any], loop: Any) -> Any:
+        """Schedule GitHub PR approval-card resolution and build inline status card."""
+        approval_id = action_value.get("github_pr_approval_id")
+        if approval_id is None:
+            logger.debug("[Feishu] GitHub PR approval card action missing id, ignoring")
+            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+        state = self._github_pr_approval_state.get(approval_id)
+        if not state:
+            logger.debug("[Feishu] GitHub PR approval %s already resolved or unknown", approval_id)
+            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+
+        action = str(action_value.get("hermes_github_pr_action", "") or "").strip().lower()
+        if action not in _GITHUB_PR_APPROVAL_ACTIONS:
+            logger.debug("[Feishu] GitHub PR approval has invalid action=%r", action)
+            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+
+        operator = getattr(event, "operator", None)
+        open_id = str(getattr(operator, "open_id", "") or "")
+        sender_id = SimpleNamespace(open_id=open_id, user_id=str(getattr(operator, "user_id", "") or ""))
+        if not self._is_interactive_operator_authorized(open_id):
+            logger.warning("[Feishu] Unauthorized GitHub PR approval click by %s", open_id or "<unknown>")
+            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+        if not self._allow_group_message(sender_id, state.get("chat_id", ""), is_bot=False):
+            logger.warning("[Feishu] GitHub PR approval click rejected by group policy for %s", open_id or "<unknown>")
+            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+
+        callback_chat_id = str(getattr(getattr(event, "context", None), "open_chat_id", "") or "")
+        expected_chat_id = str(state.get("chat_id", "") or "")
+        if expected_chat_id and not callback_chat_id:
+            logger.warning(
+                "[Feishu] GitHub PR approval callback missing chat id for %s (expected=%s)",
+                approval_id,
+                expected_chat_id,
+            )
+            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+        if callback_chat_id and expected_chat_id and callback_chat_id != expected_chat_id:
+            logger.warning(
+                "[Feishu] GitHub PR approval callback chat mismatch for %s (expected=%s, got=%s)",
+                approval_id,
+                expected_chat_id,
+                callback_chat_id,
+            )
+            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+
+        user_name = self._get_cached_sender_name(open_id) or open_id
+        token = str(getattr(event, "token", "") or "")
+        if not self._submit_on_loop(
+            loop,
+            self._resolve_github_pr_approval(
+                approval_id=approval_id,
+                action=action,
+                user_name=user_name,
+                open_id=open_id,
+                chat_id=callback_chat_id,
+                token=token,
+            ),
+        ):
+            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+
+        if P2CardActionTriggerResponse is None:
+            return None
+        response = P2CardActionTriggerResponse()
+        if CallBackCard is not None:
+            card = CallBackCard()
+            card.type = "raw"
+            card.data = self._build_resolved_github_pr_approval_card(
+                action=action,
+                state=state,
+                user_name=user_name,
+            )
+            response.card = card
+        return response
+
     def _handle_update_prompt_card_action(self, *, event: Any, action_value: Dict[str, Any], loop: Any) -> Any:
         """Schedule update prompt resolution and build the synchronous callback response."""
         prompt_id = action_value.get("update_prompt_id")
@@ -2659,8 +3142,12 @@ class FeishuAdapter(BasePlatformAdapter):
         operator = getattr(event, "operator", None)
         open_id = str(getattr(operator, "open_id", "") or "")
         sender_id = SimpleNamespace(open_id=open_id, user_id=str(getattr(operator, "user_id", "") or ""))
-        if not self._allow_group_message(sender_id, state.get("chat_id", ""), is_bot=False):
+        allowed_ids = set(self._admins) | set(self._allowed_group_users)
+        if not allowed_ids or not self._is_interactive_operator_authorized(open_id):
             logger.warning("[Feishu] Unauthorized update prompt click by %s", open_id or "<unknown>")
+            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+        if not self._allow_group_message(sender_id, state.get("chat_id", ""), is_bot=False):
+            logger.warning("[Feishu] Update prompt click rejected by group policy for %s", open_id or "<unknown>")
             return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
 
         callback_chat_id = str(getattr(getattr(event, "context", None), "open_chat_id", "") or "")
@@ -2734,6 +3221,117 @@ class FeishuAdapter(BasePlatformAdapter):
             )
         except Exception as exc:
             logger.error("Failed to resolve gateway approval from Feishu button: %s", exc)
+
+    async def _resolve_github_pr_approval(
+        self,
+        approval_id: Any,
+        action: str,
+        user_name: str,
+        *,
+        open_id: str = "",
+        chat_id: str = "",
+        token: str = "",
+    ) -> None:
+        """Resolve a GitHub PR approval card action.
+
+        ``approve`` routes a normal synthetic user message back into Hermes so
+        the existing pre-merge gate performs fresh PR/CI/mergeability checks.
+        ``reject`` and ``ignore`` only clear the card state and log status.
+        """
+        state = self._github_pr_approval_state.get(approval_id)
+        if not state:
+            logger.debug("[Feishu] GitHub PR approval %s already resolved or unknown", approval_id)
+            return
+        if action not in _GITHUB_PR_APPROVAL_ACTIONS:
+            logger.debug("[Feishu] GitHub PR approval %s invalid action=%r", approval_id, action)
+            return
+        if not self._is_interactive_operator_authorized(open_id):
+            logger.warning(
+                "[Feishu] Unauthorized GitHub PR approval click by %s for approval %s",
+                open_id or "<unknown>",
+                approval_id,
+            )
+            return
+        expected_chat_id = str(state.get("chat_id", "") or "")
+        if expected_chat_id and not chat_id:
+            logger.warning("[Feishu] GitHub PR approval %s missing callback chat id", approval_id)
+            return
+        if expected_chat_id and chat_id and expected_chat_id != chat_id:
+            logger.warning(
+                "[Feishu] GitHub PR approval %s chat mismatch (expected=%s, got=%s)",
+                approval_id,
+                expected_chat_id,
+                chat_id,
+            )
+            return
+        if action == "approve" and not str(state.get("head_sha", "") or "").strip():
+            logger.warning("[Feishu] GitHub PR approval %s missing head_sha; refusing approval route", approval_id)
+            return
+
+        state = self._github_pr_approval_state.pop(approval_id, None)
+        if not state:
+            logger.debug("[Feishu] GitHub PR approval %s already resolved while validating callback", approval_id)
+            return
+
+        if action != "approve":
+            logger.info(
+                "Feishu GitHub PR approval %s for %s#%s by %s",
+                action,
+                state.get("repo", ""),
+                state.get("pr_number", ""),
+                user_name,
+            )
+            return
+
+        route_chat_id = expected_chat_id or chat_id
+        if not route_chat_id:
+            logger.warning("[Feishu] GitHub PR approval %s missing chat_id; cannot route", approval_id)
+            return
+
+        sender_id = SimpleNamespace(open_id=open_id, user_id=None, union_id=None)
+        sender_profile = await self._resolve_sender_profile(sender_id)
+        chat_info = await self.get_chat_info(route_chat_id)
+        source = self.build_source(
+            chat_id=route_chat_id,
+            chat_name=chat_info.get("name") or route_chat_id or "Feishu Chat",
+            chat_type=self._resolve_source_chat_type(chat_info=chat_info, event_chat_type="group"),
+            user_id=sender_profile["user_id"],
+            user_name=sender_profile["user_name"],
+            thread_id=None,
+            user_id_alt=sender_profile["user_id_alt"],
+        )
+        repo = state.get("repo", "")
+        pr_number = state.get("pr_number", "")
+        head_sha = state.get("head_sha", "")
+        pr_url = state.get("pr_url", "")
+        synthetic_text = (
+            f"批准合并 PR #{pr_number}（Feishu 按钮审批）\n"
+            f"repo: {repo}\n"
+            f"head_sha: {head_sha}\n"
+            + (f"url: {pr_url}\n" if pr_url else "")
+            + "请先 fresh-check PR 状态、head SHA、CI 和 mergeability，再按既有受控 pre-merge gate 处理；不要直接无检查合并。"
+        )
+        # The callback token is not a Feishu open_message_id.  The normal
+        # gateway response path replies to ``event.message_id``; using the
+        # card-action token there makes the final pre-merge gate report fail
+        # delivery with ``invalid open_message_id``.  Anchor replies to the
+        # original approval-card message when available, otherwise send a plain
+        # chat message by leaving the reply anchor empty.
+        synthetic_event = MessageEvent(
+            text=synthetic_text,
+            message_type=MessageType.TEXT,
+            source=source,
+            raw_message={"github_pr_approval": dict(state), "action": action, "token": token},
+            message_id=str(state.get("message_id") or "") or None,
+            timestamp=datetime.now(),
+        )
+        logger.info(
+            "[Feishu] Routing GitHub PR approval for %s#%s from %s as synthetic merge request",
+            repo,
+            pr_number,
+            open_id,
+        )
+        await self._handle_message_with_guards(synthetic_event)
 
     async def _resolve_update_prompt(
         self,
@@ -4457,7 +5055,9 @@ class FeishuAdapter(BasePlatformAdapter):
         payload: str,
         reply_to: Optional[str],
         metadata: Optional[Dict[str, Any]],
+        uuid_value: Optional[str] = None,
     ) -> Any:
+        request_uuid = uuid_value or str(uuid.uuid4())
         effective_reply_to = reply_to
         if not effective_reply_to and metadata and metadata.get("thread_id"):
             effective_reply_to = metadata.get("reply_to_message_id")
@@ -4467,21 +5067,22 @@ class FeishuAdapter(BasePlatformAdapter):
                 content=payload,
                 msg_type=msg_type,
                 reply_in_thread=reply_in_thread,
-                uuid_value=str(uuid.uuid4()),
+                uuid_value=request_uuid,
             )
             request = self._build_reply_message_request(effective_reply_to, body)
             return await asyncio.to_thread(self._client.im.v1.message.reply, request)
 
         # For topic/thread messages that fell back from reply→create, use
         # thread_id as receive_id so the message lands in the topic instead of
-        # the main chat.
+        # the main chat. Otherwise detect whether chat_id is a user open_id
+        # (DM) or a group chat_id and set the Feishu receive_id_type correctly.
         _thread_id = (metadata or {}).get("thread_id")
         if _thread_id:
             body = self._build_create_message_body(
                 receive_id=_thread_id,
                 msg_type=msg_type,
                 content=payload,
-                uuid_value=str(uuid.uuid4()),
+                uuid_value=request_uuid,
             )
             request = self._build_create_message_request("thread_id", body)
         else:
@@ -4497,7 +5098,7 @@ class FeishuAdapter(BasePlatformAdapter):
                 receive_id=receive_id,
                 msg_type=msg_type,
                 content=payload,
-                uuid_value=str(uuid.uuid4()),
+                uuid_value=request_uuid,
             )
             request = self._build_create_message_request(receive_id_type, body)
         return await asyncio.to_thread(self._client.im.v1.message.create, request)
@@ -4505,6 +5106,63 @@ class FeishuAdapter(BasePlatformAdapter):
     @staticmethod
     def _response_succeeded(response: Any) -> bool:
         return bool(response and getattr(response, "success", lambda: False)())
+
+    @staticmethod
+    def _is_transient_feishu_exception(exc: Exception) -> bool:
+        if isinstance(exc, json.JSONDecodeError):
+            return True
+        if isinstance(exc, (ConnectionError, OSError, TimeoutError)):
+            return True
+        text = str(exc).lower()
+        return any(
+            marker in text
+            for marker in (
+                "timeout",
+                "timed out",
+                "temporar",
+                "rate limit",
+                "frequency limit",
+                "retry after",
+                "too many requests",
+                "too frequent",
+                "single messages too frequently",
+                "connection reset",
+                "connection aborted",
+                "server error",
+                "internal error",
+                "bad gateway",
+                "service unavailable",
+            )
+        )
+
+    @staticmethod
+    def _is_transient_feishu_response(response: Any) -> bool:
+        code = getattr(response, "code", None)
+        try:
+            code_int = int(code)
+        except (TypeError, ValueError):
+            code_int = None
+        if code_int in {429, 230020} or (code_int is not None and 500 <= code_int < 600):
+            return True
+        msg = str(getattr(response, "msg", "") or "").lower()
+        return any(
+            marker in msg
+            for marker in (
+                "timeout",
+                "timed out",
+                "temporar",
+                "rate limit",
+                "frequency limit",
+                "retry after",
+                "too many requests",
+                "too frequent",
+                "single messages too frequently",
+                "server error",
+                "internal error",
+                "bad gateway",
+                "service unavailable",
+            )
+        )
 
     @staticmethod
     def _extract_response_field(response: Any, field_name: str) -> Any:
@@ -4626,7 +5284,9 @@ class FeishuAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]],
     ) -> Any:
         last_error: Optional[Exception] = None
+        last_response: Any = None
         active_reply_to = reply_to
+        request_uuid = str(uuid.uuid4())
         for attempt in range(_FEISHU_SEND_ATTEMPTS):
             try:
                 response = await self._send_raw_message(
@@ -4635,6 +5295,7 @@ class FeishuAdapter(BasePlatformAdapter):
                     payload=payload,
                     reply_to=active_reply_to,
                     metadata=metadata,
+                    uuid_value=request_uuid,
                 )
                 # If replying to a message failed because it was withdrawn or not found,
                 # fall back to posting a new message directly to the chat.
@@ -4664,13 +5325,29 @@ class FeishuAdapter(BasePlatformAdapter):
                             payload=payload,
                             reply_to=None,
                             metadata=metadata,
+                            uuid_value=request_uuid,
                         )
-                return response
+                if self._response_succeeded(response):
+                    return response
+                last_response = response
+                if not self._is_transient_feishu_response(response) or attempt >= _FEISHU_SEND_ATTEMPTS - 1:
+                    return response
+                wait_seconds = 2 ** attempt
+                logger.warning(
+                    "[Feishu] Send attempt %d/%d got transient response for chat %s; retrying in %ds: [%s] %s",
+                    attempt + 1,
+                    _FEISHU_SEND_ATTEMPTS,
+                    chat_id,
+                    wait_seconds,
+                    getattr(response, "code", "unknown"),
+                    getattr(response, "msg", "send failed"),
+                )
+                await asyncio.sleep(wait_seconds)
             except Exception as exc:
                 last_error = exc
                 if msg_type == "post" and _POST_CONTENT_INVALID_RE.search(str(exc)):
                     raise
-                if attempt >= _FEISHU_SEND_ATTEMPTS - 1:
+                if not self._is_transient_feishu_exception(exc) or attempt >= _FEISHU_SEND_ATTEMPTS - 1:
                     raise
                 wait_seconds = 2 ** attempt
                 logger.warning(
@@ -4682,6 +5359,8 @@ class FeishuAdapter(BasePlatformAdapter):
                     exc,
                 )
                 await asyncio.sleep(wait_seconds)
+        if last_response is not None:
+            return last_response
         raise last_error or RuntimeError("Feishu send failed")
 
     async def _release_app_lock(self) -> None:
@@ -4782,6 +5461,20 @@ class FeishuAdapter(BasePlatformAdapter):
                 .request_body(request_body)
                 .build()
             )
+        return SimpleNamespace(message_id=message_id, request_body=request_body)
+
+    @staticmethod
+    def _build_patch_message_body(*, content: str) -> Any:
+        patch_body_cls = globals().get("PatchMessageRequestBody")
+        if patch_body_cls is not None:
+            return patch_body_cls.builder().content(content).build()
+        return SimpleNamespace(content=content)
+
+    @staticmethod
+    def _build_patch_message_request(message_id: str, request_body: Any) -> Any:
+        patch_request_cls = globals().get("PatchMessageRequest")
+        if patch_request_cls is not None:
+            return patch_request_cls.builder().message_id(message_id).request_body(request_body).build()
         return SimpleNamespace(message_id=message_id, request_body=request_body)
 
     @staticmethod

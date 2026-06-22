@@ -47,6 +47,9 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     # live, just cleaned up after success so the chat doesn't fill up with
     # stale breadcrumbs. Failed runs leave bubbles in place as breadcrumbs.
     "cleanup_progress": False,
+    # Rich weather cards/text are production delivery behavior; require an
+    # explicit opt-in instead of enabling extra rendering/sending by default.
+    "rich_result_weather": "off",  # off | auto | text | card
 }
 
 # ---------------------------------------------------------------------------
@@ -247,4 +250,13 @@ def _normalise(setting: str, value: Any) -> Any:
             return int(value)
         except (TypeError, ValueError):
             return 0
+    if setting == "rich_result_weather":
+        if value is False:
+            return "off"
+        if value is True:
+            return "auto"
+        normalized = str(value).strip().lower()
+        if normalized in {"off", "auto", "text", "card"}:
+            return normalized
+        return "off"
     return value

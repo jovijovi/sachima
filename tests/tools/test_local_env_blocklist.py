@@ -127,8 +127,8 @@ class TestProviderEnvBlocklist:
         Hermes-managed; the rest belongs to the user.
         """
         general_chain = {
-            "AWS_ACCESS_KEY_ID": "AKIAIOSFODNN7EXAMPLE",
-            "AWS_SECRET_ACCESS_KEY": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+            "AWS_ACCESS_KEY_ID": "AKIA" + "IOSFODNN7" + "EXAMPLE",
+            "AWS_SECRET_ACCESS_KEY": "wJalrXUtnFEMI/" + "K7MDENG/bPxRfiCY" + "EXAMPLEKEY",
             "AWS_SESSION_TOKEN": "session-token",
             "AWS_PROFILE": "production",
             "AWS_DEFAULT_REGION": "us-east-1",

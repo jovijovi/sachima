@@ -253,3 +253,58 @@ class TestDefaultPlatformWebSearchCoverage:
 
     def test_hermes_api_server_toolset_includes_web_search(self):
         assert "web_search" in resolve_toolset("hermes-api-server")
+
+
+class TestImageEditExposure:
+    """``image_edit`` ships in the shared core alongside ``image_generate``.
+
+    The edit tool is gated at schema-build time by its ``check_fn`` (only an
+    edit-capable, available backend like xAI surfaces it), but it must be part
+    of the resolved toolset so platforms can expose it at all. Regression:
+    ``image_edit`` was previously missing from ``_HERMES_CORE_TOOLS``, so
+    normal CLI / Sachima toolsets could never resolve it.
+    """
+
+    def test_core_tools_include_image_edit_and_generate(self):
+        from toolsets import _HERMES_CORE_TOOLS
+
+        assert "image_generate" in _HERMES_CORE_TOOLS
+        assert "image_edit" in _HERMES_CORE_TOOLS
+
+    def test_image_gen_toolset_resolves_image_tools(self):
+        # A profile that narrowly enables only the ``image_gen`` toolset must
+        # expose generation, editing, and provenance history statically,
+        # independent of registry-discovery order.
+        assert TOOLSETS["image_gen"]["tools"] == [
+            "image_generate",
+            "image_edit",
+            "image_history",
+        ]
+        resolved = set(resolve_toolset("image_gen"))
+        assert "image_generate" in resolved
+        assert "image_edit" in resolved
+        assert "image_history" in resolved
+
+    def test_hermes_cli_resolves_image_edit(self):
+        resolved = set(resolve_toolset("hermes-cli"))
+        assert "image_edit" in resolved
+        # image_generate compatibility must be preserved.
+        assert "image_generate" in resolved
+
+    def test_hermes_sachima_resolves_image_edit(self):
+        resolved = set(resolve_toolset("hermes-sachima"))
+        assert "image_edit" in resolved
+        assert "image_generate" in resolved
+
+
+class TestProfileScopedOptInToolsets:
+    def test_workspace_and_media_tools_are_absent_from_default_platforms(self):
+        for name in ("hermes-cli", "hermes-feishu", "hermes-sachima", "hermes-gateway"):
+            resolved = set(resolve_toolset(name))
+            assert "workspace_read" not in resolved
+            assert "workspace_write" not in resolved
+            assert "media_fetch_url" not in resolved
+
+    def test_workspace_and_media_tools_appear_only_when_explicitly_enabled(self):
+        resolved = set(resolve_multiple_toolsets(["hermes-feishu", "workspace_file", "media_fetch"]))
+        assert {"workspace_read", "workspace_write", "media_fetch_url"}.issubset(resolved)

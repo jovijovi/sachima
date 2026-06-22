@@ -1860,6 +1860,9 @@ DEFAULT_CONFIG = {
     # a plugin in plugins/context_engine/<name>/ or ~/.hermes/plugins/.
     "context": {
         "engine": "compressor",
+        # Preserve an explicit model.context_length through generic context
+        # overflow handling.  Provider-parsed lower limits still win.
+        "preserve_explicit_context_length": True,
     },
 
     # Persistent memory -- bounded curated memory injected into system prompt

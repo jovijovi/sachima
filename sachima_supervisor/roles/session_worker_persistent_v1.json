@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "role_id": "sachima.session_worker.persistent",
+  "display_name": "Sachima session worker (persistent, read-only)",
+  "description": "Portable read-only persistent-session worker role for the Sachima Phase E-2 bounded real persistent-session execution slice. acpx_binary stays null in this committed config, so the Phase E-2 runner-provenance gate fails closed and this role is NOT runnable by construction. Before any real local/offline smoke an operator must supply a local overlay that pins runner.acpx_binary to a verified absolute local acpx 0.10.0 executable (optionally checked against an expected sha256). No npx/npm/pnpm/yarn/bunx/shell fallback is ever a runnable path. This role is local and offline only: read-only, no external messaging surface, no live or default-on behavior, no public network exposure, and no production configuration.",
+  "runner": {
+    "type": "acpx",
+    "acpx_version": "0.10.0",
+    "acpx_binary": null,
+    "adapter_agent": "codex",
+    "model": null
+  },
+  "workspace": {
+    "default_cwd": "/workspace/sachima",
+    "allowed_roots": ["/workspace/sachima"],
+    "allowed_roots_security_boundary": false
+  },
+  "permissions": {
+    "read": true,
+    "search": true,
+    "write": false,
+    "execute": false,
+    "terminal": false,
+    "delete": false,
+    "move": false,
+    "fetch": false,
+    "switch_mode": false,
+    "other": false
+  },
+  "session": {"strategy": "persistent"},
+  "limits": {
+    "timeout_seconds": 900,
+    "max_turns": 8,
+    "max_output_bytes": 2000000
+  },
+  "prompt": {
+    "role_instruction": "You are the Sachima persistent session worker. Operate read-only over the sanitized material referenced by the caller. Do not modify files, run commands, fetch resources, switch modes, or deliver to any external surface.",
+    "output_contract": "Return plain text. When asked for a token, reply with exactly the requested token and nothing else."
+  },
+  "redaction": {
+    "suppress_reads": true,
+    "redact_prompt": true,
+    "redact_stderr": true,
+    "redact_metadata": true,
+    "redact_env": true
+  }
+}

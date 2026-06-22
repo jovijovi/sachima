@@ -1,0 +1,489 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sachima.local/contracts/flowweaver.v0.schema.json",
+  "title": "FlowWeaver v0 Sanitized Transaction Snapshot",
+  "description": "Versioned Phase 3 contract for ordered intents, attempted operations, generated artifacts, platform delivery ACKs, explicit final coverage, and IM-safe snapshots.",
+  "type": "object",
+  "x-flowweaver-version": "flowweaver.v0",
+  "required": [
+    "type",
+    "transaction_id",
+    "workflow_id",
+    "run_id",
+    "correlation_id",
+    "snapshot_id",
+    "adapter",
+    "created_at",
+    "contract_version",
+    "transaction",
+    "snapshot"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "type": {
+      "const": "flowweaver.handle.v0",
+      "description": "Stable correlation-envelope discriminator."
+    },
+    "transaction_id": {
+      "type": "string",
+      "pattern": "^tx_[a-z0-9_]+$"
+    },
+    "workflow_id": {
+      "type": ["string", "null"],
+      "description": "Temporal workflow id when one exists; null in mock Phase 3 snapshots."
+    },
+    "run_id": {
+      "type": ["string", "null"],
+      "description": "Temporal run id when one exists; null in mock Phase 3 snapshots."
+    },
+    "correlation_id": {
+      "type": "string",
+      "pattern": "^turn_[a-z0-9_]+$"
+    },
+    "snapshot_id": {
+      "type": "string",
+      "pattern": "^snap_[a-z0-9_]+$"
+    },
+    "adapter": {
+      "type": "string",
+      "const": "mock"
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "contract_version": {
+      "type": "string",
+      "const": "flowweaver.v0"
+    },
+    "transaction": {
+      "$ref": "#/$defs/transaction"
+    },
+    "snapshot": {
+      "$ref": "#/$defs/snapshot"
+    }
+  },
+  "$defs": {
+    "intent_status": {
+      "type": "string",
+      "enum": [
+        "pending",
+        "running",
+        "succeeded",
+        "failed",
+        "blocked",
+        "cancelled",
+        "skipped"
+      ]
+    },
+    "delivery_surface": {
+      "type": "string",
+      "enum": [
+        "progress_card",
+        "rich_card",
+        "final_text",
+        "media",
+        "file",
+        "voice",
+        "fallback_text"
+      ]
+    },
+    "target_kind": {
+      "type": "string",
+      "enum": [
+        "artifact",
+        "snapshot",
+        "final_text",
+        "transaction",
+        "intent"
+      ]
+    },
+    "coverage_mode": {
+      "type": "string",
+      "enum": [
+        "answered",
+        "delivered_artifact",
+        "failed",
+        "skipped",
+        "blocked_waiting_for_user"
+      ]
+    },
+    "transaction": {
+      "type": "object",
+      "required": [
+        "transaction_id",
+        "status",
+        "user_request_summary",
+        "intents",
+        "operations",
+        "artifacts",
+        "deliveries",
+        "intent_coverage",
+        "final_text"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "transaction_id": {
+          "type": "string",
+          "pattern": "^tx_[a-z0-9_]+$"
+        },
+        "status": {
+          "$ref": "#/$defs/intent_status"
+        },
+        "user_request_summary": {
+          "type": "string",
+          "maxLength": 240
+        },
+        "intents": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/intent"
+          }
+        },
+        "operations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/operation"
+          }
+        },
+        "artifacts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/artifact"
+          }
+        },
+        "deliveries": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/delivery_ack"
+          }
+        },
+        "intent_coverage": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/intent_coverage"
+          }
+        },
+        "final_text": {
+          "$ref": "#/$defs/final_text"
+        }
+      }
+    },
+    "intent": {
+      "type": "object",
+      "required": ["intent_id", "order_index", "title", "status", "dependencies"],
+      "additionalProperties": false,
+      "properties": {
+        "intent_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*$"
+        },
+        "order_index": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "status": {
+          "$ref": "#/$defs/intent_status"
+        },
+        "dependencies": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]*$"
+          },
+          "uniqueItems": true
+        }
+      }
+    },
+    "operation": {
+      "type": "object",
+      "description": "Work attempted for an intent. It must not include platform delivery fields or raw tool input/output.",
+      "required": ["operation_id", "intent_id", "kind", "status", "attempted_at", "summary"],
+      "additionalProperties": false,
+      "properties": {
+        "operation_id": {
+          "type": "string",
+          "pattern": "^op_[a-z0-9_]+$"
+        },
+        "intent_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*$"
+        },
+        "kind": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*$"
+        },
+        "status": {
+          "$ref": "#/$defs/intent_status"
+        },
+        "attempted_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 280
+        },
+        "inputs_summary": {
+          "type": "string",
+          "maxLength": 280
+        }
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "description": "Generated result data or fallback text. It must not include platform delivery ACK fields.",
+      "required": ["artifact_id", "intent_id", "kind", "status", "title", "content_summary"],
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "type": "string",
+          "pattern": "^artifact_[a-z0-9_]+$"
+        },
+        "intent_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*$"
+        },
+        "kind": {
+          "type": "string",
+          "enum": ["rich_card", "text_result", "fallback_text", "media", "file", "voice"]
+        },
+        "status": {
+          "$ref": "#/$defs/intent_status"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "content_summary": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 360
+        },
+        "covers_intent_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]*$"
+          },
+          "uniqueItems": true
+        },
+        "data": {
+          "type": "object",
+          "description": "Sanitized, bounded result data only."
+        },
+        "fallback_text": {
+          "type": "string",
+          "maxLength": 800
+        }
+      }
+    },
+    "delivery_ack": {
+      "type": "object",
+      "description": "Unified delivery ACK captured only after the platform send/edit succeeds.",
+      "required": [
+        "delivery_idempotency_key",
+        "surface",
+        "platform",
+        "status",
+        "message_id",
+        "target",
+        "reason"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "delivery_idempotency_key": {
+          "type": "string",
+          "pattern": "^feishu:om_[a-z0-9_]+:[a-z_]+:[a-z0-9_]+$"
+        },
+        "surface": {
+          "$ref": "#/$defs/delivery_surface"
+        },
+        "platform": {
+          "type": "string",
+          "const": "feishu"
+        },
+        "status": {
+          "type": "string",
+          "const": "sent"
+        },
+        "message_id": {
+          "type": "string",
+          "pattern": "^om_[a-z0-9_]+$"
+        },
+        "target": {
+          "$ref": "#/$defs/target"
+        },
+        "reason": {
+          "type": "null"
+        },
+        "sent_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "target": {
+      "type": "object",
+      "required": ["kind", "id"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/target_kind"
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "intent_coverage": {
+      "type": "object",
+      "description": "Explicit final coverage decision for one ordered user intent.",
+      "required": ["intent_id", "mode", "artifact_id", "delivery_idempotency_key", "reason"],
+      "additionalProperties": false,
+      "properties": {
+        "intent_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*$"
+        },
+        "mode": {
+          "$ref": "#/$defs/coverage_mode"
+        },
+        "artifact_id": {
+          "type": ["string", "null"],
+          "pattern": "^artifact_[a-z0-9_]+$"
+        },
+        "delivery_idempotency_key": {
+          "type": ["string", "null"],
+          "pattern": "^feishu:om_[a-z0-9_]+:[a-z_]+:[a-z0-9_]+$"
+        },
+        "reason": {
+          "type": ["string", "null"],
+          "maxLength": 240
+        }
+      }
+    },
+    "final_text": {
+      "type": "object",
+      "required": ["final_text_id", "status", "text", "covers_intent_ids"],
+      "additionalProperties": false,
+      "properties": {
+        "final_text_id": {
+          "type": "string",
+          "pattern": "^final_text_[a-z0-9_]+$"
+        },
+        "status": {
+          "$ref": "#/$defs/intent_status"
+        },
+        "text": {
+          "type": "string",
+          "maxLength": 1200
+        },
+        "covers_intent_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]*$"
+          }
+        }
+      }
+    },
+    "snapshot": {
+      "type": "object",
+      "description": "Bounded, ordered, sanitized render-safe progress view for IM surfaces.",
+      "required": [
+        "snapshot_id",
+        "transaction_id",
+        "status",
+        "safe_to_render",
+        "ordered_intent_ids",
+        "progress",
+        "render_text",
+        "bounds"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "snapshot_id": {
+          "type": "string",
+          "pattern": "^snap_[a-z0-9_]+$"
+        },
+        "transaction_id": {
+          "type": "string",
+          "pattern": "^tx_[a-z0-9_]+$"
+        },
+        "status": {
+          "$ref": "#/$defs/intent_status"
+        },
+        "safe_to_render": {
+          "type": "boolean",
+          "const": true
+        },
+        "ordered_intent_ids": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]*$"
+          }
+        },
+        "progress": {
+          "type": "array",
+          "maxItems": 10,
+          "items": {
+            "$ref": "#/$defs/progress_item"
+          }
+        },
+        "render_text": {
+          "type": "string",
+          "maxLength": 1200
+        },
+        "bounds": {
+          "type": "object",
+          "required": ["max_progress_items", "max_render_text_chars"],
+          "additionalProperties": false,
+          "properties": {
+            "max_progress_items": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 10
+            },
+            "max_render_text_chars": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 1200
+            }
+          }
+        }
+      }
+    },
+    "progress_item": {
+      "type": "object",
+      "required": ["intent_id", "status", "summary"],
+      "additionalProperties": false,
+      "properties": {
+        "intent_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*$"
+        },
+        "status": {
+          "$ref": "#/$defs/intent_status"
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 180
+        }
+      }
+    }
+  }
+}

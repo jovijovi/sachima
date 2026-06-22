@@ -1861,7 +1861,7 @@ class Migrator:
                 final_destination.parent.mkdir(parents=True, exist_ok=True)
                 if final_destination == destination and destination.exists():
                     shutil.rmtree(destination)
-                shutil.copytree(skill_dir, final_destination)
+                shutil.copytree(skill_dir, final_destination, symlinks=True)
                 details: Dict[str, Any] = {"backup": str(backup_path) if backup_path else ""}
                 if final_destination != destination:
                     details["renamed_from"] = str(destination)
@@ -1971,7 +1971,7 @@ class Migrator:
                 final_destination.parent.mkdir(parents=True, exist_ok=True)
                 if final_destination == destination and destination.exists():
                     shutil.rmtree(destination)
-                shutil.copytree(skill_dir, final_destination)
+                shutil.copytree(skill_dir, final_destination, symlinks=True)
                 details: Dict[str, Any] = {"backup": str(backup_path) if backup_path else ""}
                 if final_destination != destination:
                     details["renamed_from"] = str(destination)

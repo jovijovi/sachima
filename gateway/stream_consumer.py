@@ -672,6 +672,11 @@ class GatewayStreamConsumer:
                                 # tail here so the normal gateway send path does
                                 # not duplicate the visible prefix.
                                 await self._send_fallback_final(self._accumulated)
+                            else:
+                                flushed_tail = await self._flush_segment_tail_on_edit_failure()
+                                if flushed_tail:
+                                    self._final_response_sent = True
+                                    self._final_content_delivered = True
                         elif not self._already_sent:
                             self._final_response_sent = await self._send_or_edit(self._accumulated)
                             if self._final_response_sent:
@@ -1077,7 +1082,7 @@ class GatewayStreamConsumer:
         self._last_sent_text = text
         return True
 
-    async def _flush_segment_tail_on_edit_failure(self) -> None:
+    async def _flush_segment_tail_on_edit_failure(self) -> bool:
         """Deliver un-sent tail content before a segment-break reset.
 
         When an edit fails (flood control, transport error) and a tool
@@ -1098,7 +1103,7 @@ class GatewayStreamConsumer:
             tail = tail[len(visible):].lstrip()
         tail = self._clean_for_display(tail)
         if not tail.strip():
-            return
+            return False
         try:
             result = await self.adapter.send(
                 chat_id=self.chat_id,
@@ -1107,8 +1112,10 @@ class GatewayStreamConsumer:
             )
             if result.success:
                 self._already_sent = True
+                return True
         except Exception as e:
             logger.error("Segment-break tail flush error: %s", e)
+        return False
 
     async def _try_strip_cursor(self) -> None:
         """Best-effort edit to remove the cursor from the last visible message.

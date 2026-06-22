@@ -243,6 +243,31 @@ Browse and inspect all agent sessions. Each row shows the session title, source 
 
 ![Sessions admin page — stats bar, prune, and per-row rename / export / delete](/img/dashboard/admin-sessions.png)
 
+### Progress
+
+Track long-running gateway transactions from the dashboard. The Progress page reads the optional task-tracker JSONL event store and shows:
+
+- **Transaction list** — title, status, operation count, start/update time, and the latest operation preview
+- **Status filtering** — view all transactions or only running, completed, or failed work
+- **Transaction detail** — click a transaction to inspect its full progress event timeline
+- **Safe output** — data is sanitized again on read before it reaches the API or browser
+
+Enable it in `config.yaml`:
+
+```yaml
+display:
+  tool_progress: all
+  task_tracker:
+    enabled: true
+    mode: text
+    persist_events: true
+    event_store: jsonl
+    # Optional. Defaults to ~/.hermes/progress/events.jsonl
+    event_store_path: ~/.hermes/progress/events.jsonl
+```
+
+If event persistence is disabled, `/progress` still loads but shows an empty state instead of failing.
+
 ### Logs
 
 View agent, gateway, and error log files with filtering and live tailing.
@@ -457,6 +482,23 @@ Returns the full message history for a session, including tool calls and timesta
 ### GET /api/sessions/search
 
 Full-text search across message content. Query parameter: `q`. Returns matching session IDs with highlighted snippets.
+
+### GET /api/progress/transactions
+
+Returns task-tracker transactions from the configured JSONL progress event store. Query parameters:
+
+- `limit` — maximum transactions to return (default 50)
+- `status` — optional status filter, such as `running`, `completed`, or `failed`
+
+When `display.task_tracker.persist_events` is not enabled or `event_store` is not `jsonl`, this endpoint returns an empty list. It is protected by the same dashboard session/auth middleware as the rest of the dashboard API.
+
+### GET /api/progress/transactions/\{transaction_id\}/events
+
+Returns one transaction summary plus its progress event timeline. Missing transactions return an empty event list rather than a server error.
+
+:::note
+Progress API responses are sanitized on read. Do not rely on them as a raw audit log for secrets or full tool arguments.
+:::
 
 ### DELETE /api/sessions/\{session_id\}
 

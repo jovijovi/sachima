@@ -149,6 +149,26 @@ The response JSON includes the PR `number` — save it for later commands.
 
 To create as a draft, add `"draft": true` to the JSON body.
 
+### Feishu PR approval cards
+
+When working inside a Feishu gateway session, use `github_pr_approval_card` to ask for merge approval with buttons instead of asking the user to type `批准合并 PR #N` manually.
+
+Required fields:
+- `repo`
+- `pr_number`
+- `head_sha`
+
+Optional metadata:
+- `title`, `pr_url`, `author`, `base_ref`, `head_ref`
+- `locale`: `auto`, `zh-CN`, or `en`. `auto` resolves to Chinese for Feishu cards.
+
+Rules:
+- The approve button is only a UI shortcut into the existing controlled merge path; it must not directly merge.
+- The approve callback must route a synthetic approval message back to Hermes, including repo, PR number, and head SHA.
+- Hermes must fresh-check live PR state, expected head SHA, CI/checks, and mergeability before any merge.
+- Reject and ignore never trigger a merge request.
+- Resolved cards should preserve the original PR metadata so humans can still see what was approved, rejected, or ignored.
+
 ## 4. Monitoring CI Status
 
 ### Check CI Status
@@ -274,7 +294,32 @@ When asked to auto-fix CI, follow this loop:
 5. Wait for CI → re-check status
 6. Repeat if still failing (up to 3 attempts, then ask the user)
 
-## 6. Merging
+## 6. Feishu PR Approval Cards
+
+When a user wants a clickable PR merge approval in Feishu/Lark, send a rich approval card instead of asking them to type `批准合并 PR #N` manually:
+
+```text
+github_pr_approval_card(
+  repo="OWNER/REPO",
+  pr_number=123,
+  title="PR title",
+  pr_url="https://github.com/OWNER/REPO/pull/123",
+  head_sha="<current-head-sha>",
+  base_ref="release/sachima",
+  head_ref="feature/name"
+)
+```
+
+Safety rules:
+- The Feishu **批准** button must never merge directly.
+- Button approval only routes a synthetic user approval back into Hermes.
+- Before merge, always fresh-check PR state, head SHA, CI/checks, mergeability, and branch protection.
+- If the clicked card's displayed `head_sha` is stale, stop and ask for a new approval/card.
+- **拒绝** and **忽略** only resolve the card status; they do not route merge work.
+
+This tool requires a running Feishu gateway/live adapter; if unavailable, fall back to the normal text approval flow.
+
+## 7. Merging
 
 **With gh:**
 
@@ -327,7 +372,7 @@ curl -s -X POST \
   -d "{\"query\": \"mutation { enablePullRequestAutoMerge(input: {pullRequestId: \\\"$PR_NODE_ID\\\", mergeMethod: SQUASH}) { clientMutationId } }\"}"
 ```
 
-## 7. Complete Workflow Example
+## 8. Complete Workflow Example
 
 ```bash
 # 1. Start from clean main

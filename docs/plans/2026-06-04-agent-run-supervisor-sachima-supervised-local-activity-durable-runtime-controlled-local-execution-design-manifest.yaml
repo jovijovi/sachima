@@ -1,0 +1,153 @@
+phase_id: "agent-run-supervisor-sachima-supervised-local-activity-durable-runtime-controlled-local-execution-design"
+level: "level-3"
+design_only: true
+implementation_approved: false
+local_execution_approved: false
+real_agent_execution_approved: false
+controlled_ai_flow_execution_approved: false
+live_approved: false
+gateway_approved: false
+real_delivery_approved: false
+owner_dri: "Hermes operator with Dog Brother approval"
+status: "design_packet_merged"
+pr_number: 102
+pr_url: "https://github.com/jovijovi/sachima/pull/102"
+merge_commit: "e49709d6e960b8e11f8e220fa087488132f64f93"
+pr_number_note: "PR #102 merged after local docs gates, Codex primary review, and GitHub CI"
+created_at: "2026-06-04T00:00:00+08:00"
+repo: "jovijovi/sachima"
+base_branch: "release/sachima"
+base_sha: "3b917eeff1c782cea2075909061037816c4eff93"
+branch: "docs/supervised-local-activity-durable-runtime-design"
+worktree: "/home/ecs-user/workspace/hermes/worktrees/sachima/docs-supervised-local-activity-durable-runtime-design"
+
+received_approval_text:
+  - "approve_agent_run_supervisor_sachima_supervised_local_activity_durable_runtime_ownership_controlled_local_execution_design_no_live_no_gateway_no_real_delivery_no_real_agent_execution_no_controlled_ai_flow_execution"
+approval_interpretation: "docs-only Sachima design gate for durable runtime ownership and controlled local execution semantics around the already-merged supervised local Activity wrapper (PR #99) and dry-run evidence (PR #100), with PR #101 status closure as the base; no implementation, no real local exec, no persistent sessions, no cancellation execution, no live/default-on, no Gateway, no real external ingress, no real IM/Feishu delivery, no production config writes, no real AGENT execution, no real AGENT auto-routing, no controlled AI FLOW execution"
+
+approved_scope:
+  - "durable runtime ownership model as design labels (records / leases / attempts / query projections / evidence refs / state transitions)"
+  - "core ownership decision: Sachima/FlowWeaver owns product/transaction/Activity state, leases, idempotency, retry/update/close policy, role mapping, claim-check refs, and the business decision about whether a future local execution may be requested"
+  - "agent-run-supervisor remains an independent local supervision library owning local run/session internals and redacted evidence once invoked by an approved caller"
+  - "Gateway excluded as caller / lifecycle owner / renderer / delivery surface in this phase"
+  - "Temporal/durable runtime as a future caller-supplied abstraction only; no Worker/service/CLI/Docker/socket/Gateway lifecycle started or owned"
+  - "controlled local execution preconditions (gate list only, not approval)"
+  - "start/query/update/retry/close/cancel semantics with cancellation execution deferred"
+  - "idempotency / stale-state / TOCTOU / retry-ambiguity rules"
+  - "no-leak / durable-state / log allow-and-forbid rules"
+  - "stable failure taxonomy"
+  - "docs-only verification gates"
+  - "next narrower approval text (local/offline durable-state preflight; no real agent execution; no controlled AI FLOW execution)"
+  - "roadmap/current-status update"
+
+allowed_changed_paths:
+  - "docs/plans/2026-06-04-agent-run-supervisor-sachima-supervised-local-activity-durable-runtime-controlled-local-execution-design.md"
+  - "docs/plans/2026-06-04-agent-run-supervisor-sachima-supervised-local-activity-durable-runtime-controlled-local-execution-design-manifest.yaml"
+  - "docs/dev_log/2026-06-04-agent-run-supervisor-sachima-supervised-local-activity-durable-runtime-controlled-local-execution-design.md"
+  - "docs/roadmap/current-status.md"
+
+prior_evidence:
+  pr_96:
+    title: "agent-run-supervisor local/offline integration design"
+    merge_commit: "9305dd29b407cc2b8ddb1ba7ad6508abf5d619da"
+  pr_97:
+    title: "agent-run-supervisor local/offline supervisor seam"
+    merge_commit: "5affc2fbb68d483683cd61c0871cec528127388e"
+  pr_98:
+    title: "supervised local Activity design"
+    merge_commit: "675853fd2db2b8f9df781ea46803fd0747ea78cb"
+  pr_99:
+    title: "supervised local Activity wrapper (exec_dry_run, injected supervisor)"
+    merge_commit: "8152d09ee0f847d335a76e2ef90459642fb72e9d"
+  pr_100:
+    title: "supervised local Activity controlled dry-run evidence"
+    merge_commit: "3fea6e2e8ee836e924c3e0eef1b3ff3a2b930c59"
+  pr_101:
+    title: "supervised local Activity dry-run evidence status closure"
+    merge_commit: "3b917eeff1c782cea2075909061037816c4eff93"
+  pr_102:
+    title: "supervised local Activity durable runtime ownership & controlled local execution design"
+    merge_commit: "e49709d6e960b8e11f8e220fa087488132f64f93"
+  code_reference_only:
+    - "sachima_supervisor/activity.py"
+    - "sachima_supervisor/activity_evidence.py"
+
+durable_runtime_model_labels:
+  - "ActivityRecord"
+  - "Lease (lease_id / lease_epoch / lease_holder_ref / lease_deadline)"
+  - "AttemptRecord (append-only)"
+  - "QueryProjection (sanitized read-only)"
+  - "EvidenceRef + sha256 digest"
+  - "StateTransition (guarded by approval/mode/role/material/lease/idempotency/state_version)"
+
+controlled_local_execution_preconditions:
+  - "exact_future_approval"
+  - "prior_dry_run_evidence_digest"
+  - "role_allowlist"
+  - "workspace_root_refs"
+  - "state_lease"
+  - "request_fingerprint"
+  - "operator_gate"
+  - "sanitized_claim_check_refs"
+  - "budget_limits"
+  - "no_platform_ids_or_secrets_or_raw_material"
+  - "no_gateway_no_delivery"
+
+failure_taxonomy:
+  - "activity_disabled"
+  - "activity_approval_mismatch"
+  - "activity_unsupported_mode"
+  - "activity_unknown_role"
+  - "activity_unsafe_material"
+  - "activity_idempotency_conflict"
+  - "activity_stale_state"
+  - "activity_lease_lost"
+  - "activity_toctou_conflict"
+  - "activity_retry_ambiguous"
+  - "activity_precondition_unmet"
+  - "activity_budget_exceeded"
+  - "activity_supervisor_failed"
+  - "activity_evidence_write_failed"
+  - "activity_not_found"
+
+explicit_non_approvals:
+  - "runtime_code_implementation"
+  - "durable_runtime_code_implementation"
+  - "real_local_exec"
+  - "persistent_sessions"
+  - "cancellation_execution"
+  - "real_external_sachima_ingress"
+  - "real_external_delivery"
+  - "production_delivery_control"
+  - "production_agent_tool_execution_expansion"
+  - "production_config_write"
+  - "gateway_restart_or_reload"
+  - "platform_adapter_mutation"
+  - "gateway_owned_temporal_lifecycle"
+  - "gateway_as_caller_or_renderer_or_delivery_surface"
+  - "external_temporal_service_or_worker_startup"
+  - "real_send_api_or_external_im_call"
+  - "live_or_default_on_behavior"
+  - "public_webhook_exposure"
+  - "automatic_replies"
+  - "worker_auto_routing"
+  - "agent_to_agent_auto_routing"
+  - "@all_fanout"
+  - "trusted_markdown_html_rendering"
+  - "real_agent_execution"
+  - "controlled_ai_flow_execution"
+
+strongest_allowed_outcome: "agent_run_supervisor_sachima_supervised_local_activity_durable_runtime_ownership_controlled_local_execution_design_ready_for_separate_local_offline_durable_state_preflight_implementation_request"
+strongest_allowed_outcome_meaning: "Sachima has a docs-only durable-runtime-ownership and controlled-local-execution design gate; a later, narrower local/offline durable-state preflight implementation MAY be requested with no real AGENT execution and no controlled AI FLOW execution; implementation, real local exec, sessions, cancellation execution, live/Gateway/real-delivery, real AGENT execution, and controlled AI FLOW execution remain blocked"
+
+next_allowed_request: "approve_agent_run_supervisor_sachima_supervised_local_activity_durable_state_preflight_implementation_no_live_no_gateway_no_real_delivery_no_real_agent_execution_no_controlled_ai_flow_execution"
+
+verification_gates:
+  - "docs marker gate"
+  - "manifest YAML parse + required keys"
+  - "changed-file allowlist (docs/status only, 4 paths)"
+  - "secret-shaped scan"
+  - "no-leak scan"
+  - "forbidden-surface scan"
+  - "Codex primary review"
+  - "GitHub PR CI (docs-only fast path)"

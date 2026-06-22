@@ -1,0 +1,106 @@
+schema_version: sachima.plan_manifest.v1
+title: agent-run-supervisor x Sachima P5 local/offline runtime adapter implementation
+created_at: '2026-06-18T13:30:34+08:00'
+status: merged
+repository: jovijovi/sachima
+base_branch: release/sachima
+branch: feat/p5-local-offline-runtime-adapter
+pr:
+  number: 149
+  url: https://github.com/jovijovi/sachima/pull/149
+  head_sha: e6654e766f1d4818e058280a2d1e58dd9fdb0cad
+  merge_commit: 58d1b9b87f6f68bd8099a2d7695edbacdaf6716e
+  merged_at: '2026-06-18T08:11:31Z'
+  static_pr_metadata_policy: live GitHub PR metadata is authoritative after PR creation; do not treat this manifest as frozen CI or merge truth.
+implementation:
+  summary: >-
+    Adds a default-off, caller-owned, local/offline fake runtime adapter behind
+    the WP4 StepExecutor Protocol seam. The adapter returns sanitized
+    StepExecutionOutcome projections, keeps raw material out of history and
+    artifact refs, supports no-throw query/cancel/recover/close controls, and
+    preserves active-run cancellation WATCH semantics.
+  files:
+    - sachima_supervisor/p5_runtime_adapter.py
+    - sachima_supervisor/__init__.py
+    - tests/sachima_supervisor/test_p5_runtime_adapter.py
+    - docs/plans/2026-06-18-agent-run-supervisor-sachima-p5-local-offline-runtime-adapter-implementation.md
+    - docs/plans/2026-06-18-agent-run-supervisor-sachima-p5-local-offline-runtime-adapter-implementation-manifest.yaml
+    - docs/dev_log/2026-06-18-agent-run-supervisor-sachima-p5-local-offline-runtime-adapter-implementation.md
+    - docs/roadmap/current-status.md
+approval:
+  token_name: P5_RUNTIME_ADAPTER_IMPLEMENTATION_APPROVAL_TOKEN
+  exact_token_required: true
+  default_off: true
+runtime_surface:
+  adapter_type: deterministic_fake_injected_local_only
+  caller_owned: true
+  step_executor_drop_in: true
+  in_process_only: true
+  cross_process_transactional_claim_store: false
+  production_durable_runtime: false
+  external_lifecycle_owned: false
+controls:
+  execute: no_throw_step_execution_outcome
+  query: sanitized_snapshot_no_reinvoke
+  cancel: active_run_watch_preserving_no_throw_outcome
+  recover: sanitized_snapshot_only
+  close: sanitized_local_marker
+safety_properties:
+  duplicate_start_idempotency: identical execute calls converge to one fake launch
+  conflict_handling: incompatible replay fails closed with runtime_adapter_idempotency_conflict
+  no_leak_json_projection: tested
+  no_leak_serialized_history_bytes: tested
+  artifact_projection: claim_check_refs_only
+  cancellation_watch: unconfirmed active-run cancel returns cancel_ambiguous and active_run_cancellation_watch
+non_approvals:
+  real_runtime_start: false
+  worker_start: false
+  external_temporal_or_worker_lifecycle: false
+  controlled_ai_flow_execution_p6: false
+  write_capable_roles: false
+  gateway_owned_or_auto_started_lifecycle: false
+  live_gateway_feishu_or_im_behavior: false
+  production_config_write: false
+  public_ingress: false
+  real_delivery: false
+evidence:
+  red:
+    command: /home/ecs-user/.local/bin/pytest tests/sachima_supervisor/test_p5_runtime_adapter.py -q
+    result: 13 failed, 1 skipped in 0.21s
+    expected_failure: ModuleNotFoundError for sachima_supervisor.p5_runtime_adapter
+  green_focused:
+    command: /home/ecs-user/.local/bin/pytest tests/sachima_supervisor/test_p5_runtime_adapter.py -q
+    result: 25 passed in 0.18s
+  compatibility_focused:
+    command: /home/ecs-user/.local/bin/pytest tests/sachima_supervisor/test_p5_runtime_adapter.py tests/sachima_supervisor/test_ai_flow_orchestration.py tests/sachima_supervisor/test_ai_flow_store.py -q
+    result: 61 passed in 0.27s
+  full_local_gates:
+    status: passed
+    commands:
+      - python3 tools/sync_roadmap_status.py --check
+      - /home/ecs-user/.local/bin/pytest tests/sachima_supervisor -q
+      - /home/ecs-user/.local/bin/uv run --extra dev ruff check sachima_supervisor/p5_runtime_adapter.py tests/sachima_supervisor/test_p5_runtime_adapter.py sachima_supervisor/__init__.py
+      - python3 -m compileall -q sachima_supervisor tests/sachima_supervisor
+      - git diff --check
+      - custom forbidden runtime surface and secret marker scans
+      - codegraph sync/status
+    results:
+      sync_roadmap_status: PASS
+      supervisor_tests: 652 passed in 2.94s
+      ruff: All checks passed
+      compileall: PASS
+      git_diff_check: PASS
+      forbidden_runtime_surface_scan: PASS
+      secret_marker_scan: PASS
+      codegraph: index up to date
+  codex_blocker_review:
+    status: passed
+    verdict: PASS
+    blockers: none
+    provenance: Codex repo-aware read-only blocker re-review on current live diff; did not run tests or live/network surfaces.
+  pr_ci:
+    status: passed_before_merge
+next_gate_after_merge: >-
+  The separately approved P5 durable-claim-store / restart-recovery local/offline
+  gate, implemented on branch feat/p5-durable-claim-store-restart-recovery.
+  P6 controlled AI FLOW execution remains blocked.
