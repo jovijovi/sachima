@@ -322,6 +322,48 @@ def test_explicit_input_images_are_sanitized_before_recording(monkeypatch):
     assert "abc123" not in text
 
 
+def test_explicit_input_image_strings_are_recorded_as_sanitized_metadata(monkeypatch):
+    monkeypatch.setenv("HERMES_PROFILE", "unit-profile")
+
+    from tools.image_manifest import build_image_manifest_record
+
+    record = build_image_manifest_record(
+        tool="image_generate",
+        operation="generate",
+        backend="xai",
+        args={"prompt": "edit", "aspect_ratio": "square"},
+        input_images=[
+            "https://cdn.example.test/input-password=hunter2.png?token=secret",
+            "/home/alice/private/token=def456.png",
+        ],
+        duration_ms=4,
+        result_payload={"success": True, "image": "/tmp/out.png"},
+    )
+
+    assert record["input_images"] == [
+        {
+            "kind": "url",
+            "scheme": "https",
+            "host": "cdn.example.test",
+            "path": "/input-password=[REDACTED]",
+            "url": "https://cdn.example.test/input-password=[REDACTED]",
+            "query_redacted": True,
+        },
+        {
+            "kind": "file",
+            "name": "token=[REDACTED]",
+            "suffix": ".png",
+            "is_absolute": True,
+            "exists": False,
+        },
+    ]
+    text = _json_text(record)
+    assert "token=secret" not in text
+    assert "hunter2" not in text
+    assert "def456" not in text
+    assert "/home/alice" not in text
+
+
 def test_request_text_redacts_embedded_data_uri_and_signed_url(monkeypatch):
     monkeypatch.setenv("HERMES_PROFILE", "unit-profile")
 
