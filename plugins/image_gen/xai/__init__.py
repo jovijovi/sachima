@@ -38,6 +38,7 @@ from agent.image_gen_provider import (
     DEFAULT_ASPECT_RATIO,
     ImageGenProvider,
     error_response,
+    normalize_reference_images,
     is_data_uri,
     is_http_url,
     local_image_to_data_uri,
@@ -273,6 +274,31 @@ def _resolve_resolution() -> str:
     if res and res in _XAI_RESOLUTIONS:
         return res
     return DEFAULT_RESOLUTION
+
+
+def _xai_image_field(source: str) -> Dict[str, str]:
+    """Build the xAI ``image`` field for an edit request.
+
+    xAI's ``/v1/images/edits`` accepts ``{"url": <ref>, "type": "image_url"}``
+    where ``<ref>`` is a public URL or a base64 data URI. Public URLs and
+    existing data URIs pass through unchanged; local file paths are read and
+    encoded into a ``data:`` URI.
+    """
+    source = source.strip()
+    lower = source.lower()
+    if lower.startswith(("http://", "https://", "data:")):
+        return {"url": source, "type": "image_url"}
+    # Local file path → base64 data URI.
+    import base64
+    import os as _os
+
+    with open(source, "rb") as fh:
+        raw = fh.read()
+    ext = (_os.path.splitext(source)[1].lstrip(".") or "png").lower()
+    if ext == "jpg":
+        ext = "jpeg"
+    b64 = base64.b64encode(raw).decode("utf-8")
+    return {"url": f"data:image/{ext};base64,{b64}", "type": "image_url"}
 
 
 # ---------------------------------------------------------------------------
@@ -512,25 +538,37 @@ class XAIImageGenProvider(ImageGenProvider):
         return {
             "name": "xAI Grok Imagine (image)",
             "badge": "paid",
-            "tag": "grok-imagine-image — text-to-image; uses xAI Grok OAuth or XAI_API_KEY",
+            "tag": "grok-imagine-image — text-to-image & image editing; uses xAI Grok OAuth or XAI_API_KEY",
             "env_vars": [],
             "post_setup": "xai_grok",
         }
+
+    def capabilities(self) -> Dict[str, Any]:
+        # xAI's /v1/images/edits supports image editing and multi-image edit
+        # with up to 3 source images. ``image_generate`` maps image_url plus
+        # reference_image_urls onto this edit surface when present.
+        return {"modalities": ["text", "image"], "max_reference_images": 3}
 
     def generate(
         self,
         prompt: str,
         aspect_ratio: str = DEFAULT_ASPECT_RATIO,
+        *,
+        image_url: Optional[str] = None,
+        reference_image_urls: Optional[List[str]] = None,
         **kwargs: Any,
     ) -> Dict[str, Any]:
         """Generate one or more images using xAI's Grok Imagine models.
 
         ``aspect_ratio`` accepts the Hermes aliases or any official xAI wire
-        ratio (FR2). Optional keyword args (direct/provider callers only — the
-        agent tool schema stays minimal): ``n`` for multi-output (FR3) and
-        ``storage_options`` for Files API persistence (FR7, default-off, never
-        injects a public URL). The first output stays in ``result["image"]``;
-        all outputs (when more than one) are reported in ``result["images"]``.
+        ratio (FR2). When ``image_url`` or ``reference_image_urls`` are supplied,
+        this unified generation surface routes through :meth:`edit` and the
+        official ``/v1/images/edits`` endpoint. Optional keyword args (direct/
+        provider callers only — the agent tool schema stays minimal): ``n`` for
+        multi-output (FR3) and ``storage_options`` for Files API persistence
+        (FR7, default-off, never injects a public URL). The first output stays
+        in ``result["image"]``; all outputs (when more than one) are reported in
+        ``result["images"]``.
         """
         creds = resolve_xai_http_credentials()
         api_key = str(creds.get("api_key") or "").strip()
@@ -548,6 +586,18 @@ class XAIImageGenProvider(ImageGenProvider):
         xai_ar = _resolve_xai_aspect_ratio(aspect_ratio)
         resolution = _resolve_resolution()
         xai_res = resolution if resolution in _XAI_RESOLUTIONS else DEFAULT_RESOLUTION
+
+        source_images: List[str] = []
+        if isinstance(image_url, str) and image_url.strip():
+            source_images.append(image_url.strip())
+        source_images.extend(normalize_reference_images(reference_image_urls) or [])
+        if source_images:
+            edit_kwargs = dict(kwargs)
+            edit_kwargs.pop("images", None)
+            if len(source_images) > 1:
+                edit_kwargs["images"] = source_images
+                return self.edit(prompt=prompt, aspect_ratio=aspect_ratio, **edit_kwargs)
+            return self.edit(prompt=prompt, image=source_images[0], aspect_ratio=aspect_ratio, **edit_kwargs)
 
         payload: Dict[str, Any] = {
             "model": model_id,

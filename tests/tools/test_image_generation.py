@@ -363,12 +363,15 @@ class TestAspectRatioNormalization:
 
 class TestRegistryIntegration:
 
-    def test_schema_exposes_prompt_aspect_ratio_and_content_summary_to_agent(self, image_tool):
-        """The agent-facing schema must stay tight — model selection is a
-        user-level config choice, not an agent-level arg. content_summary is
-        log-only metadata and must not be forwarded to providers."""
+    def test_schema_exposes_expected_agent_params(self, image_tool):
+        """The agent-facing schema exposes prompt, aspect_ratio, image edit inputs,
+        and log-only content_summary. Model selection stays user-level config;
+        content_summary must not be forwarded to providers."""
         props = image_tool.IMAGE_GENERATE_SCHEMA["parameters"]["properties"]
-        assert set(props.keys()) == {"prompt", "aspect_ratio", "content_summary"}
+        assert set(props.keys()) == {
+            "prompt", "aspect_ratio", "image_url", "reference_image_urls", "content_summary",
+        }
+        assert image_tool.IMAGE_GENERATE_SCHEMA["parameters"]["required"] == ["prompt"]
         assert "content_summary" not in image_tool.IMAGE_GENERATE_SCHEMA["parameters"]["required"]
 
     def test_aspect_ratio_enum_is_three_values(self, image_tool):

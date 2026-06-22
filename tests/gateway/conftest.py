@@ -228,6 +228,25 @@ _ensure_telegram_mock()
 _ensure_discord_mock()
 
 
+@pytest.fixture(autouse=True)
+def _restore_narrow_import_probe_modules_after_test():
+    """Prevent import-probe tests from leaking module-cache removal.
+
+    Some FlowWeaver default-off tests temporarily remove heavy runtime modules
+    from ``sys.modules`` to prove helper imports stay narrow. That assertion is
+    fine inside the test, but leaving those modules removed means later tests can
+    import a second module object while earlier module-level imports still point
+    at the first one. Exception identity and tool-registry state can then diverge.
+    """
+    protected = ("gateway.run", "tools.registry", "model_tools", "toolsets")
+    saved = {name: sys.modules.get(name) for name in protected if name in sys.modules}
+    yield
+    for name, module in saved.items():
+        if sys.modules.get(name) is not module:
+            assert module is not None
+            sys.modules[name] = module
+
+
 # ---------------------------------------------------------------------------
 # Plugin-adapter anti-pattern guard
 # ---------------------------------------------------------------------------

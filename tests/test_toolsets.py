@@ -271,13 +271,19 @@ class TestImageEditExposure:
         assert "image_generate" in _HERMES_CORE_TOOLS
         assert "image_edit" in _HERMES_CORE_TOOLS
 
-    def test_image_gen_toolset_resolves_both_tools(self):
+    def test_image_gen_toolset_resolves_image_tools(self):
         # A profile that narrowly enables only the ``image_gen`` toolset must
-        # expose both tools statically, independent of registry-discovery order.
-        assert TOOLSETS["image_gen"]["tools"] == ["image_generate", "image_edit"]
+        # expose generation, editing, and provenance history statically,
+        # independent of registry-discovery order.
+        assert TOOLSETS["image_gen"]["tools"] == [
+            "image_generate",
+            "image_edit",
+            "image_history",
+        ]
         resolved = set(resolve_toolset("image_gen"))
         assert "image_generate" in resolved
         assert "image_edit" in resolved
+        assert "image_history" in resolved
 
     def test_hermes_cli_resolves_image_edit(self):
         resolved = set(resolve_toolset("hermes-cli"))

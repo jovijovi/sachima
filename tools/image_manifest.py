@@ -164,9 +164,9 @@ def _sanitize_image_ref(value: Any) -> str | None:
     if image_text.lower().startswith("data:"):
         return _sanitize_string(image_text, max_chars=2000)
     if Path(image_text).is_absolute():
-        return Path(image_text).name or None
+        return _sanitize_string(Path(image_text).name or "[REDACTED_PATH]", max_chars=2000)
     if _WINDOWS_ABS_START_RE.match(image_text):
-        return PureWindowsPath(image_text).name or None
+        return _sanitize_string(PureWindowsPath(image_text).name or "[REDACTED_PATH]", max_chars=2000)
     return _sanitize_string(image_text, max_chars=2000)
 
 
@@ -190,12 +190,13 @@ def sanitize_input_image_metadata(image: Any) -> dict[str, Any] | None:
     parsed = urlsplit(image_text)
     if parsed.scheme in {"http", "https"} and parsed.netloc:
         safe_netloc, userinfo_redacted = _safe_url_netloc(parsed.netloc)
-        clean = urlunsplit((parsed.scheme, safe_netloc, parsed.path, "", ""))
+        safe_path = _sanitize_string(parsed.path or "/", max_chars=2000)
+        clean = urlunsplit((parsed.scheme, safe_netloc, safe_path, "", ""))
         return {
             "kind": "url",
             "scheme": parsed.scheme,
             "host": safe_netloc,
-            "path": parsed.path or "/",
+            "path": safe_path,
             "url": clean,
             "query_redacted": bool(parsed.query or parsed.fragment or userinfo_redacted),
         }
@@ -204,7 +205,7 @@ def sanitize_input_image_metadata(image: Any) -> dict[str, Any] | None:
         path = PureWindowsPath(image_text)
         return {
             "kind": "file",
-            "name": path.name,
+            "name": _sanitize_string(path.name or "[REDACTED_PATH]", max_chars=255),
             "suffix": path.suffix,
             "is_absolute": True,
         }
@@ -212,7 +213,7 @@ def sanitize_input_image_metadata(image: Any) -> dict[str, Any] | None:
     path = Path(image_text)
     metadata: dict[str, Any] = {
         "kind": "file",
-        "name": path.name,
+        "name": _sanitize_string(path.name or "[REDACTED_PATH]", max_chars=255),
         "suffix": path.suffix,
         "is_absolute": path.is_absolute(),
     }
@@ -369,15 +370,18 @@ def _sanitize_manifest_value(value: Any) -> Any:
     return value
 
 
-def _input_images_for(tool: str, args: Mapping[str, Any], input_images: Iterable[Mapping[str, Any]] | None) -> list[dict[str, Any]]:
+def _input_images_for(tool: str, args: Mapping[str, Any], input_images: Iterable[Any] | None) -> list[dict[str, Any]]:
     if input_images is not None:
         sanitized_items: list[dict[str, Any]] = []
         for item in input_images:
-            if not isinstance(item, Mapping):
+            if isinstance(item, Mapping):
+                sanitized = _sanitize_manifest_value(item)
+                if isinstance(sanitized, dict):
+                    sanitized_items.append(sanitized)
                 continue
-            sanitized = _sanitize_manifest_value(item)
-            if isinstance(sanitized, dict):
-                sanitized_items.append(sanitized)
+            metadata = sanitize_input_image_metadata(item)
+            if metadata:
+                sanitized_items.append(metadata)
         return sanitized_items
     if tool == "image_edit":
         metadata = sanitize_input_image_metadata(args.get("image"))
@@ -391,7 +395,7 @@ def build_image_manifest_record(
     operation: str,
     backend: str | None,
     args: Mapping[str, Any],
-    input_images: Iterable[Mapping[str, Any]] | None = None,
+    input_images: Iterable[Any] | None = None,
     response_text: str | None = None,
     result_payload: Mapping[str, Any] | None = None,
     duration_ms: int | float | None = None,
@@ -470,7 +474,7 @@ def append_image_manifest_record(
     operation: str,
     backend: str | None,
     args: Mapping[str, Any],
-    input_images: Iterable[Mapping[str, Any]] | None = None,
+    input_images: Iterable[Any] | None = None,
     response_text: str | None = None,
     result_payload: Mapping[str, Any] | None = None,
     duration_ms: int | float | None = None,
