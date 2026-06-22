@@ -233,7 +233,7 @@ def test_image_history_sanitizes_legacy_records_on_read(monkeypatch, tmp_path):
                 },
                 "error": {
                     "error_type": "provider_exception",
-                    "message": "Authorization: Bearer *** token=def456 path=/tmp/private/fail.png",
+                    "message": "Authorization: Bearer *** token=def456 password=hunter2 path=/tmp/private/fail.png",
                 },
             }
         ],
@@ -257,6 +257,7 @@ def test_image_history_sanitizes_legacy_records_on_read(monkeypatch, tmp_path):
     assert "private" not in text
     assert "abc123" not in text
     assert "def456" not in text
+    assert "hunter2" not in text
 
 
 def test_image_history_registered_under_image_gen_toolset():

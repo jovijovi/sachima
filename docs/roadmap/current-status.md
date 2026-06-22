@@ -70,8 +70,18 @@
       "url": "https://github.com/jovijovi/sachima/pull/153"
     }
   ],
-  "open_pr_count": 0,
-  "open_prs": [],
+  "open_pr_count": 1,
+  "open_prs": [
+    {
+      "baseRefName": "release/sachima",
+      "headRefName": "feat/image-manifest-sequence",
+      "isDraft": false,
+      "mergeStateStatus": "CLEAN",
+      "number": 158,
+      "title": "feat: add image manifest sequence indices",
+      "url": "https://github.com/jovijovi/sachima/pull/158"
+    }
+  ],
   "repository": "jovijovi/sachima",
   "scope_note": "machine dynamic status only; approvals and phase meaning remain human-authored outside this block"
 }

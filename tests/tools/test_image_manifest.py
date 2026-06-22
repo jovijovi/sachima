@@ -369,7 +369,7 @@ def test_error_message_redacts_auth_and_secret_material(monkeypatch):
         result_payload={
             "success": False,
             "error_type": "provider_exception",
-            "error": "Authorization: Bearer sk-secret-token api_key=abc123 token=def456",
+            "error": "Authorization: Bearer sk-secret-token api_key=abc123 token=def456 password=hunter2",
         },
     )
 
@@ -377,9 +377,11 @@ def test_error_message_redacts_auth_and_secret_material(monkeypatch):
     assert "sk-secret-token" not in message
     assert "abc123" not in message
     assert "def456" not in message
+    assert "hunter2" not in message
     assert "Authorization: Bearer [REDACTED]" in message
     assert "api_key=[REDACTED]" in message
     assert "token=[REDACTED]" in message
+    assert "password=[REDACTED]" in message
 
 
 def test_append_manifest_record_is_best_effort(monkeypatch, tmp_path):

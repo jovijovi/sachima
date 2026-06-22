@@ -48,7 +48,7 @@ _AUTH_HEADER_RE = re.compile(
     re.IGNORECASE,
 )
 _SECRET_KV_RE = re.compile(
-    r"\b(api[_-]?key|token|secret)\s*([:=])\s*([^\s,;]+)",
+    r"\b(api[_-]?key|token|secret|password)\s*([:=])\s*([^\s,;]+)",
     re.IGNORECASE,
 )
 _UNIX_PRIVATE_PATH_RE = re.compile(
