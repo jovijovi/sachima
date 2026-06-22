@@ -51,6 +51,12 @@ _SECRET_KV_RE = re.compile(
     r"\b(api[_-]?key|token|secret|password)\s*([:=])\s*([^\s,;]+)",
     re.IGNORECASE,
 )
+_SECRET_QUOTED_KV_RE = re.compile(
+    r"(?P<key_quote>\\?[\"'])(?P<key>api[_-]?key|token|secret|password)(?P=key_quote)"
+    r"(?P<pre_sep>\s*)(?P<sep>[:=])(?P<post_sep>\s*)"
+    r"(?P<value_quote>\\?[\"'])(?P<value>.*?)(?P=value_quote)",
+    re.IGNORECASE,
+)
 _UNIX_PRIVATE_PATH_RE = re.compile(
     r"(?P<prefix>^|[\s=:(\[])(?P<path>/(?:home|Users|root|tmp|var/tmp|data/agents)(?:/[^\s,;'\"<>\]\)]+)+)"
 )
@@ -125,6 +131,14 @@ def _redact_embedded_path(match: re.Match[str]) -> str:
     return f"{match.group('prefix')}{_path_name(match.group('path'))}"
 
 
+def _redact_quoted_secret_kv(match: re.Match[str]) -> str:
+    return (
+        f"{match.group('key_quote')}{match.group('key')}{match.group('key_quote')}"
+        f"{match.group('pre_sep')}{match.group('sep')}{match.group('post_sep')}"
+        f"{match.group('value_quote')}[REDACTED]{match.group('value_quote')}"
+    )
+
+
 def _sanitize_string(value: Any, *, max_chars: int = 2000) -> str:
     text = str(value)
     clean = _DATA_URI_RE.sub(_redact_data_uri, text)
@@ -132,6 +146,7 @@ def _sanitize_string(value: Any, *, max_chars: int = 2000) -> str:
     clean = _WINDOWS_ABS_PATH_RE.sub(_redact_embedded_path, clean)
     clean = _UNIX_PRIVATE_PATH_RE.sub(_redact_embedded_path, clean)
     clean = _AUTH_HEADER_RE.sub(lambda m: f"{m.group(1)}[REDACTED]", clean)
+    clean = _SECRET_QUOTED_KV_RE.sub(_redact_quoted_secret_kv, clean)
     clean = _SECRET_KV_RE.sub(lambda m: f"{m.group(1)}{m.group(2)}[REDACTED]", clean)
     if len(clean) > max_chars:
         return clean[:max_chars] + "...[truncated]"

@@ -260,6 +260,37 @@ def test_image_history_sanitizes_legacy_records_on_read(monkeypatch, tmp_path):
     assert "hunter2" not in text
 
 
+def test_image_history_redacts_quoted_json_secret_fields_on_write_and_read(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_PROFILE", "unit-profile")
+
+    from tools.image_manifest import append_image_manifest_record, query_image_history
+
+    manifest_path = tmp_path / "manifest.jsonl"
+    append_image_manifest_record(
+        tool="image_generate",
+        operation="generate",
+        backend="fal",
+        args={"prompt": "draw", "aspect_ratio": "square"},
+        input_images=[],
+        duration_ms=1,
+        result_payload={
+            "success": False,
+            "error_type": "provider_exception",
+            "error": '{"password":"hunter2","token":"abc123","api_key":"key123","secret":"sauce"}',
+        },
+        manifest_path=manifest_path,
+    )
+
+    raw_text = manifest_path.read_text(encoding="utf-8")
+    history_text = json.dumps(query_image_history(manifest_path=manifest_path), sort_keys=True)
+    combined = raw_text + history_text
+    assert "hunter2" not in combined
+    assert "abc123" not in combined
+    assert "key123" not in combined
+    assert "sauce" not in combined
+    assert "[REDACTED]" in combined
+
+
 def test_image_history_registered_under_image_gen_toolset():
     import tools.image_history_tool  # noqa: F401
     from tools.registry import registry
