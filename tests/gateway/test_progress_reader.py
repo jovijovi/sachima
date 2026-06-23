@@ -241,7 +241,7 @@ def test_progress_reader_normalizes_deep_and_unsafe_todo_items(tmp_path):
     assert by_id["c"]["depth"] == 0
     rendered = json.dumps(todo_items, ensure_ascii=False)
     assert leak not in rendered
-    assert "/home/ecs-user" not in rendered
+    assert "/home/ecs-user/private.txt" in rendered
 
 
 def test_progress_reader_latest_empty_todo_snapshot_clears_stale_items(tmp_path):

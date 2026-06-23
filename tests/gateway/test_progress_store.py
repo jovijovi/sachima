@@ -154,7 +154,7 @@ def test_progress_records_redact_secret_shaped_todo_items(tmp_path):
     assert "[REDACTED]" in rendered
 
 
-def test_progress_records_redact_local_paths_in_todo_items(tmp_path):
+def test_progress_records_preserve_local_paths_in_todo_items(tmp_path):
     store_path = tmp_path / "events.jsonl"
     store = JsonlProgressEventStore(store_path)
     snapshot = TransactionSnapshot(
@@ -176,11 +176,11 @@ def test_progress_records_redact_local_paths_in_todo_items(tmp_path):
     store.append_snapshot(snapshot)
 
     rendered = store_path.read_text(encoding="utf-8")
-    assert "/tmp/private_dump.py" not in rendered
-    assert "/home/ecs-user" not in rendered
-    assert "/data/agents" not in rendered
-    assert "~/workspace" not in rendered
-    assert "[REDACTED]" in rendered
+    assert "/tmp/private_dump.py" in rendered
+    assert "/home/ecs-user/.hermes/config.yaml" in rendered
+    assert "/data/agents/private.json" in rendered
+    assert "~/workspace/private-source.md" in rendered
+    assert "[REDACTED]" not in rendered
 
 
 def test_progress_records_normalize_todo_parent_links_to_top_level(tmp_path):

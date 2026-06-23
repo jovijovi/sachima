@@ -336,7 +336,7 @@ def test_update_todo_items_sanitizes_secret_shaped_fields():
     assert "[REDACTED]" in rendered
 
 
-def test_update_todo_items_redacts_local_paths_from_user_facing_fields():
+def test_update_todo_items_preserves_local_paths_without_independent_secrets():
     tracker = ProgressTracker("tx-todo-path", "Path todos")
 
     tracker.update_todo_items(
@@ -345,6 +345,7 @@ def test_update_todo_items_redacts_local_paths_from_user_facing_fields():
                 "id": "/tmp/private_dump.py",
                 "content": "Inspect /home/ecs-user/.hermes/config.yaml before /data/agents/private.json",
                 "status": "pending",
+                # Unknown parents are still pruned, independent of path policy.
                 "parent_id": "/home/ecs-user/parent-id",
                 "source": "~/workspace/private-source.md",
             }
@@ -352,11 +353,11 @@ def test_update_todo_items_redacts_local_paths_from_user_facing_fields():
     )
 
     rendered = repr(tracker.snapshot())
-    assert "/tmp/private_dump.py" not in rendered
-    assert "/home/ecs-user" not in rendered
-    assert "/data/agents" not in rendered
-    assert "~/workspace" not in rendered
-    assert "[REDACTED]" in rendered
+    assert "/tmp/private_dump.py" in rendered
+    assert "/home/ecs-user/.hermes/config.yaml" in rendered
+    assert "/data/agents/private.json" in rendered
+    assert "~/workspace/private-source.md" in rendered
+    assert "[REDACTED]" not in rendered
 
 
 def test_update_todo_items_caps_count_and_text_length():

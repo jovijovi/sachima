@@ -67,18 +67,6 @@ _SENSITIVE_COLON_RE = re.compile(
     r"(?P<quote>['\"]?)(?P<value>[^\s'\";,]+)(?P=quote)",
     re.IGNORECASE,
 )
-_LOCAL_PATH_RE = re.compile(
-    r"(?<![A-Za-z0-9_.:/~-])"
-    r"(?:~|/(?:home|Users|tmp|var|etc|data|mnt|opt|root|workspace|private|run|srv))"
-    r"(?:/[^\s'\"`<>|),;]*)+",
-)
-_WINDOWS_LOCAL_PATH_RE = re.compile(
-    r"(?i)(?<![A-Za-z0-9_.:/~-])"
-    r"[A-Z]:\\(?:Users|Windows|Temp|tmp|home|data|workspace|private)"
-    r"(?:\\[^\s'\"`<>|),;]*)*",
-)
-
-
 def sanitize_for_progress(data: Any, max_len: int = _DEFAULT_MAX_LEN) -> str:
     """Return a safe, bounded string for user-facing progress displays.
 
@@ -208,22 +196,12 @@ def _redact_text(text: str) -> str:
         text,
     )
     text = _SENSITIVE_QUERY_VALUE_RE.sub(r"\g<lead>" + REDACTION_TEXT, text)
-    text = _SENSITIVE_ASSIGNMENT_RE.sub(_redact_assignment_match, text)
-    text = _LOCAL_PATH_RE.sub(_redact_local_path_match, text)
-    return _WINDOWS_LOCAL_PATH_RE.sub(_redact_local_path_match, text)
+    return _SENSITIVE_ASSIGNMENT_RE.sub(_redact_assignment_match, text)
 
 
 def _redact_assignment_match(match: re.Match[str]) -> str:
     quote = match.group("quote") or ""
     return f"{match.group('lead')}{quote}{REDACTION_TEXT}{quote}"
-
-
-def _redact_local_path_match(match: re.Match[str]) -> str:
-    path = match.group(0)
-    basename = path.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
-    if basename and basename not in {"~", "home", "Users", "tmp", "var", "etc", "data", "mnt", "opt", "root"}:
-        return f"{REDACTION_TEXT}/{basename}"
-    return REDACTION_TEXT
 
 
 def _cap(text: str, max_len: int) -> str:
