@@ -5,13 +5,15 @@ from __future__ import annotations
 import re
 import threading
 import time
-from dataclasses import replace
+from collections.abc import Mapping
+from dataclasses import asdict, is_dataclass, replace
 from typing import Any
 
 from gateway.progress.events import (
     ContextUsageSnapshot,
     IterationUsageSnapshot,
     ProgressOperation,
+    TodoItemSnapshot,
     TransactionSnapshot,
 )
 from gateway.progress.redaction import sanitize_for_progress, sanitize_value_for_progress
@@ -23,6 +25,18 @@ TRANSACTION_FAILED = "failed"
 OPERATION_RUNNING = "running"
 OPERATION_COMPLETED = "completed"
 OPERATION_FAILED = "failed"
+
+# Display-safety bounds for the structured todo snapshot carried on each
+# transaction. The workbench renders a compact, redacted preview of the model's
+# todo list, not the whole plan — these caps keep one oversized or adversarial
+# list from bloating progress snapshots, cards, or JSONL records.
+MAX_TODO_ITEMS = 20  # items kept per snapshot (head of the priority-ordered list)
+MAX_TODO_CONTENT_CHARS = 240  # per-item description length after redaction
+MAX_TODO_ID_CHARS = 120  # per-item id / parent_id length
+MAX_TODO_SOURCE_CHARS = 60  # provenance label length
+MAX_TODO_DEPTH = 1  # display supports two levels only: parent (0) + child (1)
+
+_VALID_TODO_STATUSES = {"pending", "in_progress", "completed", "cancelled"}
 
 _EVENT_TYPES = {
     "tool.started",
@@ -73,6 +87,7 @@ class ProgressTracker:
         self._iteration_usage: IterationUsageSnapshot | None = None
         self._model_display: str | None = None
         self._account_limit_lines: tuple[str, ...] = ()
+        self._todo_items: tuple[TodoItemSnapshot, ...] = ()
         self._next_operation_id = 1
         self._lock = threading.Lock()
 
@@ -211,6 +226,7 @@ class ProgressTracker:
                 iteration_usage=iteration_usage,
                 model_display=self._model_display,
                 account_limit_lines=self._account_limit_lines,
+                todo_items=self._todo_items,
             )
 
     def update_display_metadata(
@@ -283,6 +299,25 @@ class ProgressTracker:
             self._iteration_usage = usage
             self._touch()
             return replace(usage)
+
+    def update_todo_items(
+        self,
+        items: Any,
+        source: str = "todo_tool",
+    ) -> tuple[TodoItemSnapshot, ...]:
+        """Replace the transaction's structured todo snapshot.
+
+        ``items`` is the raw list returned by :meth:`tools.todo_tool.TodoStore.read`
+        (dicts of ``id``/``content``/``status`` plus optional ``parent_id``). The
+        list is sanitized, redacted, capped, and flattened to at most two display
+        levels here so the snapshot, cards, and JSONL records all stay compact and
+        secret-free. Malformed input never raises — it is dropped item by item.
+        """
+
+        with self._lock:
+            self._todo_items = _sanitize_todo_items(items, source=source)
+            self._touch()
+            return self._todo_items
 
     def mark_completed(self, is_error: bool = False) -> None:
         """Mark the transaction itself complete/failed."""
@@ -368,6 +403,108 @@ class ProgressTracker:
 
 def _sanitize_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
     return {str(key): sanitize_value_for_progress(value, key=key) for key, value in metadata.items()}
+
+
+def _sanitize_todo_items(items: Any, *, source: str) -> tuple[TodoItemSnapshot, ...]:
+    """Sanitize raw todo state into a bounded, two-level display snapshot.
+
+    Order is priority (matching ``TodoStore``); only the first ``MAX_TODO_ITEMS``
+    survive. Each item's text is redacted and length-capped, status is coerced to
+    a known value (unknown → ``pending``), and depth is clamped so a child always
+    points at a top-level sibling. Parent links to dropped/unknown ids are severed
+    so the item falls back to top level.
+    """
+
+    try:
+        raw_list = list(items) if items is not None else []
+    except Exception:
+        return ()
+
+    default_source = _sanitize_todo_field(source, key="todo_source", max_len=MAX_TODO_SOURCE_CHARS) or "todo_tool"
+
+    prelim: list[dict[str, Any]] = []
+    known_ids: set[str] = set()
+    for index, entry in enumerate(raw_list[:MAX_TODO_ITEMS]):
+        data = _coerce_todo_mapping(entry)
+        if data is None:
+            continue
+        item_id = _sanitize_todo_field(data.get("id"), key="todo_id", max_len=MAX_TODO_ID_CHARS)
+        if not item_id:
+            item_id = f"todo-{index + 1}"
+        prelim.append(
+            {
+                "id": item_id,
+                "content": _sanitize_todo_content(data.get("content")),
+                "status": _sanitize_todo_status(data.get("status")),
+                "parent_raw": _sanitize_todo_field(data.get("parent_id"), key="todo_parent_id", max_len=MAX_TODO_ID_CHARS),
+                "source": _sanitize_todo_field(data.get("source"), key="todo_source", max_len=MAX_TODO_SOURCE_CHARS)
+                or default_source,
+            }
+        )
+        known_ids.add(item_id)
+
+    valid_parent_by_id: dict[str, str | None] = {}
+    for item in prelim:
+        parent_raw = item["parent_raw"]
+        valid_parent_by_id[item["id"]] = (
+            parent_raw
+            if parent_raw and parent_raw != item["id"] and parent_raw in known_ids
+            else None
+        )
+
+    results: list[TodoItemSnapshot] = []
+    for item in prelim:
+        parent_id = valid_parent_by_id[item["id"]]
+        # Keep only one display level: children may point at top-level siblings,
+        # never at another child. Cycles therefore fall back to top-level too.
+        effective_parent_id = parent_id if parent_id and valid_parent_by_id.get(parent_id) is None else None
+        results.append(
+            TodoItemSnapshot(
+                id=item["id"],
+                content=item["content"],
+                status=item["status"],
+                parent_id=effective_parent_id,
+                depth=MAX_TODO_DEPTH if effective_parent_id else 0,
+                source=item["source"],
+            )
+        )
+    return tuple(results)
+
+
+def _coerce_todo_mapping(entry: Any) -> Mapping[str, Any] | dict[str, Any] | None:
+    if isinstance(entry, Mapping):
+        return entry
+    if is_dataclass(entry) and not isinstance(entry, type):
+        try:
+            return asdict(entry)
+        except Exception:
+            return None
+    if entry is None or isinstance(entry, (str, bytes, int, float, bool)):
+        return None
+    # Generic object: pull only the known todo attributes, never its whole repr.
+    data: dict[str, Any] = {}
+    for field_name in ("id", "content", "status", "parent_id", "source"):
+        if hasattr(entry, field_name):
+            data[field_name] = getattr(entry, field_name)
+    return data or None
+
+
+def _sanitize_todo_field(value: Any, *, key: str, max_len: int) -> str:
+    if value is None:
+        return ""
+    text = sanitize_value_for_progress(value, key=key, max_len=max_len)
+    return text.replace("\n", " ").strip()
+
+
+def _sanitize_todo_content(value: Any) -> str:
+    text = sanitize_value_for_progress(value, key="todo_content", max_len=MAX_TODO_CONTENT_CHARS)
+    text = text.replace("\n", " ").strip()
+    return text or "(no description)"
+
+
+def _sanitize_todo_status(value: Any) -> str:
+    text = sanitize_value_for_progress(value, key="todo_status", max_len=40).strip().lower()
+    return text if text in _VALID_TODO_STATUSES else "pending"
 
 
 def _sanitize_model_display(value: Any) -> str | None:

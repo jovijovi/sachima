@@ -5,7 +5,7 @@ import threading
 import time
 from pathlib import Path
 
-from gateway.progress.events import ProgressOperation, TransactionSnapshot
+from gateway.progress.events import ProgressOperation, TodoItemSnapshot, TransactionSnapshot
 from gateway.progress.store import (
     JsonlProgressEventStore,
     build_progress_event_store,
@@ -99,6 +99,156 @@ def test_progress_records_include_sanitized_iteration_usage(tmp_path):
 
     record = _read_jsonl(store_path)[0]
     assert record["transaction"]["iteration_usage"] == {"current": 12, "maximum": 90}
+
+
+def test_progress_records_include_sanitized_todo_items(tmp_path):
+    store_path = tmp_path / "events.jsonl"
+    store = JsonlProgressEventStore(store_path)
+    tracker = ProgressTracker("tx-todo", "Persist todo items")
+    tracker.update_todo_items([
+        {"id": "pr", "content": "PR verification", "status": "in_progress"},
+        {"id": "local", "content": "Local tests", "status": "completed", "parent_id": "pr"},
+    ])
+
+    store.append_snapshot(tracker.snapshot())
+
+    record = _read_jsonl(store_path)[0]
+    todo_items = record["transaction"]["todo_items"]
+    assert todo_items == [
+        {"id": "pr", "content": "PR verification", "status": "in_progress", "depth": 0, "source": "todo_tool"},
+        {
+            "id": "local",
+            "content": "Local tests",
+            "status": "completed",
+            "depth": 1,
+            "source": "todo_tool",
+            "parent_id": "pr",
+        },
+    ]
+
+
+def test_progress_records_redact_secret_shaped_todo_items(tmp_path):
+    store_path = tmp_path / "events.jsonl"
+    store = JsonlProgressEventStore(store_path)
+    leak = "store-todo-" + "secret"
+    snapshot = TransactionSnapshot(
+        transaction_id="tx-todo-secret",
+        title="Persist secret todo",
+        status="running",
+        started_at=1.0,
+        updated_at=2.0,
+        todo_items=(
+            TodoItemSnapshot(
+                id="1",
+                content="Auth" "orization: " + "Bearer " + leak,
+                status="pending",
+                source="token=" + leak,
+            ),
+        ),
+    )
+
+    store.append_snapshot(snapshot)
+
+    rendered = store_path.read_text(encoding="utf-8")
+    assert leak not in rendered
+    assert "[REDACTED]" in rendered
+
+
+def test_progress_records_redact_bare_provider_key_shapes_in_todo_items(tmp_path):
+    store_path = tmp_path / "events.jsonl"
+    store = JsonlProgressEventStore(store_path)
+    bare_key = "sk-" + "test-" + ("a" * 32)
+    route = "/health"
+    path = "/data/agents/workspace/config.yaml"
+    snapshot = TransactionSnapshot(
+        transaction_id="tx-todo-bare-secret",
+        title="Persist bare secret todo",
+        status="running",
+        started_at=1.0,
+        updated_at=2.0,
+        todo_items=(
+            TodoItemSnapshot(
+                id="1",
+                content=f"Implement {route} with {bare_key}; inspect {path}",
+                status="pending",
+            ),
+        ),
+    )
+
+    store.append_snapshot(snapshot)
+
+    rendered = store_path.read_text(encoding="utf-8")
+    assert bare_key not in rendered
+    assert route in rendered
+    assert path in rendered
+    assert "[REDACTED]" in rendered
+
+
+
+def test_progress_records_preserve_local_paths_in_todo_items(tmp_path):
+    store_path = tmp_path / "events.jsonl"
+    store = JsonlProgressEventStore(store_path)
+    snapshot = TransactionSnapshot(
+        transaction_id="tx-todo-path",
+        title="Persist path todo",
+        status="running",
+        started_at=1.0,
+        updated_at=2.0,
+        todo_items=(
+            TodoItemSnapshot(
+                id="/tmp/private_dump.py",
+                content="Inspect /home/ecs-user/.hermes/config.yaml and /data/agents/private.json",
+                status="pending",
+                source="~/workspace/private-source.md",
+            ),
+        ),
+    )
+
+    store.append_snapshot(snapshot)
+
+    rendered = store_path.read_text(encoding="utf-8")
+    assert "/tmp/private_dump.py" in rendered
+    assert "/home/ecs-user/.hermes/config.yaml" in rendered
+    assert "/data/agents/private.json" in rendered
+    assert "~/workspace/private-source.md" in rendered
+    assert "[REDACTED]" not in rendered
+
+
+def test_progress_records_normalize_todo_parent_links_to_top_level(tmp_path):
+    store_path = tmp_path / "events.jsonl"
+    store = JsonlProgressEventStore(store_path)
+    snapshot = TransactionSnapshot(
+        transaction_id="tx-todo-deep",
+        title="Persist deep todo",
+        status="running",
+        started_at=1.0,
+        updated_at=2.0,
+        todo_items=(
+            TodoItemSnapshot(id="a", content="Root", status="pending"),
+            TodoItemSnapshot(id="b", content="Child", status="pending", parent_id="a", depth=1),
+            TodoItemSnapshot(id="c", content="Grandchild", status="pending", parent_id="b", depth=1),
+        ),
+    )
+
+    store.append_snapshot(snapshot)
+
+    todo_items = _read_jsonl(store_path)[0]["transaction"]["todo_items"]
+    by_id = {item["id"]: item for item in todo_items}
+    assert by_id["b"]["parent_id"] == "a"
+    assert by_id["b"]["depth"] == 1
+    assert "parent_id" not in by_id["c"]
+    assert by_id["c"]["depth"] == 0
+
+
+def test_progress_records_include_empty_todo_items_to_clear_stale_state(tmp_path):
+    store_path = tmp_path / "events.jsonl"
+    store = JsonlProgressEventStore(store_path)
+    tracker = ProgressTracker("tx-no-todo", "No todos")
+
+    store.append_snapshot(tracker.snapshot())
+
+    record = _read_jsonl(store_path)[0]
+    assert record["transaction"]["todo_items"] == []
 
 
 def _rotation_snapshot() -> TransactionSnapshot:

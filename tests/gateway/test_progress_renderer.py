@@ -202,6 +202,61 @@ def test_text_renderer_preserves_ipv6_dashboard_host_brackets():
     assert "http://[::1]:9119/base/progress" in text
 
 
+def test_text_renderer_renders_flat_todo_section_before_recent_operations():
+    from gateway.progress.renderers import render_text_panel
+
+    tracker = ProgressTracker(transaction_id="tx-todo", title="Flat todos")
+    tracker.record_tool_started("read_file", "a.py")
+    tracker.update_todo_items([
+        {"id": "1", "content": "Prepare plan", "status": "completed"},
+        {"id": "2", "content": "Run tests", "status": "in_progress"},
+        {"id": "3", "content": "Submit PR", "status": "pending"},
+    ])
+
+    text = render_text_panel(tracker.snapshot(), tool_progress_mode="all")
+
+    assert "To-dos" in text
+    assert "Prepare plan" in text
+    assert "Run tests" in text
+    assert "Submit PR" in text
+    # Completed items are struck through.
+    assert "~~Prepare plan~~" in text
+    # The todo block sits before the recent-operations section.
+    assert text.index("To-dos") < text.index("Recent operations")
+
+
+def test_text_renderer_omits_todo_section_when_empty():
+    from gateway.progress.renderers import render_text_panel
+
+    tracker = ProgressTracker(transaction_id="tx-no-todo", title="No todos")
+
+    text = render_text_panel(tracker.snapshot(), tool_progress_mode="off")
+
+    assert "To-dos" not in text
+
+
+def test_text_renderer_renders_two_level_todo_grouping_without_infinite_tree():
+    from gateway.progress.renderers import render_text_panel
+
+    tracker = ProgressTracker(transaction_id="tx-todo-2", title="Grouped todos")
+    tracker.update_todo_items([
+        {"id": "pr", "content": "PR verification", "status": "in_progress"},
+        {"id": "local", "content": "Local tests", "status": "completed", "parent_id": "pr"},
+        {"id": "codex", "content": "Codex review", "status": "pending", "parent_id": "pr"},
+        {"id": "deep", "content": "Too deep", "status": "pending", "parent_id": "local"},
+    ])
+
+    text = render_text_panel(tracker.snapshot(), tool_progress_mode="off")
+
+    # Group header carries a done/total over its direct children only.
+    assert "▸ PR verification 1/2" in text
+    lines = text.splitlines()
+    child_lines = [ln for ln in lines if "Local tests" in ln or "Codex review" in ln]
+    assert child_lines and all(ln.startswith("    -") for ln in child_lines)
+    # A third-level item is clamped — it never renders deeper than one indent.
+    assert "        -" not in text
+
+
 def test_feishu_progress_card_preserves_dense_multilingual_task_title():
     from gateway.progress.renderers import render_feishu_progress_card
 

@@ -41,6 +41,9 @@ class TodoStore:
       - id: unique string identifier (agent-chosen)
       - content: task description
       - status: pending | in_progress | completed | cancelled
+      - parent_id (optional): id of a sibling item this one groups under.
+        Supports a single level of grouping for the task workbench display
+        (parent + direct children); deeper nesting is not modelled here.
     """
 
     def __init__(self):
@@ -74,6 +77,15 @@ class TodoStore:
                         status = str(t["status"]).strip().lower()
                         if status in VALID_STATUSES:
                             existing[item_id]["status"] = status
+                    # Allow re-grouping: an explicit parent_id (even an empty one
+                    # to detach) updates the link. Validity against the rest of
+                    # the list is enforced by _prune_unknown_parents below.
+                    if "parent_id" in t:
+                        parent_id = self._sanitize_parent_id(t.get("parent_id"), own_id=item_id)
+                        if parent_id is not None:
+                            existing[item_id]["parent_id"] = parent_id
+                        else:
+                            existing[item_id].pop("parent_id", None)
                 else:
                     # New item -- validate fully and append to end
                     validated = self._validate(t)
@@ -93,10 +105,17 @@ class TodoStore:
         # (list order is priority).
         if len(self._items) > MAX_TODO_ITEMS:
             self._items = self._items[:MAX_TODO_ITEMS]
+        # Drop parent links that point outside the surviving list (unknown or
+        # truncated-away parents) so a child never references a missing group.
+        self._prune_unknown_parents()
         return self.read()
 
     def read(self) -> List[Dict[str, str]]:
-        """Return a copy of the current list."""
+        """Return a copy of the current list.
+
+        Each item carries ``id``/``content``/``status``; ``parent_id`` is
+        included only when the item is grouped under another item.
+        """
         return [item.copy() for item in self._items]
 
     def has_items(self) -> bool:
@@ -150,13 +169,54 @@ class TodoStore:
             return content[:keep] + _TRUNCATION_MARKER
         return content
 
+    def _prune_unknown_parents(self) -> None:
+        """Drop parent links that are unknown or would create deeper nesting.
+
+        Runs after every write so a child whose parent was never supplied, was
+        dropped by the item-count cap, or is itself already a child falls back to
+        a top-level item. This keeps the display's two-level grouping
+        well-formed and prevents cycles from surviving in structured state.
+        """
+        known_ids = {item["id"] for item in self._items}
+        valid_parent_by_id: Dict[str, Optional[str]] = {}
+        for item in self._items:
+            parent_id = item.get("parent_id")
+            valid_parent_by_id[item["id"]] = (
+                parent_id
+                if parent_id is not None and parent_id != item["id"] and parent_id in known_ids
+                else None
+            )
+
+        for item in self._items:
+            parent_id = valid_parent_by_id[item["id"]]
+            if parent_id is not None and valid_parent_by_id.get(parent_id) is None:
+                item["parent_id"] = parent_id
+            else:
+                item.pop("parent_id", None)
+
+    @staticmethod
+    def _sanitize_parent_id(value: Any, *, own_id: str) -> Optional[str]:
+        """Normalize a supplied ``parent_id`` to a safe value or ``None``.
+
+        Empty/missing values and self-references are rejected (returned as
+        ``None``); cross-item validity is checked later by
+        :meth:`_prune_unknown_parents` once the whole list is known.
+        """
+        if value is None:
+            return None
+        parent_id = str(value).strip()
+        if not parent_id or parent_id == own_id:
+            return None
+        return parent_id
+
     @staticmethod
     def _validate(item: Dict[str, Any]) -> Dict[str, str]:
         """
         Validate and normalize a todo item.
 
-        Ensures required fields exist and status is valid.
-        Returns a clean dict with only {id, content, status}.
+        Ensures required fields exist and status is valid. Returns a clean dict
+        with {id, content, status}, plus {parent_id} only when a usable parent
+        link was supplied.
         """
         item_id = str(item.get("id", "")).strip()
         if not item_id:
@@ -172,7 +232,11 @@ class TodoStore:
         if status not in VALID_STATUSES:
             status = "pending"
 
-        return {"id": item_id, "content": content, "status": status}
+        validated = {"id": item_id, "content": content, "status": status}
+        parent_id = TodoStore._sanitize_parent_id(item.get("parent_id"), own_id=item_id)
+        if parent_id is not None:
+            validated["parent_id"] = parent_id
+        return validated
 
     @staticmethod
     def _dedupe_by_id(todos: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -249,6 +313,8 @@ TODO_SCHEMA = {
         "- merge=true: update existing items by id, add any new ones\n\n"
         "Each item: {id: string, content: string, "
         "status: pending|in_progress|completed|cancelled}\n"
+        "Optionally set parent_id to the id of another item to group a few "
+        "sub-steps under it (one level of grouping only).\n"
         "List order is priority. Only ONE item in_progress at a time.\n"
         "Mark items completed immediately when done. If something fails, "
         "cancel it and add a revised item.\n\n"
@@ -275,6 +341,13 @@ TODO_SCHEMA = {
                             "type": "string",
                             "enum": ["pending", "in_progress", "completed", "cancelled"],
                             "description": "Current status"
+                        },
+                        "parent_id": {
+                            "type": "string",
+                            "description": (
+                                "Optional id of another item to group this one "
+                                "under (single level of grouping only)."
+                            )
                         }
                     },
                     "required": ["id", "content", "status"]

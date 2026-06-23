@@ -14812,6 +14812,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 log_message="Task tracker account-limit scheduling error",
             )
 
+        def _refresh_progress_todo_items(agent_obj: Any) -> None:
+            """Copy a sanitized snapshot of the agent's structured todo list.
+
+            The source of truth is ``agent._todo_store`` (the ``todo`` tool's
+            state), never natural-language inference. Robust to a missing/sentinel
+            agent, an absent ``_todo_store``, or a ``read()`` that raises — the
+            todo block is simply omitted when no usable state is available.
+            """
+            if progress_tracker is None or agent_obj is None or agent_obj is _AGENT_PENDING_SENTINEL:
+                return
+            try:
+                store = getattr(agent_obj, "_todo_store", None)
+                if store is None:
+                    return
+                read = getattr(store, "read", None)
+                if not callable(read):
+                    return
+                progress_tracker.update_todo_items(read())
+            except Exception as todo_err:
+                logger.debug("Task tracker todo update failed: %s", todo_err)
+
         def progress_callback(event_type: str, tool_name: str = None, preview: str = None, args: dict = None, **kwargs):
             """Callback invoked by agent on tool lifecycle events."""
             if not _run_still_current():
@@ -14824,6 +14845,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         _refresh_progress_display_metadata(_agent_for_progress)
                         _refresh_progress_context_usage(_agent_for_progress)
                         _refresh_progress_iteration_usage(_agent_for_progress)
+                        # Refresh the structured todo snapshot too; the ``todo``
+                        # tool completing is exactly when the plan changes.
+                        _refresh_progress_todo_items(_agent_for_progress)
                     except Exception as usage_err:
                         logger.debug("Task tracker metadata update failed: %s", usage_err)
                     recorded = progress_tracker.record_callback_event(
@@ -17350,6 +17374,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         _agent_for_progress = agent_holder[0] if agent_holder else None
                         _refresh_progress_display_metadata(_agent_for_progress)
                         _refresh_progress_context_usage(_agent_for_progress)
+                        # Capture the final todo state in the closing snapshot so
+                        # the persisted record reflects the completed plan.
+                        _refresh_progress_todo_items(_agent_for_progress)
                         # Final work-round count: prefer the authoritative
                         # ``api_calls`` from the run result over live agent state.
                         _final_round_count = (

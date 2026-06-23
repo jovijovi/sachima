@@ -119,6 +119,113 @@ class TestTodoToolFunction:
         assert "error" in result
 
 
+class TestParentId:
+    """V2 grouping: optional parent_id links a child to a sibling item."""
+
+    def test_parent_id_preserved_for_child(self):
+        store = TodoStore()
+        store.write([
+            {"id": "pr", "content": "PR verification", "status": "in_progress"},
+            {"id": "test", "content": "Local tests", "status": "completed", "parent_id": "pr"},
+            {"id": "codex", "content": "Codex review", "status": "pending", "parent_id": "pr"},
+        ])
+        items = store.read()
+        assert items[1]["parent_id"] == "pr"
+        assert items[2]["parent_id"] == "pr"
+        # Top-level items have no parent_id key at all (backward-compatible shape).
+        assert "parent_id" not in items[0]
+
+    def test_top_level_items_have_no_parent_id_key(self):
+        store = TodoStore()
+        result = store.write([
+            {"id": "1", "content": "First", "status": "pending"},
+            {"id": "2", "content": "Second", "status": "pending"},
+        ])
+        assert result == [
+            {"id": "1", "content": "First", "status": "pending"},
+            {"id": "2", "content": "Second", "status": "pending"},
+        ]
+
+    def test_self_parent_is_dropped(self):
+        store = TodoStore()
+        store.write([{"id": "a", "content": "Self ref", "status": "pending", "parent_id": "a"}])
+        assert "parent_id" not in store.read()[0]
+
+    def test_empty_parent_is_dropped(self):
+        store = TodoStore()
+        store.write([
+            {"id": "a", "content": "Parent", "status": "pending"},
+            {"id": "b", "content": "Child", "status": "pending", "parent_id": "   "},
+        ])
+        assert "parent_id" not in store.read()[1]
+
+    def test_unknown_parent_is_dropped(self):
+        store = TodoStore()
+        store.write([
+            {"id": "a", "content": "Parent", "status": "pending"},
+            {"id": "b", "content": "Child", "status": "pending", "parent_id": "missing"},
+        ])
+        # An unresolved parent falls back to a top-level item rather than dangling.
+        assert "parent_id" not in store.read()[1]
+
+    def test_parent_id_pointing_to_child_is_dropped(self):
+        store = TodoStore()
+        store.write([
+            {"id": "a", "content": "Root", "status": "pending"},
+            {"id": "b", "content": "Child", "status": "pending", "parent_id": "a"},
+            {"id": "c", "content": "Grandchild", "status": "pending", "parent_id": "b"},
+        ])
+        items = {item["id"]: item for item in store.read()}
+        assert items["b"]["parent_id"] == "a"
+        assert "parent_id" not in items["c"]
+
+    def test_parent_cycle_is_dropped(self):
+        store = TodoStore()
+        store.write([
+            {"id": "a", "content": "Cycle A", "status": "pending", "parent_id": "b"},
+            {"id": "b", "content": "Cycle B", "status": "pending", "parent_id": "a"},
+        ])
+        assert all("parent_id" not in item for item in store.read())
+
+    def test_parent_dropped_by_item_cap_is_pruned(self):
+        from tools.todo_tool import MAX_TODO_ITEMS
+        # Child sits first (survives); its parent is pushed beyond the item cap
+        # and truncated. The surviving child must not keep a dangling link.
+        todos = [{"id": "child", "content": "child", "status": "pending", "parent_id": "late-parent"}]
+        todos += [{"id": str(i), "content": f"task {i}", "status": "pending"} for i in range(MAX_TODO_ITEMS)]
+        todos.append({"id": "late-parent", "content": "parent", "status": "pending"})
+        store = TodoStore()
+        store.write(todos)
+        items = store.read()
+        assert len(items) == MAX_TODO_ITEMS
+        assert items[0]["id"] == "child"
+        assert "parent_id" not in items[0]
+        known = {it["id"] for it in items}
+        assert all(it.get("parent_id", "child") in known for it in items if "parent_id" in it)
+
+    def test_merge_can_update_parent_id(self):
+        store = TodoStore()
+        store.write([
+            {"id": "pr", "content": "PR verification", "status": "in_progress"},
+            {"id": "test", "content": "Local tests", "status": "completed"},
+        ])
+        store.write([{"id": "test", "parent_id": "pr"}], merge=True)
+        items = store.read()
+        assert items[1]["parent_id"] == "pr"
+        # Other fields are untouched by the parent-only merge.
+        assert items[1]["content"] == "Local tests"
+        assert items[1]["status"] == "completed"
+
+    def test_merge_can_detach_parent_id(self):
+        store = TodoStore()
+        store.write([
+            {"id": "pr", "content": "PR verification", "status": "in_progress"},
+            {"id": "test", "content": "Local tests", "status": "completed", "parent_id": "pr"},
+        ])
+        store.write([{"id": "test", "parent_id": ""}], merge=True)
+        assert "parent_id" not in store.read()[1]
+
+
 class TestTodoStoreBounds:
     """Bounds on persisted todo state (GHSA-5g4g-6jrg-mw3g hardening).
 

@@ -44,6 +44,21 @@ _EVENT_LABELS = {
     "subagent.tool": "subagent tool",
 }
 
+# Cursor-style todo glyphs, constrained to what Feishu cards / plain panels can
+# show. ``cancelled`` (like ``completed``) is struck through; ``unknown`` status
+# falls back to ``pending`` via the ``.get`` default.
+_TODO_STATUS_GLYPHS = {
+    "completed": "✅",
+    "in_progress": "➡️",
+    "pending": "○",
+    "cancelled": "⚪",
+}
+_TODO_STRIKETHROUGH_STATUSES = {"completed", "cancelled"}
+# Keep the todo preview compact: at most this many item/group lines render before
+# an overflow note. Real active plans are a handful of items; this only bites on
+# pathological lists.
+_TODO_MAX_VISIBLE_LINES = 8
+
 _DEFAULT_MAX_LENGTH = 3500
 
 _FEISHU_HEADER_TEMPLATES = {
@@ -164,6 +179,11 @@ def render_text_panel(
     if iteration_line:
         lines.append(iteration_line)
 
+    todo_lines = _todo_text_lines(getattr(snapshot, "todo_items", ()))
+    if todo_lines:
+        lines.append("")
+        lines.extend(todo_lines)
+
     operations = list(snapshot.recent_operations or ())
     if mode != "off":
         lines.append("")
@@ -230,6 +250,12 @@ def render_feishu_progress_card(
 
     elements: list[dict] = [{"tag": "markdown", "content": "\n".join(details)}]
 
+    # The todo block sits between the metric details and the recent-operations
+    # list so the workbench reads plan-first, activity-second.
+    todo_element = _feishu_todo_element(getattr(snapshot, "todo_items", ()), language=lang)
+    if todo_element is not None:
+        elements.append(todo_element)
+
     if mode != "off":
         operation_lines = list(
             _iter_feishu_operation_lines(
@@ -270,6 +296,169 @@ def render_feishu_progress_card(
         },
         "elements": elements,
     }
+
+
+# ---------------------------------------------------------------------------
+# Structured todo rendering (Cursor-style, two-level, redacted)
+# ---------------------------------------------------------------------------
+
+
+def _todo_depth(item: Any) -> int:
+    try:
+        return 1 if int(getattr(item, "depth", 0)) >= 1 else 0
+    except Exception:
+        return 0
+
+
+def _todo_status_key(item: Any) -> str:
+    return str(getattr(item, "status", "") or "").strip().lower()
+
+
+def _todo_status_glyph(item: Any) -> str:
+    return _TODO_STATUS_GLYPHS.get(_todo_status_key(item), "○")
+
+
+def _todo_is_struck(item: Any) -> bool:
+    return _todo_status_key(item) in _TODO_STRIKETHROUGH_STATUSES
+
+
+def _todo_done_count(children: list) -> int:
+    return sum(1 for child in children if _todo_status_key(child) == "completed")
+
+
+def _todo_blocks(items: Iterable[Any]) -> list[tuple[Any, list]]:
+    """Group a flat todo snapshot into ordered two-level blocks.
+
+    Returns ``(top_item, child_items)`` tuples preserving the input order. A
+    depth-1 item whose ``parent_id`` resolves to a known top-level id is nested
+    under that parent; roots and any orphaned/over-nested children each become
+    their own block, so display never exceeds two levels.
+    """
+
+    materialized = [item for item in (items or ()) if item is not None]
+    root_ids = {getattr(it, "id", "") for it in materialized if _todo_depth(it) == 0 and getattr(it, "id", "")}
+    children_by_parent: dict[str, list] = {}
+    for it in materialized:
+        if _todo_depth(it) == 1:
+            parent_id = getattr(it, "parent_id", None)
+            if parent_id in root_ids:
+                children_by_parent.setdefault(parent_id, []).append(it)
+
+    blocks: list[tuple[Any, list]] = []
+    for it in materialized:
+        if _todo_depth(it) == 1 and getattr(it, "parent_id", None) in root_ids:
+            continue  # rendered under its parent block
+        kids = children_by_parent.get(getattr(it, "id", ""), []) if _todo_depth(it) == 0 else []
+        blocks.append((it, kids))
+    return blocks
+
+
+def _render_todo_lines(
+    items: Iterable[Any],
+    *,
+    fmt_flat,
+    fmt_group,
+    fmt_child,
+    max_lines: int,
+) -> tuple[list[str], int]:
+    """Render todo blocks to capped lines and report how many items were hidden."""
+
+    blocks = _todo_blocks(items)
+    total = sum(1 + len(kids) for _, kids in blocks)
+    lines: list[str] = []
+    shown = 0
+    truncated = False
+    for top, kids in blocks:
+        if len(lines) >= max_lines:
+            truncated = True
+            break
+        if kids:
+            lines.append(fmt_group(top, _todo_done_count(kids), len(kids)))
+            shown += 1
+            for kid in kids:
+                if len(lines) >= max_lines:
+                    truncated = True
+                    break
+                lines.append(fmt_child(kid))
+                shown += 1
+        else:
+            lines.append(fmt_flat(top))
+            shown += 1
+    hidden = max(0, total - shown) if truncated else 0
+    return lines, hidden
+
+
+def _feishu_todo_text(item: Any) -> str:
+    text = _feishu_escape_markdown_text(getattr(item, "content", ""))
+    if text and _todo_is_struck(item):
+        return f"~~{text}~~"
+    return text
+
+
+def _feishu_todo_element(items: Iterable[Any], *, language: str) -> dict | None:
+    materialized = tuple(item for item in (items or ()) if item is not None)
+    if not materialized:
+        return None
+    lang = _normalize_feishu_language(language)
+    labels = _feishu_labels(lang)
+    title = f"🧾 {labels['todos']} {len(materialized)}"
+
+    def fmt_flat(item: Any) -> str:
+        return f"{_todo_status_glyph(item)} {_feishu_todo_text(item)}"
+
+    def fmt_group(item: Any, done: int, total: int) -> str:
+        return f"▸ {_feishu_escape_markdown_text(getattr(item, 'content', ''))} {done}/{total}"
+
+    def fmt_child(item: Any) -> str:
+        return f"  {_todo_status_glyph(item)} {_feishu_todo_text(item)}"
+
+    lines, hidden = _render_todo_lines(
+        materialized,
+        fmt_flat=fmt_flat,
+        fmt_group=fmt_group,
+        fmt_child=fmt_child,
+        max_lines=_TODO_MAX_VISIBLE_LINES,
+    )
+    if hidden > 0:
+        lines.append(f"… 还有 {hidden} 项" if lang == "zh" else f"… {hidden} more")
+    return {"tag": "markdown", "content": f"**{title}**\n" + "\n".join(lines)}
+
+
+def _todo_plain_content(item: Any) -> str:
+    return sanitize_for_progress(getattr(item, "content", ""), max_len=240).replace("\n", " ").strip()
+
+
+def _todo_text_content(item: Any) -> str:
+    text = _todo_plain_content(item)
+    if text and _todo_is_struck(item):
+        return f"~~{text}~~"
+    return text
+
+
+def _todo_text_lines(items: Iterable[Any]) -> list[str]:
+    materialized = tuple(item for item in (items or ()) if item is not None)
+    if not materialized:
+        return []
+
+    def fmt_flat(item: Any) -> str:
+        return f"- {_todo_status_glyph(item)} {_todo_text_content(item)}"
+
+    def fmt_group(item: Any, done: int, total: int) -> str:
+        return f"- ▸ {_todo_plain_content(item)} {done}/{total}"
+
+    def fmt_child(item: Any) -> str:
+        return f"    - {_todo_status_glyph(item)} {_todo_text_content(item)}"
+
+    lines, hidden = _render_todo_lines(
+        materialized,
+        fmt_flat=fmt_flat,
+        fmt_group=fmt_group,
+        fmt_child=fmt_child,
+        max_lines=_TODO_MAX_VISIBLE_LINES + 2,
+    )
+    if hidden > 0:
+        lines.append(f"- … {hidden} more")
+    return [f"**🧾 To-dos ({len(materialized)}):**", *lines]
 
 
 def _iter_rendered_operations(
@@ -380,6 +569,7 @@ def _feishu_labels(language: str) -> dict[str, str]:
             "rounds": "Rounds",
             "account_limits": "Account limits",
             "recent_operations": "Recent operations",
+            "todos": "To-dos",
             "running": "running",
             "tool": "Tool",
             "command": "Command",
@@ -394,6 +584,7 @@ def _feishu_labels(language: str) -> dict[str, str]:
         "rounds": "执行轮次",
         "account_limits": "账户限额",
         "recent_operations": "最近操作",
+        "todos": "待办",
         "running": "进行中",
         "tool": "工具",
         "command": "命令",

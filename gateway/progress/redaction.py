@@ -67,8 +67,22 @@ _SENSITIVE_COLON_RE = re.compile(
     r"(?P<quote>['\"]?)(?P<value>[^\s'\";,]+)(?P=quote)",
     re.IGNORECASE,
 )
-
-
+# Provider/token-shaped values can appear as free text in TODO content, without a
+# nearby sensitive key name (for example pasted OpenAI/GitHub/Google tokens). Keep
+# this intentionally shape-based and bounded so ordinary API routes or local file
+# paths are not rewritten merely because they contain slashes.
+_BARE_SECRET_VALUE_RE = re.compile(
+    r"(?<![A-Za-z0-9_-])(?:"
+    r"sk-(?:proj-|ant-[A-Za-z0-9]+-)?[A-Za-z0-9_-]{20,}|"
+    r"github_pat_[A-Za-z0-9_]{20,}|"
+    r"gh[opsru]_[A-Za-z0-9_]{20,}|"
+    r"hf_[A-Za-z0-9]{20,}|"
+    r"AIza[A-Za-z0-9_-]{35}|"
+    r"AKIA[0-9A-Z]{16}|"
+    r"xox[abprs]-[A-Za-z0-9-]{20,}|"
+    r"\d{8,10}:[A-Za-z0-9_-]{35,}"
+    r")(?![A-Za-z0-9_-])"
+)
 def sanitize_for_progress(data: Any, max_len: int = _DEFAULT_MAX_LEN) -> str:
     """Return a safe, bounded string for user-facing progress displays.
 
@@ -198,7 +212,8 @@ def _redact_text(text: str) -> str:
         text,
     )
     text = _SENSITIVE_QUERY_VALUE_RE.sub(r"\g<lead>" + REDACTION_TEXT, text)
-    return _SENSITIVE_ASSIGNMENT_RE.sub(_redact_assignment_match, text)
+    text = _SENSITIVE_ASSIGNMENT_RE.sub(_redact_assignment_match, text)
+    return _BARE_SECRET_VALUE_RE.sub(REDACTION_TEXT, text)
 
 
 def _redact_assignment_match(match: re.Match[str]) -> str:

@@ -12,10 +12,20 @@ from gateway.progress.events import (
     ContextUsageSnapshot,
     IterationUsageSnapshot,
     ProgressOperation,
+    TodoItemSnapshot,
     TransactionSnapshot,
 )
 from gateway.progress.redaction import sanitize_value_for_progress
 from hermes_constants import get_hermes_home
+
+# Persistence bounds for the structured todo snapshot. These mirror the tracker
+# caps; disk is a second exfiltration surface, so the values are re-sanitized and
+# re-bounded here rather than trusted from the in-memory snapshot.
+MAX_TODO_ITEMS = 20
+MAX_TODO_CONTENT_CHARS = 240
+MAX_TODO_ID_CHARS = 120
+MAX_TODO_SOURCE_CHARS = 60
+MAX_TODO_DEPTH = 1
 
 # Size-based JSONL rotation defaults. ``events.jsonl`` is rotated to
 # ``events.jsonl.1`` (and existing archives shift up) once the next append
@@ -220,7 +230,64 @@ def _safe_transaction(snapshot: TransactionSnapshot) -> dict[str, Any]:
         transaction["context_usage"] = _safe_context_usage(snapshot.context_usage)
     if snapshot.iteration_usage is not None:
         transaction["iteration_usage"] = _safe_iteration_usage(snapshot.iteration_usage)
+    todo_items = _safe_todo_items(getattr(snapshot, "todo_items", ()))
+    # Emit an explicit empty list too. Without this, a transaction that clears
+    # its todos later in the run would leave reader summaries showing stale
+    # earlier todo state from prior operation records.
+    transaction["todo_items"] = todo_items
     return transaction
+
+
+def _safe_todo_items(items: Any) -> list[dict[str, Any]]:
+    """Re-sanitize the structured todo snapshot for persistence.
+
+    Only the first ``MAX_TODO_ITEMS`` survive; each item's text is redacted and
+    bounded again, depth is clamped to the two-level display range, and
+    ``parent_id`` is emitted only when present so legacy readers see the same
+    shape they always have.
+    """
+
+    if not items:
+        return []
+    safe: list[dict[str, Any]] = []
+    for item in list(items)[:MAX_TODO_ITEMS]:
+        record = {
+            "id": _safe_text(getattr(item, "id", ""), key="todo_id", max_len=MAX_TODO_ID_CHARS),
+            "content": _safe_text(getattr(item, "content", ""), key="todo_content", max_len=MAX_TODO_CONTENT_CHARS),
+            "status": _safe_text(getattr(item, "status", ""), key="todo_status", max_len=40),
+            "depth": min(MAX_TODO_DEPTH, _safe_nonnegative_int(getattr(item, "depth", 0))),
+            "source": _safe_text(getattr(item, "source", ""), key="todo_source", max_len=MAX_TODO_SOURCE_CHARS)
+            or "todo_tool",
+        }
+        parent_id = _safe_optional_text(getattr(item, "parent_id", None), key="todo_parent_id", max_len=MAX_TODO_ID_CHARS)
+        if parent_id:
+            record["parent_id"] = parent_id
+        safe.append(record)
+    return _normalize_todo_parent_links(safe)
+
+
+def _normalize_todo_parent_links(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    known_ids = {item.get("id") for item in items if item.get("id")}
+    valid_parent_by_id: dict[str, str | None] = {}
+    for item in items:
+        item_id = str(item.get("id") or "")
+        parent_id = item.get("parent_id")
+        valid_parent_by_id[item_id] = (
+            str(parent_id)
+            if parent_id and parent_id != item_id and parent_id in known_ids
+            else None
+        )
+
+    for item in items:
+        item_id = str(item.get("id") or "")
+        parent_id = valid_parent_by_id.get(item_id)
+        if parent_id and valid_parent_by_id.get(parent_id) is None:
+            item["parent_id"] = parent_id
+            item["depth"] = MAX_TODO_DEPTH
+        else:
+            item.pop("parent_id", None)
+            item["depth"] = 0
+    return items
 
 
 def _safe_context_usage(usage: ContextUsageSnapshot) -> dict[str, int]:

@@ -1619,6 +1619,19 @@ export interface ProgressIterationUsage {
   maximum: number;
 }
 
+/** One structured todo item surfaced from the agent's ``todo`` tool state.
+ *  Display supports two levels only: top-level items (``depth`` 0) and their
+ *  direct children (``depth`` 1, ``parent_id`` pointing at a top-level item). */
+export interface ProgressTodoItem {
+  id: string;
+  content: string;
+  /** "pending" | "in_progress" | "completed" | "cancelled" (unknown → pending). */
+  status: string;
+  parent_id?: string | null;
+  depth: number;
+  source: string;
+}
+
 export interface ProgressTransactionSummary {
   id: string;
   title: string;
@@ -1629,6 +1642,7 @@ export interface ProgressTransactionSummary {
   operation_count: number;
   last_operation: ProgressOperationSummary | null;
   iteration_usage?: ProgressIterationUsage | null;
+  todo_items?: ProgressTodoItem[] | null;
 }
 
 export interface ProgressOperationEvent extends ProgressOperationSummary {
@@ -1648,6 +1662,7 @@ export interface ProgressTransactionRecord {
   updated_at: number | null;
   completed_at: number | null;
   iteration_usage?: ProgressIterationUsage | null;
+  todo_items?: ProgressTodoItem[] | null;
 }
 
 export interface ProgressEventRecord {

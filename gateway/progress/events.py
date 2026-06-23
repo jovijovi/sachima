@@ -36,6 +36,26 @@ class ContextUsageSnapshot:
 
 
 @dataclass
+class TodoItemSnapshot:
+    """A sanitized, display-ready snapshot of one structured todo item.
+
+    The todo list comes exclusively from explicit structured state (Hermes
+    :class:`tools.todo_tool.TodoStore`), never from natural-language inference.
+    Display supports at most two levels: a top-level item (``depth == 0``) and
+    its direct children (``depth == 1``); deeper nesting is clamped by the
+    tracker. ``parent_id`` is present only for children and always points at a
+    sibling top-level item.
+    """
+
+    id: str
+    content: str
+    status: str
+    parent_id: str | None = None
+    depth: int = 0
+    source: str = "todo_tool"
+
+
+@dataclass
 class IterationUsageSnapshot:
     """Sanitized agent work-round counters for one transaction.
 
@@ -64,3 +84,4 @@ class TransactionSnapshot:
     iteration_usage: IterationUsageSnapshot | None = None
     model_display: str | None = None
     account_limit_lines: tuple[str, ...] = ()
+    todo_items: tuple[TodoItemSnapshot, ...] = ()
