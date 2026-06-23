@@ -11,9 +11,20 @@
 ```json
 {
   "base_branch": "release/sachima",
-  "base_head": "dee39770d6580f75e51391dc167540f6d3a6a098",
+  "base_head": "1aede6efc946a736966c9a48c40f3d42a8f15031",
   "base_head_note": "latest first-parent base commit excluding machine status-sync self-commits",
   "latest_merged_prs": [
+    {
+      "baseRefName": "release/sachima",
+      "headRefName": "fix/progress-execution-rounds-label",
+      "mergeCommit": {
+        "oid": "1aede6efc946a736966c9a48c40f3d42a8f15031"
+      },
+      "mergedAt": "2026-06-23T03:52:23Z",
+      "number": 161,
+      "title": "Use execution rounds label in Feishu progress card",
+      "url": "https://github.com/jovijovi/sachima/pull/161"
+    },
     {
       "baseRefName": "release/sachima",
       "headRefName": "feat/progress-rounds-jsonl-rotation",
@@ -57,17 +68,6 @@
       "number": 157,
       "title": "feat: add image manifest history",
       "url": "https://github.com/jovijovi/sachima/pull/157"
-    },
-    {
-      "baseRefName": "release/sachima",
-      "headRefName": "docs/workspace-file-predev-governance",
-      "mergeCommit": {
-        "oid": "ed4d76dbf74aa8d38dd4898467b633379f878a74"
-      },
-      "mergedAt": "2026-06-20T12:17:09Z",
-      "number": 156,
-      "title": "docs: add workspace file predevelopment governance",
-      "url": "https://github.com/jovijovi/sachima/pull/156"
     }
   ],
   "open_pr_count": 0,
