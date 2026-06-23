@@ -391,7 +391,7 @@ def _feishu_labels(language: str) -> dict[str, str]:
         "duration": "耗时",
         "model": "模型",
         "context": "上下文",
-        "rounds": "工作轮数",
+        "rounds": "执行轮次",
         "account_limits": "账户限额",
         "recent_operations": "最近操作",
         "running": "进行中",
