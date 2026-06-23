@@ -89,6 +89,106 @@ def test_progress_records_include_sanitized_context_usage(tmp_path):
     }
 
 
+def test_progress_records_include_sanitized_iteration_usage(tmp_path):
+    store_path = tmp_path / "events.jsonl"
+    store = JsonlProgressEventStore(store_path)
+    tracker = ProgressTracker("tx-rounds", "Persist iteration usage")
+    tracker.update_iteration_usage(current_rounds=12, max_rounds=90)
+
+    store.append_snapshot(tracker.snapshot())
+
+    record = _read_jsonl(store_path)[0]
+    assert record["transaction"]["iteration_usage"] == {"current": 12, "maximum": 90}
+
+
+def _rotation_snapshot() -> TransactionSnapshot:
+    return TransactionSnapshot(
+        transaction_id="tx-rotate",
+        title="Rotate progress",
+        status="running",
+        started_at=1.0,
+        updated_at=2.0,
+    )
+
+
+def _rotation_operation() -> ProgressOperation:
+    # A 200-char preview guarantees each serialized record is far larger than the
+    # tiny ``max_bytes`` the rotation tests use, so every append after the first
+    # forces a rotation regardless of the exact record framing.
+    return ProgressOperation(
+        id="op-rotate",
+        event_type="tool.started",
+        tool_name="terminal",
+        status="running",
+        preview="x" * 200,
+        started_at=1.0,
+        updated_at=2.0,
+    )
+
+
+def test_jsonl_store_rotates_when_append_would_exceed_max_bytes(tmp_path):
+    store_path = tmp_path / "events.jsonl"
+    store = JsonlProgressEventStore(store_path, max_bytes=100, max_files=3)
+    snapshot = _rotation_snapshot()
+    operation = _rotation_operation()
+
+    for _ in range(6):
+        store.append_operation(snapshot, operation)
+
+    # The live file is preserved for new writes and at least one archive exists.
+    assert store_path.exists()
+    assert (tmp_path / "events.jsonl.1").exists()
+    # Rotation keeps the live file small: it must not still hold every record.
+    assert len(_read_jsonl(store_path)) < 6
+
+
+def test_jsonl_store_rotation_preserves_current_and_first_archive_and_caps_archives(tmp_path):
+    store_path = tmp_path / "events.jsonl"
+    store = JsonlProgressEventStore(store_path, max_bytes=100, max_files=2)
+    snapshot = _rotation_snapshot()
+    operation = _rotation_operation()
+
+    for _ in range(12):
+        store.append_operation(snapshot, operation)
+
+    assert store_path.exists()
+    assert (tmp_path / "events.jsonl.1").exists()
+    assert (tmp_path / "events.jsonl.2").exists()
+    # Never retain more numbered archives than ``max_files``.
+    assert not (tmp_path / "events.jsonl.3").exists()
+
+
+def test_jsonl_store_does_not_rotate_when_rotation_disabled(tmp_path):
+    store_path = tmp_path / "events.jsonl"
+    store = JsonlProgressEventStore(store_path, max_bytes=0)
+    snapshot = _rotation_snapshot()
+    operation = _rotation_operation()
+
+    for _ in range(6):
+        store.append_operation(snapshot, operation)
+
+    assert not (tmp_path / "events.jsonl.1").exists()
+    assert len(_read_jsonl(store_path)) == 6
+
+
+def test_build_progress_event_store_accepts_rotation_options(tmp_path):
+    path = tmp_path / "events.jsonl"
+
+    store = build_progress_event_store(
+        {
+            "persist_events": True,
+            "event_store": "jsonl",
+            "event_store_path": str(path),
+            "event_store_max_bytes": 1234,
+            "event_store_max_files": 4,
+        }
+    )
+
+    assert isinstance(store, JsonlProgressEventStore)
+    assert store.max_bytes == 1234
+    assert store.max_files == 4
+
+
 def test_jsonl_store_serializes_concurrent_writes(monkeypatch, tmp_path):
     store_path = tmp_path / "events.jsonl"
     store = JsonlProgressEventStore(store_path)

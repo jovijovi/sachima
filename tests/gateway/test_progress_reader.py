@@ -154,6 +154,83 @@ def test_progress_reader_preserves_sanitized_context_usage_in_summary_and_events
     assert detail["events"][-1]["transaction"]["context_usage"] == expected
 
 
+def test_progress_reader_preserves_iteration_usage_in_summary_and_events(tmp_path):
+    path = tmp_path / "events.jsonl"
+    snapshot = _snapshot("tx-rounds", written_at=5.0, status="completed")
+    snapshot["transaction"]["iteration_usage"] = {"current": "12", "maximum": 90}
+    _write_jsonl(path, [_operation("tx-rounds", written_at=3.0), snapshot])
+
+    result = list_progress_transactions(path)
+    detail = get_progress_transaction_events(path, "tx-rounds")
+
+    expected = {"current": 12, "maximum": 90}
+    assert result["transactions"][0]["iteration_usage"] == expected
+    assert detail["transaction"]["iteration_usage"] == expected
+    assert detail["events"][-1]["transaction"]["iteration_usage"] == expected
+
+
+def test_progress_reader_omits_iteration_usage_without_meaningful_max(tmp_path):
+    path = tmp_path / "events.jsonl"
+    snapshot = _snapshot("tx-no-max", written_at=5.0, status="completed")
+    snapshot["transaction"]["iteration_usage"] = {"current": 5, "maximum": 0}
+    _write_jsonl(path, [snapshot])
+
+    result = list_progress_transactions(path)
+
+    assert result["transactions"][0]["iteration_usage"] is None
+
+
+def test_progress_reader_old_records_without_iteration_usage_remain_valid(tmp_path):
+    path = tmp_path / "events.jsonl"
+    _write_jsonl(path, [_operation("tx-legacy", written_at=2.0), _snapshot("tx-legacy", written_at=3.0)])
+
+    result = list_progress_transactions(path)
+
+    assert [tx["id"] for tx in result["transactions"]] == ["tx-legacy"]
+    assert result["transactions"][0]["iteration_usage"] is None
+
+
+def test_progress_reader_reads_across_rotated_files(tmp_path):
+    path = tmp_path / "events.jsonl"
+    archive = tmp_path / "events.jsonl.1"
+    # The older transaction survives only in the rotated archive; the newer one
+    # is still in the live file. The reader must aggregate across both.
+    _write_jsonl(archive, [_snapshot("older", written_at=1.0, status="completed")])
+    _write_jsonl(path, [_snapshot("newer", written_at=5.0, status="running")])
+
+    result = list_progress_transactions(path)
+    ids = {tx["id"] for tx in result["transactions"]}
+
+    assert ids == {"older", "newer"}
+    # A transaction that lives only in the archive is still independently readable.
+    detail = get_progress_transaction_events(path, "older")
+    assert detail["transaction"] is not None
+    assert detail["transaction"]["id"] == "older"
+
+
+def test_progress_reader_skips_file_that_disappears_during_rotation(monkeypatch, tmp_path):
+    path = tmp_path / "events.jsonl"
+    archive = tmp_path / "events.jsonl.1"
+    _write_jsonl(path, [_snapshot("live", written_at=5.0, status="running")])
+    _write_jsonl(archive, [_snapshot("archive", written_at=1.0, status="completed")])
+
+    from gateway.progress import reader
+
+    real_bounded_lines = reader._bounded_lines
+
+    def flaky_bounded_lines(candidate, *, max_bytes, max_lines):
+        if Path(candidate) == path:
+            raise FileNotFoundError(str(candidate))
+        return real_bounded_lines(candidate, max_bytes=max_bytes, max_lines=max_lines)
+
+    monkeypatch.setattr(reader, "_bounded_lines", flaky_bounded_lines)
+
+    result = list_progress_transactions(path)
+
+    assert result["skipped_lines"] == 0
+    assert [tx["id"] for tx in result["transactions"]] == ["archive"]
+
+
 def test_progress_reader_filters_status_and_applies_limits(tmp_path):
     path = tmp_path / "events.jsonl"
     _write_jsonl(

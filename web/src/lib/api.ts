@@ -1611,6 +1611,14 @@ export interface ProgressOperationSummary {
   is_error: boolean;
 }
 
+/** Agent work-round usage for one transaction: ``current`` API calls (rounds)
+ *  this turn out of the configured ``maximum`` iteration budget. Omitted by the
+ *  backend when no meaningful budget is known (legacy records, ``maximum`` 0). */
+export interface ProgressIterationUsage {
+  current: number;
+  maximum: number;
+}
+
 export interface ProgressTransactionSummary {
   id: string;
   title: string;
@@ -1620,6 +1628,7 @@ export interface ProgressTransactionSummary {
   completed_at: number | null;
   operation_count: number;
   last_operation: ProgressOperationSummary | null;
+  iteration_usage?: ProgressIterationUsage | null;
 }
 
 export interface ProgressOperationEvent extends ProgressOperationSummary {
@@ -1638,6 +1647,7 @@ export interface ProgressTransactionRecord {
   started_at: number | null;
   updated_at: number | null;
   completed_at: number | null;
+  iteration_usage?: ProgressIterationUsage | null;
 }
 
 export interface ProgressEventRecord {

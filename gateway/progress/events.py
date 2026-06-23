@@ -36,6 +36,20 @@ class ContextUsageSnapshot:
 
 
 @dataclass
+class IterationUsageSnapshot:
+    """Sanitized agent work-round counters for one transaction.
+
+    ``current`` is the number of agent API calls (work rounds) used this user
+    turn; ``maximum`` is the configured iteration budget (``max_iterations``).
+    Both are non-negative; a ``maximum`` of 0 means "no meaningful budget" and
+    callers should omit display rather than render ``0 / 0``.
+    """
+
+    current: int = 0
+    maximum: int = 0
+
+
+@dataclass
 class TransactionSnapshot:
     """A sanitized, display-ready snapshot of one running transaction."""
 
@@ -47,5 +61,6 @@ class TransactionSnapshot:
     completed_at: float | None = None
     recent_operations: tuple[ProgressOperation, ...] = ()
     context_usage: ContextUsageSnapshot | None = None
+    iteration_usage: IterationUsageSnapshot | None = None
     model_display: str | None = None
     account_limit_lines: tuple[str, ...] = ()

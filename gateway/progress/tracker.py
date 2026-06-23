@@ -8,7 +8,12 @@ import time
 from dataclasses import replace
 from typing import Any
 
-from gateway.progress.events import ContextUsageSnapshot, ProgressOperation, TransactionSnapshot
+from gateway.progress.events import (
+    ContextUsageSnapshot,
+    IterationUsageSnapshot,
+    ProgressOperation,
+    TransactionSnapshot,
+)
 from gateway.progress.redaction import sanitize_for_progress, sanitize_value_for_progress
 
 TRANSACTION_RUNNING = "running"
@@ -65,6 +70,7 @@ class ProgressTracker:
         self._status = TRANSACTION_RUNNING
         self._operations: list[ProgressOperation] = []
         self._context_usage: ContextUsageSnapshot | None = None
+        self._iteration_usage: IterationUsageSnapshot | None = None
         self._model_display: str | None = None
         self._account_limit_lines: tuple[str, ...] = ()
         self._next_operation_id = 1
@@ -190,6 +196,9 @@ class ProgressTracker:
         with self._lock:
             operations = tuple(replace(op, metadata=dict(op.metadata)) for op in self._operations)
             context_usage = replace(self._context_usage) if self._context_usage is not None else None
+            iteration_usage = (
+                replace(self._iteration_usage) if self._iteration_usage is not None else None
+            )
             return TransactionSnapshot(
                 transaction_id=self.transaction_id,
                 title=self.title,
@@ -199,6 +208,7 @@ class ProgressTracker:
                 completed_at=self._completed_at,
                 recent_operations=operations,
                 context_usage=context_usage,
+                iteration_usage=iteration_usage,
                 model_display=self._model_display,
                 account_limit_lines=self._account_limit_lines,
             )
@@ -241,6 +251,36 @@ class ProgressTracker:
                 threshold_tokens=_safe_nonnegative_int(threshold_tokens),
             )
             self._context_usage = usage
+            self._touch()
+            return replace(usage)
+
+    def update_iteration_usage(
+        self,
+        current_rounds: Any = None,
+        max_rounds: Any = None,
+    ) -> IterationUsageSnapshot:
+        """Update sanitized agent work-round counters for the transaction.
+
+        ``current_rounds`` is the agent's ``api_calls`` count for this turn and
+        ``max_rounds`` the configured ``max_iterations`` budget. Either argument
+        may be ``None`` to preserve the previously recorded value, so callers can
+        seed ``max_rounds`` early and refine ``current_rounds`` as the turn runs.
+        """
+
+        with self._lock:
+            previous = self._iteration_usage
+            current = (
+                _safe_nonnegative_int(current_rounds)
+                if current_rounds is not None
+                else (previous.current if previous is not None else 0)
+            )
+            maximum = (
+                _safe_nonnegative_int(max_rounds)
+                if max_rounds is not None
+                else (previous.maximum if previous is not None else 0)
+            )
+            usage = IterationUsageSnapshot(current=current, maximum=maximum)
+            self._iteration_usage = usage
             self._touch()
             return replace(usage)
 
