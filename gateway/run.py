@@ -14735,6 +14735,33 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if usage is not None:
                 progress_tracker.update_context_usage(**usage)
 
+        def _progress_iteration_usage_from_agent(
+            agent_obj: Any,
+            *,
+            current_override: Any = None,
+        ) -> dict[str, int] | None:
+            if agent_obj is None or agent_obj is _AGENT_PENDING_SENTINEL:
+                return None
+            maximum = _safe_progress_context_int(getattr(agent_obj, "max_iterations", 0))
+            if maximum <= 0:
+                # No meaningful budget yet — skip so the UI never shows ``0 / 0``.
+                return None
+            if current_override is not None:
+                current = _safe_progress_context_int(current_override)
+            else:
+                # ``_api_call_count`` is the live per-turn work-round counter the
+                # conversation loop maintains on the agent; absent before the
+                # first call, where 0 is the correct current value.
+                current = _safe_progress_context_int(getattr(agent_obj, "_api_call_count", 0))
+            return {"current_rounds": current, "max_rounds": maximum}
+
+        def _refresh_progress_iteration_usage(agent_obj: Any, *, current_override: Any = None) -> None:
+            if progress_tracker is None:
+                return
+            usage = _progress_iteration_usage_from_agent(agent_obj, current_override=current_override)
+            if usage is not None:
+                progress_tracker.update_iteration_usage(**usage)
+
         progress_account_limits_scheduled = [False]
         progress_account_limits_future = [None]
 
@@ -14796,6 +14823,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     try:
                         _refresh_progress_display_metadata(_agent_for_progress)
                         _refresh_progress_context_usage(_agent_for_progress)
+                        _refresh_progress_iteration_usage(_agent_for_progress)
                     except Exception as usage_err:
                         logger.debug("Task tracker metadata update failed: %s", usage_err)
                     recorded = progress_tracker.record_callback_event(
@@ -17322,6 +17350,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         _agent_for_progress = agent_holder[0] if agent_holder else None
                         _refresh_progress_display_metadata(_agent_for_progress)
                         _refresh_progress_context_usage(_agent_for_progress)
+                        # Final work-round count: prefer the authoritative
+                        # ``api_calls`` from the run result over live agent state.
+                        _final_round_count = (
+                            _result_for_progress.get("api_calls")
+                            if isinstance(_result_for_progress, dict)
+                            else None
+                        )
+                        _refresh_progress_iteration_usage(
+                            _agent_for_progress, current_override=_final_round_count
+                        )
                     except Exception as usage_err:
                         logger.debug("Task tracker final metadata update failed: %s", usage_err)
                     account_future = progress_account_limits_future[0]

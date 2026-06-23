@@ -14,6 +14,7 @@ import { H2 } from "@nous-research/ui/ui/components/typography/h2";
 import { api } from "@/lib/api";
 import type {
   ProgressEventRecord,
+  ProgressIterationUsage,
   ProgressTransactionSummary,
 } from "@/lib/api";
 import { cn, timeAgo } from "@/lib/utils";
@@ -57,6 +58,13 @@ function duration(seconds?: number | null): string {
   return `${mins}m ${secs}s`;
 }
 
+/** "current / max" work-round label, or null when no meaningful budget exists
+ *  (omit rather than show a misleading "0 / 0"). */
+function roundsLabel(usage?: ProgressIterationUsage | null): string | null {
+  if (!usage || usage.maximum <= 0) return null;
+  return `${usage.current} / ${usage.maximum}`;
+}
+
 function TransactionRow({
   tx,
   selected,
@@ -68,6 +76,7 @@ function TransactionRow({
 }) {
   const badge = statusBadge(tx.status);
   const last = tx.last_operation;
+  const rounds = roundsLabel(tx.iteration_usage);
   return (
     <button
       type="button"
@@ -99,6 +108,12 @@ function TransactionRow({
           )}
           <div className="mt-2 flex flex-wrap items-center gap-2 text-[10px] text-muted-foreground">
             <span>{tx.operation_count} ops</span>
+            {rounds && (
+              <>
+                <span>·</span>
+                <span>Rounds: {rounds}</span>
+              </>
+            )}
             <span>·</span>
             <span>{relativeTime(tx.updated_at || tx.started_at)}</span>
           </div>
@@ -320,6 +335,9 @@ export default function ProgressPage() {
                     <span>Updated: {formatTime(selected.updated_at)}</span>
                     <span>Completed: {formatTime(selected.completed_at)}</span>
                     <span>Operations: {selected.operation_count}</span>
+                    {roundsLabel(selected.iteration_usage) && (
+                      <span>Rounds: {roundsLabel(selected.iteration_usage)}</span>
+                    )}
                   </div>
                 </div>
                 <div className="max-h-[560px] overflow-y-auto">

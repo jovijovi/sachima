@@ -13,6 +13,10 @@ DEFAULT_MAX_BYTES = 5 * 1024 * 1024
 DEFAULT_MAX_LINES = 10_000
 DEFAULT_TRANSACTION_LIMIT = 50
 DEFAULT_EVENT_LIMIT = 200
+# Read across the live ``events.jsonl`` plus up to this many rotated archives
+# (``events.jsonl.1`` … ``events.jsonl.N``) so the dashboard keeps seeing recent
+# history after a size-based rotation.
+DEFAULT_MAX_ROTATED_FILES = 5
 
 
 ProgressListResponse = dict[str, Any]
@@ -77,16 +81,17 @@ def _read_progress_records(
     *,
     max_bytes: int,
     max_lines: int,
+    max_files: int = DEFAULT_MAX_ROTATED_FILES,
 ) -> tuple[list[dict[str, Any]], int]:
     if path is None:
         return [], 0
-    event_path = Path(path)
-    if not event_path.exists() or not event_path.is_file():
+    selected = _discover_progress_files(Path(path), max_files=max_files)
+    if not selected:
         return [], 0
 
     records: list[dict[str, Any]] = []
     skipped = 0
-    for line in _bounded_lines(event_path, max_bytes=max_bytes, max_lines=max_lines):
+    for line in _bounded_lines_across_files(selected, max_bytes=max_bytes, max_lines=max_lines):
         if not line.strip():
             continue
         try:
@@ -100,6 +105,68 @@ def _read_progress_records(
             continue
         records.append(normalized)
     return records, skipped
+
+
+def _discover_progress_files(event_path: Path, *, max_files: int) -> list[Path]:
+    """Return progress JSONL files newest-first: live file, then ``.1`` … ``.N``.
+
+    Only exact numeric siblings of the configured path are considered, so
+    unrelated files are never read. Missing archives are skipped; a single
+    missing index does not stop discovery of later archives.
+    """
+
+    selected: list[Path] = []
+    if event_path.exists() and event_path.is_file():
+        selected.append(event_path)
+    cap = max(0, int(max_files or 0))
+    for index in range(1, cap + 1):
+        rotated = event_path.with_name(f"{event_path.name}.{index}")
+        if rotated.exists() and rotated.is_file():
+            selected.append(rotated)
+    return selected
+
+
+def _bounded_lines_across_files(
+    paths: list[Path],
+    *,
+    max_bytes: int,
+    max_lines: int,
+) -> list[str]:
+    """Tail-read newest-first across files within global bounds, chronologically.
+
+    ``paths`` arrives newest-first (live file then ``.1``, ``.2`` …). The most
+    recent lines are collected up to the shared byte/line caps and then reversed
+    so the aggregated stream is oldest-to-newest for the summarizers — preserving
+    chronology across a rotation boundary while still bounding memory.
+    """
+
+    max_bytes = max(1, int(max_bytes or DEFAULT_MAX_BYTES))
+    max_lines = max(1, int(max_lines or DEFAULT_MAX_LINES))
+    remaining_bytes = max_bytes
+    remaining_lines = max_lines
+    chunks: list[list[str]] = []  # newest file first
+    for path in paths:
+        if remaining_lines <= 0 or remaining_bytes <= 0:
+            break
+        try:
+            chunk = _bounded_lines(path, max_bytes=remaining_bytes, max_lines=remaining_lines)
+        except OSError:
+            # The event store rotates by renaming ``events.jsonl`` to
+            # ``events.jsonl.1`` under a writer lock. Dashboard reads are
+            # intentionally lock-free, so a path discovered milliseconds ago may
+            # disappear before ``stat``/``open``. Treat that as a transient empty
+            # file instead of surfacing a 500 to the workbench.
+            continue
+        if not chunk:
+            continue
+        chunks.append(chunk)
+        remaining_lines -= len(chunk)
+        remaining_bytes -= sum(len(line.encode("utf-8")) + 1 for line in chunk)
+    chunks.reverse()  # oldest file first → chronological aggregate
+    lines: list[str] = []
+    for chunk in chunks:
+        lines.extend(chunk)
+    return lines
 
 
 def _bounded_lines(path: Path, *, max_bytes: int, max_lines: int) -> list[str]:
@@ -160,6 +227,9 @@ def _normalize_transaction(raw: Any) -> dict[str, Any] | None:
     context_usage = _safe_context_usage(raw.get("context_usage"))
     if context_usage is not None:
         transaction["context_usage"] = context_usage
+    iteration_usage = _safe_iteration_usage(raw.get("iteration_usage"))
+    if iteration_usage is not None:
+        transaction["iteration_usage"] = iteration_usage
     return transaction
 
 
@@ -174,6 +244,20 @@ def _safe_context_usage(raw: Any) -> dict[str, int] | None:
         "threshold_tokens": _safe_nonnegative_int(raw.get("threshold_tokens")),
     }
     if not any(usage.values()):
+        return None
+    return usage
+
+
+def _safe_iteration_usage(raw: Any) -> dict[str, int] | None:
+    if not isinstance(raw, dict):
+        return None
+    usage = {
+        "current": _safe_nonnegative_int(raw.get("current")),
+        "maximum": _safe_nonnegative_int(raw.get("maximum")),
+    }
+    # Without a meaningful budget there is nothing to render as ``current / max``,
+    # so omit it (this also drops legacy records that never carried the field).
+    if usage["maximum"] <= 0:
         return None
     return usage
 
@@ -214,6 +298,7 @@ def _summarize_transactions(records: list[dict[str, Any]]) -> list[dict[str, Any
                 "updated_at": transaction.get("updated_at"),
                 "completed_at": transaction.get("completed_at"),
                 "context_usage": transaction.get("context_usage"),
+                "iteration_usage": transaction.get("iteration_usage"),
                 "operation_count": 0,
                 "last_operation": None,
                 "_sort_at": record.get("written_at"),
@@ -244,6 +329,8 @@ def _merge_transaction(summary: dict[str, Any], transaction: dict[str, Any], wri
         summary["completed_at"] = transaction.get("completed_at")
     if transaction.get("context_usage") is not None:
         summary["context_usage"] = transaction.get("context_usage")
+    if transaction.get("iteration_usage") is not None:
+        summary["iteration_usage"] = transaction.get("iteration_usage")
     summary["_sort_at"] = max(
         _sort_value(summary.get("_sort_at")),
         _sort_value(written_at),

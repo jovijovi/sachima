@@ -144,6 +144,30 @@ def test_text_renderer_does_not_show_zero_ratio_for_partial_context_usage():
     assert "0 / 128,000" not in compression_text
 
 
+def test_text_renderer_includes_work_rounds_when_present():
+    from gateway.progress.renderers import render_text_panel
+
+    tracker = ProgressTracker(transaction_id="tx-rounds", title="Rounds task")
+    tracker.update_iteration_usage(current_rounds=12, max_rounds=90)
+
+    text = render_text_panel(tracker.snapshot(), tool_progress_mode="off")
+
+    assert "Rounds" in text
+    assert "12 / 90" in text
+
+
+def test_text_renderer_omits_work_rounds_without_meaningful_max():
+    from gateway.progress.renderers import render_text_panel
+
+    tracker = ProgressTracker(transaction_id="tx-rounds-empty", title="No max rounds")
+    tracker.update_iteration_usage(current_rounds=0, max_rounds=0)
+
+    text = render_text_panel(tracker.snapshot(), tool_progress_mode="off")
+
+    assert "Rounds" not in text
+    assert "0 / 0" not in text
+
+
 def test_text_renderer_omits_unsafe_dashboard_link():
     from gateway.progress.renderers import render_text_panel
 

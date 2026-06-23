@@ -217,3 +217,43 @@ def test_tracker_context_usage_peak_is_monotonic_and_values_are_bounded():
     assert usage.context_window == 0
     assert usage.peak_tokens == 50_000
     assert usage.compression_count == 0
+
+
+def test_tracker_snapshot_defaults_iteration_usage_to_none():
+    tracker = ProgressTracker("tx-rounds-none", "No rounds yet")
+
+    assert tracker.snapshot().iteration_usage is None
+
+
+def test_tracker_snapshot_carries_iteration_usage():
+    tracker = ProgressTracker("tx-rounds", "Work rounds")
+
+    tracker.update_iteration_usage(current_rounds=12, max_rounds=90)
+
+    usage = tracker.snapshot().iteration_usage
+    assert usage is not None
+    assert usage.current == 12
+    assert usage.maximum == 90
+
+
+def test_tracker_iteration_usage_clamps_negative_and_bad_values():
+    tracker = ProgressTracker("tx-rounds-bad", "Work rounds")
+
+    tracker.update_iteration_usage(current_rounds=-5, max_rounds="bad")
+
+    usage = tracker.snapshot().iteration_usage
+    assert usage is not None
+    assert usage.current == 0
+    assert usage.maximum == 0
+
+
+def test_tracker_iteration_usage_partial_update_preserves_previous_values():
+    tracker = ProgressTracker("tx-rounds-partial", "Work rounds")
+
+    tracker.update_iteration_usage(current_rounds=3, max_rounds=90)
+    tracker.update_iteration_usage(current_rounds=7)
+
+    usage = tracker.snapshot().iteration_usage
+    assert usage is not None
+    assert usage.current == 7
+    assert usage.maximum == 90

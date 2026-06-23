@@ -253,6 +253,33 @@ def test_feishu_progress_card_includes_compact_context_usage_summary():
     assert "自动压缩 2 次" in rendered
 
 
+def test_feishu_progress_card_includes_work_rounds_in_zh_and_en():
+    from gateway.progress.renderers import render_feishu_progress_card
+
+    tracker = ProgressTracker(transaction_id="tx-rounds", title="工作轮数展示")
+    tracker.update_iteration_usage(current_rounds=12, max_rounds=90)
+
+    zh = _rendered(render_feishu_progress_card(tracker.snapshot(), tool_progress_mode="off"))
+    en = _rendered(render_feishu_progress_card(tracker.snapshot(), language="en", tool_progress_mode="off"))
+
+    assert "工作轮数" in zh
+    assert "12 / 90" in zh
+    assert "Rounds" in en
+    assert "12 / 90" in en
+
+
+def test_feishu_progress_card_omits_work_rounds_without_meaningful_max():
+    from gateway.progress.renderers import render_feishu_progress_card
+
+    tracker = ProgressTracker(transaction_id="tx-rounds-empty", title="无有效轮数")
+    tracker.update_iteration_usage(current_rounds=0, max_rounds=0)
+
+    rendered = _rendered(render_feishu_progress_card(tracker.snapshot(), tool_progress_mode="off"))
+
+    assert "工作轮数" not in rendered
+    assert "0 / 0" not in rendered
+
+
 def test_feishu_progress_card_includes_sanitized_model_and_account_limits_in_order():
     from gateway.progress.events import ContextUsageSnapshot, TransactionSnapshot
     from gateway.progress.renderers import render_feishu_progress_card

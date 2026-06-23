@@ -10,7 +10,12 @@ import shlex
 from typing import Any, Iterable
 from urllib.parse import urlsplit, urlunsplit
 
-from gateway.progress.events import ContextUsageSnapshot, ProgressOperation, TransactionSnapshot
+from gateway.progress.events import (
+    ContextUsageSnapshot,
+    IterationUsageSnapshot,
+    ProgressOperation,
+    TransactionSnapshot,
+)
 from gateway.progress.redaction import sanitize_for_progress
 
 _STATUS_LABELS = {
@@ -155,6 +160,9 @@ def render_text_panel(
     context_line = _context_usage_text_line(snapshot.context_usage)
     if context_line:
         lines.append(context_line)
+    iteration_line = _iteration_usage_text_line(snapshot.iteration_usage)
+    if iteration_line:
+        lines.append(iteration_line)
 
     operations = list(snapshot.recent_operations or ())
     if mode != "off":
@@ -213,6 +221,9 @@ def render_feishu_progress_card(
     context_detail = _context_usage_feishu_line(snapshot.context_usage, language=lang)
     if context_detail:
         details.append(context_detail)
+    iteration_detail = _iteration_usage_feishu_line(snapshot.iteration_usage, language=lang)
+    if iteration_detail:
+        details.append(iteration_detail)
     account_detail = _feishu_account_limit_detail(snapshot.account_limit_lines, labels=labels, language=lang)
     if account_detail:
         details.append(account_detail)
@@ -366,6 +377,7 @@ def _feishu_labels(language: str) -> dict[str, str]:
             "duration": "Duration",
             "model": "Model",
             "context": "Context",
+            "rounds": "Rounds",
             "account_limits": "Account limits",
             "recent_operations": "Recent operations",
             "running": "running",
@@ -379,6 +391,7 @@ def _feishu_labels(language: str) -> dict[str, str]:
         "duration": "耗时",
         "model": "模型",
         "context": "上下文",
+        "rounds": "工作轮数",
         "account_limits": "账户限额",
         "recent_operations": "最近操作",
         "running": "进行中",
@@ -477,6 +490,35 @@ def _context_usage_feishu_line(usage: ContextUsageSnapshot | None, *, language: 
     label = _feishu_labels(lang)["context"]
     prefix = _feishu_metric_label("🧠", label, lang)
     return sanitize_for_progress(f"{prefix} {body}", max_len=240)
+
+
+def _iteration_usage_text_line(usage: IterationUsageSnapshot | None) -> str:
+    body = _iteration_usage_body(usage)
+    if not body:
+        return ""
+    return sanitize_for_progress(f"🔁 **Rounds:** {body}", max_len=120)
+
+
+def _iteration_usage_feishu_line(usage: IterationUsageSnapshot | None, *, language: str = "zh") -> str:
+    body = _iteration_usage_body(usage)
+    if not body:
+        return ""
+    lang = _normalize_feishu_language(language)
+    label = _feishu_labels(lang)["rounds"]
+    prefix = _feishu_metric_label("🔁", label, lang)
+    return sanitize_for_progress(f"{prefix} {body}", max_len=120)
+
+
+def _iteration_usage_body(usage: IterationUsageSnapshot | None) -> str:
+    if usage is None:
+        return ""
+    current = _safe_nonnegative_int(getattr(usage, "current", 0))
+    maximum = _safe_nonnegative_int(getattr(usage, "maximum", 0))
+    # A zero/absent budget cannot be shown as ``current / max``; omit it entirely
+    # rather than render a meaningless ``0 / 0``.
+    if maximum <= 0:
+        return ""
+    return f"{current} / {maximum}"
 
 
 def _context_usage_body(usage: ContextUsageSnapshot, *, language: str) -> str:

@@ -8,9 +8,22 @@ import time
 from pathlib import Path
 from typing import Any, Protocol
 
-from gateway.progress.events import ContextUsageSnapshot, ProgressOperation, TransactionSnapshot
+from gateway.progress.events import (
+    ContextUsageSnapshot,
+    IterationUsageSnapshot,
+    ProgressOperation,
+    TransactionSnapshot,
+)
 from gateway.progress.redaction import sanitize_value_for_progress
 from hermes_constants import get_hermes_home
+
+# Size-based JSONL rotation defaults. ``events.jsonl`` is rotated to
+# ``events.jsonl.1`` (and existing archives shift up) once the next append
+# would push the live file past ``DEFAULT_EVENT_STORE_MAX_BYTES``; at most
+# ``DEFAULT_EVENT_STORE_MAX_FILES`` numbered archives are retained. A
+# ``max_bytes`` of 0 disables rotation (legacy unbounded append).
+DEFAULT_EVENT_STORE_MAX_BYTES = 50 * 1024 * 1024  # 50 MiB
+DEFAULT_EVENT_STORE_MAX_FILES = 5
 
 
 class ProgressEventStore(Protocol):
@@ -28,8 +41,16 @@ class JsonlProgressEventStore:
     _lock_registry: dict[str, threading.Lock] = {}
     _lock_registry_guard = threading.Lock()
 
-    def __init__(self, path: str | Path | None = None):
+    def __init__(
+        self,
+        path: str | Path | None = None,
+        *,
+        max_bytes: int | None = None,
+        max_files: int | None = None,
+    ):
         self.path = Path(path) if path is not None else default_progress_events_path()
+        self.max_bytes = _normalize_event_store_max_bytes(max_bytes)
+        self.max_files = _normalize_event_store_max_files(max_files)
         self._lock = self._lock_for_path(self.path)
 
     @classmethod
@@ -52,10 +73,52 @@ class JsonlProgressEventStore:
 
     def _append_record(self, record: dict[str, Any]) -> None:
         line = json.dumps(record, ensure_ascii=False, sort_keys=True, default=str) + "\n"
+        incoming_bytes = len(line.encode("utf-8"))
         with self._lock:
             self.path.parent.mkdir(parents=True, exist_ok=True)
+            self._maybe_rotate_locked(incoming_bytes)
             with self.path.open("a", encoding="utf-8") as handle:
                 handle.write(line)
+
+    def _maybe_rotate_locked(self, incoming_bytes: int) -> None:
+        """Rotate the live JSONL file when the next append would exceed the cap.
+
+        The caller must hold ``self._lock`` so rotation is atomic with respect to
+        concurrent in-process writers sharing this path. Rotation is best-effort:
+        any OS error is swallowed and the record is still appended to the current
+        file rather than being dropped.
+        """
+
+        if self.max_bytes <= 0:
+            return
+        try:
+            current_size = self.path.stat().st_size
+        except OSError:
+            return
+        if current_size <= 0:
+            # Never rotate an empty/just-created file: a single record larger
+            # than the cap would otherwise rotate empty files indefinitely.
+            return
+        if current_size + incoming_bytes <= self.max_bytes:
+            return
+        try:
+            self._rotate_locked()
+        except OSError:
+            return
+
+    def _rotate_locked(self) -> None:
+        # Drop the oldest archive (the one at the retention cap), shift every
+        # remaining archive up one numeric suffix, then move the live file to
+        # ``.1``. The next append re-creates ``events.jsonl`` in append mode.
+        self._rotated_path(self.max_files).unlink(missing_ok=True)
+        for index in range(self.max_files - 1, 0, -1):
+            source = self._rotated_path(index)
+            if source.exists():
+                source.replace(self._rotated_path(index + 1))
+        self.path.replace(self._rotated_path(1))
+
+    def _rotated_path(self, index: int) -> Path:
+        return self.path.with_name(f"{self.path.name}.{index}")
 
 
 def default_progress_events_path() -> Path:
@@ -74,7 +137,31 @@ def build_progress_event_store(config: dict[str, Any] | None) -> ProgressEventSt
     store_type = str(config.get("event_store", "jsonl") or "jsonl").strip().lower()
     if store_type != "jsonl":
         return None
-    return JsonlProgressEventStore(config.get("event_store_path") or None)
+    return JsonlProgressEventStore(
+        config.get("event_store_path") or None,
+        max_bytes=config.get("event_store_max_bytes"),
+        max_files=config.get("event_store_max_files"),
+    )
+
+
+def _normalize_event_store_max_bytes(value: Any) -> int:
+    if value is None or isinstance(value, bool):
+        return DEFAULT_EVENT_STORE_MAX_BYTES
+    try:
+        number = int(value)
+    except Exception:
+        return DEFAULT_EVENT_STORE_MAX_BYTES
+    return max(0, number)  # 0 disables rotation (legacy unbounded append)
+
+
+def _normalize_event_store_max_files(value: Any) -> int:
+    if value is None or isinstance(value, bool):
+        return DEFAULT_EVENT_STORE_MAX_FILES
+    try:
+        number = int(value)
+    except Exception:
+        return DEFAULT_EVENT_STORE_MAX_FILES
+    return max(1, number)  # always retain at least one archive when rotating
 
 
 def progress_snapshot_to_record(snapshot: TransactionSnapshot) -> dict[str, Any]:
@@ -131,6 +218,8 @@ def _safe_transaction(snapshot: TransactionSnapshot) -> dict[str, Any]:
     }
     if snapshot.context_usage is not None:
         transaction["context_usage"] = _safe_context_usage(snapshot.context_usage)
+    if snapshot.iteration_usage is not None:
+        transaction["iteration_usage"] = _safe_iteration_usage(snapshot.iteration_usage)
     return transaction
 
 
@@ -141,6 +230,13 @@ def _safe_context_usage(usage: ContextUsageSnapshot) -> dict[str, int]:
         "peak_tokens": _safe_nonnegative_int(usage.peak_tokens),
         "compression_count": _safe_nonnegative_int(usage.compression_count),
         "threshold_tokens": _safe_nonnegative_int(usage.threshold_tokens),
+    }
+
+
+def _safe_iteration_usage(usage: IterationUsageSnapshot) -> dict[str, int]:
+    return {
+        "current": _safe_nonnegative_int(usage.current),
+        "maximum": _safe_nonnegative_int(usage.maximum),
     }
 
 
