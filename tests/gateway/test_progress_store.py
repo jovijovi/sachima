@@ -154,6 +154,37 @@ def test_progress_records_redact_secret_shaped_todo_items(tmp_path):
     assert "[REDACTED]" in rendered
 
 
+def test_progress_records_redact_bare_provider_key_shapes_in_todo_items(tmp_path):
+    store_path = tmp_path / "events.jsonl"
+    store = JsonlProgressEventStore(store_path)
+    bare_key = "sk-" + "test-" + ("a" * 32)
+    route = "/health"
+    path = "/data/agents/workspace/config.yaml"
+    snapshot = TransactionSnapshot(
+        transaction_id="tx-todo-bare-secret",
+        title="Persist bare secret todo",
+        status="running",
+        started_at=1.0,
+        updated_at=2.0,
+        todo_items=(
+            TodoItemSnapshot(
+                id="1",
+                content=f"Implement {route} with {bare_key}; inspect {path}",
+                status="pending",
+            ),
+        ),
+    )
+
+    store.append_snapshot(snapshot)
+
+    rendered = store_path.read_text(encoding="utf-8")
+    assert bare_key not in rendered
+    assert route in rendered
+    assert path in rendered
+    assert "[REDACTED]" in rendered
+
+
+
 def test_progress_records_preserve_local_paths_in_todo_items(tmp_path):
     store_path = tmp_path / "events.jsonl"
     store = JsonlProgressEventStore(store_path)

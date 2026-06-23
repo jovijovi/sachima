@@ -336,6 +336,30 @@ def test_update_todo_items_sanitizes_secret_shaped_fields():
     assert "[REDACTED]" in rendered
 
 
+def test_update_todo_items_redacts_bare_provider_key_shapes():
+    tracker = ProgressTracker("tx-todo-bare-secret", "Bare secret todos")
+    bare_key = "sk-" + "test-" + ("a" * 32)
+    route = "/metrics"
+    path = "/home/ecs-user/.hermes/config.yaml"
+
+    tracker.update_todo_items(
+        [
+            {
+                "id": "bare-secret",
+                "content": f"Implement route {route} using {bare_key} and inspect {path}",
+                "status": "pending",
+            }
+        ],
+    )
+
+    rendered = repr(tracker.snapshot())
+    assert bare_key not in rendered
+    assert route in rendered
+    assert path in rendered
+    assert "[REDACTED]" in rendered
+
+
+
 def test_update_todo_items_preserves_local_paths_without_independent_secrets():
     tracker = ProgressTracker("tx-todo-path", "Path todos")
 

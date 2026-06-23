@@ -136,6 +136,28 @@ def test_sanitize_for_progress_redacts_json_style_sensitive_keys_and_quoted_assi
     assert rendered.count("[REDACTED]") >= 4
 
 
+def test_sanitize_for_progress_redacts_bare_provider_key_shapes():
+    bare_openai_key = "sk-" + "test-" + ("a" * 32)
+    project_key = "sk-" + "proj-" + ("b" * 32)
+    github_pat = "ghp_" + ("C" * 36)
+    google_key = "AIza" + ("D" * 35)
+    safe_route = "/health"
+    safe_path = "/home/ecs-user/.hermes/config.yaml"
+
+    rendered = sanitize_for_progress(
+        f"implement {safe_route} using {bare_openai_key}; "
+        f"project={project_key}; pat {github_pat}; google {google_key}; "
+        f"read {safe_path}"
+    )
+
+    assert safe_route in rendered
+    assert safe_path in rendered
+    for secret in (bare_openai_key, project_key, github_pat, google_key):
+        assert secret not in rendered
+    assert rendered.count("[REDACTED]") >= 4
+
+
+
 def test_sanitize_for_progress_never_raises_and_respects_max_len():
     data = {
         "bad": BadRepr(),
