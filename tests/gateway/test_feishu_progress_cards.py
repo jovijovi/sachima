@@ -14,6 +14,116 @@ def _rendered(card: dict) -> str:
     return json.dumps(card, ensure_ascii=False, sort_keys=True)
 
 
+def test_feishu_progress_card_renders_flat_todo_block_before_operations():
+    from gateway.progress.renderers import render_feishu_progress_card
+
+    tracker = ProgressTracker(transaction_id="tx-todo", title="查看任务清单")
+    tracker.record_tool_started("read_file", "a.py")
+    tracker.update_todo_items([
+        {"id": "1", "content": "准备实现方案", "status": "completed"},
+        {"id": "2", "content": "修改代码", "status": "completed"},
+        {"id": "3", "content": "跑测试", "status": "in_progress"},
+        {"id": "4", "content": "Codex 复审", "status": "pending"},
+        {"id": "5", "content": "提交 PR", "status": "pending"},
+    ])
+
+    card = render_feishu_progress_card(tracker.snapshot(), tool_progress_mode="all")
+    rendered = _rendered(card)
+
+    assert "待办 5" in rendered
+    assert "✅ ~~准备实现方案~~" in rendered  # completed → strikethrough
+    assert "➡️ 跑测试" in rendered  # in_progress → arrow
+    assert "○ 提交 PR" in rendered  # pending → hollow circle
+    # The todo block precedes the recent-operations block.
+    assert rendered.index("待办") < rendered.index("最近操作")
+
+
+def test_feishu_progress_card_renders_todo_block_english_labels():
+    from gateway.progress.renderers import render_feishu_progress_card
+
+    tracker = ProgressTracker(transaction_id="tx-todo-en", title="Show todos")
+    tracker.update_todo_items([
+        {"id": "1", "content": "Prepare plan", "status": "completed"},
+        {"id": "2", "content": "Run tests", "status": "in_progress"},
+    ])
+
+    card = render_feishu_progress_card(tracker.snapshot(), language="en", tool_progress_mode="off")
+    rendered = _rendered(card)
+
+    assert "To-dos 2" in rendered
+    assert "✅ ~~Prepare plan~~" in rendered
+    assert "➡️ Run tests" in rendered
+    assert "待办" not in rendered
+
+
+def test_feishu_progress_card_renders_two_level_todo_groups():
+    from gateway.progress.renderers import render_feishu_progress_card
+
+    tracker = ProgressTracker(transaction_id="tx-todo-2level", title="分组任务")
+    tracker.update_todo_items([
+        {"id": "pr", "content": "PR 验证", "status": "in_progress"},
+        {"id": "local", "content": "本地测试", "status": "completed", "parent_id": "pr"},
+        {"id": "codex", "content": "Codex 复审", "status": "in_progress", "parent_id": "pr"},
+        {"id": "ci", "content": "CI 等待", "status": "pending", "parent_id": "pr"},
+        {"id": "card", "content": "提审卡", "status": "pending", "parent_id": "pr"},
+        {"id": "release", "content": "发布", "status": "pending"},
+        {"id": "merge", "content": "合并", "status": "pending", "parent_id": "release"},
+    ])
+
+    card = render_feishu_progress_card(tracker.snapshot(), tool_progress_mode="off")
+    rendered = _rendered(card)
+
+    assert "待办 7" in rendered
+    assert "▸ PR 验证 1/4" in rendered  # one of four children completed
+    assert "▸ 发布 0/1" in rendered
+    # Children render indented under their parent group.
+    assert "  ✅ ~~本地测试~~" in rendered
+    assert "  ➡️ Codex 复审" in rendered
+
+
+def test_feishu_progress_card_omits_todo_block_when_empty():
+    from gateway.progress.renderers import render_feishu_progress_card
+
+    tracker = ProgressTracker(transaction_id="tx-todo-empty", title="空任务")
+
+    card = render_feishu_progress_card(tracker.snapshot(), tool_progress_mode="off")
+    rendered = _rendered(card)
+
+    # "待办" must not appear when the todo list is empty (block omitted entirely).
+    assert "待办" not in rendered
+
+
+def test_feishu_progress_card_todo_block_does_not_leak_secrets():
+    from gateway.progress.renderers import render_feishu_progress_card
+
+    tracker = ProgressTracker(transaction_id="tx-todo-secret", title="敏感任务")
+    leak = "card-todo-" + "secret"
+    tracker.update_todo_items([
+        {"id": "1", "content": "Authorization: Bearer " + leak, "status": "pending"},
+    ])
+
+    card = render_feishu_progress_card(tracker.snapshot(), tool_progress_mode="off")
+    rendered = _rendered(card)
+
+    assert leak not in rendered
+    assert "待办 1" in rendered
+
+
+def test_feishu_progress_card_todo_block_caps_lines_with_overflow_note():
+    from gateway.progress.renderers import render_feishu_progress_card
+
+    tracker = ProgressTracker(transaction_id="tx-todo-overflow", title="超量任务")
+    tracker.update_todo_items([
+        {"id": str(i), "content": f"任务 {i}", "status": "pending"} for i in range(15)
+    ])
+
+    card = render_feishu_progress_card(tracker.snapshot(), tool_progress_mode="off")
+    rendered = _rendered(card)
+
+    assert "待办 15" in rendered
+    assert "还有" in rendered  # overflow note covers the hidden items
+
+
 def test_feishu_progress_card_running_shape_uses_safe_operation_labels():
     from gateway.progress.renderers import render_feishu_progress_card
 

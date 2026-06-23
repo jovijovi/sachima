@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Activity,
@@ -5,6 +6,7 @@ import {
   CheckCircle2,
   ChevronRight,
   Clock,
+  ListChecks,
   Loader2,
   RefreshCw,
   Terminal,
@@ -15,6 +17,7 @@ import { api } from "@/lib/api";
 import type {
   ProgressEventRecord,
   ProgressIterationUsage,
+  ProgressTodoItem,
   ProgressTransactionSummary,
 } from "@/lib/api";
 import { cn, timeAgo } from "@/lib/utils";
@@ -65,6 +68,120 @@ function roundsLabel(usage?: ProgressIterationUsage | null): string | null {
   return `${usage.current} / ${usage.maximum}`;
 }
 
+// ── Structured todo preview (two-level, capped) ──────────────────────────
+const TODO_GLYPH: Record<string, string> = {
+  completed: "✅",
+  in_progress: "➡️",
+  pending: "○",
+  cancelled: "⚪",
+};
+const TODO_MAX_VISIBLE = 12;
+
+function todoGlyph(status?: string | null): string {
+  return TODO_GLYPH[(status || "").toLowerCase()] ?? "○";
+}
+
+function todoStruck(status?: string | null): boolean {
+  const normalized = (status || "").toLowerCase();
+  return normalized === "completed" || normalized === "cancelled";
+}
+
+function todoDepth(item: ProgressTodoItem): number {
+  return (item.depth ?? 0) >= 1 ? 1 : 0;
+}
+
+/** Group a flat todo list into ordered two-level blocks. A child whose
+ *  parent_id resolves to a top-level id nests under it; roots and any
+ *  orphaned/over-nested children each become their own block. */
+function buildTodoBlocks(
+  items: ProgressTodoItem[],
+): Array<{ top: ProgressTodoItem; children: ProgressTodoItem[] }> {
+  const rootIds = new Set(
+    items.filter((it) => todoDepth(it) === 0 && it.id).map((it) => it.id),
+  );
+  const childrenByParent = new Map<string, ProgressTodoItem[]>();
+  for (const it of items) {
+    if (todoDepth(it) === 1 && it.parent_id && rootIds.has(it.parent_id)) {
+      const list = childrenByParent.get(it.parent_id) ?? [];
+      list.push(it);
+      childrenByParent.set(it.parent_id, list);
+    }
+  }
+  const blocks: Array<{ top: ProgressTodoItem; children: ProgressTodoItem[] }> = [];
+  for (const it of items) {
+    if (todoDepth(it) === 1 && it.parent_id && rootIds.has(it.parent_id)) continue;
+    const children = todoDepth(it) === 0 ? childrenByParent.get(it.id) ?? [] : [];
+    blocks.push({ top: it, children });
+  }
+  return blocks;
+}
+
+function TodoItemRow({ item, indent }: { item: ProgressTodoItem; indent?: boolean }) {
+  return (
+    <div className={cn("flex items-start gap-1.5 text-xs normal-case", indent && "pl-4")}>
+      <span aria-hidden className="shrink-0 leading-5">
+        {todoGlyph(item.status)}
+      </span>
+      <span
+        className={cn(
+          "min-w-0 break-words leading-5",
+          todoStruck(item.status) ? "text-muted-foreground line-through" : "text-foreground",
+        )}
+      >
+        {item.content}
+      </span>
+    </div>
+  );
+}
+
+function TodoBlock({ items }: { items: ProgressTodoItem[] }) {
+  if (!items || items.length === 0) return null;
+  const blocks = buildTodoBlocks(items);
+  const total = blocks.reduce((sum, block) => sum + 1 + block.children.length, 0);
+  const rows: ReactNode[] = [];
+  for (const block of blocks) {
+    if (rows.length >= TODO_MAX_VISIBLE) break;
+    if (block.children.length > 0) {
+      const done = block.children.filter(
+        (child) => (child.status || "").toLowerCase() === "completed",
+      ).length;
+      rows.push(
+        <div
+          key={`group-${block.top.id}`}
+          className="flex items-center gap-1.5 text-xs font-medium text-foreground normal-case"
+        >
+          <span aria-hidden>▸</span>
+          <span className="min-w-0 break-words">{block.top.content}</span>
+          <span className="text-muted-foreground">
+            {done}/{block.children.length}
+          </span>
+        </div>,
+      );
+      for (const child of block.children) {
+        if (rows.length >= TODO_MAX_VISIBLE) break;
+        rows.push(<TodoItemRow key={`child-${child.id}`} item={child} indent />);
+      }
+    } else {
+      rows.push(<TodoItemRow key={`flat-${block.top.id}`} item={block.top} />);
+    }
+  }
+  const hidden = total - rows.length;
+  return (
+    <div className="mt-3 border-t border-border/60 pt-3">
+      <div className="mb-1.5 flex items-center gap-1.5 text-xs font-semibold text-foreground normal-case">
+        <ListChecks className="h-3.5 w-3.5" />
+        To-dos ({items.length})
+      </div>
+      <div className="flex flex-col gap-1">
+        {rows}
+        {hidden > 0 && (
+          <div className="text-[11px] text-muted-foreground normal-case">… {hidden} more</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function TransactionRow({
   tx,
   selected,
@@ -112,6 +229,12 @@ function TransactionRow({
               <>
                 <span>·</span>
                 <span>Rounds: {rounds}</span>
+              </>
+            )}
+            {tx.todo_items && tx.todo_items.length > 0 && (
+              <>
+                <span>·</span>
+                <span>{tx.todo_items.length} to-dos</span>
               </>
             )}
             <span>·</span>
@@ -339,6 +462,9 @@ export default function ProgressPage() {
                       <span>Rounds: {roundsLabel(selected.iteration_usage)}</span>
                     )}
                   </div>
+                  {selected.todo_items && selected.todo_items.length > 0 && (
+                    <TodoBlock items={selected.todo_items} />
+                  )}
                 </div>
                 <div className="max-h-[560px] overflow-y-auto">
                   {events.length === 0 ? (

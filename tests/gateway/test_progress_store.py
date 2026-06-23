@@ -5,7 +5,7 @@ import threading
 import time
 from pathlib import Path
 
-from gateway.progress.events import ProgressOperation, TransactionSnapshot
+from gateway.progress.events import ProgressOperation, TodoItemSnapshot, TransactionSnapshot
 from gateway.progress.store import (
     JsonlProgressEventStore,
     build_progress_event_store,
@@ -99,6 +99,70 @@ def test_progress_records_include_sanitized_iteration_usage(tmp_path):
 
     record = _read_jsonl(store_path)[0]
     assert record["transaction"]["iteration_usage"] == {"current": 12, "maximum": 90}
+
+
+def test_progress_records_include_sanitized_todo_items(tmp_path):
+    store_path = tmp_path / "events.jsonl"
+    store = JsonlProgressEventStore(store_path)
+    tracker = ProgressTracker("tx-todo", "Persist todo items")
+    tracker.update_todo_items([
+        {"id": "pr", "content": "PR verification", "status": "in_progress"},
+        {"id": "local", "content": "Local tests", "status": "completed", "parent_id": "pr"},
+    ])
+
+    store.append_snapshot(tracker.snapshot())
+
+    record = _read_jsonl(store_path)[0]
+    todo_items = record["transaction"]["todo_items"]
+    assert todo_items == [
+        {"id": "pr", "content": "PR verification", "status": "in_progress", "depth": 0, "source": "todo_tool"},
+        {
+            "id": "local",
+            "content": "Local tests",
+            "status": "completed",
+            "depth": 1,
+            "source": "todo_tool",
+            "parent_id": "pr",
+        },
+    ]
+
+
+def test_progress_records_redact_secret_shaped_todo_items(tmp_path):
+    store_path = tmp_path / "events.jsonl"
+    store = JsonlProgressEventStore(store_path)
+    leak = "store-todo-" + "secret"
+    snapshot = TransactionSnapshot(
+        transaction_id="tx-todo-secret",
+        title="Persist secret todo",
+        status="running",
+        started_at=1.0,
+        updated_at=2.0,
+        todo_items=(
+            TodoItemSnapshot(
+                id="1",
+                content="Authorization: Bearer " + leak,
+                status="pending",
+                source="token=" + leak,
+            ),
+        ),
+    )
+
+    store.append_snapshot(snapshot)
+
+    rendered = store_path.read_text(encoding="utf-8")
+    assert leak not in rendered
+    assert "[REDACTED]" in rendered
+
+
+def test_progress_records_include_empty_todo_items_to_clear_stale_state(tmp_path):
+    store_path = tmp_path / "events.jsonl"
+    store = JsonlProgressEventStore(store_path)
+    tracker = ProgressTracker("tx-no-todo", "No todos")
+
+    store.append_snapshot(tracker.snapshot())
+
+    record = _read_jsonl(store_path)[0]
+    assert record["transaction"]["todo_items"] == []
 
 
 def _rotation_snapshot() -> TransactionSnapshot:

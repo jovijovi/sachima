@@ -3,7 +3,7 @@
 import threading
 from dataclasses import is_dataclass
 
-from gateway.progress.events import ProgressOperation, TransactionSnapshot
+from gateway.progress.events import ProgressOperation, TodoItemSnapshot, TransactionSnapshot
 from gateway.progress.tracker import ProgressTracker
 
 
@@ -23,6 +23,7 @@ def test_tracker_snapshot_is_transaction_dataclass_with_timestamps():
     assert snapshot.recent_operations == ()
     assert snapshot.model_display is None
     assert snapshot.account_limit_lines == ()
+    assert snapshot.todo_items == ()
     assert isinstance(tracker._lock, type(threading.Lock()))
 
 
@@ -257,3 +258,112 @@ def test_tracker_iteration_usage_partial_update_preserves_previous_values():
     assert usage is not None
     assert usage.current == 7
     assert usage.maximum == 90
+
+
+def test_update_todo_items_carries_flat_list():
+    tracker = ProgressTracker("tx-todo-flat", "Flat todos")
+
+    returned = tracker.update_todo_items([
+        {"id": "1", "content": "Prepare plan", "status": "completed"},
+        {"id": "2", "content": "Run tests", "status": "in_progress"},
+        {"id": "3", "content": "Submit PR", "status": "pending"},
+    ])
+
+    items = tracker.snapshot().todo_items
+    assert returned == items
+    assert all(isinstance(it, TodoItemSnapshot) for it in items)
+    assert [it.content for it in items] == ["Prepare plan", "Run tests", "Submit PR"]
+    assert [it.status for it in items] == ["completed", "in_progress", "pending"]
+    assert all(it.depth == 0 and it.parent_id is None for it in items)
+    assert all(it.source == "todo_tool" for it in items)
+
+
+def test_update_todo_items_carries_two_level_grouping():
+    tracker = ProgressTracker("tx-todo-2level", "Grouped todos")
+
+    tracker.update_todo_items([
+        {"id": "pr", "content": "PR verification", "status": "in_progress"},
+        {"id": "local", "content": "Local tests", "status": "completed", "parent_id": "pr"},
+        {"id": "codex", "content": "Codex review", "status": "pending", "parent_id": "pr"},
+        {"id": "ship", "content": "Ship", "status": "pending"},
+    ])
+
+    items = {it.id: it for it in tracker.snapshot().todo_items}
+    assert items["pr"].depth == 0 and items["pr"].parent_id is None
+    assert items["local"].depth == 1 and items["local"].parent_id == "pr"
+    assert items["codex"].depth == 1 and items["codex"].parent_id == "pr"
+    assert items["ship"].depth == 0 and items["ship"].parent_id is None
+
+
+def test_update_todo_items_clamps_depth_to_one_for_deep_chains():
+    tracker = ProgressTracker("tx-todo-deep", "Deep chain")
+
+    tracker.update_todo_items([
+        {"id": "a", "content": "Root", "status": "pending"},
+        {"id": "b", "content": "Child", "status": "pending", "parent_id": "a"},
+        {"id": "c", "content": "Grandchild", "status": "pending", "parent_id": "b"},
+    ])
+
+    items = tracker.snapshot().todo_items
+    assert max(it.depth for it in items) == 1  # never depth 2, even for a 3-deep chain
+
+
+def test_update_todo_items_sanitizes_secret_shaped_fields():
+    tracker = ProgressTracker("tx-todo-secret", "Secret todos")
+    leak = "leak-" + "value"
+
+    tracker.update_todo_items(
+        [
+            {
+                "id": "api_key=" + leak,
+                "content": "Authorization: Bearer " + leak,
+                "status": "in_progress",
+                "parent_id": "token=" + leak,
+                "source": "password=" + leak,
+            }
+        ],
+    )
+
+    snapshot = tracker.snapshot()
+    rendered = repr(snapshot)
+    assert leak not in rendered
+    assert "[REDACTED]" in rendered
+
+
+def test_update_todo_items_caps_count_and_text_length():
+    from gateway.progress.tracker import MAX_TODO_CONTENT_CHARS, MAX_TODO_ITEMS
+
+    tracker = ProgressTracker("tx-todo-caps", "Capped todos")
+    tracker.update_todo_items(
+        [{"id": str(i), "content": "x" * 500, "status": "pending"} for i in range(MAX_TODO_ITEMS + 25)]
+    )
+
+    items = tracker.snapshot().todo_items
+    assert len(items) == MAX_TODO_ITEMS
+    assert all(len(it.content) <= MAX_TODO_CONTENT_CHARS for it in items)
+
+
+def test_update_todo_items_coerces_unknown_status_to_pending_and_survives_bad_shapes():
+    tracker = ProgressTracker("tx-todo-bad", "Bad shapes")
+
+    tracker.update_todo_items([
+        {"id": "1", "content": "Known", "status": "weird-status"},
+        "not-a-dict",
+        None,
+        {"id": "2", "content": "", "status": "completed"},
+    ])
+
+    items = tracker.snapshot().todo_items
+    by_id = {it.id: it for it in items}
+    assert by_id["1"].status == "pending"  # unknown status falls back to pending
+    assert by_id["2"].content == "(no description)"
+    # The non-dict / None entries are dropped, not fatal.
+    assert set(by_id) == {"1", "2"}
+
+
+def test_update_todo_items_empty_resets_to_tuple():
+    tracker = ProgressTracker("tx-todo-empty", "Empty todos")
+    tracker.update_todo_items([{"id": "1", "content": "x", "status": "pending"}])
+
+    assert tracker.update_todo_items([]) == ()
+    assert tracker.snapshot().todo_items == ()

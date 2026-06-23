@@ -180,6 +180,91 @@ def test_progress_reader_omits_iteration_usage_without_meaningful_max(tmp_path):
     assert result["transactions"][0]["iteration_usage"] is None
 
 
+def test_progress_reader_preserves_todo_items_in_summary_and_events(tmp_path):
+    path = tmp_path / "events.jsonl"
+    snapshot = _snapshot("tx-todo", written_at=5.0, status="completed")
+    snapshot["transaction"]["todo_items"] = [
+        {"id": "pr", "content": "PR verification", "status": "in_progress", "depth": 0, "source": "todo_tool"},
+        {
+            "id": "local",
+            "content": "Local tests",
+            "status": "completed",
+            "depth": 1,
+            "parent_id": "pr",
+            "source": "todo_tool",
+        },
+    ]
+    _write_jsonl(path, [_operation("tx-todo", written_at=3.0), snapshot])
+
+    result = list_progress_transactions(path)
+    detail = get_progress_transaction_events(path, "tx-todo")
+
+    expected = [
+        {"id": "pr", "content": "PR verification", "status": "in_progress", "depth": 0, "source": "todo_tool"},
+        {
+            "id": "local",
+            "content": "Local tests",
+            "status": "completed",
+            "depth": 1,
+            "source": "todo_tool",
+            "parent_id": "pr",
+        },
+    ]
+    assert result["transactions"][0]["todo_items"] == expected
+    assert detail["transaction"]["todo_items"] == expected
+    assert detail["events"][-1]["transaction"]["todo_items"] == expected
+
+
+def test_progress_reader_normalizes_deep_and_unsafe_todo_items(tmp_path):
+    path = tmp_path / "events.jsonl"
+    snapshot = _snapshot("tx-todo-bad", written_at=5.0, status="completed")
+    leak = "reader-todo-" + "secret"
+    snapshot["transaction"]["todo_items"] = [
+        {"id": "a", "content": "Authorization: Bearer " + leak, "status": "weird", "depth": 9},
+        "not-a-dict",
+        {"status": "pending"},  # no id and no content → dropped
+        {"id": "b", "content": "Child", "status": "completed", "depth": 5, "parent_id": "a"},
+    ]
+    _write_jsonl(path, [snapshot])
+
+    result = list_progress_transactions(path)
+    todo_items = result["transactions"][0]["todo_items"]
+
+    assert [it["id"] for it in todo_items] == ["a", "b"]
+    # depth clamped to the two-level range and unknown status coerced to pending.
+    assert all(it["depth"] <= 1 for it in todo_items)
+    assert todo_items[0]["status"] == "pending"
+    assert leak not in json.dumps(todo_items, ensure_ascii=False)
+
+
+def test_progress_reader_latest_empty_todo_snapshot_clears_stale_items(tmp_path):
+    path = tmp_path / "events.jsonl"
+    with_todos = _snapshot("tx-todo-clear", written_at=3.0, status="running")
+    with_todos["transaction"]["todo_items"] = [
+        {"id": "a", "content": "Old todo", "status": "pending", "depth": 0, "source": "todo_tool"},
+    ]
+    cleared = _snapshot("tx-todo-clear", written_at=4.0, status="completed")
+    cleared["transaction"]["todo_items"] = []
+    _write_jsonl(path, [with_todos, cleared])
+
+    result = list_progress_transactions(path)
+    detail = get_progress_transaction_events(path, "tx-todo-clear")
+
+    assert result["transactions"][0]["todo_items"] == []
+    assert detail["transaction"]["todo_items"] == []
+    assert detail["events"][-1]["transaction"]["todo_items"] == []
+
+
+def test_progress_reader_old_records_without_todo_items_remain_valid(tmp_path):
+    path = tmp_path / "events.jsonl"
+    _write_jsonl(path, [_operation("tx-legacy", written_at=2.0), _snapshot("tx-legacy", written_at=3.0)])
+
+    result = list_progress_transactions(path)
+
+    assert [tx["id"] for tx in result["transactions"]] == ["tx-legacy"]
+    assert result["transactions"][0]["todo_items"] is None
+
+
 def test_progress_reader_old_records_without_iteration_usage_remain_valid(tmp_path):
     path = tmp_path / "events.jsonl"
     _write_jsonl(path, [_operation("tx-legacy", written_at=2.0), _snapshot("tx-legacy", written_at=3.0)])

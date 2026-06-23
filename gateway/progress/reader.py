@@ -13,6 +13,15 @@ DEFAULT_MAX_BYTES = 5 * 1024 * 1024
 DEFAULT_MAX_LINES = 10_000
 DEFAULT_TRANSACTION_LIMIT = 50
 DEFAULT_EVENT_LIMIT = 200
+
+# Display bounds for the structured todo snapshot, re-applied on read because the
+# JSONL store is treated as untrusted user-facing data.
+MAX_TODO_ITEMS = 20
+MAX_TODO_CONTENT_CHARS = 240
+MAX_TODO_ID_CHARS = 120
+MAX_TODO_SOURCE_CHARS = 60
+MAX_TODO_DEPTH = 1
+_VALID_TODO_STATUSES = {"pending", "in_progress", "completed", "cancelled"}
 # Read across the live ``events.jsonl`` plus up to this many rotated archives
 # (``events.jsonl.1`` … ``events.jsonl.N``) so the dashboard keeps seeing recent
 # history after a size-based rotation.
@@ -230,7 +239,48 @@ def _normalize_transaction(raw: Any) -> dict[str, Any] | None:
     iteration_usage = _safe_iteration_usage(raw.get("iteration_usage"))
     if iteration_usage is not None:
         transaction["iteration_usage"] = iteration_usage
+    if "todo_items" in raw:
+        # Preserve an explicit empty list so a later snapshot can clear stale
+        # todo state seen in earlier operation records. Legacy records that lack
+        # the field still omit it and remain compatible.
+        transaction["todo_items"] = _safe_todo_items(raw.get("todo_items"))
     return transaction
+
+
+def _safe_todo_items(raw: Any) -> list[dict[str, Any]]:
+    """Normalize a persisted ``todo_items`` array, dropping invalid entries.
+
+    Old records without the field yield ``[]``. Each surviving item is
+    re-sanitized and re-bounded: text is redacted/capped, status defaults to
+    ``pending`` when unknown, depth is clamped to the two-level range, and
+    ``parent_id`` is kept only when present and non-empty.
+    """
+
+    if not isinstance(raw, list):
+        return []
+    items: list[dict[str, Any]] = []
+    for entry in raw[:MAX_TODO_ITEMS]:
+        if not isinstance(entry, dict):
+            continue
+        item_id = _safe_text(entry.get("id"), key="todo_id", max_len=MAX_TODO_ID_CHARS)
+        content = _safe_text(entry.get("content"), key="todo_content", max_len=MAX_TODO_CONTENT_CHARS)
+        if not item_id and not content:
+            continue
+        status = _safe_text(entry.get("status"), key="todo_status", max_len=40).lower()
+        if status not in _VALID_TODO_STATUSES:
+            status = "pending"
+        item: dict[str, Any] = {
+            "id": item_id,
+            "content": content,
+            "status": status,
+            "depth": min(MAX_TODO_DEPTH, _safe_nonnegative_int(entry.get("depth"))),
+            "source": _safe_text(entry.get("source"), key="todo_source", max_len=MAX_TODO_SOURCE_CHARS) or "todo_tool",
+        }
+        parent_id = _safe_optional_text(entry.get("parent_id"), key="todo_parent_id", max_len=MAX_TODO_ID_CHARS)
+        if parent_id:
+            item["parent_id"] = parent_id
+        items.append(item)
+    return items
 
 
 def _safe_context_usage(raw: Any) -> dict[str, int] | None:
@@ -299,6 +349,7 @@ def _summarize_transactions(records: list[dict[str, Any]]) -> list[dict[str, Any
                 "completed_at": transaction.get("completed_at"),
                 "context_usage": transaction.get("context_usage"),
                 "iteration_usage": transaction.get("iteration_usage"),
+                "todo_items": transaction.get("todo_items"),
                 "operation_count": 0,
                 "last_operation": None,
                 "_sort_at": record.get("written_at"),
@@ -331,6 +382,10 @@ def _merge_transaction(summary: dict[str, Any], transaction: dict[str, Any], wri
         summary["context_usage"] = transaction.get("context_usage")
     if transaction.get("iteration_usage") is not None:
         summary["iteration_usage"] = transaction.get("iteration_usage")
+    # Latest record with a todo snapshot wins; records without the field never
+    # clobber an earlier snapshot (a transaction rarely clears its todo list).
+    if transaction.get("todo_items") is not None:
+        summary["todo_items"] = transaction.get("todo_items")
     summary["_sort_at"] = max(
         _sort_value(summary.get("_sort_at")),
         _sort_value(written_at),
