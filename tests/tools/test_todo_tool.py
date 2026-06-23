@@ -168,6 +168,25 @@ class TestParentId:
         # An unresolved parent falls back to a top-level item rather than dangling.
         assert "parent_id" not in store.read()[1]
 
+    def test_parent_id_pointing_to_child_is_dropped(self):
+        store = TodoStore()
+        store.write([
+            {"id": "a", "content": "Root", "status": "pending"},
+            {"id": "b", "content": "Child", "status": "pending", "parent_id": "a"},
+            {"id": "c", "content": "Grandchild", "status": "pending", "parent_id": "b"},
+        ])
+        items = {item["id"]: item for item in store.read()}
+        assert items["b"]["parent_id"] == "a"
+        assert "parent_id" not in items["c"]
+
+    def test_parent_cycle_is_dropped(self):
+        store = TodoStore()
+        store.write([
+            {"id": "a", "content": "Cycle A", "status": "pending", "parent_id": "b"},
+            {"id": "b", "content": "Cycle B", "status": "pending", "parent_id": "a"},
+        ])
+        assert all("parent_id" not in item for item in store.read())
+
     def test_parent_dropped_by_item_cap_is_pruned(self):
         from tools.todo_tool import MAX_TODO_ITEMS
         # Child sits first (survives); its parent is pushed beyond the item cap

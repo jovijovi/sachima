@@ -306,6 +306,12 @@ def test_update_todo_items_clamps_depth_to_one_for_deep_chains():
 
     items = tracker.snapshot().todo_items
     assert max(it.depth for it in items) == 1  # never depth 2, even for a 3-deep chain
+    by_id = {it.id: it for it in items}
+    assert by_id["b"].parent_id == "a"
+    # c originally pointed to b, but b is already a child. Persisted/API todo
+    # parent links must point only at top-level items, so c falls back to top level.
+    assert by_id["c"].depth == 0
+    assert by_id["c"].parent_id is None
 
 
 def test_update_todo_items_sanitizes_secret_shaped_fields():
@@ -327,6 +333,29 @@ def test_update_todo_items_sanitizes_secret_shaped_fields():
     snapshot = tracker.snapshot()
     rendered = repr(snapshot)
     assert leak not in rendered
+    assert "[REDACTED]" in rendered
+
+
+def test_update_todo_items_redacts_local_paths_from_user_facing_fields():
+    tracker = ProgressTracker("tx-todo-path", "Path todos")
+
+    tracker.update_todo_items(
+        [
+            {
+                "id": "/tmp/private_dump.py",
+                "content": "Inspect /home/ecs-user/.hermes/config.yaml before /data/agents/private.json",
+                "status": "pending",
+                "parent_id": "/home/ecs-user/parent-id",
+                "source": "~/workspace/private-source.md",
+            }
+        ],
+    )
+
+    rendered = repr(tracker.snapshot())
+    assert "/tmp/private_dump.py" not in rendered
+    assert "/home/ecs-user" not in rendered
+    assert "/data/agents" not in rendered
+    assert "~/workspace" not in rendered
     assert "[REDACTED]" in rendered
 
 

@@ -443,17 +443,28 @@ def _sanitize_todo_items(items: Any, *, source: str) -> tuple[TodoItemSnapshot, 
         )
         known_ids.add(item_id)
 
-    results: list[TodoItemSnapshot] = []
+    valid_parent_by_id: dict[str, str | None] = {}
     for item in prelim:
         parent_raw = item["parent_raw"]
-        has_parent = bool(parent_raw) and parent_raw != item["id"] and parent_raw in known_ids
+        valid_parent_by_id[item["id"]] = (
+            parent_raw
+            if parent_raw and parent_raw != item["id"] and parent_raw in known_ids
+            else None
+        )
+
+    results: list[TodoItemSnapshot] = []
+    for item in prelim:
+        parent_id = valid_parent_by_id[item["id"]]
+        # Keep only one display level: children may point at top-level siblings,
+        # never at another child. Cycles therefore fall back to top-level too.
+        effective_parent_id = parent_id if parent_id and valid_parent_by_id.get(parent_id) is None else None
         results.append(
             TodoItemSnapshot(
                 id=item["id"],
                 content=item["content"],
                 status=item["status"],
-                parent_id=parent_raw if has_parent else None,
-                depth=MAX_TODO_DEPTH if has_parent else 0,
+                parent_id=effective_parent_id,
+                depth=MAX_TODO_DEPTH if effective_parent_id else 0,
                 source=item["source"],
             )
         )

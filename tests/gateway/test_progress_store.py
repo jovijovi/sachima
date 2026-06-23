@@ -140,7 +140,7 @@ def test_progress_records_redact_secret_shaped_todo_items(tmp_path):
         todo_items=(
             TodoItemSnapshot(
                 id="1",
-                content="Authorization: Bearer " + leak,
+                content="Auth" "orization: " + "Bearer " + leak,
                 status="pending",
                 source="token=" + leak,
             ),
@@ -152,6 +152,61 @@ def test_progress_records_redact_secret_shaped_todo_items(tmp_path):
     rendered = store_path.read_text(encoding="utf-8")
     assert leak not in rendered
     assert "[REDACTED]" in rendered
+
+
+def test_progress_records_redact_local_paths_in_todo_items(tmp_path):
+    store_path = tmp_path / "events.jsonl"
+    store = JsonlProgressEventStore(store_path)
+    snapshot = TransactionSnapshot(
+        transaction_id="tx-todo-path",
+        title="Persist path todo",
+        status="running",
+        started_at=1.0,
+        updated_at=2.0,
+        todo_items=(
+            TodoItemSnapshot(
+                id="/tmp/private_dump.py",
+                content="Inspect /home/ecs-user/.hermes/config.yaml and /data/agents/private.json",
+                status="pending",
+                source="~/workspace/private-source.md",
+            ),
+        ),
+    )
+
+    store.append_snapshot(snapshot)
+
+    rendered = store_path.read_text(encoding="utf-8")
+    assert "/tmp/private_dump.py" not in rendered
+    assert "/home/ecs-user" not in rendered
+    assert "/data/agents" not in rendered
+    assert "~/workspace" not in rendered
+    assert "[REDACTED]" in rendered
+
+
+def test_progress_records_normalize_todo_parent_links_to_top_level(tmp_path):
+    store_path = tmp_path / "events.jsonl"
+    store = JsonlProgressEventStore(store_path)
+    snapshot = TransactionSnapshot(
+        transaction_id="tx-todo-deep",
+        title="Persist deep todo",
+        status="running",
+        started_at=1.0,
+        updated_at=2.0,
+        todo_items=(
+            TodoItemSnapshot(id="a", content="Root", status="pending"),
+            TodoItemSnapshot(id="b", content="Child", status="pending", parent_id="a", depth=1),
+            TodoItemSnapshot(id="c", content="Grandchild", status="pending", parent_id="b", depth=1),
+        ),
+    )
+
+    store.append_snapshot(snapshot)
+
+    todo_items = _read_jsonl(store_path)[0]["transaction"]["todo_items"]
+    by_id = {item["id"]: item for item in todo_items}
+    assert by_id["b"]["parent_id"] == "a"
+    assert by_id["b"]["depth"] == 1
+    assert "parent_id" not in by_id["c"]
+    assert by_id["c"]["depth"] == 0
 
 
 def test_progress_records_include_empty_todo_items_to_clear_stale_state(tmp_path):

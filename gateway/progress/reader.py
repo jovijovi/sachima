@@ -280,6 +280,30 @@ def _safe_todo_items(raw: Any) -> list[dict[str, Any]]:
         if parent_id:
             item["parent_id"] = parent_id
         items.append(item)
+    return _normalize_todo_parent_links(items)
+
+
+def _normalize_todo_parent_links(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    known_ids = {item.get("id") for item in items if item.get("id")}
+    valid_parent_by_id: dict[str, str | None] = {}
+    for item in items:
+        item_id = str(item.get("id") or "")
+        parent_id = item.get("parent_id")
+        valid_parent_by_id[item_id] = (
+            str(parent_id)
+            if parent_id and parent_id != item_id and parent_id in known_ids
+            else None
+        )
+
+    for item in items:
+        item_id = str(item.get("id") or "")
+        parent_id = valid_parent_by_id.get(item_id)
+        if parent_id and valid_parent_by_id.get(parent_id) is None:
+            item["parent_id"] = parent_id
+            item["depth"] = MAX_TODO_DEPTH
+        else:
+            item.pop("parent_id", None)
+            item["depth"] = 0
     return items
 
 

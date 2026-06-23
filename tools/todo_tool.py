@@ -170,16 +170,28 @@ class TodoStore:
         return content
 
     def _prune_unknown_parents(self) -> None:
-        """Drop ``parent_id`` links that don't resolve to a surviving item.
+        """Drop parent links that are unknown or would create deeper nesting.
 
-        Runs after every write so a child whose parent was never supplied, or
-        was dropped by the item-count cap, falls back to a top-level item rather
-        than dangling. Keeps the display's two-level grouping well-formed.
+        Runs after every write so a child whose parent was never supplied, was
+        dropped by the item-count cap, or is itself already a child falls back to
+        a top-level item. This keeps the display's two-level grouping
+        well-formed and prevents cycles from surviving in structured state.
         """
         known_ids = {item["id"] for item in self._items}
+        valid_parent_by_id: Dict[str, Optional[str]] = {}
         for item in self._items:
             parent_id = item.get("parent_id")
-            if parent_id is not None and parent_id not in known_ids:
+            valid_parent_by_id[item["id"]] = (
+                parent_id
+                if parent_id is not None and parent_id != item["id"] and parent_id in known_ids
+                else None
+            )
+
+        for item in self._items:
+            parent_id = valid_parent_by_id[item["id"]]
+            if parent_id is not None and valid_parent_by_id.get(parent_id) is None:
+                item["parent_id"] = parent_id
+            else:
                 item.pop("parent_id", None)
 
     @staticmethod

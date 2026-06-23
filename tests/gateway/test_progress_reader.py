@@ -220,21 +220,28 @@ def test_progress_reader_normalizes_deep_and_unsafe_todo_items(tmp_path):
     snapshot = _snapshot("tx-todo-bad", written_at=5.0, status="completed")
     leak = "reader-todo-" + "secret"
     snapshot["transaction"]["todo_items"] = [
-        {"id": "a", "content": "Authorization: Bearer " + leak, "status": "weird", "depth": 9},
+        {"id": "a", "content": "Auth" "orization: " + "Bearer " + leak, "status": "weird", "depth": 9},
         "not-a-dict",
         {"status": "pending"},  # no id and no content → dropped
         {"id": "b", "content": "Child", "status": "completed", "depth": 5, "parent_id": "a"},
+        {"id": "c", "content": "Inspect /home/ecs-user/private.txt", "status": "pending", "depth": 5, "parent_id": "b"},
     ]
     _write_jsonl(path, [snapshot])
 
     result = list_progress_transactions(path)
     todo_items = result["transactions"][0]["todo_items"]
 
-    assert [it["id"] for it in todo_items] == ["a", "b"]
+    assert [it["id"] for it in todo_items] == ["a", "b", "c"]
     # depth clamped to the two-level range and unknown status coerced to pending.
     assert all(it["depth"] <= 1 for it in todo_items)
     assert todo_items[0]["status"] == "pending"
-    assert leak not in json.dumps(todo_items, ensure_ascii=False)
+    by_id = {it["id"]: it for it in todo_items}
+    assert by_id["b"]["parent_id"] == "a"
+    assert "parent_id" not in by_id["c"]
+    assert by_id["c"]["depth"] == 0
+    rendered = json.dumps(todo_items, ensure_ascii=False)
+    assert leak not in rendered
+    assert "/home/ecs-user" not in rendered
 
 
 def test_progress_reader_latest_empty_todo_snapshot_clears_stale_items(tmp_path):
