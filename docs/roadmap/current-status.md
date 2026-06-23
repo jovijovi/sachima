@@ -11,9 +11,20 @@
 ```json
 {
   "base_branch": "release/sachima",
-  "base_head": "1aede6efc946a736966c9a48c40f3d42a8f15031",
+  "base_head": "a44c99395435aaa3069c689f3cc57f7b32722cdf",
   "base_head_note": "latest first-parent base commit excluding machine status-sync self-commits",
   "latest_merged_prs": [
+    {
+      "baseRefName": "release/sachima",
+      "headRefName": "feat/progress-todo-workbench",
+      "mergeCommit": {
+        "oid": "a44c99395435aaa3069c689f3cc57f7b32722cdf"
+      },
+      "mergedAt": "2026-06-23T11:03:10Z",
+      "number": 162,
+      "title": "Add structured TODOs to progress workbench",
+      "url": "https://github.com/jovijovi/sachima/pull/162"
+    },
     {
       "baseRefName": "release/sachima",
       "headRefName": "fix/progress-execution-rounds-label",
@@ -57,17 +68,6 @@
       "number": 158,
       "title": "feat: add image manifest sequence indices",
       "url": "https://github.com/jovijovi/sachima/pull/158"
-    },
-    {
-      "baseRefName": "release/sachima",
-      "headRefName": "feat/image-manifest-history",
-      "mergeCommit": {
-        "oid": "8dc1e5ac9f7b2fb4b6f8cc04a69069acecbeb2bf"
-      },
-      "mergedAt": "2026-06-21T03:38:47Z",
-      "number": 157,
-      "title": "feat: add image manifest history",
-      "url": "https://github.com/jovijovi/sachima/pull/157"
     }
   ],
   "open_pr_count": 0,
