@@ -11,9 +11,20 @@
 ```json
 {
   "base_branch": "release/sachima",
-  "base_head": "0a55f782f00d1f096847e3acd5ff0814583bbf18",
+  "base_head": "dee39770d6580f75e51391dc167540f6d3a6a098",
   "base_head_note": "latest first-parent base commit excluding machine status-sync self-commits",
   "latest_merged_prs": [
+    {
+      "baseRefName": "release/sachima",
+      "headRefName": "feat/progress-rounds-jsonl-rotation",
+      "mergeCommit": {
+        "oid": "dee39770d6580f75e51391dc167540f6d3a6a098"
+      },
+      "mergedAt": "2026-06-23T02:47:39Z",
+      "number": 160,
+      "title": "Add progress rounds and rotate event JSONL",
+      "url": "https://github.com/jovijovi/sachima/pull/160"
+    },
     {
       "baseRefName": "release/sachima",
       "headRefName": "merge/upstream-v2026.6.19-into-release-sachima",
@@ -57,17 +68,6 @@
       "number": 156,
       "title": "docs: add workspace file predevelopment governance",
       "url": "https://github.com/jovijovi/sachima/pull/156"
-    },
-    {
-      "baseRefName": "release/sachima",
-      "headRefName": "docs/p5-temporal-pr-b-predev-governance",
-      "mergeCommit": {
-        "oid": "09308899652375c2b43c55c9de0e1d07ea0965ce"
-      },
-      "mergedAt": "2026-06-20T09:08:33Z",
-      "number": 155,
-      "title": "docs: prepare P5 Temporal PR B governance",
-      "url": "https://github.com/jovijovi/sachima/pull/155"
     }
   ],
   "open_pr_count": 0,
