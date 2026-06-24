@@ -491,8 +491,7 @@ def _feishu_todo_element(items: Iterable[Any], *, language: str) -> dict | None:
     if not materialized:
         return None
     lang = _normalize_feishu_language(language)
-    labels = _feishu_labels(lang)
-    title = f"🧾 {labels['todos']} {len(materialized)}"
+    title = _feishu_todo_title(materialized, language=lang)
 
     def fmt_flat(item: Any) -> str:
         return f"{_todo_status_glyph(item)} {_feishu_todo_text(item)}"
@@ -513,6 +512,17 @@ def _feishu_todo_element(items: Iterable[Any], *, language: str) -> dict | None:
     if hidden > 0:
         lines.append(f"… 还有 {hidden} 项" if lang == "zh" else f"… {hidden} more")
     return {"tag": "markdown", "content": f"**{title}**\n" + "\n".join(lines)}
+
+
+def _feishu_todo_title(items: Iterable[Any], *, language: str) -> str:
+    materialized = tuple(item for item in (items or ()) if item is not None)
+    total = len(materialized)
+    completed = sum(1 for item in materialized if _todo_status_key(item) == "completed")
+    percent = (completed * 100 // total) if total else 0
+    label = _feishu_labels(language)["todos"]
+    if _normalize_feishu_language(language) == "zh":
+        return f"🧾 {label} - {completed} / {total}（{percent}%）"
+    return f"🧾 {label} - {completed} / {total} ({percent}%)"
 
 
 def _todo_plain_content(item: Any) -> str:
@@ -660,7 +670,7 @@ def _feishu_labels(language: str) -> dict[str, str]:
             "rounds": "Rounds",
             "account_limits": "Account limits",
             "recent_operations": "Recent operations",
-            "todos": "To-dos",
+            "todos": "TODO",
             "running": "running",
             "tool": "Tool",
             "command": "Command",

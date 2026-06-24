@@ -259,6 +259,42 @@ def test_copy_agent_todo_progress_carries_lifecycle_and_clears_archived_items():
     assert archived_snapshot.todo_lifecycle.state == "archived"
 
 
+def test_copy_agent_todo_progress_drops_completed_prior_transaction_items():
+    from gateway.run import _copy_agent_todo_progress
+
+    old_store = TodoStore()
+    old_store.write([{"id": "old", "content": "Finished old task", "status": "completed"}])
+    old_store.bind_transaction("tx-old")
+    old_store.mark_lifecycle("completed")
+    old_agent = SimpleNamespace(_todo_store=old_store)
+    new_tracker = ProgressTracker("tx-new", "New unrelated task")
+
+    _copy_agent_todo_progress(new_tracker, old_agent)
+
+    new_snapshot = new_tracker.snapshot()
+    assert new_snapshot.todo_items == ()
+    assert new_snapshot.todo_lifecycle is not None
+    assert new_snapshot.todo_lifecycle.state == "archived"
+
+
+def test_copy_agent_todo_progress_keeps_completed_items_for_same_transaction_final_card():
+    from gateway.run import _copy_agent_todo_progress
+
+    store = TodoStore()
+    store.write([{"id": "done", "content": "Finished current task", "status": "completed"}])
+    store.bind_transaction("tx-current")
+    store.mark_lifecycle("completed")
+    agent = SimpleNamespace(_todo_store=store)
+    tracker = ProgressTracker("tx-current", "Current task")
+
+    _copy_agent_todo_progress(tracker, agent)
+
+    snapshot = tracker.snapshot()
+    assert [item.content for item in snapshot.todo_items] == ["Finished current task"]
+    assert snapshot.todo_lifecycle is not None
+    assert snapshot.todo_lifecycle.state == "completed"
+
+
 class FeishuRetryableIntermediatePatchFailureAdapter(FeishuProgressCardCaptureAdapter):
     async def patch_interactive_card(self, chat_id, message_id, card, finalize=False) -> SendResult:
         self.cards_patched.append(
