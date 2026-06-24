@@ -3407,6 +3407,7 @@ class AIAgent:
         requester_scope = normalize_owner_scope_ref(owner_scope_ref or self._todo_owner_scope_ref())
         suspended_candidates: list[tuple[SuspendedTodoHint, list[dict[str, Any]]]] = []
         terminal_transaction_ids: set[str] = set()
+        seen_candidate_transaction_ids: set[str] = set()
 
         for index, msg in enumerate(reversed(history)):
             if msg.get("role") != "tool":
@@ -3448,6 +3449,14 @@ class AIAgent:
             ]
             if not remaining:
                 continue
+            if tx_id in seen_candidate_transaction_ids:
+                # One todo response is persisted per todo write, so a single
+                # transaction can surface many times in history. Only its newest
+                # snapshot (first reached in this reverse scan) is an eligible
+                # resume candidate; older same-transaction snapshots are
+                # superseded and must not count as separate tasks.
+                continue
+            seen_candidate_transaction_ids.add(tx_id)
             title = str(remaining[0].get("content") or tx_id).strip() or tx_id
             hint = SuspendedTodoHint(
                 transaction_id=tx_id,

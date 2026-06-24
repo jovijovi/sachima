@@ -1119,6 +1119,59 @@ class TestHydrateTodoStore:
         assert agent._todo_store.read_lifecycle()["transaction_id"] == "tx-prev"
         assert agent._todo_store.read_lifecycle()["state"] == "resumed"
 
+    def test_resumes_single_transaction_despite_multiple_active_snapshots(self, agent):
+        """One transaction may have multiple todo tool responses; resume the newest snapshot."""
+
+        owner = self._owner_scope()
+        stale = [{"id": "1", "content": "step one", "status": "in_progress"}]
+        latest = [
+            {"id": "1", "content": "step one", "status": "completed"},
+            {"id": "2", "content": "step two", "status": "pending"},
+        ]
+        history = [
+            {
+                "role": "tool",
+                "tool_call_id": "c-active-1",
+                "content": json.dumps(
+                    {
+                        "todos": stale,
+                        "todo_lifecycle": {
+                            "state": "active",
+                            "transaction_id": "tx-multi",
+                            "remaining_count": 1,
+                            "owner_scope_ref": owner,
+                        },
+                    }
+                ),
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "c-active-2",
+                "content": json.dumps(
+                    {
+                        "todos": latest,
+                        "todo_lifecycle": {
+                            "state": "active",
+                            "transaction_id": "tx-multi",
+                            "remaining_count": 1,
+                            "owner_scope_ref": owner,
+                        },
+                    }
+                ),
+            },
+        ]
+
+        with patch("run_agent._set_interrupt"):
+            agent._hydrate_todo_store(
+                history,
+                current_user_message="继续上一任务",
+                owner_scope_ref=owner,
+            )
+
+        assert agent._todo_store.read() == latest
+        assert agent._todo_store.read_lifecycle()["state"] == "resumed"
+        assert agent._todo_store.read_lifecycle()["transaction_id"] == "tx-multi"
+
     def test_suspended_history_cross_owner_does_not_hydrate(self, agent):
         original_owner = self._owner_scope(conversation_id="chat-a", user_id="user-a")
         requester = self._owner_scope(conversation_id="chat-b", user_id="user-a")
