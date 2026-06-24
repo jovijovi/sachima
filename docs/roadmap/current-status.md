@@ -11,9 +11,20 @@
 ```json
 {
   "base_branch": "release/sachima",
-  "base_head": "a44c99395435aaa3069c689f3cc57f7b32722cdf",
+  "base_head": "3cc9ca979459f3a8bc0b267c6ad49b493d0335ea",
   "base_head_note": "latest first-parent base commit excluding machine status-sync self-commits",
   "latest_merged_prs": [
+    {
+      "baseRefName": "release/sachima",
+      "headRefName": "feat/todo-lifecycle-workbench",
+      "mergeCommit": {
+        "oid": "3cc9ca979459f3a8bc0b267c6ad49b493d0335ea"
+      },
+      "mergedAt": "2026-06-24T05:22:12Z",
+      "number": 163,
+      "title": "Add TODO lifecycle to task workbench",
+      "url": "https://github.com/jovijovi/sachima/pull/163"
+    },
     {
       "baseRefName": "release/sachima",
       "headRefName": "feat/progress-todo-workbench",
@@ -57,17 +68,6 @@
       "number": 159,
       "title": "Merge upstream Hermes Agent v2026.6.19 into Sachima release",
       "url": "https://github.com/jovijovi/sachima/pull/159"
-    },
-    {
-      "baseRefName": "release/sachima",
-      "headRefName": "feat/image-manifest-sequence",
-      "mergeCommit": {
-        "oid": "dbe86f2731cbc5a3efdf8a26c499b559258c6a66"
-      },
-      "mergedAt": "2026-06-22T01:50:09Z",
-      "number": 158,
-      "title": "feat: add image manifest sequence indices",
-      "url": "https://github.com/jovijovi/sachima/pull/158"
     }
   ],
   "open_pr_count": 0,
