@@ -1020,6 +1020,18 @@ class TestInterrupt:
 
 
 class TestHydrateTodoStore:
+    @staticmethod
+    def _owner_scope(profile="default", platform="feishu", conversation_id="chat-a", user_id="user-a"):
+        from gateway.progress.todo_lifecycle import make_owner_scope_ref
+
+        owner = make_owner_scope_ref(
+            profile=profile,
+            platform=platform,
+            conversation_id=conversation_id,
+            user_id=user_id,
+        )
+        return owner.__dict__.copy()
+
     def test_no_todo_in_history(self, agent):
         history = [
             {"role": "user", "content": "hello"},
@@ -1029,7 +1041,7 @@ class TestHydrateTodoStore:
             agent._hydrate_todo_store(history)
         assert not agent._todo_store.has_items()
 
-    def test_recovers_from_history(self, agent):
+    def test_legacy_todos_history_does_not_hydrate_for_unrelated_new_request(self, agent):
         todos = [{"id": "1", "content": "do thing", "status": "pending"}]
         history = [
             {"role": "user", "content": "plan"},
@@ -1041,8 +1053,147 @@ class TestHydrateTodoStore:
             },
         ]
         with patch("run_agent._set_interrupt"):
-            agent._hydrate_todo_store(history)
-        assert agent._todo_store.has_items()
+            agent._hydrate_todo_store(history, current_user_message="start a different task")
+        assert not agent._todo_store.has_items()
+
+    def test_recovers_suspended_history_for_same_owner_explicit_resume(self, agent):
+        owner = self._owner_scope()
+        todos = [{"id": "1", "content": "wait for CI", "status": "pending"}]
+        history = [
+            {
+                "role": "tool",
+                "content": json.dumps(
+                    {
+                        "todos": todos,
+                        "todo_lifecycle": {
+                            "state": "suspended",
+                            "transaction_id": "tx-prev",
+                            "suspension_reason": "waiting_external",
+                            "owner_scope_ref": owner,
+                        },
+                    }
+                ),
+                "tool_call_id": "c1",
+            },
+        ]
+
+        with patch("run_agent._set_interrupt"):
+            agent._hydrate_todo_store(
+                history,
+                current_user_message="继续上一任务",
+                owner_scope_ref=owner,
+            )
+
+        assert agent._todo_store.read() == todos
+        assert agent._todo_store.read_lifecycle()["state"] == "resumed"
+
+    def test_recovers_previous_active_history_only_for_same_owner_explicit_resume(self, agent):
+        owner = self._owner_scope()
+        todos = [{"id": "1", "content": "unfinished", "status": "pending"}]
+        history = [
+            {
+                "role": "tool",
+                "content": json.dumps(
+                    {
+                        "todos": todos,
+                        "todo_lifecycle": {
+                            "state": "active",
+                            "transaction_id": "tx-prev",
+                            "remaining_count": 1,
+                            "owner_scope_ref": owner,
+                        },
+                    }
+                ),
+                "tool_call_id": "c1",
+            },
+        ]
+
+        with patch("run_agent._set_interrupt"):
+            agent._hydrate_todo_store(
+                history,
+                current_user_message="继续上一任务",
+                owner_scope_ref=owner,
+            )
+
+        assert agent._todo_store.read() == todos
+        assert agent._todo_store.read_lifecycle()["transaction_id"] == "tx-prev"
+        assert agent._todo_store.read_lifecycle()["state"] == "resumed"
+
+    def test_suspended_history_cross_owner_does_not_hydrate(self, agent):
+        original_owner = self._owner_scope(conversation_id="chat-a", user_id="user-a")
+        requester = self._owner_scope(conversation_id="chat-b", user_id="user-a")
+        todos = [{"id": "1", "content": "other chat task", "status": "pending"}]
+        history = [
+            {
+                "role": "tool",
+                "content": json.dumps(
+                    {
+                        "todos": todos,
+                        "todo_lifecycle": {
+                            "state": "suspended",
+                            "suspension_reason": "waiting_user",
+                            "owner_scope_ref": original_owner,
+                        },
+                    }
+                ),
+                "tool_call_id": "c1",
+            },
+        ]
+
+        with patch("run_agent._set_interrupt"):
+            agent._hydrate_todo_store(
+                history,
+                current_user_message="继续上一任务",
+                owner_scope_ref=requester,
+            )
+
+        assert not agent._todo_store.has_items()
+
+    def test_completed_lifecycle_history_tombstones_earlier_active_same_transaction(self, agent):
+        owner = self._owner_scope()
+        todos = [{"id": "1", "content": "finished", "status": "pending"}]
+        history = [
+            {
+                "role": "tool",
+                "content": json.dumps(
+                    {
+                        "todos": todos,
+                        "todo_lifecycle": {
+                            "state": "active",
+                            "transaction_id": "tx-prev",
+                            "remaining_count": 1,
+                            "owner_scope_ref": owner,
+                        },
+                    }
+                ),
+                "tool_call_id": "c-active",
+            },
+            {
+                "role": "tool",
+                "content": json.dumps(
+                    {
+                        "todos": [{"id": "1", "content": "finished", "status": "completed"}],
+                        "todo_lifecycle": {
+                            "state": "completed",
+                            "transaction_id": "tx-prev",
+                            "completed_count": 1,
+                            "remaining_count": 0,
+                            "owner_scope_ref": owner,
+                        },
+                    }
+                ),
+                "tool_call_id": "c-completed",
+            },
+        ]
+
+        with patch("run_agent._set_interrupt"):
+            agent._hydrate_todo_store(
+                history,
+                current_user_message="继续上一任务",
+                owner_scope_ref=owner,
+            )
+
+        assert not agent._todo_store.has_items()
 
     def test_skips_non_todo_tools(self, agent):
         history = [
@@ -2552,6 +2703,19 @@ class TestConcurrentToolExecution:
             mock_todo.assert_called_once()
         assert "ok" in result
 
+    def test_invoke_tool_binds_todo_lifecycle_to_task_and_owner_scope(self, agent):
+        owner = TestHydrateTodoStore._owner_scope()
+        agent._todo_owner_scope_ref = lambda: owner
+
+        result = json.loads(agent._invoke_tool(
+            "todo",
+            {"todos": [{"id": "1", "content": "task", "status": "pending"}]},
+            "task-boundary",
+        ))
+
+        assert result["todo_lifecycle"]["transaction_id"] == "task-boundary"
+        assert result["todo_lifecycle"]["owner_scope_ref"] == owner
+
     def test_invoke_tool_agent_level_tool_emits_terminal_post_tool_hook(self, agent, monkeypatch):
         """Agent-owned tool paths should close observer tool spans."""
         hook_calls = []
@@ -2684,6 +2848,23 @@ class TestConcurrentToolExecution:
         assert post_call[1]["tool_call_id"] == "todo-1"
         assert post_call[1]["result"] == '{"ok":true}'
         assert post_call[1]["status"] == "ok"
+
+    def test_sequential_todo_tool_binds_lifecycle_to_effective_task(self, agent):
+        owner = TestHydrateTodoStore._owner_scope()
+        agent._todo_owner_scope_ref = lambda: owner
+        tool_call = _mock_tool_call(
+            name="todo",
+            arguments='{"todos":[{"id":"1","content":"task","status":"pending"}]}',
+            call_id="todo-1",
+        )
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tool_call])
+        messages = []
+
+        agent._execute_tool_calls_sequential(mock_msg, messages, "task-boundary")
+
+        result = json.loads(messages[-1]["content"])
+        assert result["todo_lifecycle"]["transaction_id"] == "task-boundary"
+        assert result["todo_lifecycle"]["owner_scope_ref"] == owner
 
     def test_sequential_agent_level_tool_execution_middleware_wraps_inline_dispatch(self, agent, monkeypatch):
         """Sequential built-in tool paths should expose the adaptive execution boundary."""

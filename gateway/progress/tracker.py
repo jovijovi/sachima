@@ -17,6 +17,12 @@ from gateway.progress.events import (
     TransactionSnapshot,
 )
 from gateway.progress.redaction import sanitize_for_progress, sanitize_value_for_progress
+from gateway.progress.todo_lifecycle import (
+    SuspendedTodoHint,
+    TodoLifecycleSnapshot,
+    normalize_suspended_todo_hint,
+    normalize_todo_lifecycle,
+)
 
 TRANSACTION_RUNNING = "running"
 TRANSACTION_COMPLETED = "completed"
@@ -88,6 +94,8 @@ class ProgressTracker:
         self._model_display: str | None = None
         self._account_limit_lines: tuple[str, ...] = ()
         self._todo_items: tuple[TodoItemSnapshot, ...] = ()
+        self._todo_lifecycle: TodoLifecycleSnapshot | None = None
+        self._suspended_todo_hint: SuspendedTodoHint | None = None
         self._next_operation_id = 1
         self._lock = threading.Lock()
 
@@ -227,6 +235,8 @@ class ProgressTracker:
                 model_display=self._model_display,
                 account_limit_lines=self._account_limit_lines,
                 todo_items=self._todo_items,
+                todo_lifecycle=self._todo_lifecycle,
+                suspended_todo_hint=self._suspended_todo_hint,
             )
 
     def update_display_metadata(
@@ -319,6 +329,22 @@ class ProgressTracker:
             self._touch()
             return self._todo_items
 
+    def update_todo_lifecycle(self, lifecycle: Any) -> TodoLifecycleSnapshot | None:
+        """Replace lifecycle metadata for the transaction's structured todos."""
+
+        with self._lock:
+            self._todo_lifecycle = normalize_todo_lifecycle(lifecycle)
+            self._touch()
+            return self._todo_lifecycle
+
+    def update_suspended_todo_hint(self, hint: Any) -> SuspendedTodoHint | None:
+        """Replace the compact suspended-work hint for this transaction."""
+
+        with self._lock:
+            self._suspended_todo_hint = normalize_suspended_todo_hint(hint)
+            self._touch()
+            return self._suspended_todo_hint
+
     def mark_completed(self, is_error: bool = False) -> None:
         """Mark the transaction itself complete/failed."""
 
@@ -326,7 +352,56 @@ class ProgressTracker:
             now = time.time()
             self._status = TRANSACTION_FAILED if is_error else TRANSACTION_COMPLETED
             self._completed_at = now
+            self._derive_terminal_todo_lifecycle(is_error=is_error)
             self._touch(now)
+
+    def _derive_terminal_todo_lifecycle(self, *, is_error: bool) -> None:
+        """Derive terminal lifecycle state from the final structured TODO list."""
+
+        if not self._todo_items:
+            return
+        existing_state = self._todo_lifecycle.state if self._todo_lifecycle is not None else ""
+        if existing_state in {"archived"}:
+            return
+
+        completed = sum(1 for item in self._todo_items if item.status == "completed")
+        remaining = sum(1 for item in self._todo_items if item.status in {"pending", "in_progress"})
+        cancelled = sum(1 for item in self._todo_items if item.status == "cancelled")
+        owner = self._todo_lifecycle.owner_scope_ref if self._todo_lifecycle is not None else None
+        next_action = self._todo_lifecycle.next_action if self._todo_lifecycle is not None else None
+
+        if remaining > 0:
+            reason = "failed_recoverable" if is_error else "paused"
+            lifecycle = TodoLifecycleSnapshot(
+                state="suspended",
+                suspension_reason=reason,
+                completed_count=completed,
+                remaining_count=remaining,
+                next_action=next_action,
+                owner_scope_ref=owner,
+            )
+            self._todo_lifecycle = lifecycle
+            self._suspended_todo_hint = normalize_suspended_todo_hint(
+                {
+                    "transaction_id": self.transaction_id,
+                    "title": self.title,
+                    "reason": reason,
+                    "remaining_count": remaining,
+                    "next_action": next_action,
+                    "owner_scope_ref": owner,
+                }
+            )
+            return
+
+        state = "cancelled" if cancelled and cancelled == len(self._todo_items) else "completed"
+        self._todo_lifecycle = TodoLifecycleSnapshot(
+            state=state,
+            completed_count=completed,
+            remaining_count=0,
+            next_action=next_action,
+            owner_scope_ref=owner,
+        )
+        self._suspended_todo_hint = None
 
     def _record_event_operation(
         self,

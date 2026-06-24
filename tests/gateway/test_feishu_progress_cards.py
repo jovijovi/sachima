@@ -124,6 +124,52 @@ def test_feishu_progress_card_todo_block_caps_lines_with_overflow_note():
     assert "还有" in rendered  # overflow note covers the hidden items
 
 
+def test_task_card_hides_archived_todos_and_shows_suspended_hint():
+    from gateway.progress.renderers import render_feishu_progress_card
+    from gateway.progress.todo_lifecycle import make_owner_scope_ref
+
+    owner = make_owner_scope_ref(
+        profile="default",
+        platform="feishu",
+        conversation_id="raw-chat-id-a",
+        user_id="raw-user-id-a",
+    )
+    fake_key = "sk-" + "test-" + ("d" * 32)
+    tracker = ProgressTracker(transaction_id="tx-archived", title="新任务")
+    tracker.update_todo_items([
+        {"id": "old", "content": f"旧待办 {fake_key}", "status": "pending"},
+    ])
+    tracker.update_todo_lifecycle(
+        {
+            "state": "archived",
+            "completed_count": 1,
+            "remaining_count": 0,
+            "owner_scope_ref": owner,
+        }
+    )
+    tracker.update_suspended_todo_hint(
+        {
+            "transaction_id": "tx-suspended",
+            "title": "等待 CI：/data/agents/workspace/report.md",
+            "reason": "waiting_external",
+            "remaining_count": 1,
+            "next_action": "继续上一任务 via /api/progress",
+            "owner_scope_ref": owner,
+        }
+    )
+
+    card = render_feishu_progress_card(tracker.snapshot(), tool_progress_mode="off")
+    rendered = _rendered(card)
+
+    assert "待办" not in rendered
+    assert "旧待办" not in rendered
+    assert "挂起事项" in rendered
+    assert "等待 CI" in rendered
+    assert "/data/agents/workspace/report.md" in rendered
+    assert "/api/progress" in rendered
+    assert fake_key not in rendered
+
+
 def test_feishu_progress_card_running_shape_uses_safe_operation_labels():
     from gateway.progress.renderers import render_feishu_progress_card
 

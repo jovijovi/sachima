@@ -71,6 +71,7 @@ class _FakeAgent:
         self._invalid_tool_retries = -1
         self._vision_supported = None
         self._persist_calls = 0
+        self._hydrate_todo_calls = []
 
     # --- methods the prologue calls ---
     def _ensure_db_session(self):
@@ -88,8 +89,8 @@ class _FakeAgent:
     def _replay_compression_warning(self):
         pass
 
-    def _hydrate_todo_store(self, *_a, **_k):
-        pass
+    def _hydrate_todo_store(self, *args, **kwargs):
+        self._hydrate_todo_calls.append((args, kwargs))
 
     def _safe_print(self, *_a, **_k):
         pass
@@ -172,6 +173,20 @@ def test_persist_user_message_becomes_original():
     assert ctx.original_user_message == "clean"
     # but the appended user turn carries the full (sanitized) message.
     assert ctx.messages[-1]["content"] == "api-prefixed"
+
+
+def test_todo_hydration_runs_even_when_cached_store_has_items():
+    """A cached agent must let lifecycle hydration clear stale prior-turn TODOs."""
+
+    agent = _FakeAgent()
+    history = [{"role": "tool", "content": '{"todos": []}'}]
+
+    _build(agent, user_message="new unrelated task", conversation_history=history)
+
+    assert len(agent._hydrate_todo_calls) == 1
+    args, kwargs = agent._hydrate_todo_calls[0]
+    assert args == (history,)
+    assert kwargs["current_user_message"] == "new unrelated task"
 
 
 def test_memory_nudge_fires_at_interval():

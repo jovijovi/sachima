@@ -3352,17 +3352,63 @@ class AIAgent:
         except Exception:
             pass
 
-    def _hydrate_todo_store(self, history: List[Dict[str, Any]]) -> None:
+    def _todo_owner_scope_ref(self) -> Dict[str, str] | None:
+        """Build a safe owner scope for lifecycle TODO resume, when available."""
+
+        conversation_id = (
+            getattr(self, "_gateway_session_key", None)
+            or getattr(self, "_chat_id", None)
+            or getattr(self, "session_id", None)
+        )
+        user_id = getattr(self, "_user_id_alt", None) or getattr(self, "_user_id", None)
+        if not conversation_id or not user_id:
+            return None
+        try:
+            from hermes_cli.profiles import get_active_profile_name
+            profile = get_active_profile_name() or "default"
+        except Exception:
+            profile = "default"
+        try:
+            from gateway.progress.todo_lifecycle import make_owner_scope_ref
+
+            owner = make_owner_scope_ref(
+                profile=profile,
+                platform=getattr(self, "platform", None) or "cli",
+                conversation_id=conversation_id,
+                user_id=user_id,
+                thread_id=getattr(self, "_thread_id", None),
+            )
+            return owner.__dict__.copy()
+        except Exception:
+            return None
+
+    def _hydrate_todo_store(
+        self,
+        history: List[Dict[str, Any]],
+        *,
+        current_user_message: str = "",
+        owner_scope_ref: Dict[str, Any] | None = None,
+    ) -> None:
         """
         Recover todo state from conversation history.
-        
-        The gateway creates a fresh AIAgent per message, so the in-memory
-        TodoStore is empty. We scan the history for the most recent todo
-        tool response and replay it to reconstruct the state.
+
+        The gateway creates a fresh AIAgent per message, so old tool responses
+        may be present while the in-memory TodoStore is empty. Legacy
+        ``todos``-only responses fail closed for new turns; lifecycle-aware
+        suspended state is restored only for a deterministic same-owner resume.
         """
-        # Walk history backwards to find the most recent todo tool response
-        last_todo_response = None
-        for msg in reversed(history):
+        from gateway.progress.todo_lifecycle import (
+            SuspendedTodoHint,
+            normalize_owner_scope_ref,
+            normalize_todo_lifecycle,
+            select_resume_candidate,
+        )
+
+        requester_scope = normalize_owner_scope_ref(owner_scope_ref or self._todo_owner_scope_ref())
+        suspended_candidates: list[tuple[SuspendedTodoHint, list[dict[str, Any]]]] = []
+        terminal_transaction_ids: set[str] = set()
+
+        for index, msg in enumerate(reversed(history)):
             if msg.get("role") != "tool":
                 continue
             content = msg.get("content", "")
@@ -3371,17 +3417,68 @@ class AIAgent:
                 continue
             try:
                 data = json.loads(content)
-                if "todos" in data and isinstance(data["todos"], list):
-                    last_todo_response = data["todos"]
-                    break
             except (json.JSONDecodeError, TypeError):
                 continue
-        
-        if last_todo_response:
-            # Replay the items into the store (replace mode)
-            self._todo_store.write(last_todo_response, merge=False)
-            if not self.quiet_mode:
-                self._vprint(f"{self.log_prefix}📋 Restored {len(last_todo_response)} todo item(s) from history")
+            todos = data.get("todos")
+            if not isinstance(todos, list):
+                continue
+            lifecycle_raw = data.get("todo_lifecycle")
+            lifecycle = normalize_todo_lifecycle(lifecycle_raw)
+            tx_id = ""
+            if isinstance(lifecycle_raw, dict):
+                tx_id = str(lifecycle_raw.get("transaction_id") or "").strip()
+            if not tx_id:
+                # Without a stable transaction id we cannot safely correlate
+                # terminal records with earlier active records, so fail closed.
+                continue
+            if lifecycle is not None and lifecycle.state in {"completed", "cancelled", "archived"}:
+                terminal_transaction_ids.add(tx_id)
+                continue
+            if tx_id in terminal_transaction_ids:
+                continue
+            if (
+                lifecycle is None
+                or lifecycle.state not in {"created", "active", "resumed", "suspended"}
+                or lifecycle.owner_scope_ref is None
+            ):
+                continue
+            remaining = [
+                item for item in todos
+                if isinstance(item, dict) and str(item.get("status", "")).strip().lower() in {"pending", "in_progress"}
+            ]
+            if not remaining:
+                continue
+            title = str(remaining[0].get("content") or tx_id).strip() or tx_id
+            hint = SuspendedTodoHint(
+                transaction_id=tx_id,
+                title=title,
+                reason=lifecycle.suspension_reason or "paused",
+                remaining_count=len(remaining),
+                next_action=lifecycle.next_action,
+                owner_scope_ref=lifecycle.owner_scope_ref,
+            )
+            suspended_candidates.append((hint, todos))
+
+        selected = select_resume_candidate(
+            current_user_message,
+            [hint for hint, _items in suspended_candidates],
+            requester_scope,
+        )
+        if selected is not None:
+            for hint, todos in suspended_candidates:
+                if hint.transaction_id != selected.transaction_id:
+                    continue
+                self._todo_store.write(todos, merge=False)
+                self._todo_store.bind_transaction(
+                    hint.transaction_id,
+                    owner_scope_ref=hint.owner_scope_ref.__dict__.copy() if hint.owner_scope_ref else None,
+                )
+                self._todo_store.mark_lifecycle("resumed")
+                if not self.quiet_mode:
+                    self._vprint(f"{self.log_prefix}📋 Restored {len(todos)} todo item(s) from suspended history")
+                break
+        else:
+            self._todo_store.clear_for_new_transaction()
         _set_interrupt(False)
 
     @property

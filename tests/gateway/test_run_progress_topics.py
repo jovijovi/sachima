@@ -12,7 +12,9 @@ import pytest
 
 from gateway.config import Platform, PlatformConfig, StreamingConfig
 from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult
+from gateway.progress.tracker import ProgressTracker
 from gateway.session import SessionSource
+from tools.todo_tool import TodoStore
 
 
 class ProgressCaptureAdapter(BasePlatformAdapter):
@@ -226,6 +228,35 @@ class FeishuPatchFailureAdapter(FeishuProgressCardCaptureAdapter):
             {"chat_id": chat_id, "message_id": message_id, "card": card, "finalize": finalize}
         )
         return SendResult(success=False, error="temporary card patch failure")
+
+
+def test_copy_agent_todo_progress_carries_lifecycle_and_clears_archived_items():
+    from gateway.run import _copy_agent_todo_progress
+
+    active_store = TodoStore()
+    active_store.write([{"id": "1", "content": "Current task", "status": "pending"}])
+    active_store.bind_transaction("tx-current")
+    active_store.mark_lifecycle("active")
+    active_agent = SimpleNamespace(_todo_store=active_store)
+    tracker = ProgressTracker("tx-current", "Current task")
+
+    _copy_agent_todo_progress(tracker, active_agent)
+
+    active_snapshot = tracker.snapshot()
+    assert [item.content for item in active_snapshot.todo_items] == ["Current task"]
+    assert active_snapshot.todo_lifecycle.state == "active"
+
+    archived_store = TodoStore()
+    archived_store.write([{"id": "old", "content": "Old task", "status": "pending"}])
+    archived_store.bind_transaction("tx-old")
+    archived_store.mark_lifecycle("archived")
+    archived_agent = SimpleNamespace(_todo_store=archived_store)
+
+    _copy_agent_todo_progress(tracker, archived_agent)
+
+    archived_snapshot = tracker.snapshot()
+    assert archived_snapshot.todo_items == ()
+    assert archived_snapshot.todo_lifecycle.state == "archived"
 
 
 class FeishuRetryableIntermediatePatchFailureAdapter(FeishuProgressCardCaptureAdapter):

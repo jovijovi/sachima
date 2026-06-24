@@ -16,6 +16,12 @@ from gateway.progress.events import (
     TransactionSnapshot,
 )
 from gateway.progress.redaction import sanitize_value_for_progress
+from gateway.progress.todo_lifecycle import (
+    lifecycle_to_dict,
+    normalize_suspended_todo_hint,
+    normalize_todo_lifecycle,
+    suspended_hint_to_dict,
+)
 from hermes_constants import get_hermes_home
 
 # Persistence bounds for the structured todo snapshot. These mirror the tracker
@@ -235,7 +241,25 @@ def _safe_transaction(snapshot: TransactionSnapshot) -> dict[str, Any]:
     # its todos later in the run would leave reader summaries showing stale
     # earlier todo state from prior operation records.
     transaction["todo_items"] = todo_items
+    todo_lifecycle = _safe_todo_lifecycle(getattr(snapshot, "todo_lifecycle", None))
+    transaction["todo_lifecycle"] = todo_lifecycle
+    suspended_hint = _safe_suspended_todo_hint(getattr(snapshot, "suspended_todo_hint", None))
+    transaction["suspended_todo_hint"] = suspended_hint
     return transaction
+
+
+def _safe_todo_lifecycle(raw: Any) -> dict[str, Any] | None:
+    lifecycle = normalize_todo_lifecycle(raw)
+    if lifecycle is None:
+        return None
+    return lifecycle_to_dict(lifecycle)
+
+
+def _safe_suspended_todo_hint(raw: Any) -> dict[str, Any] | None:
+    hint = normalize_suspended_todo_hint(raw)
+    if hint is None:
+        return None
+    return suspended_hint_to_dict(hint)
 
 
 def _safe_todo_items(items: Any) -> list[dict[str, Any]]:

@@ -1632,6 +1632,32 @@ export interface ProgressTodoItem {
   source: string;
 }
 
+export interface ProgressOwnerScopeRef {
+  profile: string;
+  platform: string;
+  conversation: string;
+  user: string;
+}
+
+export interface ProgressTodoLifecycle {
+  state: string;
+  suspension_reason?: string | null;
+  completed_count: number;
+  remaining_count: number;
+  next_action?: string | null;
+  owner_scope_ref?: ProgressOwnerScopeRef | null;
+}
+
+export interface ProgressSuspendedTodoHint {
+  transaction_id: string;
+  title: string;
+  reason: string;
+  remaining_count: number;
+  next_action?: string | null;
+  overflow_count?: number;
+  owner_scope_ref?: ProgressOwnerScopeRef | null;
+}
+
 export interface ProgressTransactionSummary {
   id: string;
   title: string;
@@ -1643,6 +1669,8 @@ export interface ProgressTransactionSummary {
   last_operation: ProgressOperationSummary | null;
   iteration_usage?: ProgressIterationUsage | null;
   todo_items?: ProgressTodoItem[] | null;
+  todo_lifecycle?: ProgressTodoLifecycle | null;
+  suspended_todo_hint?: ProgressSuspendedTodoHint | null;
 }
 
 export interface ProgressOperationEvent extends ProgressOperationSummary {
@@ -1663,6 +1691,8 @@ export interface ProgressTransactionRecord {
   completed_at: number | null;
   iteration_usage?: ProgressIterationUsage | null;
   todo_items?: ProgressTodoItem[] | null;
+  todo_lifecycle?: ProgressTodoLifecycle | null;
+  suspended_todo_hint?: ProgressSuspendedTodoHint | null;
 }
 
 export interface ProgressEventRecord {
