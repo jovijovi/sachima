@@ -130,7 +130,11 @@ def _copy_agent_todo_progress(progress_tracker: Any, agent_obj: Any) -> None:
     state = str((lifecycle or {}).get("state") or "").strip().lower() if isinstance(lifecycle, dict) else ""
     transaction_id = str((lifecycle or {}).get("transaction_id") or "").strip() if isinstance(lifecycle, dict) else ""
     current_transaction_id = str(getattr(progress_tracker, "transaction_id", "") or "").strip()
-    should_archive_prior_terminal_todos = state in {"completed", "cancelled"} and transaction_id != current_transaction_id
+    should_archive_prior_terminal_todos = (
+        state in {"completed", "cancelled"}
+        and bool(transaction_id)
+        and transaction_id != current_transaction_id
+    )
     if state == "archived" or should_archive_prior_terminal_todos:
         items = []
         if isinstance(lifecycle, dict) and state != "archived":

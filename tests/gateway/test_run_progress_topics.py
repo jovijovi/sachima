@@ -295,6 +295,32 @@ def test_copy_agent_todo_progress_keeps_completed_items_for_same_transaction_fin
     assert snapshot.todo_lifecycle.state == "completed"
 
 
+def test_copy_agent_todo_progress_keeps_unbound_completed_items_for_current_final_card():
+    from gateway.progress.renderers import render_feishu_progress_card
+    from gateway.run import _copy_agent_todo_progress
+
+    store = TodoStore()
+    store.write([
+        {"id": "done-1", "content": "Finished current task A", "status": "completed"},
+        {"id": "done-2", "content": "Finished current task B", "status": "completed"},
+    ])
+    agent = SimpleNamespace(_todo_store=store)
+    tracker = ProgressTracker("tx-current", "Current task")
+
+    _copy_agent_todo_progress(tracker, agent)
+
+    snapshot = tracker.snapshot()
+    assert [item.content for item in snapshot.todo_items] == [
+        "Finished current task A",
+        "Finished current task B",
+    ]
+    assert snapshot.todo_lifecycle is not None
+    assert snapshot.todo_lifecycle.state == "completed"
+    card = render_feishu_progress_card(snapshot, language="zh", tool_progress_mode="off")
+    rendered = json.dumps(card, ensure_ascii=False)
+    assert "待办 - 2 / 2（100%）" in rendered
+
+
 class FeishuRetryableIntermediatePatchFailureAdapter(FeishuProgressCardCaptureAdapter):
     async def patch_interactive_card(self, chat_id, message_id, card, finalize=False) -> SendResult:
         self.cards_patched.append(
