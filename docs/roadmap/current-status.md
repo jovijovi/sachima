@@ -11,9 +11,20 @@
 ```json
 {
   "base_branch": "release/sachima",
-  "base_head": "3cc9ca979459f3a8bc0b267c6ad49b493d0335ea",
+  "base_head": "dc46af8d33a96ddcabf98401eee7289d789e5e58",
   "base_head_note": "latest first-parent base commit excluding machine status-sync self-commits",
   "latest_merged_prs": [
+    {
+      "baseRefName": "release/sachima",
+      "headRefName": "fix/feishu-todo-card-lifecycle",
+      "mergeCommit": {
+        "oid": "dc46af8d33a96ddcabf98401eee7289d789e5e58"
+      },
+      "mergedAt": "2026-06-24T09:03:01Z",
+      "number": 164,
+      "title": "Fix Feishu TODO card lifecycle progress",
+      "url": "https://github.com/jovijovi/sachima/pull/164"
+    },
     {
       "baseRefName": "release/sachima",
       "headRefName": "feat/todo-lifecycle-workbench",
@@ -57,17 +68,6 @@
       "number": 160,
       "title": "Add progress rounds and rotate event JSONL",
       "url": "https://github.com/jovijovi/sachima/pull/160"
-    },
-    {
-      "baseRefName": "release/sachima",
-      "headRefName": "merge/upstream-v2026.6.19-into-release-sachima",
-      "mergeCommit": {
-        "oid": "0a55f782f00d1f096847e3acd5ff0814583bbf18"
-      },
-      "mergedAt": "2026-06-22T10:33:16Z",
-      "number": 159,
-      "title": "Merge upstream Hermes Agent v2026.6.19 into Sachima release",
-      "url": "https://github.com/jovijovi/sachima/pull/159"
     }
   ],
   "open_pr_count": 0,
