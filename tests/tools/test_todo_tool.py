@@ -72,6 +72,76 @@ class TestFormatForInjection:
         assert "context compression" in text.lower()
 
 
+class TestTodoLifecycleInjection:
+    def test_active_and_resumed_todos_inject_after_compression(self):
+        store = TodoStore()
+        store.write([{"id": "1", "content": "Continue work", "status": "pending"}])
+        store.mark_lifecycle("active")
+
+        assert "Continue work" in store.format_for_injection()
+
+        store.mark_lifecycle("resumed")
+        assert "Continue work" in store.format_for_injection()
+
+    def test_completed_archived_and_suspended_todos_do_not_inject_as_current_state(self):
+        store = TodoStore()
+        store.write([{"id": "1", "content": "Old work", "status": "pending"}])
+
+        for state in ("completed", "archived", "suspended", "cancelled"):
+            store.mark_lifecycle(state, reason="waiting_external")
+            assert store.format_for_injection() is None
+
+    def test_all_completed_or_cancelled_todos_do_not_inject_without_explicit_lifecycle(self):
+        store = TodoStore()
+        store.write([{"id": "1", "content": "Done work", "status": "completed"}])
+        assert store.format_for_injection() is None
+
+        store.write([{"id": "2", "content": "Cancelled work", "status": "cancelled"}])
+        assert store.format_for_injection() is None
+
+    def test_tool_output_includes_backward_compatible_lifecycle_metadata(self):
+        store = TodoStore()
+        store.write([{"id": "1", "content": "Task", "status": "pending"}])
+        store.bind_transaction("tx-1")
+        store.mark_lifecycle("active")
+
+        result = json.loads(todo_tool(store=store))
+
+        assert result["todos"] == [{"id": "1", "content": "Task", "status": "pending"}]
+        assert result["summary"]["pending"] == 1
+        assert result["todo_lifecycle"]["state"] == "active"
+        assert result["todo_lifecycle"]["transaction_id"] == "tx-1"
+
+    def test_tool_output_derives_lifecycle_from_item_statuses_without_new_schema(self):
+        store = TodoStore()
+        store.write([{"id": "1", "content": "Finished", "status": "completed"}])
+
+        completed = json.loads(todo_tool(store=store))
+
+        assert completed["todo_lifecycle"]["state"] == "completed"
+        assert completed["todo_lifecycle"]["completed_count"] == 1
+        assert completed["todo_lifecycle"]["remaining_count"] == 0
+
+        store.write([{"id": "2", "content": "Continue", "status": "pending"}])
+        active = json.loads(todo_tool(store=store))
+
+        assert active["todo_lifecycle"]["state"] == "active"
+        assert active["todo_lifecycle"]["completed_count"] == 0
+        assert active["todo_lifecycle"]["remaining_count"] == 1
+
+    def test_replace_after_terminal_lifecycle_starts_new_active_todo_state(self):
+        store = TodoStore()
+        store.write([{"id": "old", "content": "Old task", "status": "pending"}])
+        store.mark_lifecycle("completed")
+
+        store.write([{"id": "new", "content": "New task", "status": "pending"}])
+        result = json.loads(todo_tool(store=store))
+
+        assert result["todo_lifecycle"]["state"] == "active"
+        assert result["todo_lifecycle"]["remaining_count"] == 1
+        assert "New task" in store.format_for_injection()
+
+
 class TestMergeMode:
     def test_update_existing_by_id(self):
         store = TodoStore()

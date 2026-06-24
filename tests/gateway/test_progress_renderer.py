@@ -257,6 +257,51 @@ def test_text_renderer_renders_two_level_todo_grouping_without_infinite_tree():
     assert "        -" not in text
 
 
+def test_feishu_renders_suspended_hint_separately_from_main_todos():
+    from gateway.progress.renderers import render_text_panel
+    from gateway.progress.todo_lifecycle import make_owner_scope_ref
+
+    owner = make_owner_scope_ref(
+        profile="default",
+        platform="feishu",
+        conversation_id="raw-chat-id-a",
+        user_id="raw-user-id-a",
+    )
+    fake_key = "sk-" + "test-" + ("c" * 32)
+    tracker = ProgressTracker(transaction_id="tx-suspended", title="New unrelated task")
+    tracker.update_todo_items([
+        {"id": "old", "content": f"Old task using {fake_key}", "status": "pending"},
+    ])
+    tracker.update_todo_lifecycle(
+        {
+            "state": "suspended",
+            "suspension_reason": "waiting_external",
+            "remaining_count": 1,
+            "owner_scope_ref": owner,
+        }
+    )
+    tracker.update_suspended_todo_hint(
+        {
+            "transaction_id": "tx-suspended",
+            "title": "Wait for CI at /data/agents/workspace/report.md",
+            "reason": "waiting_external",
+            "remaining_count": 1,
+            "next_action": "continue previous task via /api/progress",
+            "owner_scope_ref": owner,
+        }
+    )
+
+    text = render_text_panel(tracker.snapshot(), tool_progress_mode="off")
+
+    assert "To-dos" not in text
+    assert "Old task" not in text
+    assert "Suspended work" in text
+    assert "Wait for CI" in text
+    assert "/data/agents/workspace/report.md" in text
+    assert "/api/progress" in text
+    assert fake_key not in text
+
+
 def test_feishu_progress_card_preserves_dense_multilingual_task_title():
     from gateway.progress.renderers import render_feishu_progress_card
 

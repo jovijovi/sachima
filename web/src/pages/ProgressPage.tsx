@@ -17,9 +17,14 @@ import { api } from "@/lib/api";
 import type {
   ProgressEventRecord,
   ProgressIterationUsage,
+  ProgressSuspendedTodoHint,
   ProgressTodoItem,
   ProgressTransactionSummary,
 } from "@/lib/api";
+import {
+  formatSuspendedTodoHint,
+  shouldRenderProgressMainTodos,
+} from "@/lib/progress-todo-lifecycle";
 import { cn, timeAgo } from "@/lib/utils";
 import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Button } from "@nous-research/ui/ui/components/button";
@@ -182,6 +187,20 @@ function TodoBlock({ items }: { items: ProgressTodoItem[] }) {
   );
 }
 
+function SuspendedTodoHint({ hint }: { hint?: ProgressSuspendedTodoHint | null }) {
+  const text = formatSuspendedTodoHint(hint);
+  if (!text) return null;
+  return (
+    <div className="mt-3 border-t border-border/60 pt-3">
+      <div className="mb-1.5 flex items-center gap-1.5 text-xs font-semibold text-warning normal-case">
+        <AlertTriangle className="h-3.5 w-3.5" />
+        Suspended work
+      </div>
+      <p className="text-xs text-muted-foreground normal-case">{text}</p>
+    </div>
+  );
+}
+
 function TransactionRow({
   tx,
   selected,
@@ -194,6 +213,8 @@ function TransactionRow({
   const badge = statusBadge(tx.status);
   const last = tx.last_operation;
   const rounds = roundsLabel(tx.iteration_usage);
+  const showMainTodos = shouldRenderProgressMainTodos(tx);
+  const suspendedHint = formatSuspendedTodoHint(tx.suspended_todo_hint);
   return (
     <button
       type="button"
@@ -231,10 +252,16 @@ function TransactionRow({
                 <span>Rounds: {rounds}</span>
               </>
             )}
-            {tx.todo_items && tx.todo_items.length > 0 && (
+            {showMainTodos && tx.todo_items && tx.todo_items.length > 0 && (
               <>
                 <span>·</span>
                 <span>{tx.todo_items.length} to-dos</span>
+              </>
+            )}
+            {suspendedHint && (
+              <>
+                <span>·</span>
+                <span>Suspended</span>
               </>
             )}
             <span>·</span>
@@ -462,9 +489,10 @@ export default function ProgressPage() {
                       <span>Rounds: {roundsLabel(selected.iteration_usage)}</span>
                     )}
                   </div>
-                  {selected.todo_items && selected.todo_items.length > 0 && (
+                  {shouldRenderProgressMainTodos(selected) && selected.todo_items && selected.todo_items.length > 0 && (
                     <TodoBlock items={selected.todo_items} />
                   )}
+                  <SuspendedTodoHint hint={selected.suspended_todo_hint} />
                 </div>
                 <div className="max-h-[560px] overflow-y-auto">
                   {events.length === 0 ? (

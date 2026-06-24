@@ -272,6 +272,145 @@ def test_progress_reader_old_records_without_todo_items_remain_valid(tmp_path):
     assert result["transactions"][0]["todo_items"] is None
 
 
+def test_progress_reader_normalizes_todo_lifecycle_and_rejects_malformed_scope(tmp_path):
+    from gateway.progress.todo_lifecycle import make_owner_scope_ref
+
+    path = tmp_path / "events.jsonl"
+    owner = make_owner_scope_ref(
+        profile="default",
+        platform="feishu",
+        conversation_id="raw-chat-id-a",
+        user_id="raw-user-id-a",
+    )
+    snapshot = _snapshot("tx-lifecycle", written_at=5.0, status="running")
+    snapshot["transaction"]["todo_lifecycle"] = {
+        "state": "suspended",
+        "suspension_reason": "waiting_external",
+        "completed_count": "2",
+        "remaining_count": "1",
+        "next_action": "Check /api/progress",
+        "owner_scope_ref": {
+            "profile": owner.profile,
+            "platform": owner.platform,
+            "conversation": owner.conversation,
+            "user": owner.user,
+        },
+    }
+    snapshot["transaction"]["suspended_todo_hint"] = {
+        "transaction_id": "tx-lifecycle",
+        "title": "Wait for CI",
+        "reason": "waiting_external",
+        "remaining_count": "1",
+        "next_action": "continue previous task",
+        "owner_scope_ref": {
+            "profile": owner.profile,
+            "platform": owner.platform,
+            "conversation": owner.conversation,
+            "user": owner.user,
+        },
+    }
+    malformed = _snapshot("tx-malformed", written_at=6.0, status="running")
+    malformed["transaction"]["todo_lifecycle"] = {
+        "state": "suspended",
+        "suspension_reason": "waiting_user",
+        "owner_scope_ref": {"profile": "default", "platform": "feishu", "conversation": "raw-chat-id"},
+    }
+    malformed["transaction"]["suspended_todo_hint"] = {
+        "transaction_id": "tx-malformed",
+        "title": "Bad scope",
+        "reason": "waiting_user",
+        "remaining_count": 1,
+        "owner_scope_ref": {"profile": "default", "platform": "feishu", "conversation": "raw-chat-id"},
+    }
+    _write_jsonl(path, [snapshot, malformed])
+
+    result = list_progress_transactions(path)
+    by_id = {tx["id"]: tx for tx in result["transactions"]}
+
+    lifecycle = by_id["tx-lifecycle"]["todo_lifecycle"]
+    assert lifecycle["state"] == "suspended"
+    assert lifecycle["completed_count"] == 2
+    assert lifecycle["remaining_count"] == 1
+    assert lifecycle["owner_scope_ref"]["conversation"] == owner.conversation
+    assert by_id["tx-lifecycle"]["suspended_todo_hint"]["remaining_count"] == 1
+    malformed_lifecycle = by_id["tx-malformed"]["todo_lifecycle"]
+    assert malformed_lifecycle["state"] == "suspended"
+    assert malformed_lifecycle["owner_scope_ref"] is None
+    assert by_id["tx-malformed"]["suspended_todo_hint"] is None
+
+    rendered = json.dumps(result, ensure_ascii=False)
+    assert "raw-chat-id-a" not in rendered
+    assert "raw-user-id-a" not in rendered
+
+
+def test_progress_reader_latest_null_lifecycle_and_hint_clear_stale_state(tmp_path):
+    from gateway.progress.todo_lifecycle import make_owner_scope_ref
+
+    path = tmp_path / "events.jsonl"
+    owner = make_owner_scope_ref(
+        profile="default",
+        platform="feishu",
+        conversation_id="raw-chat-id-a",
+        user_id="raw-user-id-a",
+    )
+    scope = {
+        "profile": owner.profile,
+        "platform": owner.platform,
+        "conversation": owner.conversation,
+        "user": owner.user,
+    }
+    with_state = _snapshot("tx-clear", written_at=3.0, status="running")
+    with_state["transaction"]["todo_lifecycle"] = {
+        "state": "suspended",
+        "suspension_reason": "waiting_external",
+        "completed_count": 1,
+        "remaining_count": 1,
+        "owner_scope_ref": scope,
+    }
+    with_state["transaction"]["suspended_todo_hint"] = {
+        "transaction_id": "tx-clear",
+        "title": "Wait for CI",
+        "reason": "waiting_external",
+        "remaining_count": 1,
+        "owner_scope_ref": scope,
+    }
+    cleared = _snapshot("tx-clear", written_at=4.0, status="completed")
+    cleared["transaction"]["todo_lifecycle"] = None
+    cleared["transaction"]["suspended_todo_hint"] = None
+    _write_jsonl(path, [with_state, cleared])
+
+    summary = list_progress_transactions(path)["transactions"][0]
+
+    assert summary["todo_lifecycle"] is None
+    assert summary["suspended_todo_hint"] is None
+
+
+def test_progress_reader_preserves_non_resumable_lifecycle_without_owner_scope(tmp_path):
+    """Lifecycle state still controls rendering even when no owner scope exists.
+
+    Owner scope gates cross-turn resume/hints; it must not be required for
+    same-transaction lifecycle states like archived that hide stale main TODOs.
+    """
+
+    path = tmp_path / "events.jsonl"
+    snapshot = _snapshot("tx-no-owner", written_at=5.0, status="completed")
+    snapshot["transaction"]["todo_items"] = [
+        {"id": "old", "content": "Old current block", "status": "pending", "depth": 0, "source": "todo_tool"},
+    ]
+    snapshot["transaction"]["todo_lifecycle"] = {
+        "state": "archived",
+        "completed_count": 1,
+        "remaining_count": 0,
+    }
+    _write_jsonl(path, [snapshot])
+
+    result = list_progress_transactions(path)
+
+    lifecycle = result["transactions"][0]["todo_lifecycle"]
+    assert lifecycle["state"] == "archived"
+    assert lifecycle["owner_scope_ref"] is None
+
+
 def test_progress_reader_old_records_without_iteration_usage_remain_valid(tmp_path):
     path = tmp_path / "events.jsonl"
     _write_jsonl(path, [_operation("tx-legacy", written_at=2.0), _snapshot("tx-legacy", written_at=3.0)])

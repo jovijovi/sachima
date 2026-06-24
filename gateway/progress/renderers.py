@@ -179,10 +179,15 @@ def render_text_panel(
     if iteration_line:
         lines.append(iteration_line)
 
-    todo_lines = _todo_text_lines(getattr(snapshot, "todo_items", ()))
+    todo_lines = _todo_text_lines(getattr(snapshot, "todo_items", ())) if should_render_main_todos(snapshot) else []
     if todo_lines:
         lines.append("")
         lines.extend(todo_lines)
+
+    suspended_lines = _suspended_hint_text_lines(getattr(snapshot, "suspended_todo_hint", None))
+    if suspended_lines:
+        lines.append("")
+        lines.extend(suspended_lines)
 
     operations = list(snapshot.recent_operations or ())
     if mode != "off":
@@ -252,9 +257,20 @@ def render_feishu_progress_card(
 
     # The todo block sits between the metric details and the recent-operations
     # list so the workbench reads plan-first, activity-second.
-    todo_element = _feishu_todo_element(getattr(snapshot, "todo_items", ()), language=lang)
+    todo_element = (
+        _feishu_todo_element(getattr(snapshot, "todo_items", ()), language=lang)
+        if should_render_main_todos(snapshot)
+        else None
+    )
     if todo_element is not None:
         elements.append(todo_element)
+
+    suspended_element = _feishu_suspended_hint_element(
+        getattr(snapshot, "suspended_todo_hint", None),
+        language=lang,
+    )
+    if suspended_element is not None:
+        elements.append(suspended_element)
 
     if mode != "off":
         operation_lines = list(
@@ -301,6 +317,81 @@ def render_feishu_progress_card(
 # ---------------------------------------------------------------------------
 # Structured todo rendering (Cursor-style, two-level, redacted)
 # ---------------------------------------------------------------------------
+
+
+def should_render_main_todos(snapshot: Any) -> bool:
+    """Return whether snapshot TODOs belong in the current-task main block."""
+
+    lifecycle = getattr(snapshot, "todo_lifecycle", None)
+    if lifecycle is None:
+        return True
+    state = _lifecycle_state(lifecycle)
+    if not state:
+        return False
+    return state in {"created", "active", "resumed", "completed", "cancelled"}
+
+
+def _lifecycle_state(lifecycle: Any) -> str:
+    if isinstance(lifecycle, dict):
+        raw = lifecycle.get("state")
+    else:
+        raw = getattr(lifecycle, "state", None)
+    return str(raw or "").strip().lower()
+
+
+def _hint_field(hint: Any, key: str, default: Any = None) -> Any:
+    if isinstance(hint, dict):
+        return hint.get(key, default)
+    return getattr(hint, key, default)
+
+
+def _suspended_hint_text_lines(hint: Any) -> list[str]:
+    if hint is None:
+        return []
+    title = sanitize_for_progress(_hint_field(hint, "title", ""), max_len=240).replace("\n", " ").strip()
+    if not title:
+        return []
+    remaining = _safe_hint_count(_hint_field(hint, "remaining_count", 0))
+    overflow = _safe_hint_count(_hint_field(hint, "overflow_count", 0))
+    next_action = sanitize_for_progress(_hint_field(hint, "next_action", ""), max_len=240).replace("\n", " ").strip()
+    suffix = f" ({remaining} remaining" + (f", +{overflow} more" if overflow else "") + ")"
+    if next_action:
+        suffix += f": {next_action}"
+    return ["**Suspended work:**", f"- {title}{suffix}"]
+
+
+def _feishu_suspended_hint_element(hint: Any, *, language: str) -> dict | None:
+    if hint is None:
+        return None
+    lang = _normalize_feishu_language(language)
+    title = sanitize_for_progress(_hint_field(hint, "title", ""), max_len=240).replace("\n", " ").strip()
+    if not title:
+        return None
+    remaining = _safe_hint_count(_hint_field(hint, "remaining_count", 0))
+    overflow = _safe_hint_count(_hint_field(hint, "overflow_count", 0))
+    next_action = sanitize_for_progress(_hint_field(hint, "next_action", ""), max_len=240).replace("\n", " ").strip()
+    if lang == "zh":
+        label = "挂起事项"
+        detail = f"{title}（{remaining} 项未完成"
+        if overflow:
+            detail += f"，另有 {overflow} 项"
+        detail += "）"
+    else:
+        label = "Suspended work"
+        detail = f"{title} ({remaining} remaining"
+        if overflow:
+            detail += f", +{overflow} more"
+        detail += ")"
+    if next_action:
+        detail += f"：{next_action}" if lang == "zh" else f": {next_action}"
+    return {"tag": "markdown", "content": f"**{label}**\n{detail}"}
+
+
+def _safe_hint_count(value: Any) -> int:
+    try:
+        return max(0, int(value))
+    except Exception:
+        return 0
 
 
 def _todo_depth(item: Any) -> int:

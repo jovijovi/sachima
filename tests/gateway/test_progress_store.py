@@ -251,7 +251,98 @@ def test_progress_records_include_empty_todo_items_to_clear_stale_state(tmp_path
     assert record["transaction"]["todo_items"] == []
 
 
+def test_progress_records_include_todo_lifecycle_and_hint(tmp_path):
+    from gateway.progress.todo_lifecycle import make_owner_scope_ref
+
+    store_path = tmp_path / "events.jsonl"
+    store = JsonlProgressEventStore(store_path)
+    tracker = ProgressTracker("tx-lifecycle", "Persist lifecycle")
+    owner = make_owner_scope_ref(
+        profile="default",
+        platform="feishu",
+        conversation_id="raw-chat-id-a",
+        user_id="raw-user-id-a",
+    )
+    fake_key = "sk-" + "test-" + ("b" * 32)
+    tracker.update_todo_lifecycle(
+        {
+            "state": "suspended",
+            "suspension_reason": "waiting_external",
+            "completed_count": 3,
+            "remaining_count": 1,
+            "next_action": f"Check /api/progress without leaking {fake_key}",
+            "owner_scope_ref": owner,
+        }
+    )
+    tracker.update_suspended_todo_hint(
+        {
+            "transaction_id": "tx-lifecycle",
+            "title": "Wait for CI",
+            "reason": "waiting_external",
+            "remaining_count": 1,
+            "next_action": "continue previous task",
+            "owner_scope_ref": owner,
+        }
+    )
+
+    store.append_snapshot(tracker.snapshot())
+    record = _read_jsonl(store_path)[0]
+    transaction = record["transaction"]
+    assert transaction["todo_lifecycle"]["state"] == "suspended"
+    assert transaction["todo_lifecycle"]["suspension_reason"] == "waiting_external"
+    assert transaction["todo_lifecycle"]["completed_count"] == 3
+    assert transaction["todo_lifecycle"]["remaining_count"] == 1
+    assert transaction["todo_lifecycle"]["owner_scope_ref"] == {
+        "profile": owner.profile,
+        "platform": owner.platform,
+        "conversation": owner.conversation,
+        "user": owner.user,
+    }
+    assert transaction["suspended_todo_hint"]["transaction_id"] == "tx-lifecycle"
+    rendered = json.dumps(record, ensure_ascii=False)
+    assert "/api/progress" in rendered
+    assert fake_key not in rendered
+    assert "raw-chat-id-a" not in rendered
+    assert "raw-user-id-a" not in rendered
+
+
+def test_progress_records_include_null_lifecycle_and_hint_to_clear_stale_state(tmp_path):
+    from gateway.progress.todo_lifecycle import make_owner_scope_ref
+
+    store_path = tmp_path / "events.jsonl"
+    store = JsonlProgressEventStore(store_path)
+    owner = make_owner_scope_ref(
+        profile="default",
+        platform="feishu",
+        conversation_id="raw-chat-id-a",
+        user_id="raw-user-id-a",
+    )
+    tracker = ProgressTracker("tx-lifecycle-clear", "Clear lifecycle")
+    tracker.update_todo_lifecycle({"state": "suspended", "owner_scope_ref": owner})
+    tracker.update_suspended_todo_hint(
+        {
+            "transaction_id": "tx-lifecycle-clear",
+            "title": "Old hint",
+            "reason": "paused",
+            "remaining_count": 1,
+            "owner_scope_ref": owner,
+        }
+    )
+    store.append_snapshot(tracker.snapshot())
+    tracker.update_todo_lifecycle(None)
+    tracker.update_suspended_todo_hint(None)
+
+    store.append_snapshot(tracker.snapshot())
+
+    transaction = _read_jsonl(store_path)[-1]["transaction"]
+    assert "todo_lifecycle" in transaction
+    assert "suspended_todo_hint" in transaction
+    assert transaction["todo_lifecycle"] is None
+    assert transaction["suspended_todo_hint"] is None
+
+
 def _rotation_snapshot() -> TransactionSnapshot:
+
     return TransactionSnapshot(
         transaction_id="tx-rotate",
         title="Rotate progress",

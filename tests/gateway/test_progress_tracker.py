@@ -421,3 +421,92 @@ def test_update_todo_items_empty_resets_to_tuple():
 
     assert tracker.update_todo_items([]) == ()
     assert tracker.snapshot().todo_items == ()
+
+
+def test_mark_completed_derives_terminal_todo_lifecycle_from_remaining_items():
+    tracker = ProgressTracker("tx-terminal-pending", "Pending leftovers")
+    tracker.update_todo_items([
+        {"id": "1", "content": "done", "status": "completed"},
+        {"id": "2", "content": "left", "status": "pending"},
+    ])
+    tracker.update_todo_lifecycle({"state": "active"})
+
+    tracker.mark_completed(is_error=False)
+
+    lifecycle = tracker.snapshot().todo_lifecycle
+    assert lifecycle is not None
+    assert lifecycle.state == "suspended"
+    assert lifecycle.suspension_reason == "paused"
+    assert lifecycle.completed_count == 1
+    assert lifecycle.remaining_count == 1
+
+
+def test_mark_completed_creates_same_owner_suspended_hint_when_scope_exists():
+    from gateway.progress.todo_lifecycle import make_owner_scope_ref
+
+    owner = make_owner_scope_ref(
+        profile="default",
+        platform="feishu",
+        conversation_id="raw-chat-id",
+        user_id="raw-user-id",
+    )
+    tracker = ProgressTracker("tx-terminal-hint", "Pending leftovers")
+    tracker.update_todo_items([{"id": "1", "content": "left", "status": "pending"}])
+    tracker.update_todo_lifecycle({"state": "active", "owner_scope_ref": owner})
+
+    tracker.mark_completed(is_error=False)
+
+    hint = tracker.snapshot().suspended_todo_hint
+    assert hint is not None
+    assert hint.transaction_id == "tx-terminal-hint"
+    assert hint.title == "Pending leftovers"
+    assert hint.reason == "paused"
+    assert hint.remaining_count == 1
+    assert hint.owner_scope_ref == owner
+
+
+def test_update_todo_lifecycle_carries_sanitized_state():
+    from gateway.progress.todo_lifecycle import make_owner_scope_ref
+
+    tracker = ProgressTracker("tx-lifecycle", "Lifecycle todos")
+    owner = make_owner_scope_ref(
+        profile="default",
+        platform="feishu",
+        conversation_id="raw-chat-secret-123",
+        user_id="raw-user-secret-456",
+    )
+    fake_key = "sk-" + "test-" + ("a" * 32)
+
+    lifecycle = tracker.update_todo_lifecycle(
+        {
+            "state": "suspended",
+            "suspension_reason": "waiting_external",
+            "completed_count": "2",
+            "remaining_count": "1",
+            "next_action": f"Inspect /api/progress and never show {fake_key}",
+            "owner_scope_ref": owner,
+        }
+    )
+    hint = tracker.update_suspended_todo_hint(
+        {
+            "transaction_id": "tx-lifecycle",
+            "title": "Wait for CI",
+            "reason": "waiting_external",
+            "remaining_count": 1,
+            "next_action": "continue previous task",
+            "owner_scope_ref": owner,
+        }
+    )
+
+    snapshot = tracker.snapshot()
+    assert snapshot.todo_lifecycle == lifecycle
+    assert snapshot.suspended_todo_hint == hint
+    assert snapshot.todo_lifecycle.state == "suspended"
+    assert snapshot.todo_lifecycle.suspension_reason == "waiting_external"
+    assert snapshot.todo_lifecycle.completed_count == 2
+    assert snapshot.todo_lifecycle.remaining_count == 1
+    rendered = repr(snapshot)
+    assert "/api/progress" in rendered
+    assert fake_key not in rendered
+    assert "raw-chat-secret-123" not in rendered
+    assert "raw-user-secret-456" not in rendered

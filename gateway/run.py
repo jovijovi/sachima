@@ -101,6 +101,41 @@ _GATEWAY_PROVIDER_ERROR_RE = re.compile(
     re.IGNORECASE,
 )
 
+
+def _copy_agent_todo_progress(progress_tracker: Any, agent_obj: Any) -> None:
+    """Copy lifecycle-aware TodoStore state into a progress tracker snapshot."""
+
+    if progress_tracker is None or agent_obj is None:
+        return
+    store = getattr(agent_obj, "_todo_store", None)
+    if store is None:
+        return
+
+    snapshot: dict[str, Any] = {}
+    read_snapshot = getattr(store, "read_snapshot", None)
+    if callable(read_snapshot):
+        snapshot = read_snapshot() or {}
+    else:
+        read = getattr(store, "read", None)
+        if not callable(read):
+            return
+        snapshot = {"todos": read()}
+        read_lifecycle = getattr(store, "read_lifecycle", None)
+        if callable(read_lifecycle):
+            lifecycle = read_lifecycle()
+            if lifecycle is not None:
+                snapshot["todo_lifecycle"] = lifecycle
+
+    lifecycle = snapshot.get("todo_lifecycle")
+    state = str((lifecycle or {}).get("state") or "").strip().lower() if isinstance(lifecycle, dict) else ""
+    items = [] if state == "archived" else snapshot.get("todos", [])
+    progress_tracker.update_todo_items(items)
+    if hasattr(progress_tracker, "update_todo_lifecycle"):
+        progress_tracker.update_todo_lifecycle(lifecycle)
+    hint = snapshot.get("suspended_todo_hint")
+    if hint is not None and hasattr(progress_tracker, "update_suspended_todo_hint"):
+        progress_tracker.update_suspended_todo_hint(hint)
+
 _GATEWAY_PROVIDER_POLICY_RE = re.compile(
     r"("  # raw provider policy/safety bodies are noisy and may be sensitive
     r"cybersecurity\s+risk"
@@ -14823,13 +14858,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if progress_tracker is None or agent_obj is None or agent_obj is _AGENT_PENDING_SENTINEL:
                 return
             try:
-                store = getattr(agent_obj, "_todo_store", None)
-                if store is None:
-                    return
-                read = getattr(store, "read", None)
-                if not callable(read):
-                    return
-                progress_tracker.update_todo_items(read())
+                _copy_agent_todo_progress(progress_tracker, agent_obj)
             except Exception as todo_err:
                 logger.debug("Task tracker todo update failed: %s", todo_err)
 

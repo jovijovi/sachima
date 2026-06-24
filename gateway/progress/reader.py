@@ -8,6 +8,12 @@ from pathlib import Path
 from typing import Any
 
 from gateway.progress.redaction import sanitize_value_for_progress
+from gateway.progress.todo_lifecycle import (
+    lifecycle_to_dict,
+    normalize_suspended_todo_hint,
+    normalize_todo_lifecycle,
+    suspended_hint_to_dict,
+)
 
 DEFAULT_MAX_BYTES = 5 * 1024 * 1024
 DEFAULT_MAX_LINES = 10_000
@@ -244,7 +250,25 @@ def _normalize_transaction(raw: Any) -> dict[str, Any] | None:
         # todo state seen in earlier operation records. Legacy records that lack
         # the field still omit it and remain compatible.
         transaction["todo_items"] = _safe_todo_items(raw.get("todo_items"))
+    if "todo_lifecycle" in raw:
+        transaction["todo_lifecycle"] = _safe_todo_lifecycle(raw.get("todo_lifecycle"))
+    if "suspended_todo_hint" in raw:
+        transaction["suspended_todo_hint"] = _safe_suspended_todo_hint(raw.get("suspended_todo_hint"))
     return transaction
+
+
+def _safe_todo_lifecycle(raw: Any) -> dict[str, Any] | None:
+    lifecycle = normalize_todo_lifecycle(raw)
+    if lifecycle is None:
+        return None
+    return lifecycle_to_dict(lifecycle)
+
+
+def _safe_suspended_todo_hint(raw: Any) -> dict[str, Any] | None:
+    hint = normalize_suspended_todo_hint(raw)
+    if hint is None:
+        return None
+    return suspended_hint_to_dict(hint)
 
 
 def _safe_todo_items(raw: Any) -> list[dict[str, Any]]:
@@ -374,6 +398,8 @@ def _summarize_transactions(records: list[dict[str, Any]]) -> list[dict[str, Any
                 "context_usage": transaction.get("context_usage"),
                 "iteration_usage": transaction.get("iteration_usage"),
                 "todo_items": transaction.get("todo_items"),
+                "todo_lifecycle": transaction.get("todo_lifecycle") if "todo_lifecycle" in transaction else None,
+                "suspended_todo_hint": transaction.get("suspended_todo_hint") if "suspended_todo_hint" in transaction else None,
                 "operation_count": 0,
                 "last_operation": None,
                 "_sort_at": record.get("written_at"),
@@ -410,6 +436,10 @@ def _merge_transaction(summary: dict[str, Any], transaction: dict[str, Any], wri
     # clobber an earlier snapshot (a transaction rarely clears its todo list).
     if transaction.get("todo_items") is not None:
         summary["todo_items"] = transaction.get("todo_items")
+    if "todo_lifecycle" in transaction:
+        summary["todo_lifecycle"] = transaction.get("todo_lifecycle")
+    if "suspended_todo_hint" in transaction:
+        summary["suspended_todo_hint"] = transaction.get("suspended_todo_hint")
     summary["_sort_at"] = max(
         _sort_value(summary.get("_sort_at")),
         _sort_value(written_at),

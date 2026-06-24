@@ -1807,6 +1807,13 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
     if function_name == "todo":
         def _execute(next_args: dict) -> Any:
             from tools.todo_tool import todo_tool as _todo_tool
+            bind_transaction = getattr(agent._todo_store, "bind_transaction", None)
+            if callable(bind_transaction):
+                owner_scope_ref = None
+                owner_scope_fn = getattr(agent, "_todo_owner_scope_ref", None)
+                if callable(owner_scope_fn):
+                    owner_scope_ref = owner_scope_fn()
+                bind_transaction(effective_task_id, owner_scope_ref=owner_scope_ref)
             return _finish_agent_tool(
                 _todo_tool(
                     todos=next_args.get("todos"),

@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from gateway.progress.todo_lifecycle import SuspendedTodoHint, TodoLifecycleSnapshot
+
 
 @dataclass
 class ProgressOperation:
@@ -85,3 +87,5 @@ class TransactionSnapshot:
     model_display: str | None = None
     account_limit_lines: tuple[str, ...] = ()
     todo_items: tuple[TodoItemSnapshot, ...] = ()
+    todo_lifecycle: TodoLifecycleSnapshot | None = None
+    suspended_todo_hint: SuspendedTodoHint | None = None

@@ -17,6 +17,11 @@ Design:
 import json
 from typing import Dict, Any, List, Optional
 
+from gateway.progress.todo_lifecycle import (
+    normalize_owner_scope_ref,
+    normalize_todo_lifecycle,
+)
+
 
 # Valid status values for todo items
 VALID_STATUSES = {"pending", "in_progress", "completed", "cancelled"}
@@ -48,6 +53,11 @@ class TodoStore:
 
     def __init__(self):
         self._items: List[Dict[str, str]] = []
+        self._transaction_id: Optional[str] = None
+        self._owner_scope_ref: Optional[Dict[str, str]] = None
+        self._lifecycle_state: Optional[str] = None
+        self._suspension_reason: Optional[str] = None
+        self._next_action: Optional[str] = None
 
     def write(self, todos: List[Dict[str, Any]], merge: bool = False) -> List[Dict[str, str]]:
         """
@@ -61,6 +71,9 @@ class TodoStore:
         if not merge:
             # Replace mode: new list entirely
             self._items = [self._validate(t) for t in self._dedupe_by_id(todos)]
+            self._lifecycle_state = None
+            self._suspension_reason = None
+            self._next_action = None
         else:
             # Merge mode: update existing items by id, append new ones
             existing = {item["id"]: item for item in self._items}
@@ -122,6 +135,95 @@ class TodoStore:
         """Check if there are any items in the list."""
         return bool(self._items)
 
+    def bind_transaction(
+        self,
+        transaction_id: Optional[str],
+        owner_scope_ref: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Bind the current todo list to a sanitized transaction/owner scope."""
+
+        self._transaction_id = str(transaction_id or "").strip() or None
+        owner = normalize_owner_scope_ref(owner_scope_ref)
+        self._owner_scope_ref = owner.__dict__.copy() if owner is not None else None
+
+    def mark_lifecycle(
+        self,
+        state: str,
+        reason: Optional[str] = None,
+        next_action: Optional[str] = None,
+    ) -> None:
+        """Set lifecycle metadata for the current todo list."""
+
+        lifecycle = normalize_todo_lifecycle(
+            {
+                "state": state,
+                "suspension_reason": reason,
+                "next_action": next_action,
+                "owner_scope_ref": self._owner_scope_ref,
+            }
+        )
+        if lifecycle is None:
+            self._lifecycle_state = None
+            self._suspension_reason = None
+            self._next_action = None
+            return
+        self._lifecycle_state = lifecycle.state
+        self._suspension_reason = lifecycle.suspension_reason
+        self._next_action = lifecycle.next_action
+
+    def clear_for_new_transaction(self) -> None:
+        """Clear items and lifecycle metadata for a clean unrelated task."""
+
+        self._items = []
+        self._transaction_id = None
+        self._owner_scope_ref = None
+        self._lifecycle_state = None
+        self._suspension_reason = None
+        self._next_action = None
+
+    def read_lifecycle(self) -> Optional[Dict[str, Any]]:
+        """Return a backward-compatible lifecycle envelope, if one is known."""
+
+        if not self._items and not self._lifecycle_state and not self._transaction_id and not self._owner_scope_ref:
+            return None
+        completed = sum(1 for item in self._items if item["status"] == "completed")
+        remaining = sum(1 for item in self._items if item["status"] in {"pending", "in_progress"})
+        if self._lifecycle_state:
+            state = self._lifecycle_state
+        elif remaining > 0:
+            state = "active"
+        elif self._items and all(item["status"] == "cancelled" for item in self._items):
+            state = "cancelled"
+        else:
+            state = "completed"
+        lifecycle: Dict[str, Any] = {
+            "state": state,
+            "completed_count": completed,
+            "remaining_count": remaining,
+        }
+        if self._transaction_id:
+            lifecycle["transaction_id"] = self._transaction_id
+        if self._suspension_reason:
+            lifecycle["suspension_reason"] = self._suspension_reason
+        if self._next_action:
+            lifecycle["next_action"] = self._next_action
+        if self._owner_scope_ref:
+            lifecycle["owner_scope_ref"] = self._owner_scope_ref.copy()
+        return lifecycle
+
+    def read_snapshot(self) -> Dict[str, Any]:
+        """Return todos, summary, and optional lifecycle metadata."""
+
+        items = self.read()
+        snapshot: Dict[str, Any] = {
+            "todos": items,
+            "summary": _summary_counts(items),
+        }
+        lifecycle = self.read_lifecycle()
+        if lifecycle is not None:
+            snapshot["todo_lifecycle"] = lifecycle
+        return snapshot
+
     def format_for_injection(self) -> Optional[str]:
         """
         Render the todo list for post-compression injection.
@@ -130,6 +232,8 @@ class TodoStore:
         message history, or None if the list is empty.
         """
         if not self._items:
+            return None
+        if self._lifecycle_state in {"completed", "archived", "suspended", "cancelled"}:
             return None
 
         # Status markers for compact display
@@ -268,26 +372,23 @@ def todo_tool(
         return tool_error("TodoStore not initialized")
 
     if todos is not None:
-        items = store.write(todos, merge)
-    else:
-        items = store.read()
+        store.write(todos, merge)
 
-    # Build summary counts
+    return json.dumps(store.read_snapshot(), ensure_ascii=False)
+
+
+def _summary_counts(items: List[Dict[str, str]]) -> Dict[str, int]:
     pending = sum(1 for i in items if i["status"] == "pending")
     in_progress = sum(1 for i in items if i["status"] == "in_progress")
     completed = sum(1 for i in items if i["status"] == "completed")
     cancelled = sum(1 for i in items if i["status"] == "cancelled")
-
-    return json.dumps({
-        "todos": items,
-        "summary": {
-            "total": len(items),
-            "pending": pending,
-            "in_progress": in_progress,
-            "completed": completed,
-            "cancelled": cancelled,
-        },
-    }, ensure_ascii=False)
+    return {
+        "total": len(items),
+        "pending": pending,
+        "in_progress": in_progress,
+        "completed": completed,
+        "cancelled": cancelled,
+    }
 
 
 def check_todo_requirements() -> bool:
