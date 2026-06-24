@@ -30,7 +30,7 @@ def test_feishu_progress_card_renders_flat_todo_block_before_operations():
     card = render_feishu_progress_card(tracker.snapshot(), tool_progress_mode="all")
     rendered = _rendered(card)
 
-    assert "待办 5" in rendered
+    assert "待办 - 2 / 5（40%）" in rendered
     assert "✅ ~~准备实现方案~~" in rendered  # completed → strikethrough
     assert "➡️ 跑测试" in rendered  # in_progress → arrow
     assert "○ 提交 PR" in rendered  # pending → hollow circle
@@ -50,7 +50,7 @@ def test_feishu_progress_card_renders_todo_block_english_labels():
     card = render_feishu_progress_card(tracker.snapshot(), language="en", tool_progress_mode="off")
     rendered = _rendered(card)
 
-    assert "To-dos 2" in rendered
+    assert "TODO - 1 / 2 (50%)" in rendered
     assert "✅ ~~Prepare plan~~" in rendered
     assert "➡️ Run tests" in rendered
     assert "待办" not in rendered
@@ -73,7 +73,7 @@ def test_feishu_progress_card_renders_two_level_todo_groups():
     card = render_feishu_progress_card(tracker.snapshot(), tool_progress_mode="off")
     rendered = _rendered(card)
 
-    assert "待办 7" in rendered
+    assert "待办 - 1 / 7（14%）" in rendered
     assert "▸ PR 验证 1/4" in rendered  # one of four children completed
     assert "▸ 发布 0/1" in rendered
     # Children render indented under their parent group.
@@ -106,7 +106,7 @@ def test_feishu_progress_card_todo_block_does_not_leak_secrets():
     rendered = _rendered(card)
 
     assert leak not in rendered
-    assert "待办 1" in rendered
+    assert "待办 - 0 / 1（0%）" in rendered
 
 
 def test_feishu_progress_card_todo_block_caps_lines_with_overflow_note():
@@ -120,7 +120,7 @@ def test_feishu_progress_card_todo_block_caps_lines_with_overflow_note():
     card = render_feishu_progress_card(tracker.snapshot(), tool_progress_mode="off")
     rendered = _rendered(card)
 
-    assert "待办 15" in rendered
+    assert "待办 - 0 / 15（0%）" in rendered
     assert "还有" in rendered  # overflow note covers the hidden items
 
 
