@@ -74,4 +74,6 @@ Claude final blocker-only re-review returned `VERDICT: PASS` / 95 on the same fi
 
 Final solution packet created: `docs/plans/2026-06-24-task-workbench-todo-lifecycle-final-solution.md`.
 
-Next: wait for explicit user approval before implementation.
+Implementation plan created after the operator's continuation request: `docs/plans/2026-06-24-task-workbench-todo-lifecycle-implementation-plan.md`. This remains docs-only planning; no source-code implementation, tests, Gateway runtime action, platform mutation, or production config change has started.
+
+Next: wait for explicit user approval before source-code implementation / Claude Code main-programmer execution.
