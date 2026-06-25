@@ -126,3 +126,12 @@ git diff --check: PASS
 ```
 
 Verification scope: docs-only; no runtime, Worker, workflow/activity, acpx/npx/agent, Gateway/Feishu, production config, service restart, or delivery behavior was executed.
+
+## PR
+
+```text
+PR: https://github.com/jovijovi/sachima/pull/168
+state: OPEN
+```
+
+The manifest records PR #168 as open.

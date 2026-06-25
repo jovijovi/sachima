@@ -6,7 +6,7 @@ roadmap_phase: P6
 roadmap_phase_name: Controlled AI FLOW execution
 level: level-3-pre-development-governance
 date: '2026-06-25'
-status: ready_for_pr
+status: pr_open
 status_meaning: >-
   Docs-only pre-development governance PR for P6 controlled AI FLOW execution.
   It prepares a later P6-A implementation request through PRD, Claude architect
@@ -15,9 +15,9 @@ repository: jovijovi/sachima
 base_branch: release/sachima
 base_head: 40c4ed562994c0d1a29ad92d9f7f2d6fb6e9c9cf
 branch: docs/p6-controlled-ai-flow-predev-governance
-pr_number: null
-pr_url: null
-pr_state: not_opened
+pr_number: 168
+pr_url: https://github.com/jovijovi/sachima/pull/168
+pr_state: open
 owner_dri: Hermes operator under Sachima governed task
 operator_approval: >-
   批准开 P6 controlled AI FLOW execution pre-development governance：PRD → Claude 架构/teach-back → 技术方案 → Codex blocker review → 再请求实现批准。
