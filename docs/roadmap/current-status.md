@@ -11,9 +11,20 @@
 ```json
 {
   "base_branch": "release/sachima",
-  "base_head": "69bbe4c4bd38c4626f5841c817f558c74248683b",
+  "base_head": "6a447840e35b538075c09b989d8eb357aa20087e",
   "base_head_note": "latest first-parent base commit excluding machine status-sync self-commits",
   "latest_merged_prs": [
+    {
+      "baseRefName": "release/sachima",
+      "headRefName": "feat/p6a-temporal-controlled-ai-flow-implementation",
+      "mergeCommit": {
+        "oid": "6a447840e35b538075c09b989d8eb357aa20087e"
+      },
+      "mergedAt": "2026-06-25T17:08:27Z",
+      "number": 169,
+      "title": "feat: add P6-A controlled AI flow composition",
+      "url": "https://github.com/jovijovi/sachima/pull/169"
+    },
     {
       "baseRefName": "release/sachima",
       "headRefName": "docs/p6-controlled-ai-flow-predev-governance",
@@ -57,31 +68,10 @@
       "number": 165,
       "title": "docs: record xAI multi-reference image status",
       "url": "https://github.com/jovijovi/sachima/pull/165"
-    },
-    {
-      "baseRefName": "release/sachima",
-      "headRefName": "fix/feishu-todo-card-lifecycle",
-      "mergeCommit": {
-        "oid": "dc46af8d33a96ddcabf98401eee7289d789e5e58"
-      },
-      "mergedAt": "2026-06-24T09:03:01Z",
-      "number": 164,
-      "title": "Fix Feishu TODO card lifecycle progress",
-      "url": "https://github.com/jovijovi/sachima/pull/164"
     }
   ],
-  "open_pr_count": 1,
-  "open_prs": [
-    {
-      "baseRefName": "release/sachima",
-      "headRefName": "feat/p6a-temporal-controlled-ai-flow-implementation",
-      "isDraft": false,
-      "mergeStateStatus": "CLEAN",
-      "number": 169,
-      "title": "feat: add P6-A controlled AI flow composition",
-      "url": "https://github.com/jovijovi/sachima/pull/169"
-    }
-  ],
+  "open_pr_count": 0,
+  "open_prs": [],
   "repository": "jovijovi/sachima",
   "scope_note": "machine dynamic status only; approvals and phase meaning remain human-authored outside this block"
 }
