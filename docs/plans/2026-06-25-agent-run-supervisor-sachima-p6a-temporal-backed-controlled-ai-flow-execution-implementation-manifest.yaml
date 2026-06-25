@@ -90,7 +90,7 @@ local_verification:
     result: PASS
 review:
   codex_blocker_review:
-    status: passed_before_pr_open
+    status: passed_after_pr_open_status_sync
     verdict: PASS
     score: 96
     blockers: none
@@ -98,9 +98,11 @@ review:
       Initial read-only sandbox review was blocked by Codex/bubblewrap
       (bwrap loopback RTM_NEWADDR). Fallback read-only-by-instruction review
       found roadmap drift and then a control-path ordering blocker; both were
-      fixed. The pre-PR fallback re-review passed and its diff checksum was
-      unchanged across the review run. Final merge readiness remains live
-      GitHub/CI/head-bound evidence, not this archived manifest.
+      fixed. After PR #169 opened, stale PR-open status wording in roadmap,
+      plan, manifest, and dev log was repaired, then a final no-bwrap fallback
+      three-stage exact-head review passed with unchanged diff checksum. Final
+      merge readiness still remains live GitHub/CI/head-bound evidence, not this
+      archived manifest.
 pr:
   status: open_pending_merge_approval
   number: 169

@@ -202,7 +202,7 @@ Codex review history so far:
 2. Fallback read-only-by-instruction review found stale roadmap wording; `docs/roadmap/current-status.md` was corrected.
 3. Fallback re-review found a real control-path blocker: invalid active-run cancel and close could call executor controls before WP4 resident-state validation. P6 now validates resident run/cancel preconditions before executor controls, close summarizes before closing, and `test_control_ops_validate_resident_state_before_executor_side_effects` covers zero executor calls for missing resident state.
 
-Final Codex exact-head blocker re-review passed after those fixes:
+Final Codex exact-head blocker re-review passed after those fixes, and a later post-PR-open status-authority cleanup review also passed after stale PR-open wording was removed from the roadmap/plan/manifest/dev-log surfaces:
 
 ```text
 VERDICT: PASS

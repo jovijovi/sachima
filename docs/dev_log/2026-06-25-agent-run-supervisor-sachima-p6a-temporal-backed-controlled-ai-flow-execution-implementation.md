@@ -130,7 +130,7 @@ WP3b active-run cancellation WATCH remains open and is intentionally propagated,
 
 ## Codex blocker review
 
-Initial `--sandbox read-only` Codex review was blocked by the environment (`bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted`). Fallback read-only-by-instruction review first found roadmap drift, then a control-path ordering blocker. Both were fixed. Final fallback re-review returned:
+Initial `--sandbox read-only` Codex review was blocked by the environment (`bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted`). Fallback read-only-by-instruction review first found roadmap drift, then a control-path ordering blocker. Both were fixed. After PR #169 opened, stale PR-open status wording was repaired across the roadmap/plan/manifest/dev-log surfaces. The final no-bwrap fallback three-stage exact-head review returned:
 
 ```text
 VERDICT: PASS
@@ -139,7 +139,7 @@ BLOCKERS:
 - None
 ```
 
-Post-review diff checksum was unchanged across the fallback review run, confirming Codex did not modify files.
+Post-review diff checksum was unchanged across the fallback review run, confirming Codex did not modify files. The approval-ready head must still be taken from live GitHub/CI and the active approval card, not from this archived dev log.
 
 ## Next steps
 
