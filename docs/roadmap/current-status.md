@@ -76,7 +76,7 @@
       "baseRefName": "release/sachima",
       "headRefName": "docs/p6-controlled-ai-flow-predev-governance",
       "isDraft": false,
-      "mergeStateStatus": "UNSTABLE",
+      "mergeStateStatus": "CLEAN",
       "number": 168,
       "title": "docs: add P6 controlled AI FLOW predev governance",
       "url": "https://github.com/jovijovi/sachima/pull/168"
