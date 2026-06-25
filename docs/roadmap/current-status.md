@@ -229,6 +229,19 @@ implementation_marker_note: no live / no Gateway / no real delivery; WP4 control
 - PE-2 design packet: `docs/plans/2026-05-12-flowweaver-pe2-design-packet.md`
 - Latest PE-2A dev log: `docs/dev_log/2026-05-12-flowweaver-pe2a-controlled-runtime-fake-delivery.md`
 
+## Side capability references
+
+These references are not phase approvals, but they preserve implementation state
+for cross-cutting Sachima/Hermes capabilities that future work may need to
+re-enter.
+
+- xAI/Grok Imagine multi-reference image generation status snapshot:
+  `docs/dev_log/2026-06-25-xai-multi-reference-image-generation-status.md`
+- xAI Imagine API refresh PRD:
+  `docs/plans/2026-06-19-xai-imagine-api-refresh-prd.md`
+- xAI Imagine API refresh dev log:
+  `docs/dev_log/2026-06-19-xai-imagine-api-refresh.md`
+
 ## How to use this file
 
 Before any roadmap, phase, PR, CI, merge, review, or next-phase-readiness work:
