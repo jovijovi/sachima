@@ -11,9 +11,20 @@
 ```json
 {
   "base_branch": "release/sachima",
-  "base_head": "6c2a1447e512ccba38ea2dd9de4047a303f26706",
+  "base_head": "936ebc9f19c98a19228968101060023ede2327f1",
   "base_head_note": "latest first-parent base commit excluding machine status-sync self-commits",
   "latest_merged_prs": [
+    {
+      "baseRefName": "release/sachima",
+      "headRefName": "docs/ars-post-p5-status-calibration",
+      "mergeCommit": {
+        "oid": "936ebc9f19c98a19228968101060023ede2327f1"
+      },
+      "mergedAt": "2026-06-25T08:32:34Z",
+      "number": 167,
+      "title": "docs: calibrate post-P5 Sachima roadmap",
+      "url": "https://github.com/jovijovi/sachima/pull/167"
+    },
     {
       "baseRefName": "release/sachima",
       "headRefName": "feat/p5-temporal-pr-b-implementation",
@@ -57,31 +68,10 @@
       "number": 163,
       "title": "Add TODO lifecycle to task workbench",
       "url": "https://github.com/jovijovi/sachima/pull/163"
-    },
-    {
-      "baseRefName": "release/sachima",
-      "headRefName": "feat/progress-todo-workbench",
-      "mergeCommit": {
-        "oid": "a44c99395435aaa3069c689f3cc57f7b32722cdf"
-      },
-      "mergedAt": "2026-06-23T11:03:10Z",
-      "number": 162,
-      "title": "Add structured TODOs to progress workbench",
-      "url": "https://github.com/jovijovi/sachima/pull/162"
     }
   ],
-  "open_pr_count": 1,
-  "open_prs": [
-    {
-      "baseRefName": "release/sachima",
-      "headRefName": "docs/ars-post-p5-status-calibration",
-      "isDraft": false,
-      "mergeStateStatus": "UNSTABLE",
-      "number": 167,
-      "title": "docs: calibrate post-P5 Sachima roadmap",
-      "url": "https://github.com/jovijovi/sachima/pull/167"
-    }
-  ],
+  "open_pr_count": 0,
+  "open_prs": [],
   "repository": "jovijovi/sachima",
   "scope_note": "machine dynamic status only; approvals and phase meaning remain human-authored outside this block"
 }
