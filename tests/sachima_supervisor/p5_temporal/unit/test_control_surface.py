@@ -90,3 +90,61 @@ def test_surface_leak_guard_collapses_to_stable_code():
     result = asyncio.run(surface.query(workflow_id="p5wf_" + "0" * 48))
     assert result["ok"] is False
     assert result["error_code"] == C.RUNTIME_HISTORY_LEAK_DETECTED
+
+
+def test_surface_start_rejects_raw_workflow_id_before_temporal_start():
+    fake, surface = _surface()
+    req = _start_request()
+    raw_wid = "http://example.test/object?" + "to" + "ken=raw"
+
+    result = asyncio.run(surface.start(req, workflow_id=raw_wid))
+
+    assert result["ok"] is False
+    assert result["error_code"] == C.INVALID_START_PAYLOAD
+    assert result["workflow_id"] is None
+    assert fake.start_calls == 0
+    assert fake.start_kwargs == []
+    assert C.scan_projection_for_leak(result) is None
+
+
+class _TripwireRuntimeClient:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def start(self, start_request, *, workflow_id):
+        self.calls += 1
+        return {"ok": True, "op": "start", "workflow_id": workflow_id, "snapshot": {}, "error_code": None}
+
+
+def test_surface_handle_rejects_raw_workflow_id_before_runtime_dispatch():
+    runtime = _TripwireRuntimeClient()
+    surface = P5TemporalControlSurface(runtime)
+
+    result = asyncio.run(
+        surface.handle(
+            {
+                "operation": "start",
+                "workflow_id": "/home/ecs-user/private/workflow",
+                "start_request": _start_request(),
+            }
+        )
+    )
+
+    assert result["ok"] is False
+    assert result["error_code"] == C.INVALID_START_PAYLOAD
+    assert result["workflow_id"] is None
+    assert runtime.calls == 0
+
+
+def test_surface_handle_unknown_operation_rejects_raw_workflow_id_without_echo():
+    fake, surface = _surface()
+
+    result = asyncio.run(
+        surface.handle({"operation": "explode", "workflow_id": "/home/ecs-user/private/workflow"})
+    )
+
+    assert result["ok"] is False
+    assert result["error_code"] == C.INVALID_START_PAYLOAD
+    assert result["workflow_id"] is None
+    assert C.scan_projection_for_leak(result) is None
+    assert fake.start_calls == 0

@@ -285,3 +285,116 @@ def test_duplicate_start_completed_but_open_workflow_prefers_query():
     assert second["snapshot"]["run_ref"] == "run_p5_demo_0001"
     assert fake.start_calls == 1
     assert flags["result_awaited"] is False
+
+
+# --------------------------------------------------------------------------- #
+# Workflow-id trust boundary: raw ids must not reach Temporal (Gate B/D)
+# --------------------------------------------------------------------------- #
+def test_start_rejects_raw_workflow_id_before_temporal_start():
+    fake, client = _client()
+    req = _start_request()
+    raw_wid = "http://example.test/object?" + "to" + "ken=raw"
+
+    result = asyncio.run(client.start(req, workflow_id=raw_wid))
+
+    assert result["ok"] is False
+    assert result["error_code"] == C.INVALID_START_PAYLOAD
+    assert result["workflow_id"] is None
+    assert fake.start_calls == 0
+    assert fake.start_kwargs == []
+    assert C.scan_projection_for_leak(result) is None
+
+
+def test_start_rejects_mismatched_safe_workflow_id_before_temporal_start():
+    fake, client = _client()
+    req = _start_request()
+    mismatched_wid = "p5wf_" + "1" * 48
+    assert mismatched_wid != C.deterministic_workflow_id(req)
+
+    result = asyncio.run(client.start(req, workflow_id=mismatched_wid))
+
+    assert result["ok"] is False
+    assert result["error_code"] == C.INVALID_START_PAYLOAD
+    assert result["workflow_id"] is None
+    assert fake.start_calls == 0
+    assert fake.start_kwargs == []
+
+
+class _HandleLookupTripwireClient:
+    def __init__(self) -> None:
+        self.handle_calls = 0
+
+    def get_workflow_handle(self, workflow_id: str):
+        self.handle_calls += 1
+        raise AssertionError("raw workflow id must not reach Temporal handle lookup")
+
+
+def test_query_rejects_raw_workflow_id_before_handle_lookup():
+    fake = _HandleLookupTripwireClient()
+    client = P5TemporalRuntimeClient(fake)
+
+    result = asyncio.run(client.query(workflow_id="/home/ecs-user/private/workflow"))
+
+    assert result["ok"] is False
+    assert result["error_code"] == C.INVALID_START_PAYLOAD
+    assert result["workflow_id"] is None
+    assert fake.handle_calls == 0
+
+
+class _QueryFailsHangingResultHandle:
+    def __init__(self, flags: dict, snapshot: dict | None = None) -> None:
+        self.id = "p5wf_" + "2" * 48
+        self._flags = flags
+        self._snapshot = snapshot
+
+    async def query(self, query_fn, *args):
+        self._flags["query_awaited"] = True
+        raise RuntimeError("query_unavailable")
+
+    async def result(self):
+        self._flags["result_awaited"] = True
+        if self._snapshot is not None:
+            return self._snapshot
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")  # pragma: no cover
+
+
+class _QueryFailsHangingResultClient:
+    def __init__(self, handle: _QueryFailsHangingResultHandle) -> None:
+        self._handle = handle
+
+    def get_workflow_handle(self, workflow_id: str) -> _QueryFailsHangingResultHandle:
+        return self._handle
+
+
+def test_query_result_fallback_is_bounded_when_workflow_stays_open():
+    flags = {"query_awaited": False, "result_awaited": False}
+    handle = _QueryFailsHangingResultHandle(flags)
+    client = P5TemporalRuntimeClient(_QueryFailsHangingResultClient(handle))
+    wid = "p5wf_" + "2" * 48
+
+    result = asyncio.run(asyncio.wait_for(client.query(workflow_id=wid), timeout=2))
+
+    assert flags == {"query_awaited": True, "result_awaited": True}
+    assert result["ok"] is False
+    assert result["error_code"] in {C.RUNTIME_NOT_FOUND, C.RUNTIME_ERROR}
+
+
+def test_query_result_fallback_still_reads_fast_terminal_result():
+    req = _start_request()
+    snapshot = C.build_query_snapshot(
+        start_request=req,
+        state="closed",
+        snapshot_version=3,
+        artifact_refs=(C.deterministic_artifact_ref(req),),
+    )
+    flags = {"query_awaited": False, "result_awaited": False}
+    handle = _QueryFailsHangingResultHandle(flags, snapshot=snapshot)
+    client = P5TemporalRuntimeClient(_QueryFailsHangingResultClient(handle))
+    wid = C.deterministic_workflow_id(req)
+
+    result = asyncio.run(asyncio.wait_for(client.query(workflow_id=wid), timeout=2))
+
+    assert flags == {"query_awaited": True, "result_awaited": True}
+    assert result["ok"] is True
+    assert result["snapshot"]["state"] == "closed"

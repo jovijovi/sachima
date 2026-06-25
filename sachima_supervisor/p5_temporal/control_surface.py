@@ -19,6 +19,10 @@ def _err(op: str, code: str, *, workflow_id: str | None = None) -> dict[str, Any
     return {"ok": False, "op": op, "workflow_id": workflow_id, "snapshot": None, "error_code": code, "replayed": False}
 
 
+def _stable(code: str | None, default: str = C.INVALID_START_PAYLOAD) -> str:
+    return code if code in C.STABLE_CODES else default
+
+
 class P5TemporalControlSurface:
     """Sanitized, no-throw dispatcher over the runtime client."""
 
@@ -26,15 +30,31 @@ class P5TemporalControlSurface:
         self._runtime_client = runtime_client
 
     async def start(self, start_request: Any, *, workflow_id: str) -> dict[str, Any]:
+        try:
+            workflow_id = C.workflow_id_for_start_request(start_request, supplied=workflow_id)
+        except C.ContractError as exc:
+            return _err("start", _stable(exc.code))
         return await self._guard("start", self._runtime_client.start(start_request, workflow_id=workflow_id))
 
     async def query(self, *, workflow_id: str) -> dict[str, Any]:
+        try:
+            workflow_id = C.validate_workflow_id(workflow_id)
+        except C.ContractError as exc:
+            return _err("query", _stable(exc.code))
         return await self._guard("query", self._runtime_client.query(workflow_id=workflow_id))
 
     async def cancel(self, *, workflow_id: str, update: Any) -> dict[str, Any]:
+        try:
+            workflow_id = C.validate_workflow_id(workflow_id)
+        except C.ContractError as exc:
+            return _err("cancel", _stable(exc.code))
         return await self._guard("cancel", self._runtime_client.signal_cancel(workflow_id=workflow_id, update=update))
 
     async def recover(self, *, workflow_id: str) -> dict[str, Any]:
+        try:
+            workflow_id = C.validate_workflow_id(workflow_id)
+        except C.ContractError as exc:
+            return _err("recover", _stable(exc.code))
         return await self._guard("recover", self._runtime_client.recover(workflow_id=workflow_id))
 
     async def close(self) -> dict[str, Any]:
@@ -57,6 +77,11 @@ class P5TemporalControlSurface:
             return await self.recover(workflow_id=workflow_id)
         if operation == "close":
             return await self.close()
+        if workflow_id is not None:
+            try:
+                workflow_id = C.validate_workflow_id(workflow_id)
+            except C.ContractError as exc:
+                return _err("dispatch", _stable(exc.code))
         return _err("dispatch", C.RUNTIME_ERROR, workflow_id=workflow_id if isinstance(workflow_id, str) else None)
 
     async def _guard(self, op: str, coro: Any) -> dict[str, Any]:

@@ -70,8 +70,18 @@
       "url": "https://github.com/jovijovi/sachima/pull/161"
     }
   ],
-  "open_pr_count": 0,
-  "open_prs": [],
+  "open_pr_count": 1,
+  "open_prs": [
+    {
+      "baseRefName": "release/sachima",
+      "headRefName": "feat/p5-temporal-pr-b-implementation",
+      "isDraft": false,
+      "mergeStateStatus": "CLEAN",
+      "number": 166,
+      "title": "feat: add P5 Temporal runtime slice",
+      "url": "https://github.com/jovijovi/sachima/pull/166"
+    }
+  ],
   "repository": "jovijovi/sachima",
   "scope_note": "machine dynamic status only; approvals and phase meaning remain human-authored outside this block"
 }

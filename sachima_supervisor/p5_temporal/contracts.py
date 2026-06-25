@@ -81,6 +81,7 @@ STABLE_CODES = frozenset(
 _SAFE_ID_RE = re.compile(r"^[a-z][a-z0-9_]{0,127}$")
 _SHA256_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _SAFE_KIND_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+_WORKFLOW_ID_RE = re.compile(r"^p5wf_[0-9a-f]{48}$")
 
 #: Denylist markers (FR2). Matched case-insensitively against the lowered string
 #: rendering of any field / projection. Kept deliberately specific so legitimate
@@ -484,6 +485,21 @@ def workflow_id_from_refs(run_ref: Any, step_ref: Any) -> str:
     return "p5wf_" + _digest_hex(seed)[:48]
 
 
+def validate_workflow_id(value: Any, *, code: str = INVALID_START_PAYLOAD) -> str:
+    """Validate the exact Temporal workflow-id shape used by P5 Slice 1.
+
+    Workflow ids are durable backend keys, not user/WP4 refs. They must never be
+    normalized from raw material; only the deterministic ``p5wf_<48 hex>`` form is
+    allowed to cross into Temporal client calls.
+    """
+
+    if type(value) is not str or _WORKFLOW_ID_RE.fullmatch(value) is None:
+        raise ContractError(code)
+    if _has_forbidden_marker(value):
+        raise ContractError(code)
+    return value
+
+
 # --------------------------------------------------------------------------- #
 # StartRequest builder / validator
 # --------------------------------------------------------------------------- #
@@ -649,6 +665,26 @@ def deterministic_workflow_id(request: StartRequest) -> str:
 
     validate_start_request(request)
     return workflow_id_from_refs(request.run_ref, request.step_ref)
+
+
+def workflow_id_for_start_request(
+    request: StartRequest, *, supplied: Any | None = None, code: str = INVALID_START_PAYLOAD
+) -> str:
+    """Return the deterministic workflow id, optionally proving a supplied id matches.
+
+    This binds the independent runtime/control-surface ``workflow_id`` parameter
+    back to the sanitized ``StartRequest``. A syntactically valid but mismatched id
+    is still rejected before any Temporal call, preserving the one durable workflow
+    per ``(run_ref, step_ref)`` contract.
+    """
+
+    expected = deterministic_workflow_id(request)
+    if supplied is None:
+        return expected
+    observed = validate_workflow_id(supplied, code=code)
+    if observed != expected:
+        raise ContractError(code)
+    return observed
 
 
 def safe_artifact_kind(step_ref: str) -> str:
@@ -906,6 +942,8 @@ __all__ = [
     "artifact_ref_to_claim_check",
     "safe_ref",
     "workflow_id_from_refs",
+    "validate_workflow_id",
+    "workflow_id_for_start_request",
     "build_start_request",
     "validate_start_request",
     "build_update_payload",

@@ -35,6 +35,13 @@ _NO_RELAUNCH_ID_CONFLICT_POLICY = WorkflowIDConflictPolicy.FAIL
 #: States in which the controlled-deterministic step body has finished running.
 _WORK_DONE_STATES = frozenset({"completed", "cancelled", "closed", "failed"})
 
+# Query paths must not block on a workflow that intentionally stays open after
+# completing its step body. A query failure may still inspect a terminal/closed
+# result, but only with a short bound so open workflows fail closed instead of
+# hanging the runtime boundary.
+_QUERY_TIMEOUT_SECONDS = 1.0
+_RESULT_FALLBACK_TIMEOUT_SECONDS = 1.0
+
 
 def _ok(op: str, *, workflow_id: str | None = None, snapshot: Any = None, replayed: bool = False) -> dict[str, Any]:
     return {
@@ -77,6 +84,7 @@ class P5TemporalRuntimeClient:
     async def start(self, start_request: Any, *, workflow_id: str) -> dict[str, Any]:
         try:
             C.validate_start_request(start_request)
+            workflow_id = C.workflow_id_for_start_request(start_request, supplied=workflow_id)
         except C.ContractError as exc:
             return _err("start", _stable(exc.code, C.INVALID_START_PAYLOAD))
         try:
@@ -135,6 +143,10 @@ class P5TemporalRuntimeClient:
     # Query / recover / cancel / close (all no-throw)
     # ------------------------------------------------------------------ #
     async def query(self, *, workflow_id: str) -> dict[str, Any]:
+        try:
+            workflow_id = C.validate_workflow_id(workflow_id)
+        except C.ContractError as exc:
+            return _err("query", _stable(exc.code, C.INVALID_START_PAYLOAD))
         snapshot = await self._read_snapshot(workflow_id, prefer_query=True)
         if snapshot is None:
             return _err("query", C.RUNTIME_NOT_FOUND, workflow_id=workflow_id)
@@ -145,6 +157,10 @@ class P5TemporalRuntimeClient:
 
     async def recover(self, *, workflow_id: str) -> dict[str, Any]:
         # Reattach by workflow id only; never auto-relaunch uncertain work.
+        try:
+            workflow_id = C.validate_workflow_id(workflow_id)
+        except C.ContractError as exc:
+            return _err("recover", _stable(exc.code, C.INVALID_START_PAYLOAD))
         snapshot = await self._read_snapshot(workflow_id, prefer_query=True)
         if snapshot is None:
             return _err("recover", C.RUNTIME_NOT_FOUND, workflow_id=workflow_id)
@@ -154,6 +170,10 @@ class P5TemporalRuntimeClient:
         return _ok("recover", workflow_id=workflow_id, snapshot=safe)
 
     async def signal_cancel(self, *, workflow_id: str, update: Any) -> dict[str, Any]:
+        try:
+            workflow_id = C.validate_workflow_id(workflow_id)
+        except C.ContractError as exc:
+            return _err("cancel", _stable(exc.code, C.INVALID_START_PAYLOAD))
         try:
             C.validate_update_payload(update)
         except C.ContractError as exc:
@@ -180,12 +200,14 @@ class P5TemporalRuntimeClient:
     async def serialized_event_history_bytes(self, *, workflow_id: str) -> bytes:
         import temporalio.api.history.v1
 
+        workflow_id = C.validate_workflow_id(workflow_id)
         handle = self._client.get_workflow_handle(workflow_id)
         history = await handle.fetch_history()
         proto = temporalio.api.history.v1.History(events=history.events)
         return proto.SerializeToString()
 
     async def event_history_json(self, *, workflow_id: str) -> dict[str, Any]:
+        workflow_id = C.validate_workflow_id(workflow_id)
         handle = self._client.get_workflow_handle(workflow_id)
         history = await handle.fetch_history()
         return history.to_json_dict()
@@ -194,20 +216,29 @@ class P5TemporalRuntimeClient:
     # Helpers
     # ------------------------------------------------------------------ #
     async def _read_snapshot(self, workflow_id: str, *, prefer_query: bool = False) -> Any:
+        try:
+            workflow_id = C.validate_workflow_id(workflow_id)
+        except C.ContractError:
+            return None
         handle = self._client.get_workflow_handle(workflow_id)
         if prefer_query:
             try:
-                return await handle.query(StepWorkflow.snapshot)
+                return await asyncio.wait_for(
+                    handle.query(StepWorkflow.snapshot), timeout=_QUERY_TIMEOUT_SECONDS
+                )
             except BaseException:  # noqa: BLE001
                 pass
         # Completed workflows expose their final snapshot as the run result.
         try:
-            return await handle.result()
+            timeout = _RESULT_FALLBACK_TIMEOUT_SECONDS if prefer_query else _QUERY_TIMEOUT_SECONDS
+            return await asyncio.wait_for(handle.result(), timeout=timeout)
         except BaseException:  # noqa: BLE001
             pass
         if not prefer_query:
             try:
-                return await handle.query(StepWorkflow.snapshot)
+                return await asyncio.wait_for(
+                    handle.query(StepWorkflow.snapshot), timeout=_QUERY_TIMEOUT_SECONDS
+                )
             except BaseException:  # noqa: BLE001
                 return None
         return None

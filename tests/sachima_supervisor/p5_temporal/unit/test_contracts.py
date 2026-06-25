@@ -209,6 +209,37 @@ def test_deterministic_workflow_id_stable_and_safe():
     assert C.deterministic_workflow_id(other_step) != wid1
 
 
+def test_workflow_id_contract_accepts_only_exact_deterministic_id():
+    req = C.build_start_request(**_clean_start_fields())
+    wid = C.deterministic_workflow_id(req)
+
+    assert C.validate_workflow_id(wid) == wid
+    assert C.workflow_id_for_start_request(req, supplied=wid) == wid
+    assert C.workflow_id_for_start_request(req) == wid
+
+    with pytest.raises(C.ContractError) as mismatch:
+        C.workflow_id_for_start_request(req, supplied="p5wf_" + "1" * 48)
+    assert mismatch.value.code == C.INVALID_START_PAYLOAD
+
+
+@pytest.mark.parametrize(
+    "raw_workflow_id",
+    [
+        "run_p5_demo_0001",
+        "p5wf_" + "0" * 47,
+        "p5wf_" + "g" * 48,
+        "http://example.test/object?" + "to" + "ken=raw",
+        "/home/ecs-user/private/workflow",
+        "post" + "gres://user:pw@host/db",
+        "p5wf_" + "0" * 48 + "?" + "X-Amz-" + "Signature=abc",
+    ],
+)
+def test_validate_workflow_id_rejects_raw_or_non_deterministic_material(raw_workflow_id):
+    with pytest.raises(C.ContractError) as exc:
+        C.validate_workflow_id(raw_workflow_id)
+    assert exc.value.code == C.INVALID_START_PAYLOAD
+
+
 def test_deterministic_artifact_ref_is_claim_check_only():
     req = C.build_start_request(**_clean_start_fields())
     ref = C.deterministic_artifact_ref(req)
