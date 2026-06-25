@@ -11,9 +11,20 @@
 ```json
 {
   "base_branch": "release/sachima",
-  "base_head": "6a447840e35b538075c09b989d8eb357aa20087e",
+  "base_head": "869f3c77f737f14ff16c58f9c16c3e64819f0eb6",
   "base_head_note": "latest first-parent base commit excluding machine status-sync self-commits",
   "latest_merged_prs": [
+    {
+      "baseRefName": "release/sachima",
+      "headRefName": "docs/p6b-readonly-real-agent-predev-governance",
+      "mergeCommit": {
+        "oid": "869f3c77f737f14ff16c58f9c16c3e64819f0eb6"
+      },
+      "mergedAt": "2026-06-25T23:37:21Z",
+      "number": 170,
+      "title": "docs: add P6-B read-only real-agent predev governance",
+      "url": "https://github.com/jovijovi/sachima/pull/170"
+    },
     {
       "baseRefName": "release/sachima",
       "headRefName": "feat/p6a-temporal-controlled-ai-flow-implementation",
@@ -57,17 +68,6 @@
       "number": 166,
       "title": "feat: add P5 Temporal runtime slice",
       "url": "https://github.com/jovijovi/sachima/pull/166"
-    },
-    {
-      "baseRefName": "release/sachima",
-      "headRefName": "docs/xai-multi-reference-status-20260625",
-      "mergeCommit": {
-        "oid": "2190871df7c0379ab99f4e1640cfd572c7e94dd8"
-      },
-      "mergedAt": "2026-06-25T00:58:16Z",
-      "number": 165,
-      "title": "docs: record xAI multi-reference image status",
-      "url": "https://github.com/jovijovi/sachima/pull/165"
     }
   ],
   "open_pr_count": 0,
