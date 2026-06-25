@@ -1,0 +1,45 @@
+---
+phase: P6-B
+artifact: bounded_read_only_real_agent_step_execution_predev_governance
+status: docs_only_pre_pr_candidate
+created_at: 2026-06-26
+base_branch: release/sachima
+predecessor:
+  pr: 169
+  merged: true
+  merge_commit: 6a447840e35b538075c09b989d8eb357aa20087e
+  head_sha: 1da0b9cdb1a028d0c77c3062987e413727309162
+scope:
+  docs_only: true
+  implementation: false
+  real_agent_execution: false
+  real_smoke: false
+  gateway_or_feishu: false
+  production_config: false
+  real_delivery: false
+  write_roles: false
+artifacts:
+  prd: docs/plans/2026-06-26-agent-run-supervisor-sachima-p6b-bounded-read-only-real-agent-step-execution-predev-governance-prd.md
+  claude_teach_back: docs/plans/2026-06-26-agent-run-supervisor-sachima-p6b-bounded-read-only-real-agent-step-execution-predev-governance-claude-teach-back.md
+  technical_solution: docs/plans/2026-06-26-agent-run-supervisor-sachima-p6b-bounded-read-only-real-agent-step-execution-predev-governance-technical-solution.md
+  codex_review: docs/plans/2026-06-26-agent-run-supervisor-sachima-p6b-bounded-read-only-real-agent-step-execution-predev-governance-technical-solution-review.md
+  user_review_packet: docs/plans/2026-06-26-agent-run-supervisor-sachima-p6b-bounded-read-only-real-agent-step-execution-predev-governance-user-review-packet.md
+  dev_log: docs/dev_log/2026-06-26-agent-run-supervisor-sachima-p6b-bounded-read-only-real-agent-step-execution-predev-governance.md
+required_gates:
+  - git diff --check
+  - yaml safe_load manifest
+  - docs-only changed-file allowlist
+  - targeted P6-A stale open/pending wording scan
+  - forbidden source/runtime mutation scan
+  - Claude architect teach-back / solution
+  - Codex blocker review
+review:
+  claude_teach_back: PASS / readiness 90/100 / architecture may proceed
+  codex_blocker_review: PASS / score 91/100 / blockers none / no-bwrap fallback hash MATCH
+strongest_allowed_outcome_meaning: >-
+  Docs-only P6-B pre-development governance plus PR #169 merged-state cleanup.
+  It may request a later implementation approval for a default-off bounded
+  read-only real-agent step seam, but it approves no source implementation,
+  real agent execution, real smoke, write roles, Gateway/Feishu/live behavior,
+  production config, or real delivery.
+...
