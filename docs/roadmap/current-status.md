@@ -11,9 +11,20 @@
 ```json
 {
   "base_branch": "release/sachima",
-  "base_head": "dc46af8d33a96ddcabf98401eee7289d789e5e58",
+  "base_head": "2190871df7c0379ab99f4e1640cfd572c7e94dd8",
   "base_head_note": "latest first-parent base commit excluding machine status-sync self-commits",
   "latest_merged_prs": [
+    {
+      "baseRefName": "release/sachima",
+      "headRefName": "docs/xai-multi-reference-status-20260625",
+      "mergeCommit": {
+        "oid": "2190871df7c0379ab99f4e1640cfd572c7e94dd8"
+      },
+      "mergedAt": "2026-06-25T00:58:16Z",
+      "number": 165,
+      "title": "docs: record xAI multi-reference image status",
+      "url": "https://github.com/jovijovi/sachima/pull/165"
+    },
     {
       "baseRefName": "release/sachima",
       "headRefName": "fix/feishu-todo-card-lifecycle",
@@ -57,17 +68,6 @@
       "number": 161,
       "title": "Use execution rounds label in Feishu progress card",
       "url": "https://github.com/jovijovi/sachima/pull/161"
-    },
-    {
-      "baseRefName": "release/sachima",
-      "headRefName": "feat/progress-rounds-jsonl-rotation",
-      "mergeCommit": {
-        "oid": "dee39770d6580f75e51391dc167540f6d3a6a098"
-      },
-      "mergedAt": "2026-06-23T02:47:39Z",
-      "number": 160,
-      "title": "Add progress rounds and rotate event JSONL",
-      "url": "https://github.com/jovijovi/sachima/pull/160"
     }
   ],
   "open_pr_count": 0,
