@@ -1,0 +1,135 @@
+schema_version: sachima.plan_manifest.v1
+title: agent-run-supervisor x Sachima P6-A Temporal-backed controlled AI FLOW execution implementation
+created_at: '2026-06-25T18:50:14+08:00'
+status: pr_open_pending_merge_approval
+repository: jovijovi/sachima
+base_branch: release/sachima
+branch: feat/p6a-temporal-controlled-ai-flow-implementation
+approval:
+  exact_phrase: approve_agent_run_supervisor_sachima_p6a_temporal_backed_controlled_ai_flow_execution_implementation_controlled_deterministic_or_injected_fake_steps_only_default_off_no_real_agent_execution_no_write_roles_no_live_no_gateway_no_feishu_no_production_config_no_real_delivery
+  exact_token_required: true
+  default_off: true
+implementation:
+  summary: >-
+    Adds a thin default-off P6-A composition/admission module over the existing
+    WP4 controlled AI FLOW orchestrator and P5 StepExecutor seam. It supports
+    controlled-deterministic or injected/fake step bodies only, sanitized P6
+    evidence, caller-owned query/cancel/recover/close controls, and hermetic-local
+    Temporal Worker proof.
+  files:
+    - sachima_supervisor/p6_controlled_ai_flow.py
+    - tests/sachima_supervisor/p6_controlled_ai_flow/**
+    - docs/plans/2026-06-25-agent-run-supervisor-sachima-p6a-temporal-backed-controlled-ai-flow-execution-implementation.md
+    - docs/plans/2026-06-25-agent-run-supervisor-sachima-p6a-temporal-backed-controlled-ai-flow-execution-implementation-manifest.yaml
+    - docs/dev_log/2026-06-25-agent-run-supervisor-sachima-p6a-temporal-backed-controlled-ai-flow-execution-implementation.md
+    - docs/roadmap/current-status.md
+runtime_surface:
+  outer_p6_admission: true
+  p5_temporal_step_executor_reused: true
+  wp4_orchestrator_reused_unmodified: true
+  hermetic_local_temporal_worker_tests: true
+  controlled_deterministic_step_body_only: true
+  injected_fake_step_body_only: true
+  real_agent_execution: false
+  write_capable_roles: false
+  gateway_or_feishu_surface: false
+  production_cluster_or_traffic: false
+  production_config_write: false
+  real_delivery: false
+safety_properties:
+  default_off: true
+  exact_p6_token: true
+  p6_codes_additive_to_runtime_codes: true
+  zero_executor_calls_on_admission_failure: true
+  no_reimplemented_translation_bridge: true
+  query_recover_no_relaunch: true
+  active_run_cancellation_watch_preserved: true
+  p6_evidence_scan1_guarded: true
+  forbidden_runner_scan: passed
+  forbidden_gateway_feishu_platform_scan: passed
+  changed_file_allowlist: passed
+local_verification:
+  initial_unit_red_after_claude_output:
+    command: uv run --frozen --extra dev python -m pytest tests/sachima_supervisor/p6_controlled_ai_flow/unit/ -q
+    result: 4 failed, 37 passed in 0.40s
+    note: Claude Code shell execution was blocked, so Hermes captured live failures and made narrow fixes.
+  p6_unit:
+    command: uv run --frozen --extra dev python -m pytest tests/sachima_supervisor/p6_controlled_ai_flow/unit/ -q
+    result: 43 passed in 0.33s
+  wp4_p5_regression:
+    command: uv run --frozen --extra dev python -m pytest tests/sachima_supervisor/test_ai_flow_orchestration.py tests/sachima_supervisor/test_p5_runtime_adapter.py -q
+    result: 64 passed in 0.40s
+  p6_hermetic:
+    command: uv run --frozen --extra dev --extra flowweaver-temporal python -m pytest tests/sachima_supervisor/p6_controlled_ai_flow/hermetic/ -q
+    result: 9 passed in 1.66s
+  p5_determinism_replay:
+    command: uv run --frozen --extra dev --extra flowweaver-temporal python -m pytest tests/sachima_supervisor/p5_temporal/hermetic/test_determinism_replay.py -q
+    result: 1 passed in 0.30s
+  p5_temporal_unit:
+    command: uv run --frozen --extra dev --extra flowweaver-temporal python -m pytest tests/sachima_supervisor/p5_temporal/unit/ -q
+    result: 172 passed in 2.20s
+  combined_focused:
+    command: uv run --frozen --extra dev --extra flowweaver-temporal python -m pytest tests/sachima_supervisor/p6_controlled_ai_flow tests/sachima_supervisor/test_ai_flow_orchestration.py tests/sachima_supervisor/test_p5_runtime_adapter.py tests/sachima_supervisor/p5_temporal/hermetic/test_determinism_replay.py -q
+    result: 116 passed in 2.35s
+  ruff:
+    command: uv run --frozen --extra dev ruff check sachima_supervisor/p6_controlled_ai_flow.py tests/sachima_supervisor/p6_controlled_ai_flow
+    result: All checks passed
+  sync_roadmap_status:
+    command: python tools/sync_roadmap_status.py --check --base-remote sachima
+    result: 'docs/roadmap/current-status.md: machine status block is up to date'
+  git_diff_check:
+    command: git diff --check
+    result: PASS
+  changed_file_allowlist:
+    result: PASS
+  forbidden_surface_scan:
+    result: PASS
+  forbidden_runner_added_line_scan:
+    result: PASS
+  added_line_secret_leak_scan:
+    result: PASS
+review:
+  codex_blocker_review:
+    status: historical_passes_and_late_fix_recorded_live_head_required
+    verdict: PASS
+    score: 96
+    blockers: none
+    provenance: >-
+      Initial read-only sandbox review was blocked by Codex/bubblewrap
+      (bwrap loopback RTM_NEWADDR). Fallback read-only-by-instruction review
+      found roadmap drift and then a control-path ordering blocker; both were
+      fixed. After PR #169 opened, stale PR-open status wording in roadmap,
+      plan, manifest, and dev log was repaired, then a final no-bwrap fallback
+      three-stage exact-head review passed with unchanged diff checksum. A later
+      exact-head review found an active-run side-effect-before-validation blocker;
+      Hermes-direct repair gated executor.cancel on resident claimed-in-progress
+      WP4 state and added a regression. Final merge readiness remains live
+      GitHub/CI/head-bound evidence, not this archived manifest.
+pr:
+  status: open_pending_merge_approval
+  number: 169
+  url: https://github.com/jovijovi/sachima/pull/169
+  live_state_note: >-
+    Check GitHub for current headRefOid, checks, mergeability, and approval state
+    immediately before merge.
+non_approvals:
+  real_acpx_or_npx_or_agent_execution: false
+  real_claude_code_or_codex_cli_step_bodies: false
+  write_capable_roles: false
+  additional_or_unbounded_persistent_session_execution: false
+  additional_or_unbounded_cancellation_execution: false
+  clean_active_run_cancellation_claims_beyond_existing_watch: false
+  gateway_involvement_or_mutation: false
+  gateway_restart_or_reload: false
+  feishu_or_im_delivery: false
+  platform_adapter_mutation: false
+  public_ingress: false
+  production_cluster_or_production_traffic: false
+  production_config_write: false
+  service_restart_or_reload: false
+  real_delivery: false
+open_tails:
+  wp3b_active_run_cancellation_watch: open
+next_gate_after_merge: >-
+  If merged, the next gate remains separately approved bounded real-agent or
+  write-role/delivery progression only after a new PRD/review/approval chain.
