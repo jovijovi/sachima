@@ -11,9 +11,20 @@
 ```json
 {
   "base_branch": "release/sachima",
-  "base_head": "936ebc9f19c98a19228968101060023ede2327f1",
+  "base_head": "3189f7d36cad6d06b26a77c5d22394c710e00adc",
   "base_head_note": "latest first-parent base commit excluding machine status-sync self-commits",
   "latest_merged_prs": [
+    {
+      "baseRefName": "release/sachima",
+      "headRefName": "docs/p6-controlled-ai-flow-predev-governance",
+      "mergeCommit": {
+        "oid": "3189f7d36cad6d06b26a77c5d22394c710e00adc"
+      },
+      "mergedAt": "2026-06-25T09:58:20Z",
+      "number": 168,
+      "title": "docs: add P6 controlled AI FLOW predev governance",
+      "url": "https://github.com/jovijovi/sachima/pull/168"
+    },
     {
       "baseRefName": "release/sachima",
       "headRefName": "docs/ars-post-p5-status-calibration",
@@ -57,31 +68,10 @@
       "number": 164,
       "title": "Fix Feishu TODO card lifecycle progress",
       "url": "https://github.com/jovijovi/sachima/pull/164"
-    },
-    {
-      "baseRefName": "release/sachima",
-      "headRefName": "feat/todo-lifecycle-workbench",
-      "mergeCommit": {
-        "oid": "3cc9ca979459f3a8bc0b267c6ad49b493d0335ea"
-      },
-      "mergedAt": "2026-06-24T05:22:12Z",
-      "number": 163,
-      "title": "Add TODO lifecycle to task workbench",
-      "url": "https://github.com/jovijovi/sachima/pull/163"
     }
   ],
-  "open_pr_count": 1,
-  "open_prs": [
-    {
-      "baseRefName": "release/sachima",
-      "headRefName": "docs/p6-controlled-ai-flow-predev-governance",
-      "isDraft": false,
-      "mergeStateStatus": "CLEAN",
-      "number": 168,
-      "title": "docs: add P6 controlled AI FLOW predev governance",
-      "url": "https://github.com/jovijovi/sachima/pull/168"
-    }
-  ],
+  "open_pr_count": 0,
+  "open_prs": [],
   "repository": "jovijovi/sachima",
   "scope_note": "machine dynamic status only; approvals and phase meaning remain human-authored outside this block"
 }
