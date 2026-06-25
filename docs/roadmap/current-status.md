@@ -11,9 +11,20 @@
 ```json
 {
   "base_branch": "release/sachima",
-  "base_head": "2190871df7c0379ab99f4e1640cfd572c7e94dd8",
+  "base_head": "6c2a1447e512ccba38ea2dd9de4047a303f26706",
   "base_head_note": "latest first-parent base commit excluding machine status-sync self-commits",
   "latest_merged_prs": [
+    {
+      "baseRefName": "release/sachima",
+      "headRefName": "feat/p5-temporal-pr-b-implementation",
+      "mergeCommit": {
+        "oid": "6c2a1447e512ccba38ea2dd9de4047a303f26706"
+      },
+      "mergedAt": "2026-06-25T06:48:07Z",
+      "number": 166,
+      "title": "feat: add P5 Temporal runtime slice",
+      "url": "https://github.com/jovijovi/sachima/pull/166"
+    },
     {
       "baseRefName": "release/sachima",
       "headRefName": "docs/xai-multi-reference-status-20260625",
@@ -57,31 +68,10 @@
       "number": 162,
       "title": "Add structured TODOs to progress workbench",
       "url": "https://github.com/jovijovi/sachima/pull/162"
-    },
-    {
-      "baseRefName": "release/sachima",
-      "headRefName": "fix/progress-execution-rounds-label",
-      "mergeCommit": {
-        "oid": "1aede6efc946a736966c9a48c40f3d42a8f15031"
-      },
-      "mergedAt": "2026-06-23T03:52:23Z",
-      "number": 161,
-      "title": "Use execution rounds label in Feishu progress card",
-      "url": "https://github.com/jovijovi/sachima/pull/161"
     }
   ],
-  "open_pr_count": 1,
-  "open_prs": [
-    {
-      "baseRefName": "release/sachima",
-      "headRefName": "feat/p5-temporal-pr-b-implementation",
-      "isDraft": false,
-      "mergeStateStatus": "CLEAN",
-      "number": 166,
-      "title": "feat: add P5 Temporal runtime slice",
-      "url": "https://github.com/jovijovi/sachima/pull/166"
-    }
-  ],
+  "open_pr_count": 0,
+  "open_prs": [],
   "repository": "jovijovi/sachima",
   "scope_note": "machine dynamic status only; approvals and phase meaning remain human-authored outside this block"
 }
