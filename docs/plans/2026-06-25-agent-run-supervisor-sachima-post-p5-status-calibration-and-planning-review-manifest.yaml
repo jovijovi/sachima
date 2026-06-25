@@ -1,0 +1,115 @@
+schema_version: sachima.plan_manifest.v1
+title: agent-run-supervisor x Sachima post-P5 status calibration and planning review
+phase: Post-P5 status calibration and planning review
+phase_id: agent-run-supervisor-sachima-post-p5-status-calibration-planning-review
+roadmap_phase: P6-predev
+roadmap_phase_name: Controlled AI FLOW execution pre-development governance readiness
+date: '2026-06-25'
+status: open
+status_meaning: >-
+  Docs-only status calibration after PR #166 plus planning evaluation for the
+  next P6 controlled AI FLOW execution gate. This artifact updates roadmap truth
+  and recommends optimizing, not replacing, the existing plan.
+repository: jovijovi/sachima
+base_branch: release/sachima
+base_head: 653511bb8b3b7fd9677d03b04009d15279f93ee8
+branch: docs/ars-post-p5-status-calibration
+pr_number: 167
+pr_url: https://github.com/jovijovi/sachima/pull/167
+pr_state: open
+owner_dri: Hermes operator under Sachima governed task
+operator_request: >-
+  先做状态校准。然后基于 sachima 当前最新的现状及项目进度，评估是否要优化/改进当前的规划。
+
+prerequisite_prs:
+  - number: 166
+    title: "feat: add P5 Temporal runtime slice"
+    state: MERGED
+    head_sha: fa91d148218ee4b7cc0064be754b96f2a08ef543
+    merge_commit: 6c2a1447e512ccba38ea2dd9de4047a303f26706
+    merged_at: '2026-06-25T06:48:07Z'
+    role: >-
+      Code-bearing P5 Temporal PR B implementation. It landed the Slice 1
+      Temporal modules and final blocker fixes, but did not approve production
+      cluster/traffic, Gateway-owned lifecycle, P6 real agent execution,
+      Feishu/IM/live/default-on behavior, production config, or real delivery.
+
+governance_artifacts:
+  plan: docs/plans/2026-06-25-agent-run-supervisor-sachima-post-p5-status-calibration-and-planning-review.md
+  manifest: docs/plans/2026-06-25-agent-run-supervisor-sachima-post-p5-status-calibration-and-planning-review-manifest.yaml
+  dev_log: docs/dev_log/2026-06-25-agent-run-supervisor-sachima-post-p5-status-calibration-and-planning-review.md
+  current_status: docs/roadmap/current-status.md
+
+docs_only_scope:
+  allowed_paths:
+    - docs/plans/2026-06-25-agent-run-supervisor-sachima-post-p5-status-calibration-and-planning-review.md
+    - docs/plans/2026-06-25-agent-run-supervisor-sachima-post-p5-status-calibration-and-planning-review-manifest.yaml
+    - docs/dev_log/2026-06-25-agent-run-supervisor-sachima-post-p5-status-calibration-and-planning-review.md
+    - docs/roadmap/current-status.md
+  source_code_implementation: false
+  tests_or_scripts: false
+  starts_temporal_service: false
+  starts_worker: false
+  runs_workflow_or_activity: false
+  invokes_acpx_npx_agent: false
+  gateway_or_feishu_changes: false
+  production_config_write: false
+
+status_calibration:
+  p5_temporal_pr_b_implementation: MERGED
+  next_mainline_recommended: P6 controlled AI FLOW execution pre-development governance
+  planning_verdict: optimize_existing_plan_do_not_replace
+  p6_first_implementation_shape_recommended: >-
+    Temporal-backed controlled AI FLOW execution with controlled-deterministic or
+    injected/fake steps first; real agent execution remains a later separate gate.
+
+acceptance_gates:
+  - git diff --check
+  - YAML parse of this manifest
+  - changed-file allowlist: docs/plans + docs/dev_log + docs/roadmap only
+  - forbidden implementation-surface scan: no runtime source/test/script/config changes
+  - stale PR #166 status scan: no current-candidate wording for feat/p5-temporal-pr-b-implementation
+  - secret-shaped / no-leak scan over added lines
+  - tools/sync_roadmap_status.py --check
+  - blocker-only docs review focused on stale lifecycle state, accidental implementation/execution approval, and planning drift
+
+local_verification:
+  latest_run_utc: '2026-06-25T07:55:52Z'
+  result: PASS
+  gates:
+    - tools/sync_roadmap_status.py --check
+    - git diff --check
+    - YAML parse of this manifest
+    - changed-file allowlist
+    - forbidden implementation-surface scan
+    - stale PR #166 current-candidate scan
+    - added-line secret/no-leak scan
+    - Codex blocker-only review PASS
+  codex_review:
+    final_verdict: PASS
+    blockers: 0
+    model: gpt-5.5
+    cli_version: 0.142.1
+    mode: --ignore-user-config --sandbox read-only with compact diff packet
+    note: >-
+      The first codex exec review --uncommitted attempt timed out after 600s
+      while loading project MCP/codegraph and produced no verdict; the focused
+      final review completed with VERDICT: PASS / BLOCKERS: None.
+
+non_approvals:
+  implementation: false
+  runtime_or_worker_start: false
+  workflow_or_activity_execution: false
+  controlled_ai_flow_execution: false
+  real_agent_execution: false
+  acpx_invocation: false
+  npx_invocation: false
+  write_capable_roles: false
+  gateway_involvement_or_mutation: false
+  gateway_restart_or_reload: false
+  feishu_or_im_delivery: false
+  platform_adapter_mutation: false
+  public_ingress: false
+  production_cluster_or_traffic: false
+  production_config_write: false
+  real_delivery: false
