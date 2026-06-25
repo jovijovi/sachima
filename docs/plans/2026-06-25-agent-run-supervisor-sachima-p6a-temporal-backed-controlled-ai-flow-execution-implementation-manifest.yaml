@@ -1,7 +1,7 @@
 schema_version: sachima.plan_manifest.v1
 title: agent-run-supervisor x Sachima P6-A Temporal-backed controlled AI FLOW execution implementation
 created_at: '2026-06-25T18:50:14+08:00'
-status: local_verified_codex_pass_pending_pr
+status: pr_open_pending_merge_approval
 repository: jovijovi/sachima
 base_branch: release/sachima
 branch: feat/p6a-temporal-controlled-ai-flow-implementation
@@ -89,8 +89,8 @@ local_verification:
   added_line_secret_leak_scan:
     result: PASS
 review:
-  codex_exact_head_blocker_review:
-    status: passed
+  codex_blocker_review:
+    status: passed_before_pr_open
     verdict: PASS
     score: 96
     blockers: none
@@ -98,10 +98,16 @@ review:
       Initial read-only sandbox review was blocked by Codex/bubblewrap
       (bwrap loopback RTM_NEWADDR). Fallback read-only-by-instruction review
       found roadmap drift and then a control-path ordering blocker; both were
-      fixed. Final fallback re-review passed. Diff checksum was unchanged across
-      the fallback review run, confirming the reviewer did not modify files.
+      fixed. The pre-PR fallback re-review passed and its diff checksum was
+      unchanged across the review run. Final merge readiness remains live
+      GitHub/CI/head-bound evidence, not this archived manifest.
 pr:
-  status: not_open
+  status: open_pending_merge_approval
+  number: 169
+  url: https://github.com/jovijovi/sachima/pull/169
+  live_state_note: >-
+    Check GitHub for current headRefOid, checks, mergeability, and approval state
+    immediately before merge.
 non_approvals:
   real_acpx_or_npx_or_agent_execution: false
   real_claude_code_or_codex_cli_step_bodies: false

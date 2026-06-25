@@ -70,8 +70,18 @@
       "url": "https://github.com/jovijovi/sachima/pull/164"
     }
   ],
-  "open_pr_count": 0,
-  "open_prs": [],
+  "open_pr_count": 1,
+  "open_prs": [
+    {
+      "baseRefName": "release/sachima",
+      "headRefName": "feat/p6a-temporal-controlled-ai-flow-implementation",
+      "isDraft": false,
+      "mergeStateStatus": "CLEAN",
+      "number": 169,
+      "title": "feat: add P6-A controlled AI flow composition",
+      "url": "https://github.com/jovijovi/sachima/pull/169"
+    }
+  ],
   "repository": "jovijovi/sachima",
   "scope_note": "machine dynamic status only; approvals and phase meaning remain human-authored outside this block"
 }

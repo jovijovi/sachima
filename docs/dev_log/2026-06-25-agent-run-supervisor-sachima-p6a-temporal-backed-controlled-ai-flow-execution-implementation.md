@@ -2,7 +2,7 @@
 
 Date: 2026-06-25
 Branch: `feat/p6a-temporal-controlled-ai-flow-implementation`
-Status: local implementation verified; Codex blocker review PASS; pending PR.
+Status: PR #169 open; local implementation verified; merge requires fresh live PR/CI/head checks and explicit approval.
 
 ## User approval
 
@@ -143,5 +143,5 @@ Post-review diff checksum was unchanged across the fallback review run, confirmi
 
 ## Next steps
 
-1. Open PR after local + review gates are clean.
-2. Wait for GitHub checks and send head-SHA-bound approval card.
+1. Keep PR #169 live-state checks head-bound before merge.
+2. If the PR head changes, rerun final gates/review and send a fresh head-SHA-bound approval card.

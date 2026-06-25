@@ -2,7 +2,7 @@
 
 Date: 2026-06-25
 Branch: `feat/p6a-temporal-controlled-ai-flow-implementation`
-Status: local implementation verified; Codex exact-head blocker review PASS; pending PR.
+Status: PR #169 open; local implementation verified; merge requires fresh live PR/CI/head checks and explicit approval.
 
 ## Scope
 
@@ -211,4 +211,4 @@ BLOCKERS:
 - None
 ```
 
-This branch still requires PR CI and head-SHA-bound merge approval before merge.
+PR #169 is open at https://github.com/jovijovi/sachima/pull/169. Merge readiness is live state and must be checked from GitHub on the current head before approval/merge; this archived plan/dev-log must not be used as live CI or merge-state authority.
