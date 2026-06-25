@@ -1,0 +1,137 @@
+schema_version: sachima.plan_manifest.v1
+title: agent-run-supervisor x Sachima P6 controlled AI FLOW execution pre-development governance
+phase: P6 controlled AI FLOW execution pre-development governance
+phase_id: agent-run-supervisor-sachima-p6-controlled-ai-flow-execution-predev-governance
+roadmap_phase: P6
+roadmap_phase_name: Controlled AI FLOW execution
+level: level-3-pre-development-governance
+date: '2026-06-25'
+status: ready_for_pr
+status_meaning: >-
+  Docs-only pre-development governance PR for P6 controlled AI FLOW execution.
+  It prepares a later P6-A implementation request through PRD, Claude architect
+  teach-back, no-code technical solution, Codex blocker review, and user review.
+repository: jovijovi/sachima
+base_branch: release/sachima
+base_head: 40c4ed562994c0d1a29ad92d9f7f2d6fb6e9c9cf
+branch: docs/p6-controlled-ai-flow-predev-governance
+pr_number: null
+pr_url: null
+pr_state: not_opened
+owner_dri: Hermes operator under Sachima governed task
+operator_approval: >-
+  批准开 P6 controlled AI FLOW execution pre-development governance：PRD → Claude 架构/teach-back → 技术方案 → Codex blocker review → 再请求实现批准。
+
+prerequisite_prs:
+  - number: 166
+    title: "feat: add P5 Temporal runtime slice"
+    state: MERGED
+    merge_commit: 6c2a1447e512ccba38ea2dd9de4047a303f26706
+    merged_at: '2026-06-25T06:48:07Z'
+    role: >-
+      Code-bearing P5 Temporal Slice 1 prerequisite for P6-A; does not approve
+      P6 real agent execution, production cluster/traffic, Gateway-owned
+      lifecycle, live/Feishu/default-on behavior, production config, or real delivery.
+  - number: 167
+    title: "docs: calibrate post-P5 Sachima roadmap"
+    state: MERGED
+    merge_commit: 936ebc9f19c98a19228968101060023ede2327f1
+    merged_at: '2026-06-25T08:32:34Z'
+    role: >-
+      Post-P5 status calibration and planning review recommending this P6
+      pre-development governance gate.
+
+governance_artifacts:
+  prd: docs/plans/2026-06-25-agent-run-supervisor-sachima-p6-controlled-ai-flow-execution-predev-governance-prd.md
+  manifest: docs/plans/2026-06-25-agent-run-supervisor-sachima-p6-controlled-ai-flow-execution-predev-governance-manifest.yaml
+  dev_log: docs/dev_log/2026-06-25-agent-run-supervisor-sachima-p6-controlled-ai-flow-execution-predev-governance.md
+  claude_teach_back: docs/plans/2026-06-25-agent-run-supervisor-sachima-p6-controlled-ai-flow-execution-predev-governance-claude-teach-back.md
+  technical_solution: docs/plans/2026-06-25-agent-run-supervisor-sachima-p6-controlled-ai-flow-execution-predev-governance-technical-solution.md
+  technical_review: docs/plans/2026-06-25-agent-run-supervisor-sachima-p6-controlled-ai-flow-execution-predev-governance-technical-solution-review.md
+  user_review_packet: docs/plans/2026-06-25-agent-run-supervisor-sachima-p6-controlled-ai-flow-execution-predev-governance-user-review-packet.md
+  current_status: docs/roadmap/current-status.md
+
+role_split:
+  hermes: PRD author, PM/controller, repo operator, deterministic gates, final arbiter
+  claude_code: architect teach-back and no-code technical solution; no implementation
+  codex_cli: primary independent blocker review; no implementation
+  user: approves or rejects later P6-A implementation request
+
+docs_only_scope:
+  allowed_paths:
+    - docs/plans/2026-06-25-agent-run-supervisor-sachima-p6-controlled-ai-flow-execution-predev-governance-prd.md
+    - docs/plans/2026-06-25-agent-run-supervisor-sachima-p6-controlled-ai-flow-execution-predev-governance-manifest.yaml
+    - docs/plans/2026-06-25-agent-run-supervisor-sachima-p6-controlled-ai-flow-execution-predev-governance-claude-teach-back.md
+    - docs/plans/2026-06-25-agent-run-supervisor-sachima-p6-controlled-ai-flow-execution-predev-governance-technical-solution.md
+    - docs/plans/2026-06-25-agent-run-supervisor-sachima-p6-controlled-ai-flow-execution-predev-governance-technical-solution-review.md
+    - docs/plans/2026-06-25-agent-run-supervisor-sachima-p6-controlled-ai-flow-execution-predev-governance-user-review-packet.md
+    - docs/dev_log/2026-06-25-agent-run-supervisor-sachima-p6-controlled-ai-flow-execution-predev-governance.md
+    - docs/roadmap/current-status.md
+  source_code_implementation: false
+  tests_or_scripts: false
+  runtime_or_worker_start: false
+  workflow_or_activity_execution: false
+  acpx_npx_or_agent_invocation: false
+  gateway_or_feishu_changes: false
+  production_config_write: false
+
+future_p6a_scope_prepared:
+  target: Temporal-backed controlled AI FLOW execution through WP4 and P5 surfaces
+  first_step_body: controlled_deterministic_or_injected_fake_only
+  default_off: true
+  real_agent_execution: false
+  write_roles: false
+  gateway_feishu_live_delivery: false
+  production_cluster_or_traffic: false
+
+required_reviews:
+  claude_teach_back:
+    required: true
+    pass_score_min: 90
+    unresolved_p0_p1_questions_allowed: false
+    result: PASS
+    score: 90
+    blockers: none
+  technical_solution_review:
+    required: true
+    primary_reviewer: Codex CLI
+    pass_score_min: 90
+    blockers_allowed: false
+    result: PASS
+    score: 92
+    blockers: none
+
+acceptance_gates:
+  - git diff --check
+  - YAML parse of this manifest
+  - tools/sync_roadmap_status.py --check --base-remote sachima
+  - changed-file allowlist: only listed docs/plans, docs/dev_log, and docs/roadmap files
+  - forbidden implementation-surface scan: no source/test/script/config/runtime changes
+  - stale status scan: post-P5 calibration must not remain current work after this PR
+  - secret-shaped / no-leak added-lines scan
+  - Claude teach-back PASS with no P0/P1 questions
+  - Claude technical solution produced no code changes
+  - Codex blocker review PASS / BLOCKERS None
+
+non_approvals:
+  source_code_implementation: false
+  runtime_or_worker_start: false
+  workflow_or_activity_execution: false
+  controlled_ai_flow_execution: false
+  real_acpx_or_npx_or_agent_execution: false
+  additional_or_unbounded_persistent_session_execution: false
+  additional_or_unbounded_cancellation_execution: false
+  write_capable_roles: false
+  satine_or_hermes_profile_acp_execution: false
+  agent_to_agent_auto_routing: false
+  automatic_replies: false
+  worker_auto_routing: false
+  gateway_involvement_or_mutation: false
+  gateway_restart_or_reload: false
+  feishu_or_im_delivery: false
+  platform_adapter_mutation: false
+  public_ingress: false
+  production_cluster_or_traffic: false
+  production_config_write: false
+  service_restart_or_reload: false
+  real_delivery: false
