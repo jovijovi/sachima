@@ -92,7 +92,7 @@ GREEN after fixes:
 
 ```text
 uv run --frozen --extra dev python -m pytest tests/sachima_supervisor/p6_controlled_ai_flow/unit/ -q
-42 passed in 0.34s
+43 passed in 0.33s
 ```
 
 ## Local verification
@@ -101,7 +101,7 @@ Focused and regression gates run on 2026-06-25:
 
 ```text
 uv run --frozen --extra dev python -m pytest tests/sachima_supervisor/p6_controlled_ai_flow/unit/ -q
-42 passed in 0.34s
+43 passed in 0.33s
 
 uv run --frozen --extra dev python -m pytest tests/sachima_supervisor/test_ai_flow_orchestration.py tests/sachima_supervisor/test_p5_runtime_adapter.py -q
 64 passed in 0.40s
@@ -202,7 +202,7 @@ Codex review history so far:
 2. Fallback read-only-by-instruction review found stale roadmap wording; `docs/roadmap/current-status.md` was corrected.
 3. Fallback re-review found a real control-path blocker: invalid active-run cancel and close could call executor controls before WP4 resident-state validation. P6 now validates resident run/cancel preconditions before executor controls, close summarizes before closing, and `test_control_ops_validate_resident_state_before_executor_side_effects` covers zero executor calls for missing resident state.
 
-Final Codex exact-head blocker re-review passed after those fixes, and a later post-PR-open status-authority cleanup review also passed after stale PR-open wording was removed from the roadmap/plan/manifest/dev-log surfaces:
+Codex exact-head blocker re-review passed after those fixes, and a later post-PR-open status-authority cleanup review also passed after stale PR-open wording was removed from the roadmap/plan/manifest/dev-log surfaces:
 
 ```text
 VERDICT: PASS
@@ -210,5 +210,8 @@ SCORE: 96
 BLOCKERS:
 - None
 ```
+
+
+A subsequent exact-head review found one more side-effect-before-validation blocker: active-run cancellation could call the injected executor before proving a resident WP4 step was actually `claimed_in_progress`. The Hermes-direct fix now gates `executor.cancel(...)` on that resident claimed-step state and adds `test_active_run_cancel_without_resident_in_flight_step_skips_executor_side_effect`; final merge readiness remains live/head-bound and is not frozen in this archived plan.
 
 PR #169 is open at https://github.com/jovijovi/sachima/pull/169. Merge readiness is live state and must be checked from GitHub on the current head before approval/merge; this archived plan/dev-log must not be used as live CI or merge-state authority.

@@ -132,3 +132,18 @@ def test_control_ops_validate_resident_state_before_executor_side_effects():
     assert cancel.error_code == "activity_not_found"
     assert close.error_code == "activity_not_found"
     assert counter.total_calls == 0
+
+
+def test_active_run_cancel_without_resident_in_flight_step_skips_executor_side_effect():
+    counter = CountingExecutor(make_local_adapter())
+    session = _session(counter)
+    session.create_run(run_request())
+
+    out = session.cancel(cancel_request(scope="active_run", step_id="architect"))
+
+    assert out.ok is False
+    assert out.active_run_watch is True
+    assert out.error_code == C.ACTIVE_RUN_CANCELLATION_WATCH
+    assert out.snapshot is not None
+    assert out.snapshot["status"] == "cancel_ambiguous"
+    assert counter.total_calls == 0

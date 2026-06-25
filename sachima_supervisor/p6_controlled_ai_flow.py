@@ -448,7 +448,7 @@ class P6ControlledAiFlowSession:
         # interrupt (P6-A never proves clean active-run cancellation); between-step
         # cancellation is the WP4 deterministic path only.
         executor_outcome = None
-        if cancel_request.scope == "active_run":
+        if cancel_request.scope == "active_run" and self._active_run_cancel_has_claimed_step(cancel_request):
             executor_outcome = self.executor.cancel(
                 run_id=cancel_request.run_id,
                 step_id=cancel_request.step_id or "",
@@ -538,6 +538,21 @@ class P6ControlledAiFlowSession:
         if not self._run_exists(getattr(cancel_request, "run_id", "")):
             return "activity_not_found"
         return None
+
+    def _active_run_cancel_has_claimed_step(self, cancel_request: Any) -> bool:
+        """Gate active-run executor.cancel on resident WP4 in-flight state.
+
+        Without a matching ``claimed_in_progress`` resident step, P6-A cannot prove
+        the cancel target is active. In that case it must let WP4 record the
+        fail-closed WATCH without touching the injected executor / durable control
+        surface first.
+        """
+
+        step_id = getattr(cancel_request, "step_id", None)
+        if not isinstance(step_id, str) or not step_id:
+            return False
+        resident = self.store.get_step(getattr(cancel_request, "run_id", ""), step_id)
+        return resident is not None and resident.get("status") == "claimed_in_progress"
 
     def _control_snapshot(
         self,

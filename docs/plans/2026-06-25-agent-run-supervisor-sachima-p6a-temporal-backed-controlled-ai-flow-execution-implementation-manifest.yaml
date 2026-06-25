@@ -55,7 +55,7 @@ local_verification:
     note: Claude Code shell execution was blocked, so Hermes captured live failures and made narrow fixes.
   p6_unit:
     command: uv run --frozen --extra dev python -m pytest tests/sachima_supervisor/p6_controlled_ai_flow/unit/ -q
-    result: 42 passed in 0.34s
+    result: 43 passed in 0.33s
   wp4_p5_regression:
     command: uv run --frozen --extra dev python -m pytest tests/sachima_supervisor/test_ai_flow_orchestration.py tests/sachima_supervisor/test_p5_runtime_adapter.py -q
     result: 64 passed in 0.40s
@@ -90,7 +90,7 @@ local_verification:
     result: PASS
 review:
   codex_blocker_review:
-    status: passed_after_pr_open_status_sync
+    status: historical_passes_and_late_fix_recorded_live_head_required
     verdict: PASS
     score: 96
     blockers: none
@@ -100,9 +100,11 @@ review:
       found roadmap drift and then a control-path ordering blocker; both were
       fixed. After PR #169 opened, stale PR-open status wording in roadmap,
       plan, manifest, and dev log was repaired, then a final no-bwrap fallback
-      three-stage exact-head review passed with unchanged diff checksum. Final
-      merge readiness still remains live GitHub/CI/head-bound evidence, not this
-      archived manifest.
+      three-stage exact-head review passed with unchanged diff checksum. A later
+      exact-head review found an active-run side-effect-before-validation blocker;
+      Hermes-direct repair gated executor.cancel on resident claimed-in-progress
+      WP4 state and added a regression. Final merge readiness remains live
+      GitHub/CI/head-bound evidence, not this archived manifest.
 pr:
   status: open_pending_merge_approval
   number: 169

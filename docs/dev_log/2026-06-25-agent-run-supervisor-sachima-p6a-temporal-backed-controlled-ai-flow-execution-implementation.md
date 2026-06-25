@@ -78,7 +78,7 @@ Added tests under `tests/sachima_supervisor/p6_controlled_ai_flow/` for unit and
 
 ```text
 uv run --frozen --extra dev python -m pytest tests/sachima_supervisor/p6_controlled_ai_flow/unit/ -q
-42 passed in 0.34s
+43 passed in 0.33s
 
 uv run --frozen --extra dev python -m pytest tests/sachima_supervisor/test_ai_flow_orchestration.py tests/sachima_supervisor/test_p5_runtime_adapter.py -q
 64 passed in 0.40s
@@ -140,6 +140,8 @@ BLOCKERS:
 ```
 
 Post-review diff checksum was unchanged across the fallback review run, confirming Codex did not modify files. The approval-ready head must still be taken from live GitHub/CI and the active approval card, not from this archived dev log.
+A subsequent exact-head review found one more side-effect-before-validation blocker: active-run cancellation could call the injected executor before proving a resident WP4 step was actually `claimed_in_progress`. The Hermes-direct fix now gates `executor.cancel(...)` on that resident claimed-step state and adds `test_active_run_cancel_without_resident_in_flight_step_skips_executor_side_effect`; final merge readiness remains live/head-bound and is not frozen in this archived dev log.
+
 
 ## Next steps
 
