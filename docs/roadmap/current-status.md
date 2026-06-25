@@ -70,8 +70,18 @@
       "url": "https://github.com/jovijovi/sachima/pull/163"
     }
   ],
-  "open_pr_count": 0,
-  "open_prs": [],
+  "open_pr_count": 1,
+  "open_prs": [
+    {
+      "baseRefName": "release/sachima",
+      "headRefName": "docs/p6-controlled-ai-flow-predev-governance",
+      "isDraft": false,
+      "mergeStateStatus": "CLEAN",
+      "number": 168,
+      "title": "docs: add P6 controlled AI FLOW predev governance",
+      "url": "https://github.com/jovijovi/sachima/pull/168"
+    }
+  ],
   "repository": "jovijovi/sachima",
   "scope_note": "machine dynamic status only; approvals and phase meaning remain human-authored outside this block"
 }
@@ -172,16 +182,20 @@ latest_p5_temporal_pr_b_predev_governance_manifest: docs/plans/2026-06-20-agent-
 latest_p5_temporal_pr_b_predev_governance_dev_log: docs/dev_log/2026-06-20-agent-run-supervisor-sachima-p5-temporal-pr-b-predev-governance.md
 latest_p5_temporal_pr_b_implementation: agent-run-supervisor × Sachima P5 Temporal PR B implementation (MERGED in PR #166, merge commit `6c2a1447e512ccba38ea2dd9de4047a303f26706`, mergedAt 2026-06-25T06:48:07Z; code-bearing Slice 1 under `sachima_supervisor/p5_temporal/`; final head `fa91d148218ee4b7cc0064be754b96f2a08ef543`; local gates, Codex blocker-only re-review, and GitHub CI passed; adds controlled-deterministic Temporal workflow/activity/runtime/control-surface/StepExecutor/ops-worker modules; fixes workflow-id trust boundary and bounded query-result fallback; approves no production cluster/traffic, no Gateway-owned lifecycle, no P6 real agent/acpx/npx execution, no write roles, no Feishu/IM/live/default-on behavior, no production config, and no real delivery)
 latest_p5_temporal_pr_b_implementation_runbook: docs/runbooks/p5-temporal-staging.md
-latest_post_p5_status_calibration_planning_review: agent-run-supervisor × Sachima post-P5 status calibration and planning review (current docs-only calibration branch `docs/ars-post-p5-status-calibration`; reconciles PR #166 live truth and evaluates whether the existing plan should be optimized before P6)
+latest_post_p5_status_calibration_planning_review: agent-run-supervisor × Sachima post-P5 status calibration and planning review (MERGED in PR #167, merge commit `936ebc9f19c98a19228968101060023ede2327f1`, mergedAt 2026-06-25T08:32:34Z; reconciled PR #166 live truth and recommended P6 controlled AI FLOW execution pre-development governance before implementation)
 latest_post_p5_status_calibration_planning_review_doc: docs/plans/2026-06-25-agent-run-supervisor-sachima-post-p5-status-calibration-and-planning-review.md
 latest_post_p5_status_calibration_planning_review_manifest: docs/plans/2026-06-25-agent-run-supervisor-sachima-post-p5-status-calibration-and-planning-review-manifest.yaml
 latest_post_p5_status_calibration_planning_review_dev_log: docs/dev_log/2026-06-25-agent-run-supervisor-sachima-post-p5-status-calibration-and-planning-review.md
+latest_p6_controlled_ai_flow_execution_predev_governance: agent-run-supervisor × Sachima P6 controlled AI FLOW execution pre-development governance (current docs-only branch `docs/p6-controlled-ai-flow-predev-governance`; approved sequence PRD → Claude architecture/teach-back → no-code technical solution → Codex blocker review → user implementation-approval request; prepares P6-A Temporal-backed controlled AI FLOW execution with controlled-deterministic/injected-fake steps only; starts no implementation, runtime/Worker, workflow/activity execution, real acpx/npx/agent execution, Gateway/Feishu/live behavior, production config, or real delivery)
+latest_p6_controlled_ai_flow_execution_predev_governance_prd: docs/plans/2026-06-25-agent-run-supervisor-sachima-p6-controlled-ai-flow-execution-predev-governance-prd.md
+latest_p6_controlled_ai_flow_execution_predev_governance_manifest: docs/plans/2026-06-25-agent-run-supervisor-sachima-p6-controlled-ai-flow-execution-predev-governance-manifest.yaml
+latest_p6_controlled_ai_flow_execution_predev_governance_dev_log: docs/dev_log/2026-06-25-agent-run-supervisor-sachima-p6-controlled-ai-flow-execution-predev-governance.md
 latest_protocol_repo: jovijovi/sachima-protocols
 latest_protocol_spec: https://github.com/jovijovi/sachima-protocols/blob/main/protocols/envelope/v1.md
 latest_protocol_implementation: P4 Sachima Envelope v1 local conformance implementation (Sachima-side)
 latest_protocol_implementation_doc: docs/dev_log/2026-05-13-sachima-envelope-v1-local-conformance-implementation.md
-current_position: PR #166 has merged the code-bearing **P5 Temporal PR B implementation** into `release/sachima` (`6c2a1447e512ccba38ea2dd9de4047a303f26706`, mergedAt 2026-06-25T06:48:07Z), and the follow-up machine status-sync commit is current. Sachima now has a default-off, caller-owned Temporal Slice 1 under `sachima_supervisor/p5_temporal/`, with a controlled-deterministic step body, exact approval-token admission, a caller-supplied Temporal client, ops-owned Worker launcher, hermetic-local gates, no-leak scans, duplicate-start/recovery/determinism/Gateway-boundary tests, and the final workflow-id / bounded-query blocker fixes. Current work is the docs-only post-P5 status calibration and planning review on branch `docs/ars-post-p5-status-calibration`: it may correct stale status prose and decide how to optimize the next P6 planning gate, but it starts no implementation/execution/runtime.
-implementation_marker_note: no live / no Gateway / no real delivery; WP4 controlled AI FLOW local/offline injected-fakes implementation merged in PR #145; P5 design/readiness / prep / local-offline adapter / durable claim-store gates merged in PRs #147-#150; P5 Temporal Slice 1 design/readiness PR A merged in PR #154; docs-only PR B pre-development governance merged in PR #155; code-bearing P5 Temporal PR B implementation merged in PR #166. The next mainline is P6 controlled AI FLOW execution pre-development governance/planning, not direct controlled AI FLOW execution. PR #166 does not approve production cluster/traffic, Gateway-owned or auto-started lifecycle, P6 real acpx/npx/agent execution, write roles, Feishu/IM/live/default-on behavior, production config writes, or real delivery; WP3b active-run cancellation WATCH remains.
+current_position: PR #166 has merged the code-bearing **P5 Temporal PR B implementation** into `release/sachima` (`6c2a1447e512ccba38ea2dd9de4047a303f26706`, mergedAt 2026-06-25T06:48:07Z), PR #167 has merged the post-P5 status calibration/planning review (`936ebc9f19c98a19228968101060023ede2327f1`, mergedAt 2026-06-25T08:32:34Z), and the follow-up machine status-sync commit is current. Sachima now has a default-off, caller-owned Temporal Slice 1 under `sachima_supervisor/p5_temporal/`, with a controlled-deterministic step body, exact approval-token admission, a caller-supplied Temporal client, ops-owned Worker launcher, hermetic-local gates, no-leak scans, duplicate-start/recovery/determinism/Gateway-boundary tests, and the final workflow-id / bounded-query blocker fixes. Current work is the docs-only P6 controlled AI FLOW execution pre-development governance on branch `docs/p6-controlled-ai-flow-predev-governance`: PRD → Claude architecture/teach-back → no-code technical solution → Codex blocker review → user implementation-approval request; it starts no implementation/execution/runtime.
+implementation_marker_note: no live / no Gateway / no real delivery; WP4 controlled AI FLOW local/offline injected-fakes implementation merged in PR #145; P5 design/readiness / prep / local-offline adapter / durable claim-store gates merged in PRs #147-#150; P5 Temporal Slice 1 design/readiness PR A merged in PR #154; docs-only PR B pre-development governance merged in PR #155; code-bearing P5 Temporal PR B implementation merged in PR #166; post-P5 status calibration/planning review merged in PR #167. The current mainline is P6 controlled AI FLOW execution pre-development governance/planning, not direct controlled AI FLOW execution. PR #166 and this P6 governance branch do not approve production cluster/traffic, Gateway-owned or auto-started lifecycle, P6 real acpx/npx/agent execution, write roles, Feishu/IM/live/default-on behavior, production config writes, or real delivery; WP3b active-run cancellation WATCH remains.
 ```
 
 ## Canonical references
@@ -297,8 +311,8 @@ Sachima governed PRs should preserve hard safety evidence—exact approval gates
 | P5-temporal — Temporal production runtime enablement Slice 1 (design/readiness) | Merged in PR #154 (`f465186cc96bc182eab00b1de039ed8258f06ac8`, mergedAt 2026-06-20T05:48:26Z) — PR A docs-only on `docs/p5-temporal-production-runtime-enablement-slice-1` | Design/readiness packet `docs/plans/2026-06-20-agent-run-supervisor-sachima-p5-temporal-production-runtime-enablement-slice-1-design-readiness.md` + manifest + dev log | Production-facing. Selects Temporal as the durable backend and records the GRANTED external Temporal service/Worker lifecycle token (hermetic-local + staging namespace only; ops-owned, never Gateway-owned). Fixes the PR B `sachima_supervisor/p5_temporal/` modules, no-leak / duplicate-start / recovery / determinism-replay / Gateway-boundary gates, rollout, and rollback. Docs-only; starts no runtime; Slice 1 step body is controlled deterministic. Production cluster, production traffic, and P6 real acpx/agent execution remain separate gates; WP3b active-run cancellation WATCH preserved. |
 | P5-temporal-pr-b-governance — PR B pre-development governance | Merged in PR #155 (`09308899652375c2b43c55c9de0e1d07ea0965ce`, 2026-06-20) | PRD `docs/plans/2026-06-20-agent-run-supervisor-sachima-p5-temporal-pr-b-predev-governance-prd.md` + manifest/dev log + review/teach-back/technical-solution artifacts | Completed the pre-development sequence for PR B and approved no implementation/runtime/execution/live/delivery by itself. |
 | P5-temporal-pr-b-implementation — Temporal Slice 1 code | Merged in PR #166 (`6c2a1447e512ccba38ea2dd9de4047a303f26706`, mergedAt 2026-06-25T06:48:07Z) | Code under `sachima_supervisor/p5_temporal/`, tests under `tests/sachima_supervisor/p5_temporal/`, staging runbook `docs/runbooks/p5-temporal-staging.md`; final head `fa91d148218ee4b7cc0064be754b96f2a08ef543`; local gates, Codex blocker-only re-review, and GitHub CI passed | Adds default-off, caller-owned Temporal Slice 1 with controlled-deterministic step body, exact approval token, caller-supplied Temporal client, ops-owned Worker launcher, hermetic-local gates, no-leak / duplicate-start / recovery / determinism / Gateway-boundary tests, and final workflow-id / bounded-query blocker fixes. Does not approve production cluster/traffic, Gateway-owned lifecycle, P6 real agent/acpx/npx execution, write roles, Feishu/IM/live/default-on behavior, production config, or real delivery. |
-| Post-P5 status calibration and planning review | Current docs-only calibration branch `docs/ars-post-p5-status-calibration` | Plan `docs/plans/2026-06-25-agent-run-supervisor-sachima-post-p5-status-calibration-and-planning-review.md` + manifest/dev log + this roadmap update | Reconciles PR #166 live truth and evaluates planning optimization before P6. Docs/status only; no implementation, runtime/Worker start, workflow/activity execution, controlled AI FLOW execution, real agent execution, live/Gateway/Feishu, production config, or real delivery. |
-| P6 — Controlled AI FLOW execution | Pending; pre-development governance recommended next | Not started as implementation/execution | Eligible for a docs-only P6 PRD/architecture/technical-solution gate after this calibration. Real controlled AI FLOW execution remains unapproved until a later separately approved implementation gate; first implementation should likely be Temporal-backed controlled-deterministic/fake/injected steps before any real-agent execution. |
+| Post-P5 status calibration and planning review | Merged in PR #167 (`936ebc9f19c98a19228968101060023ede2327f1`, mergedAt 2026-06-25T08:32:34Z) | Plan `docs/plans/2026-06-25-agent-run-supervisor-sachima-post-p5-status-calibration-and-planning-review.md` + manifest/dev log + roadmap update | Reconciled PR #166 live truth and recommended P6 controlled AI FLOW execution pre-development governance before implementation. Docs/status only; no implementation, runtime/Worker start, workflow/activity execution, controlled AI FLOW execution, real agent execution, live/Gateway/Feishu, production config, or real delivery. |
+| P6 — Controlled AI FLOW execution | Current docs-only pre-development governance branch `docs/p6-controlled-ai-flow-predev-governance` | PRD `docs/plans/2026-06-25-agent-run-supervisor-sachima-p6-controlled-ai-flow-execution-predev-governance-prd.md` + manifest/dev log; Claude/Codex artifacts pending | Prepares a later P6-A implementation request for Temporal-backed controlled AI FLOW execution with controlled-deterministic or injected/fake steps only. This governance branch itself approves no implementation/execution/runtime/Worker start, no real acpx/npx/agent execution, no write roles, no Gateway/Feishu/live/default-on behavior, no production config, and no real delivery. |
 | P7 — Real delivery and ACK closure | Pending | Not started | Blocked until fake/local delivery and AI FLOW gates are production-ready and separately approved |
 | P8 — Product / ops hardening | Pending | Not started | Blocked until limited live pilot readiness |
 
@@ -336,8 +350,9 @@ This table tracks phase-bearing and bridge-phase PRs. Pure roadmap-status mainte
 | #154 | P5 Temporal Slice 1 design/readiness PR A | `f465186cc96bc182eab00b1de039ed8258f06ac8` | Docs-only Temporal durable-backend selection and hermetic-local + staging ops-owned Worker lifecycle grant; no runtime started, no production cluster/traffic, no P6 real agent execution |
 | #155 | P5 Temporal PR B pre-development governance | `09308899652375c2b43c55c9de0e1d07ea0965ce` | Docs-only PRD/review/teach-back/technical-solution gate for code-bearing PR B; no implementation/runtime/execution/live/delivery approval |
 | #166 | P5 Temporal PR B implementation | `6c2a1447e512ccba38ea2dd9de4047a303f26706` | Code-bearing default-off Temporal Slice 1 under `sachima_supervisor/p5_temporal/`; final gates and Codex blocker-only review passed; no production cluster/traffic, Gateway-owned lifecycle, P6 real agent execution, live/Gateway/Feishu/production config, or real delivery approval |
+| #167 | Post-P5 status calibration and planning review | `936ebc9f19c98a19228968101060023ede2327f1` | Docs-only status calibration and planning optimization; recommended P6 pre-development governance before implementation; no implementation/runtime/execution/live/delivery approval |
 
-> PR #138 merged WP3a cancellation request-state + supervisor interrupt API. PR #140 merged WP3b bounded real cancellation execution with active-run cancellation WATCH preserved. PR #142 merged WP4 controlled AI FLOW docs-only design. PR #145 merged the WP4 local/offline injected-fakes-only implementation slice, PRs #147-#150 merged the P5 durable-runtime design/prep/local adapter/durable claim-store chain, PR #154 selected Temporal in a docs-only design/readiness gate, PR #155 completed PR B pre-development governance, and PR #166 merged the code-bearing P5 Temporal Slice 1. Current candidate work is this docs-only post-P5 status calibration and planning review. Production cluster, production traffic, P6 real acpx/agent execution, write roles, auto-routing, Gateway-owned lifecycle, live/Gateway/Feishu/production config, and real delivery remain separate future approvals.
+> PR #138 merged WP3a cancellation request-state + supervisor interrupt API. PR #140 merged WP3b bounded real cancellation execution with active-run cancellation WATCH preserved. PR #142 merged WP4 controlled AI FLOW docs-only design. PR #145 merged the WP4 local/offline injected-fakes-only implementation slice, PRs #147-#150 merged the P5 durable-runtime design/prep/local adapter/durable claim-store chain, PR #154 selected Temporal in a docs-only design/readiness gate, PR #155 completed PR B pre-development governance, PR #166 merged the code-bearing P5 Temporal Slice 1, and PR #167 merged post-P5 status calibration/planning review. Current candidate work is this docs-only P6 controlled AI FLOW execution pre-development governance branch. Production cluster, production traffic, P6 real acpx/agent execution, write roles, auto-routing, Gateway-owned lifecycle, live/Gateway/Feishu/production config, and real delivery remain separate future approvals.
 
 ## Evidence index
 
@@ -420,22 +435,22 @@ satine_or_hermes_profile_acp_execution
 controlled_ai_flow_execution
 ```
 
-> Scoped-grant note (2026-06-25, P5 Temporal Slice 1): the external Temporal service/Worker lifecycle token `approve_external_temporal_service_or_worker_lifecycle_for_sachima_p5_runtime` was granted for hermetic-local + staging namespace only and is ops-owned. PR #166 has now landed the code-bearing Slice 1 behind the caller-owned control surface; it does **not** lift the entries above for a production cluster (`sachima-p5-prod`), production traffic, a Gateway-owned or auto-started runtime lifecycle, P6 real agent/acpx/npx execution, live/default-on behavior, production config writes, or real delivery. The current status-calibration branch starts no runtime and approves no implementation/execution.
+> Scoped-grant note (2026-06-25, P5 Temporal Slice 1): the external Temporal service/Worker lifecycle token `approve_external_temporal_service_or_worker_lifecycle_for_sachima_p5_runtime` was granted for hermetic-local + staging namespace only and is ops-owned. PR #166 has now landed the code-bearing Slice 1 behind the caller-owned control surface; it does **not** lift the entries above for a production cluster (`sachima-p5-prod`), production traffic, a Gateway-owned or auto-started runtime lifecycle, P6 real agent/acpx/npx execution, live/default-on behavior, production config writes, or real delivery. This P6 pre-development governance branch starts no runtime and approves no implementation/execution.
 
 The agent-run-supervisor Sachima local/offline integration design packet additionally carries, for its own scope, these non-approvals: `automatic_replies`, `worker_auto_routing`, `agent_to_agent_auto_routing`, `@all_fanout`, and `trusted_markdown_html_rendering`. See `docs/plans/2026-06-03-agent-run-supervisor-sachima-local-offline-integration-design.md`.
 
 ## Next allowed request
 
-PR #166 has merged the code-bearing P5 Temporal PR B implementation (`6c2a1447e512ccba38ea2dd9de4047a303f26706`, mergedAt 2026-06-25T06:48:07Z), and the current docs-only status calibration / planning review is reconciling that live truth into the human-authored roadmap.
+PR #166 has merged the code-bearing P5 Temporal PR B implementation (`6c2a1447e512ccba38ea2dd9de4047a303f26706`, mergedAt 2026-06-25T06:48:07Z), PR #167 has merged post-P5 status calibration/planning review (`936ebc9f19c98a19228968101060023ede2327f1`, mergedAt 2026-06-25T08:32:34Z), and this branch is now the approved docs-only P6 pre-development governance candidate.
 
-With PR #166 merged, the current allowed mainline step is **not** direct controlled AI FLOW execution. The next recommended request is a docs-only **P6 controlled AI FLOW execution pre-development governance** gate:
+With PR #166 and PR #167 merged, the current allowed mainline step is **not** direct controlled AI FLOW execution. The current candidate is this docs-only **P6 controlled AI FLOW execution pre-development governance** gate:
 
 ```text
-P6 pre-development governance (recommended next):
-  PRD -> PRD quality review -> Claude architecture/teach-back -> no-code technical solution -> Codex blocker review -> user approval point
+P6 pre-development governance (current):
+  PRD -> Claude architecture/teach-back -> no-code technical solution -> Codex blocker review -> user implementation-approval point
 ```
 
-The P6 gate should optimize the existing plan instead of replacing it. Recommended shape:
+The P6 gate should optimize the existing plan instead of replacing it. Recommended staged shape remains:
 
 ```text
 P6-A: Temporal-backed controlled AI FLOW execution with controlled-deterministic or injected/fake steps only.
@@ -444,11 +459,13 @@ P6-C: later write-capable roles / rollback / sandbox gates.
 P7: Gateway / Feishu / IM / real delivery, separately approved.
 ```
 
-The suggested next approval phrase is:
+The approval phrase already granted for this docs-only governance branch is:
 
 ```text
 approve_agent_run_supervisor_sachima_p6_controlled_ai_flow_execution_predev_governance_docs_only_no_implementation_no_real_agent_execution_no_write_roles_no_live_no_gateway_no_feishu_no_production_config_no_real_delivery
 ```
+
+The later implementation approval phrase must be narrower than or equal to the P6-A scope in this branch's user review packet.
 
 Still requires separate explicit approval before any future work:
 
