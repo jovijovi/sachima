@@ -11,9 +11,20 @@
 ```json
 {
   "base_branch": "release/sachima",
-  "base_head": "9a7a042905aa39ecc192a50cafb5215446f0133a",
+  "base_head": "b5eb9fb984d32de18175933370aa88ce6b93ae74",
   "base_head_note": "latest first-parent base commit excluding machine status-sync self-commits",
   "latest_merged_prs": [
+    {
+      "baseRefName": "release/sachima",
+      "headRefName": "fix/task-workbench-title-summary",
+      "mergeCommit": {
+        "oid": "b5eb9fb984d32de18175933370aa88ce6b93ae74"
+      },
+      "mergedAt": "2026-06-26T08:24:30Z",
+      "number": 172,
+      "title": "fix: stabilize Feishu task workbench titles",
+      "url": "https://github.com/jovijovi/sachima/pull/172"
+    },
     {
       "baseRefName": "release/sachima",
       "headRefName": "feat/p6b-read-only-real-agent-step-implementation",
@@ -57,17 +68,6 @@
       "number": 168,
       "title": "docs: add P6 controlled AI FLOW predev governance",
       "url": "https://github.com/jovijovi/sachima/pull/168"
-    },
-    {
-      "baseRefName": "release/sachima",
-      "headRefName": "docs/ars-post-p5-status-calibration",
-      "mergeCommit": {
-        "oid": "936ebc9f19c98a19228968101060023ede2327f1"
-      },
-      "mergedAt": "2026-06-25T08:32:34Z",
-      "number": 167,
-      "title": "docs: calibrate post-P5 Sachima roadmap",
-      "url": "https://github.com/jovijovi/sachima/pull/167"
     }
   ],
   "open_pr_count": 0,
