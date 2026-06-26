@@ -11,9 +11,20 @@
 ```json
 {
   "base_branch": "release/sachima",
-  "base_head": "f2a8f4e4dd0c60c22b2d6f222b7ce01af7a88903",
+  "base_head": "ba87a8d488405ed1618ca018e3dbe3f05f5edbbe",
   "base_head_note": "latest first-parent base commit excluding machine status-sync self-commits",
   "latest_merged_prs": [
+    {
+      "baseRefName": "release/sachima",
+      "headRefName": "docs/p6b-stage2-readiness-governance",
+      "mergeCommit": {
+        "oid": "ba87a8d488405ed1618ca018e3dbe3f05f5edbbe"
+      },
+      "mergedAt": "2026-06-26T21:07:31Z",
+      "number": 174,
+      "title": "docs: add P6-B stage 2 readiness gate",
+      "url": "https://github.com/jovijovi/sachima/pull/174"
+    },
     {
       "baseRefName": "release/sachima",
       "headRefName": "docs/status-dashboard-slimdown-20260626",
@@ -57,31 +68,10 @@
       "number": 170,
       "title": "docs: add P6-B read-only real-agent predev governance",
       "url": "https://github.com/jovijovi/sachima/pull/170"
-    },
-    {
-      "baseRefName": "release/sachima",
-      "headRefName": "feat/p6a-temporal-controlled-ai-flow-implementation",
-      "mergeCommit": {
-        "oid": "6a447840e35b538075c09b989d8eb357aa20087e"
-      },
-      "mergedAt": "2026-06-25T17:08:27Z",
-      "number": 169,
-      "title": "feat: add P6-A controlled AI flow composition",
-      "url": "https://github.com/jovijovi/sachima/pull/169"
     }
   ],
-  "open_pr_count": 1,
-  "open_prs": [
-    {
-      "baseRefName": "release/sachima",
-      "headRefName": "docs/p6b-stage2-readiness-governance",
-      "isDraft": false,
-      "mergeStateStatus": "CLEAN",
-      "number": 174,
-      "title": "docs: add P6-B stage 2 readiness gate",
-      "url": "https://github.com/jovijovi/sachima/pull/174"
-    }
-  ],
+  "open_pr_count": 0,
+  "open_prs": [],
   "repository": "jovijovi/sachima",
   "scope_note": "machine dynamic status only; approvals and phase meaning remain human-authored outside this block"
 }
