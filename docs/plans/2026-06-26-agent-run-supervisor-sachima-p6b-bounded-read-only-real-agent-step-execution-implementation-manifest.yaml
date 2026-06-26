@@ -108,8 +108,8 @@ local_verification:
     result: passed_empty_forbidden_surface_reused_wall_source_forbidden_and_secret_hits
 review:
   codex_blocker_review:
-    status: pending_hermes_exact_head
-    verdict: pending
+    status: live_pr_gate_owned_by_hermes
+    verdict: live_github_pr_head_authoritative
   claude_self_review_subagent:
     status: performed_static_no_execution
 non_approvals:
@@ -142,5 +142,5 @@ next_gate_after_merge: >-
   and assert no file/git/network/delivery with post-run proof; and it must first prove
   crash-after-claim / restart / recover-without-relaunch.
 pr:
-  status: not_created_by_claude
-  note: Claude does not commit/push/PR. Hermes inspects the diff, runs final gates and Codex review, and commits/pushes/opens the PR.
+  status: opened_by_hermes_as_pr_171
+  note: Claude does not commit/push/PR. Hermes owns live PR state, exact-head review, checks, approval card, and merge operations outside this static manifest.
