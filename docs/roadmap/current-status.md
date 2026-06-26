@@ -11,9 +11,20 @@
 ```json
 {
   "base_branch": "release/sachima",
-  "base_head": "869f3c77f737f14ff16c58f9c16c3e64819f0eb6",
+  "base_head": "9a7a042905aa39ecc192a50cafb5215446f0133a",
   "base_head_note": "latest first-parent base commit excluding machine status-sync self-commits",
   "latest_merged_prs": [
+    {
+      "baseRefName": "release/sachima",
+      "headRefName": "feat/p6b-read-only-real-agent-step-implementation",
+      "mergeCommit": {
+        "oid": "9a7a042905aa39ecc192a50cafb5215446f0133a"
+      },
+      "mergedAt": "2026-06-26T01:07:33Z",
+      "number": 171,
+      "title": "feat: add P6-B read-only agent step bridge",
+      "url": "https://github.com/jovijovi/sachima/pull/171"
+    },
     {
       "baseRefName": "release/sachima",
       "headRefName": "docs/p6b-readonly-real-agent-predev-governance",
@@ -57,31 +68,10 @@
       "number": 167,
       "title": "docs: calibrate post-P5 Sachima roadmap",
       "url": "https://github.com/jovijovi/sachima/pull/167"
-    },
-    {
-      "baseRefName": "release/sachima",
-      "headRefName": "feat/p5-temporal-pr-b-implementation",
-      "mergeCommit": {
-        "oid": "6c2a1447e512ccba38ea2dd9de4047a303f26706"
-      },
-      "mergedAt": "2026-06-25T06:48:07Z",
-      "number": 166,
-      "title": "feat: add P5 Temporal runtime slice",
-      "url": "https://github.com/jovijovi/sachima/pull/166"
     }
   ],
-  "open_pr_count": 1,
-  "open_prs": [
-    {
-      "baseRefName": "release/sachima",
-      "headRefName": "feat/p6b-read-only-real-agent-step-implementation",
-      "isDraft": false,
-      "mergeStateStatus": "CLEAN",
-      "number": 171,
-      "title": "feat: add P6-B read-only agent step bridge",
-      "url": "https://github.com/jovijovi/sachima/pull/171"
-    }
-  ],
+  "open_pr_count": 0,
+  "open_prs": [],
   "repository": "jovijovi/sachima",
   "scope_note": "machine dynamic status only; approvals and phase meaning remain human-authored outside this block"
 }
