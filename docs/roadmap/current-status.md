@@ -11,9 +11,20 @@
 ```json
 {
   "base_branch": "release/sachima",
-  "base_head": "b5eb9fb984d32de18175933370aa88ce6b93ae74",
+  "base_head": "f2a8f4e4dd0c60c22b2d6f222b7ce01af7a88903",
   "base_head_note": "latest first-parent base commit excluding machine status-sync self-commits",
   "latest_merged_prs": [
+    {
+      "baseRefName": "release/sachima",
+      "headRefName": "docs/status-dashboard-slimdown-20260626",
+      "mergeCommit": {
+        "oid": "f2a8f4e4dd0c60c22b2d6f222b7ce01af7a88903"
+      },
+      "mergedAt": "2026-06-26T13:16:38Z",
+      "number": 173,
+      "title": "docs: slim roadmap status dashboard",
+      "url": "https://github.com/jovijovi/sachima/pull/173"
+    },
     {
       "baseRefName": "release/sachima",
       "headRefName": "fix/task-workbench-title-summary",
@@ -57,17 +68,6 @@
       "number": 169,
       "title": "feat: add P6-A controlled AI flow composition",
       "url": "https://github.com/jovijovi/sachima/pull/169"
-    },
-    {
-      "baseRefName": "release/sachima",
-      "headRefName": "docs/p6-controlled-ai-flow-predev-governance",
-      "mergeCommit": {
-        "oid": "3189f7d36cad6d06b26a77c5d22394c710e00adc"
-      },
-      "mergedAt": "2026-06-25T09:58:20Z",
-      "number": 168,
-      "title": "docs: add P6 controlled AI FLOW predev governance",
-      "url": "https://github.com/jovijovi/sachima/pull/168"
     }
   ],
   "open_pr_count": 0,
