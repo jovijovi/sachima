@@ -364,3 +364,51 @@ def test_ok_noise_stripping_does_not_corrupt_okta_or_okr_names():
     assert "OKR progress" in okr_title
     assert okr_title != "Handle request: R progress summary for Q2"
     assert not okr_title.startswith("Handle request:")
+
+
+def test_task_workbench_title_issue_becomes_concise_task_title_not_raw_details():
+    message = (
+        "OK。现在我们聚焦 sachima 项目，我发现主线外的一个小问题：\n"
+        "飞书任务工作台富交互卡中的“任务”内容描述不太稳定，有时是固定回复“提炼并处理用户意图”没走摘要，"
+        "有时又太过具体（一大段话）。\n"
+        "我想要的是根据对话上下文分析用户意图并简练摘要成一句话标题，无需细节。"
+    )
+
+    title = summarize_task_intent(message)
+
+    assert title == "优化飞书任务工作台任务标题摘要生成"
+    assert title != message
+    assert "提炼并处理用户意图" not in title
+    assert "一大段" not in title
+    assert len(title) <= 32
+
+
+def test_approval_turn_uses_recent_substantive_context_instead_of_generic_fallback():
+    context = [
+        {"role": "user", "content": "OK，先讨论清楚。"},
+        {
+            "role": "user",
+            "content": (
+                "飞书任务工作台富交互卡中的“任务”内容描述不太稳定。"
+                "需要根据对话上下文把用户意图简练摘要成一句话标题。"
+            ),
+        },
+        {
+            "role": "assistant",
+            "content": "方案：实现任务标题摘要生成、语言判定和安全兜底。",
+        },
+    ]
+
+    for acknowledgement in ("接下来走正规开发流程。批准开始实施。", "OK"):
+        title = summarize_task_intent(acknowledgement, context_messages=context)
+
+        assert title == "优化飞书任务工作台任务标题摘要生成"
+        assert title != "提炼并处理用户意图"
+        assert title != acknowledgement
+
+
+def test_acknowledgement_without_context_uses_safe_specific_fallback_not_summary_placeholder():
+    title = summarize_task_intent("批准开始实施")
+
+    assert title == "推进已确认任务"
+    assert title != "提炼并处理用户意图"

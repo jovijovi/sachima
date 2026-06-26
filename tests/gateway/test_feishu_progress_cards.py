@@ -272,6 +272,30 @@ def test_feishu_progress_card_supports_english_labels():
     assert detect_feishu_progress_card_language("Review Feishu card layout", configured="auto") == "en"
     assert detect_feishu_progress_card_language("评估飞书卡片", configured="auto") == "zh"
     assert detect_feishu_progress_card_language("评估飞书卡片", configured="en") == "en"
+    assert (
+        detect_feishu_progress_card_language(
+            "OK",
+            configured="auto",
+            context_messages=[{"role": "user", "content": "继续优化飞书任务工作台卡片"}],
+        )
+        == "zh"
+    )
+    assert (
+        detect_feishu_progress_card_language(
+            "OK",
+            configured="auto",
+            context_messages=[{"role": "user", "content": "Review Feishu card layout"}],
+        )
+        == "en"
+    )
+    assert (
+        detect_feishu_progress_card_language(
+            "批准",
+            configured="auto",
+            context_messages=[{"role": "user", "content": "Review Feishu card layout"}],
+        )
+        == "en"
+    )
 
     card = render_feishu_progress_card(tracker.snapshot(), language="en")
     rendered = _rendered(card)
