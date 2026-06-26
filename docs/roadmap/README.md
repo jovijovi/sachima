@@ -4,19 +4,26 @@ This directory contains living roadmap status documents for long-running, multi-
 
 ## Files
 
-- `current-status.md` — the living progress dashboard for this repository.
+- `current-status.md` — lean current-decision dashboard for this repository.
+- `phase-ledger.md` — long historical phase map and bridge PR ledger.
+- `tail-register.md` — full tail register; `current-status.md` carries only a high-signal subset.
+- `evidence-index.md` — evidence paths and manifests.
+- `reference-index.md` — stable canonical references and side capability pointers.
+- `boundary-register.md` — full non-approval and drift-guard boundary register.
+- `status-metadata-legacy.md` — extracted long-form legacy status metadata kept for archaeology, not the current decision.
 
 ## Relationship to other project documents
 
 ```text
 GOAL.md = final goal, north-star principles, and durable product direction
 canonical roadmap = planned route, phase definitions, gates, and rubrics
-current-status.md = current position, evidence links, tails, and next allowed request
+current-status.md = current position, high-signal tails, non-approvals, and next allowed request
+phase-ledger.md / tail-register.md / evidence-index.md / boundary-register.md / status-metadata-legacy.md = long-form history, tails, evidence, boundaries, and legacy metadata
 docs/dev_log/*.md = per-task execution ledger
 outputs/ = runtime evidence artifacts, not PR payload unless explicitly approved
 ```
 
-`current-status.md` is not a replacement for the canonical roadmap. It is a compact index that tells an agent where the project is right now and what is still blocked.
+`current-status.md` is not a replacement for the canonical roadmap or the split ledgers. It is a compact index that tells an agent where the project is right now and what is still blocked. Keep long history, full tail tables, and long evidence paths in the split ledger files instead of growing the entrypoint.
 
 ## Agent preflight rule
 
@@ -34,7 +41,7 @@ If `current-status.md` is missing, stale, or contradicts the requested work, sto
 
 ## Update rule
 
-Update the human-authored portions of `current-status.md` when any of these happens:
+Update the human-authored portions of `current-status.md` when the current decision, next allowed request, high-signal tail subset, or explicit non-approvals change. Update the split ledger files when full phase history, tail history, evidence paths, or reference links change. Typical triggers:
 
 - a master phase closes;
 - a bridge phase closes;
