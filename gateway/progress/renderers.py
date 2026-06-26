@@ -639,24 +639,110 @@ def _feishu_safe_task_title(title: object, *, language: str) -> str:
     raw = str(title or "")
     if _UNSAFE_FEISHU_TASK_TITLE_RE.search(raw):
         return fallback
-    safe = sanitize_for_progress(raw or default, max_len=320)
+    safe = sanitize_for_progress(raw or default, max_len=120)
     if _UNSAFE_FEISHU_TASK_TITLE_RE.search(safe):
         return fallback
     return safe or default
 
 
-def detect_feishu_progress_card_language(message: object, configured: object | None = "auto") -> str:
-    """Resolve Feishu progress-card language from config and user text.
+def detect_feishu_progress_card_language(
+    message: object,
+    configured: object | None = "auto",
+    *,
+    context_messages: Iterable[object] | None = None,
+) -> str:
+    """Resolve Feishu progress-card language from config, user text, and context.
 
-    ``configured`` accepts explicit zh/en values. ``auto`` chooses Chinese when
-    the current user message contains CJK text and English otherwise.
+    Explicit zh/en config wins. In auto mode, substantive current user text wins;
+    bare acknowledgements such as ``OK``/``批准`` inherit the recent substantive
+    user language instead of flipping the card to English.
     """
 
     configured_text = str(configured or "auto").strip().lower()
     if configured_text not in {"", "auto", "detect"}:
         return _normalize_feishu_language(configured_text)
-    text = str(message or "")
-    return "zh" if _CJK_RE.search(text) else "en"
+    text = _language_probe_text(message)
+    if _is_language_control_text(text):
+        contextual = _detect_contextual_feishu_language(context_messages)
+        return contextual or "zh"
+    if _CJK_RE.search(text):
+        return "zh"
+    return "en" if re.search(r"[A-Za-z]", text or "") else "zh"
+
+
+def _language_probe_text(value: object) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        return _language_probe_text(value.get("content") or value.get("text") or "")
+    if isinstance(value, list):
+        parts: list[str] = []
+        for item in value:
+            piece = _language_probe_text(item)
+            if piece:
+                parts.append(piece)
+        return " ".join(parts)
+    return str(value or "")
+
+
+def _is_language_control_text(text: str) -> bool:
+    compact = re.sub(r"[\s，,。.!！?？：:；;、\-_/]+", "", (text or "").strip().lower())
+    return compact in {
+        "ok",
+        "okay",
+        "yes",
+        "y",
+        "approve",
+        "approved",
+        "goahead",
+        "continue",
+        "next",
+        "doit",
+        "好的",
+        "好",
+        "可以",
+        "行",
+        "嗯",
+        "同意",
+        "批准",
+        "授权",
+        "已授权操作",
+        "继续",
+        "继续吧",
+        "执行下一步",
+        "下一步",
+        "开始",
+        "开工",
+        "修吧",
+        "批准开始实施",
+        "接下来走正规开发流程批准开始实施",
+        "ok继续",
+        "ok执行下一步",
+    }
+
+
+def _detect_contextual_feishu_language(context_messages: Iterable[object] | None) -> str:
+    if not context_messages:
+        return ""
+    try:
+        materialized = list(context_messages)
+    except TypeError:
+        return ""
+    for entry in reversed(materialized[-12:]):
+        if isinstance(entry, dict):
+            role = str(entry.get("role") or "").strip().lower()
+            if role and role != "user":
+                continue
+        text = _language_probe_text(entry).strip()
+        if not text or _is_language_control_text(text):
+            continue
+        if _CJK_RE.search(text):
+            return "zh"
+        if re.search(r"[A-Za-z]", text):
+            return "en"
+    return ""
 
 
 def _feishu_labels(language: str) -> dict[str, str]:

@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import re
-from typing import Any
+from typing import Any, Iterable
 
 from gateway.progress.redaction import sanitize_for_progress
 
-_DEFAULT_MAX_TITLE_LEN = 320
+_DEFAULT_MAX_TITLE_LEN = 180
 _WHITESPACE_RE = re.compile(r"\s+")
 _UNSAFE_COMMAND_TITLE_RE = re.compile(
     r"(?i)(\bcurl\s+|(?:^|\s)(?:-H|--header)\s+|(?:authorization|x-api-key|api-key|cookie|set-cookie)\s*:|bearer\s+\S+)"
@@ -59,9 +59,56 @@ _SCHEDULE_TIME_RE = re.compile(
     r"|周[一二三四五六日天]|星期[一二三四五六日天]|礼拜[一二三四五六日天])?"
     r"(?:是|的)?(?:大概|大约|大致|具体)?\s*几点(?:钟)?\s*(.+)$"
 )
+_CONTROL_COMPACT_VALUES = {
+    "ok",
+    "okay",
+    "yes",
+    "y",
+    "approved",
+    "approve",
+    "goahead",
+    "continue",
+    "next",
+    "doit",
+    "start",
+    "implement",
+    "fixit",
+    "好的",
+    "好",
+    "可以",
+    "行",
+    "嗯",
+    "同意",
+    "批准",
+    "授权",
+    "已授权操作",
+    "继续",
+    "继续吧",
+    "执行下一步",
+    "下一步",
+    "开始",
+    "开工",
+    "修吧",
+    "批准开始实施",
+    "接下来走正规开发流程批准开始实施",
+    "ok执行下一步",
+    "ok继续",
+}
+_LOW_INFORMATION_TITLES = {
+    "task",
+    "任务",
+    "提炼并处理用户意图",
+    "summarize user intent",
+    "summarize multilingual user intent",
+}
 
 
-def summarize_task_intent(message: Any, *, max_len: int = _DEFAULT_MAX_TITLE_LEN) -> str:
+def summarize_task_intent(
+    message: Any,
+    *,
+    context_messages: Iterable[Any] | None = None,
+    max_len: int = _DEFAULT_MAX_TITLE_LEN,
+) -> str:
     """Return a sanitized, high-density transaction title.
 
     This is intentionally conservative: it removes obvious conversational
@@ -69,10 +116,15 @@ def summarize_task_intent(message: Any, *, max_len: int = _DEFAULT_MAX_TITLE_LEN
     adding details that are not present in the user request.
     """
 
-    text = _message_to_text(message)
-    text = _normalize_whitespace(text)
-    text = _strip_conversational_noise(text)
-    text = _rewrite_high_confidence_intent(text)
+    raw_text = _normalize_whitespace(_message_to_text(message))
+    text = _strip_conversational_noise(raw_text)
+    contextual_title = _rewrite_contextual_control_intent(text, context_messages)
+    if not contextual_title and raw_text != text:
+        contextual_title = _rewrite_contextual_control_intent(raw_text, context_messages)
+    if contextual_title:
+        text = contextual_title
+    else:
+        text = _rewrite_high_confidence_intent(text)
     text = sanitize_for_progress(text or "Task", max_len=max_len)
     return text or "Task"
 
@@ -137,6 +189,9 @@ def _rewrite_high_confidence_intent(text: str) -> str:
     unsafe_command = _rewrite_unsafe_command_or_header_intent(text)
     if unsafe_command:
         return unsafe_command
+    task_workbench = _rewrite_task_workbench_title_intent(text)
+    if task_workbench:
+        return task_workbench
     weather = _rewrite_weather_intent(text)
     if weather:
         return weather
@@ -153,6 +208,81 @@ def _rewrite_high_confidence_intent(text: str) -> str:
     if generic:
         return generic
     return _fallback_non_raw_intent(text)
+
+
+def _rewrite_contextual_control_intent(text: str, context_messages: Iterable[Any] | None) -> str:
+    """Use recent conversation context for bare acknowledgements/approvals.
+
+    A turn like "OK", "同意", or "批准开始实施" carries little task meaning by
+    itself. The progress card should show the substantive task the user just
+    approved, not a generic placeholder or the acknowledgement literal.
+    """
+
+    if not _is_contextual_control_turn(text):
+        return ""
+
+    for candidate in _iter_context_message_texts(context_messages, preferred_role="user"):
+        title = _rewrite_high_confidence_intent(candidate)
+        if not _is_low_information_title(title):
+            return title
+    for candidate in _iter_context_message_texts(context_messages, preferred_role="assistant"):
+        title = _rewrite_high_confidence_intent(candidate)
+        if not _is_low_information_title(title):
+            return title
+
+    return "推进已确认任务" if re.search(r"[\u4e00-\u9fff]", text or "") else "Continue approved task"
+
+
+def _is_contextual_control_turn(text: str) -> bool:
+    compact = re.sub(r"[\s，,。.!！?？：:；;、\-_/]+", "", (text or "").strip().lower())
+    return compact in _CONTROL_COMPACT_VALUES
+
+
+def _iter_context_message_texts(
+    context_messages: Iterable[Any] | None,
+    *,
+    preferred_role: str,
+) -> Iterable[str]:
+    if not context_messages:
+        return
+    try:
+        materialized = list(context_messages)
+    except TypeError:
+        return
+    for entry in reversed(materialized[-12:]):
+        role = ""
+        content: Any = entry
+        if isinstance(entry, dict):
+            role = str(entry.get("role") or "").strip().lower()
+            content = entry.get("content")
+        if role and role != preferred_role:
+            continue
+        candidate = _strip_conversational_noise(_normalize_whitespace(_message_to_text(content)))
+        if not candidate or _is_contextual_control_turn(candidate):
+            continue
+        # Skip tiny fragments; they usually do not carry enough task semantics.
+        if len(candidate) < 8:
+            continue
+        yield candidate
+
+
+def _is_low_information_title(title: str) -> bool:
+    normalized = re.sub(r"\s+", " ", (title or "").strip().lower())
+    return not normalized or normalized in _LOW_INFORMATION_TITLES
+
+
+def _rewrite_task_workbench_title_intent(text: str) -> str:
+    lowered = text.lower()
+    mentions_workbench = "任务工作台" in text or "task workbench" in lowered
+    mentions_task_title = (
+        "任务" in text
+        and any(term in text for term in ("标题", "摘要", "用户意图", "内容描述", "提炼并处理用户意图"))
+    ) or ("task" in lowered and any(term in lowered for term in ("title", "summary", "intent")))
+    if mentions_workbench and mentions_task_title:
+        if re.search(r"[\u4e00-\u9fff]", text):
+            return "优化飞书任务工作台任务标题摘要生成"
+        return "Improve Task Workbench task-title summaries"
+    return ""
 
 
 def _rewrite_unsafe_command_or_header_intent(text: str) -> str:
@@ -384,7 +514,7 @@ def _rewrite_generic_chinese_intent(text: str) -> str:
     action = _rewrite_chinese_action_intent(stripped)
     if action:
         return action
-    return _rewrite_chinese_fallback_intent(stripped) or "提炼并处理用户意图"
+    return _rewrite_chinese_fallback_intent(stripped) or "推进用户请求"
 
 
 def _rewrite_chinese_action_intent(text: str) -> str:
@@ -495,7 +625,7 @@ def _rewrite_english_fallback_intent(text: str) -> str:
         }
         return action_templates.get(verb, "Handle {rest}").format(rest=rest)
 
-    return "Summarize user intent"
+    return "Handle user request"
 
 
 def _fallback_non_raw_intent(text: str) -> str:
@@ -504,7 +634,7 @@ def _fallback_non_raw_intent(text: str) -> str:
         return cleaned
     if any(ch.isalpha() for ch in text):
         return "Summarize multilingual user intent"
-    return "Summarize user intent"
+    return "Handle user request"
 
 
 def _trim_redundant_prefixes(text: str) -> str:

@@ -14727,7 +14727,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     progress_tracker = progress_transaction.get("tracker")
                     progress_event_store = progress_transaction.get("event_store")
                 else:
-                    _tracker_title = summarize_task_intent(message)
+                    _tracker_title = summarize_task_intent(message, context_messages=history)
                     progress_tracker = ProgressTracker(
                         transaction_id=session_id or session_key or "gateway-task",
                         title=_tracker_title,
@@ -15178,7 +15178,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     dashboard_url=task_tracker_dashboard_url,
                     style=str(task_tracker_config.get("style", "lively")),
                     emoji=is_truthy_value(task_tracker_config.get("emoji"), default=True),
-                    language=detect_feishu_progress_card_language(message, configured=task_tracker_language),
+                    language=detect_feishu_progress_card_language(
+                        message,
+                        configured=task_tracker_language,
+                        context_messages=history,
+                    ),
                 )
 
             async def _send_compact_feishu_card_fallback_notice(reason: str, *, final: bool = False) -> None:

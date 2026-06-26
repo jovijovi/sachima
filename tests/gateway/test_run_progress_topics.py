@@ -2629,7 +2629,7 @@ async def test_task_tracker_panel_replaces_raw_tool_progress_when_enabled(monkey
     all_panels = "\n".join([call["content"] for call in adapter.sent] + [call["content"] for call in adapter.edits])
     assert "📌" in first_panel
     assert "Transaction" in first_panel
-    assert "Summarize user intent" in first_panel
+    assert "Handle user request" in first_panel
     assert "hello" not in first_panel
     assert "read_file" in all_panels
     assert "search_files" in all_panels
