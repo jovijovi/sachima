@@ -1,0 +1,63 @@
+schema_version: sachima.plan_manifest.v1
+title: agent-run-supervisor x Sachima P6-B Stage-2 bounded real-smoke readiness
+created_at: '2026-06-27'
+status: docs_only_readiness_packet_real_smoke_blocked
+repository: jovijovi/sachima
+base_branch: release/sachima
+branch: docs/p6b-stage2-readiness-governance
+predecessors:
+  p6b_stage_1:
+    pr: 171
+    merged: true
+    meaning: default_off_injected_fake_read_only_bridge_source_implementation
+  status_dashboard_slimdown:
+    pr: 173
+    merged: true
+scope:
+  docs_only: true
+  implementation: false
+  host_local_provisioning: false
+  real_agent_execution: false
+  real_smoke: false
+  acpx_or_npx_invocation: false
+  write_roles: false
+  file_mutation_by_agent_step: false
+  git_mutation_by_agent_step: false
+  network_access_by_agent_step: false
+  gateway_or_feishu: false
+  production_config: false
+  service_restart_or_reload: false
+  real_delivery: false
+artifacts:
+  prd: docs/plans/2026-06-27-agent-run-supervisor-sachima-p6b-stage2-bounded-real-smoke-readiness-prd.md
+  technical_solution: docs/plans/2026-06-27-agent-run-supervisor-sachima-p6b-stage2-bounded-real-smoke-readiness-technical-solution.md
+  claude_architect_review: docs/plans/2026-06-27-agent-run-supervisor-sachima-p6b-stage2-bounded-real-smoke-readiness-claude-architect-review.md
+  user_review_packet: docs/plans/2026-06-27-agent-run-supervisor-sachima-p6b-stage2-bounded-real-smoke-readiness-user-review-packet.md
+  dev_log: docs/dev_log/2026-06-27-agent-run-supervisor-sachima-p6b-stage2-bounded-real-smoke-readiness.md
+verdicts:
+  readiness_packet: PASS_WITH_WATCH
+  real_smoke_execution_request: BLOCKED
+hard_blockers_before_real_smoke:
+  B1_cross_process_crash_no_relaunch: open
+  B2_exact_smoke_parameters_not_pinned: open
+watch_items:
+  wp3b_active_run_cancellation: open
+  prompt_read_affordance_vs_read_suppression: open
+  caller_supplied_artifact_sink_out_of_repo_proof: open
+required_gates:
+  - git diff --check
+  - yaml safe_load manifest
+  - docs-only changed-file allowlist
+  - forbidden source/runtime mutation scan
+  - current-status/tail/boundary non-approval scan
+  - Claude Code architect/docs read-only review
+  - Codex primary read-only blocker review
+strongest_allowed_outcome_meaning: >-
+  Docs-only P6-B Stage-2 readiness/governance. It records that readiness may
+  proceed with WATCH items, but real smoke execution is blocked until cross-process
+  crash/recover-without-relaunch proof and exact runner/role/sink/evidence pinning
+  are complete. It approves no implementation, host-local provisioning, acpx/npx
+  invocation, real agent execution, real smoke, write roles, Gateway/Feishu/live
+  behavior, production config, service restart, or real delivery.
+next_safe_approval_after_merge: >-
+  approve_agent_run_supervisor_sachima_p6b_stage2_host_local_dor_and_crash_no_relaunch_proof_pinned_local_runner_role_overlay_artifact_sink_evidence_only_no_real_agent_launch_no_real_smoke_no_write_no_git_no_network_no_live_no_gateway_no_feishu_no_production_config_no_real_delivery

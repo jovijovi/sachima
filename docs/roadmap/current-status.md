@@ -79,11 +79,11 @@
 <!-- sachima-status-sync:end -->
 
 ```text
-last_updated: 2026-06-26
+last_updated: 2026-06-27
 base_branch: release/sachima
-current_position: PR #171 P6-B Stage-1 source implementation and PR #172 Feishu task workbench title stabilization are merged; next mainline candidate is P6-B Stage-2 readiness/governance only.
-current_mainline: agent-run-supervisor × Sachima P6-B Stage-1 source implementation has merged; Stage-2 real smoke and later write/live/delivery work remain separate approvals.
-current_head_evidence: PR #171 merged P6-B Stage-1; PR #172 merged Feishu task workbench title stabilization; machine block above is git/GitHub evidence only.
+current_position: P6-B Stage-2 readiness/governance records PASS_WITH_WATCH for readiness and BLOCKED for real smoke until cross-process crash/no-relaunch proof and exact runner/role/sink/evidence pinning are complete.
+current_mainline: agent-run-supervisor × Sachima P6-B Stage-2 readiness/governance is the current mainline authority surface; real smoke remains unapproved.
+current_head_evidence: PR #171 merged P6-B Stage-1, PR #172 merged Feishu task workbench title stabilization, PR #173 merged roadmap status dashboard slimdown; machine block above is git/GitHub evidence only.
 detail_ledgers: docs/roadmap/phase-ledger.md, docs/roadmap/tail-register.md, docs/roadmap/evidence-index.md, docs/roadmap/reference-index.md
 ```
 
@@ -100,9 +100,9 @@ detail_ledgers: docs/roadmap/phase-ledger.md, docs/roadmap/tail-register.md, doc
 
 ```text
 P6-B Stage-1 source implementation is merged in PR #171.
-The Feishu task workbench title-summary fix is merged in PR #172.
-The current mainline may next request P6-B Stage-2 bounded real-smoke readiness/governance for a single read-only planning/report step, or a separate P6-C design gate if the owner chooses.
-No real agent/acpx/npx execution, real smoke, write roles, Gateway/Feishu/live behavior, production config, public ingress, or real delivery is approved by this status page.
+The Feishu task workbench title-summary fix is merged in PR #172, and the status dashboard slimdown is merged in PR #173.
+P6-B Stage-2 readiness/governance records that the readiness packet may proceed with WATCH items, but real smoke execution is BLOCKED until B1 cross-process crash/no-relaunch proof and B2 exact runner/role/sink/evidence pinning are complete.
+No real agent/acpx/npx execution, real smoke, write roles, Gateway/Feishu/live behavior, production config, public ingress, service restart, or real delivery is approved by this status page.
 ```
 
 ## Current phase summary
@@ -114,6 +114,7 @@ No real agent/acpx/npx execution, real smoke, write roles, Gateway/Feishu/live b
 | P6-A controlled AI FLOW composition | Merged in PR #169 | Default-off outer P6 composition over WP4 + P5 seam; deterministic/injected-fake steps only | `docs/roadmap/phase-ledger.md` |
 | P6-B pre-development governance | Merged in PR #170 | Defines bounded read-only planning/report step gate; docs-only | `docs/roadmap/phase-ledger.md` |
 | P6-B Stage-1 source implementation | Merged in PR #171 | Thin default-off bridge StepExecutor; injected-fake runner gates only; no real smoke | `docs/roadmap/phase-ledger.md` |
+| P6-B Stage-2 readiness/governance | Docs-only readiness packet | PASS_WITH_WATCH for readiness; real smoke BLOCKED by B1 cross-process crash/no-relaunch proof and B2 exact runner/role/sink/evidence pinning | `docs/plans/2026-06-27-agent-run-supervisor-sachima-p6b-stage2-bounded-real-smoke-readiness-prd.md` |
 | Feishu task workbench title summary | Merged in PR #172 | Stabilizes task-card title summary behavior; not a phase authority change | GitHub PR #172 |
 | P7 real delivery / ACK closure | Pending | Not started; requires separate approval after fake/local delivery and AI FLOW gates are production-ready | `docs/roadmap/tail-register.md` |
 | P8 product / ops hardening | Pending | Not started; blocked until limited live pilot readiness | `docs/roadmap/tail-register.md` |
@@ -122,7 +123,7 @@ No real agent/acpx/npx execution, real smoke, write roles, Gateway/Feishu/live b
 
 | Tail | Class | Blocks next mainline? | Required before | Detail |
 |---|---|---:|---|---|
-| P6-B Stage-2 real smoke | NEXT_PHASE | Yes, if doing real smoke | Any real acpx/npx/agent execution inside P6-B | Separate approval plus crash-after-claim / restart / recover-without-relaunch proof |
+| P6-B Stage-2 real smoke | NEXT_PHASE | Yes, if doing real smoke | Any real acpx/npx/agent execution inside P6-B | BLOCKED until B1 cross-process crash/no-relaunch proof and B2 exact runner/role/sink/evidence pinning are complete; separate approval still required |
 | WP3b active-run cancellation | WATCH | No for docs/governance; Yes for clean cancellation claims | Any clean active-run cancellation claim | Full tail table in `docs/roadmap/tail-register.md` |
 | P4 Envelope v1 agentic-ui conformance | NEXT_PHASE | No for current supervisor mainline | Any P4 behavior-bearing external-ingress claim | Side tail; do not pivot to it by default |
 | Status dashboard hygiene | WATCH | No | Any phase closure / next-readiness claim | Keep this lean file plus split ledgers aligned |
@@ -162,15 +163,15 @@ controlled_ai_flow_execution beyond approved P6-A deterministic/injected-fake sc
 
 ## Next allowed request
 
-The current allowed mainline request is **P6-B Stage-2 bounded real-smoke readiness / pre-development governance** for the already-merged Stage-1 read-only planning/report bridge, unless the owner explicitly chooses a different branch such as P6-C.
+The current allowed mainline request after this readiness packet is **P6-B Stage-2 host-local DoR / crash-no-relaunch proof and parameter pinning**, not real-smoke execution.
 
-The next request must stay narrower than live/product delivery:
+The next request must stay narrower than live/product delivery and still exclude any real AGENT launch:
 
 ```text
-P6-B Stage-2 candidate:
-  prove whether one bounded read-only planning/report step can run through pinned local acpx/agent plumbing
-  -> exact command/role/provenance/prompt/materializer/artifact-sink preflight
-  -> crash/no-relaunch/recover evidence before any success claim
+P6-B Stage-2 next safe gate:
+  prove or fail-close crash-after-claim / restart / recover-without-relaunch behavior
+  -> pin exact runner/role/provenance/prompt/materializer/artifact-sink/evidence values
+  -> no real agent/acpx/npx step execution yet
   -> no write roles, no file/git mutation by agent step, no Gateway/Feishu/live/production config/real delivery
 ```
 
