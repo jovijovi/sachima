@@ -70,8 +70,18 @@
       "url": "https://github.com/jovijovi/sachima/pull/169"
     }
   ],
-  "open_pr_count": 0,
-  "open_prs": [],
+  "open_pr_count": 1,
+  "open_prs": [
+    {
+      "baseRefName": "release/sachima",
+      "headRefName": "docs/p6b-stage2-readiness-governance",
+      "isDraft": false,
+      "mergeStateStatus": "CLEAN",
+      "number": 174,
+      "title": "docs: add P6-B stage 2 readiness gate",
+      "url": "https://github.com/jovijovi/sachima/pull/174"
+    }
+  ],
   "repository": "jovijovi/sachima",
   "scope_note": "machine dynamic status only; approvals and phase meaning remain human-authored outside this block"
 }
