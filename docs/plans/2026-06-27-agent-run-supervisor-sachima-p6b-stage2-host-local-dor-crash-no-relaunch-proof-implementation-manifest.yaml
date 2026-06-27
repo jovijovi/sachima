@@ -1,7 +1,7 @@
 schema_version: sachima.plan_manifest.v1
 title: agent-run-supervisor x Sachima P6-B Stage-2 host-local DoR / crash-no-relaunch proof implementation
 created_at: '2026-06-27'
-status: local_gates_passed_pending_hermes_review_and_pr
+status: pr_open_final_exact_head_review_blocker_fix_recorded
 repository: jovijovi/sachima
 base_branch: release/sachima
 branch: feat/p6b-stage2-host-local-dor-proof
@@ -216,5 +216,12 @@ next_gate_after_merge: >-
   the workflow + single step + output_contract, max turns/wall-time, and assert no
   file/git/network/Gateway/Feishu/live/production/real-delivery with post-run proof.
 pr:
-  status: not_opened_hermes_owns_pr
-  note: Claude does not commit/push/PR. Hermes verifies, reviews, commits, pushes, and opens the PR; live PR head/CI/review remain authoritative.
+  status: open
+  number: 175
+  url: https://github.com/jovijovi/sachima/pull/175
+  current_head: 58514239ded739c48351904cb5a09c87181b1bbf
+  ci_status_on_current_head: passed
+  note: >-
+    Claude does not commit/push/PR. Hermes verified, reviewed, committed, pushed, and opened
+    the PR; live PR head/CI/review remain authoritative. Final exact-head review found these
+    stale manifest fields; this narrow docs fix records the live PR truth for the exact head.
