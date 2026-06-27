@@ -11,9 +11,20 @@
 ```json
 {
   "base_branch": "release/sachima",
-  "base_head": "251e26e4549251721bec0f9725caf9d571bbd187",
+  "base_head": "3d02edb8512ef4fef61a01fb976550251db3ec11",
   "base_head_note": "latest first-parent base commit excluding machine status-sync self-commits",
   "latest_merged_prs": [
+    {
+      "baseRefName": "release/sachima",
+      "headRefName": "docs/sachima-production-grade-goal",
+      "mergeCommit": {
+        "oid": "3d02edb8512ef4fef61a01fb976550251db3ec11"
+      },
+      "mergedAt": "2026-06-27T06:53:59Z",
+      "number": 176,
+      "title": "docs: clarify Sachima production-grade goal",
+      "url": "https://github.com/jovijovi/sachima/pull/176"
+    },
     {
       "baseRefName": "release/sachima",
       "headRefName": "feat/p6b-stage2-host-local-dor-proof",
@@ -57,17 +68,6 @@
       "number": 172,
       "title": "fix: stabilize Feishu task workbench titles",
       "url": "https://github.com/jovijovi/sachima/pull/172"
-    },
-    {
-      "baseRefName": "release/sachima",
-      "headRefName": "feat/p6b-read-only-real-agent-step-implementation",
-      "mergeCommit": {
-        "oid": "9a7a042905aa39ecc192a50cafb5215446f0133a"
-      },
-      "mergedAt": "2026-06-26T01:07:33Z",
-      "number": 171,
-      "title": "feat: add P6-B read-only agent step bridge",
-      "url": "https://github.com/jovijovi/sachima/pull/171"
     }
   ],
   "open_pr_count": 0,
