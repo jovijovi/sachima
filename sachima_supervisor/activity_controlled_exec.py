@@ -39,9 +39,9 @@ Boundaries enforced here (local/offline only):
     conflicting starts fail closed before any second launch. Identical
     replays of an in-progress or terminal claim return the resident
     sanitized projection and never start a second run; a crashed
-    in-progress claim is never auto-relaunched. A transactional durable
-    (cross-process) claim-store adapter remains a later, separately
-    approved gate.
+    in-progress claim is never auto-relaunched. The file-backed adapter adds
+    the approved local cross-process persistence layer for this same CAS
+    contract.
   * Only the public ``invoke_local_offline_supervisor`` boundary (or an
     injected equivalent in tests) is ever called. This module never spawns a
     child process, agent CLI, shell, container, service, Gateway, or IM
@@ -71,6 +71,7 @@ import hashlib
 import json
 import os
 import re
+import tempfile
 import threading
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -462,9 +463,9 @@ class ControlledLocalExecClaimStore:
     under one in-process mutex, so concurrent identical starts resolve to
     exactly one acquisition and concurrent conflicting starts fail closed.
     Resident state and fingerprints are revalidated on every read so malicious
-    resident material can never be projected. This locked store is the approved
-    first-slice local/offline CAS; a transactional durable (cross-process)
-    store adapter is a later, separately approved gate.
+    resident material can never be projected. This locked store remains the
+    in-process CAS; ``FileControlledLocalExecClaimStore`` below provides the
+    same contract with local cross-process persistence.
     """
 
     _by_activity: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -586,6 +587,306 @@ class ControlledLocalExecClaimStore:
                 )
             self._by_activity[activity_id] = stored
             self._by_idempotency[idempotency_key] = (fingerprint, stored)
+
+
+class FileControlledLocalExecClaimStore:
+    """File-backed controlled-exec claim store with cross-process locking.
+
+    The persisted file contains only the same sanitized claim projections as the
+    in-process store plus idempotency fingerprints. Every read revalidates the
+    full JSON payload before projecting state, so tampering or unsafe resident
+    material fails closed instead of leaking raw content. Writes happen while an
+    OS file lock is held and commit through an atomic ``os.replace``.
+    """
+
+    _STORE_TYPE = "sachima.supervisor.controlled_local_exec_claim_store.v1"
+    _SCHEMA_VERSION = 1
+    _TOP_LEVEL_KEYS = frozenset(
+        {"type", "schema_version", "by_activity", "by_idempotency"}
+    )
+    _IDEMPOTENCY_ENTRY_KEYS = frozenset({"fingerprint", "activity_id"})
+
+    def __init__(self, path: str | Path) -> None:
+        self._path = Path(path)
+        self._lock_path = self._path.with_name(self._path.name + ".lock")
+        self._thread_lock = threading.RLock()
+
+    def get_by_activity(self, activity_id: str) -> dict[str, Any] | None:
+        with self._locked_payload(write=False) as payload:
+            state = payload["by_activity"].get(activity_id)
+            return None if state is None else _validate_claim_state_projection(state)
+
+    def get_idempotent(self, idempotency_key: str) -> tuple[str, dict[str, Any]] | None:
+        with self._locked_payload(write=False) as payload:
+            return self._get_idempotent_from_payload(payload, idempotency_key)
+
+    def claim(
+        self,
+        *,
+        activity_id: str,
+        idempotency_key: str,
+        fingerprint: str,
+        state: dict[str, Any],
+    ) -> tuple[str, dict[str, Any]]:
+        if not _is_safe_fingerprint(fingerprint):
+            raise ControlledLocalExecError(
+                "activity_unsafe_material", "unsafe claim fingerprint rejected"
+            )
+        with self._locked_payload(write=True) as payload:
+            existing = self._get_idempotent_from_payload(payload, idempotency_key)
+            if existing is not None:
+                existing_fingerprint, existing_state = existing
+                if existing_fingerprint != fingerprint:
+                    raise ControlledLocalExecError(
+                        "activity_idempotency_conflict",
+                        "idempotency key maps to an incompatible controlled exec request",
+                    )
+                return "replayed", existing_state
+            if activity_id in payload["by_activity"]:
+                raise ControlledLocalExecError(
+                    "activity_claim_conflict",
+                    "activity is already claimed under a different idempotency key",
+                )
+            stored = _validate_claim_state_projection(state)
+            if (
+                stored["status"] != _STATUS_CLAIMED
+                or stored["activity_id"] != activity_id
+                or stored["idempotency_key"] != idempotency_key
+            ):
+                raise ControlledLocalExecError(
+                    "activity_unsafe_material", "unsafe claim state rejected"
+                )
+            payload["by_activity"][activity_id] = stored
+            payload["by_idempotency"][idempotency_key] = {
+                "fingerprint": fingerprint,
+                "activity_id": activity_id,
+            }
+            return "acquired", stored
+
+    def finalize(
+        self,
+        *,
+        activity_id: str,
+        idempotency_key: str,
+        fingerprint: str,
+        state: dict[str, Any],
+    ) -> None:
+        if not _is_safe_fingerprint(fingerprint):
+            raise ControlledLocalExecError(
+                "activity_unsafe_material", "unsafe claim fingerprint rejected"
+            )
+        with self._locked_payload(write=True) as payload:
+            existing = self._get_idempotent_from_payload(payload, idempotency_key)
+            if existing is None:
+                raise ControlledLocalExecError(
+                    "activity_claim_conflict", "no resident claim to finalize"
+                )
+            existing_fingerprint, existing_state = existing
+            if (
+                existing_fingerprint != fingerprint
+                or existing_state["status"] != _STATUS_CLAIMED
+                or existing_state["activity_id"] != activity_id
+            ):
+                raise ControlledLocalExecError(
+                    "activity_claim_conflict", "resident claim does not match this attempt"
+                )
+            stored = _validate_claim_state_projection(state)
+            if (
+                stored["status"] not in _TERMINAL_STATUSES
+                or stored["activity_id"] != activity_id
+                or stored["idempotency_key"] != idempotency_key
+            ):
+                raise ControlledLocalExecError(
+                    "activity_unsafe_material", "unsafe terminal claim state rejected"
+                )
+            payload["by_activity"][activity_id] = stored
+            payload["by_idempotency"][idempotency_key] = {
+                "fingerprint": fingerprint,
+                "activity_id": activity_id,
+            }
+
+    class _LockedPayload:
+        def __init__(self, owner: FileControlledLocalExecClaimStore, *, write: bool) -> None:
+            self._owner = owner
+            self._write = write
+            self._lock_file: Any = None
+            self.payload: dict[str, Any] | None = None
+
+        def __enter__(self) -> dict[str, Any]:
+            owner = self._owner
+            owner._path.parent.mkdir(parents=True, exist_ok=True)
+            owner._thread_lock.acquire()
+            try:
+                self._lock_file = owner._lock_path.open("a+b")
+                owner._lock_exclusive(self._lock_file)
+                self.payload = owner._read_payload_unlocked()
+                return self.payload
+            except Exception:
+                owner._thread_lock.release()
+                if self._lock_file is not None:
+                    self._lock_file.close()
+                raise
+
+        def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+            try:
+                if exc_type is None and self._write and self.payload is not None:
+                    self._owner._write_payload_unlocked(self.payload)
+            finally:
+                if self._lock_file is not None:
+                    self._owner._unlock(self._lock_file)
+                    self._lock_file.close()
+                self._owner._thread_lock.release()
+
+    @staticmethod
+    def _load_fcntl() -> Any:
+        try:
+            import fcntl as fcntl_module
+        except ModuleNotFoundError:
+            raise ControlledLocalExecError(
+                "activity_file_lock_unavailable",
+                "file-backed claim store requires platform file locking",
+            ) from None
+        return fcntl_module
+
+    @classmethod
+    def _lock_exclusive(cls, lock_file: Any) -> None:
+        fcntl_module = cls._load_fcntl()
+        fcntl_module.flock(lock_file.fileno(), fcntl_module.LOCK_EX)
+
+    @classmethod
+    def _unlock(cls, lock_file: Any) -> None:
+        try:
+            fcntl_module = cls._load_fcntl()
+        except ControlledLocalExecError:
+            return
+        fcntl_module.flock(lock_file.fileno(), fcntl_module.LOCK_UN)
+
+    def _locked_payload(self, *, write: bool) -> _LockedPayload:
+        return self._LockedPayload(self, write=write)
+
+    @classmethod
+    def _empty_payload(cls) -> dict[str, Any]:
+        return {
+            "type": cls._STORE_TYPE,
+            "schema_version": cls._SCHEMA_VERSION,
+            "by_activity": {},
+            "by_idempotency": {},
+        }
+
+    def _read_payload_unlocked(self) -> dict[str, Any]:
+        if not self._path.exists():
+            return self._empty_payload()
+        try:
+            raw = self._path.read_text(encoding="utf-8")
+            payload = json.loads(raw)
+        except (OSError, UnicodeDecodeError, ValueError):
+            raise _reject_unsafe_state() from None
+        return self._validate_payload(payload)
+
+    def _write_payload_unlocked(self, payload: Mapping[str, Any]) -> None:
+        canonical = self._validate_payload(payload)
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path: str | None = None
+        try:
+            fd, tmp_path = tempfile.mkstemp(
+                prefix=self._path.name + ".",
+                suffix=".tmp",
+                dir=str(self._path.parent),
+                text=True,
+            )
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(canonical, handle, sort_keys=True, separators=(",", ":"))
+                handle.write("\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(tmp_path, self._path)
+            tmp_path = None
+            self._fsync_parent_dir()
+        finally:
+            if tmp_path is not None:
+                try:
+                    os.unlink(tmp_path)
+                except FileNotFoundError:
+                    pass
+
+    def _fsync_parent_dir(self) -> None:
+        try:
+            fd = os.open(self._path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        except OSError:
+            return
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+
+    def _get_idempotent_from_payload(
+        self, payload: Mapping[str, Any], idempotency_key: str
+    ) -> tuple[str, dict[str, Any]] | None:
+        entry = payload["by_idempotency"].get(idempotency_key)
+        if entry is None:
+            return None
+        if type(entry) is not dict or set(entry) != self._IDEMPOTENCY_ENTRY_KEYS:
+            raise _reject_unsafe_state()
+        fingerprint = entry["fingerprint"]
+        activity_id = entry["activity_id"]
+        if not _is_safe_fingerprint(fingerprint) or not _is_required_safe_ref(activity_id):
+            raise _reject_unsafe_state()
+        state = payload["by_activity"].get(activity_id)
+        if state is None:
+            raise _reject_unsafe_state()
+        projected = _validate_claim_state_projection(state)
+        if projected["idempotency_key"] != idempotency_key:
+            raise _reject_unsafe_state()
+        return fingerprint, projected
+
+    @classmethod
+    def _validate_payload(cls, payload: Mapping[str, Any]) -> dict[str, Any]:
+        if type(payload) is not dict or set(payload) != cls._TOP_LEVEL_KEYS:
+            raise _reject_unsafe_state()
+        if (
+            payload["type"] != cls._STORE_TYPE
+            or payload["schema_version"] != cls._SCHEMA_VERSION
+            or type(payload["by_activity"]) is not dict
+            or type(payload["by_idempotency"]) is not dict
+        ):
+            raise _reject_unsafe_state()
+        by_activity: dict[str, dict[str, Any]] = {}
+        for activity_id, state in payload["by_activity"].items():
+            if not _is_required_safe_ref(activity_id):
+                raise _reject_unsafe_state()
+            projected = _validate_claim_state_projection(state)
+            if projected["activity_id"] != activity_id:
+                raise _reject_unsafe_state()
+            by_activity[activity_id] = projected
+        by_idempotency: dict[str, dict[str, str]] = {}
+        referenced_activities: set[str] = set()
+        for idempotency_key, entry in payload["by_idempotency"].items():
+            if not _is_required_safe_ref(idempotency_key):
+                raise _reject_unsafe_state()
+            if type(entry) is not dict or set(entry) != cls._IDEMPOTENCY_ENTRY_KEYS:
+                raise _reject_unsafe_state()
+            fingerprint = entry["fingerprint"]
+            activity_id = entry["activity_id"]
+            if not _is_safe_fingerprint(fingerprint) or not _is_required_safe_ref(
+                activity_id
+            ):
+                raise _reject_unsafe_state()
+            state = by_activity.get(activity_id)
+            if state is None or state["idempotency_key"] != idempotency_key:
+                raise _reject_unsafe_state()
+            referenced_activities.add(activity_id)
+            by_idempotency[idempotency_key] = {
+                "fingerprint": fingerprint,
+                "activity_id": activity_id,
+            }
+        if set(by_activity) != referenced_activities:
+            raise _reject_unsafe_state()
+        return {
+            "type": cls._STORE_TYPE,
+            "schema_version": cls._SCHEMA_VERSION,
+            "by_activity": by_activity,
+            "by_idempotency": by_idempotency,
+        }
 
 
 # --------------------------------------------------------------------------- #
