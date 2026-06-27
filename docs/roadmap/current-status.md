@@ -11,9 +11,20 @@
 ```json
 {
   "base_branch": "release/sachima",
-  "base_head": "a7c40bac845d85d4cb2072a701e8cb4e01aa6bb6",
+  "base_head": "b2531aeb9d37b77cbcf333c9dea8a7d652239403",
   "base_head_note": "latest first-parent base commit excluding machine status-sync self-commits",
   "latest_merged_prs": [
+    {
+      "baseRefName": "release/sachima",
+      "headRefName": "docs/status-close-p6b-after-pr179",
+      "mergeCommit": {
+        "oid": "b2531aeb9d37b77cbcf333c9dea8a7d652239403"
+      },
+      "mergedAt": "2026-06-27T13:41:26Z",
+      "number": 180,
+      "title": "docs: close P6-B status after PR 179",
+      "url": "https://github.com/jovijovi/sachima/pull/180"
+    },
     {
       "baseRefName": "release/sachima",
       "headRefName": "feat/p6b-durable-claim-store",
@@ -57,17 +68,6 @@
       "number": 176,
       "title": "docs: clarify Sachima production-grade goal",
       "url": "https://github.com/jovijovi/sachima/pull/176"
-    },
-    {
-      "baseRefName": "release/sachima",
-      "headRefName": "feat/p6b-stage2-host-local-dor-proof",
-      "mergeCommit": {
-        "oid": "251e26e4549251721bec0f9725caf9d571bbd187"
-      },
-      "mergedAt": "2026-06-27T05:10:03Z",
-      "number": 175,
-      "title": "feat: add P6-B host-local DoR proof",
-      "url": "https://github.com/jovijovi/sachima/pull/175"
     }
   ],
   "open_pr_count": 0,
