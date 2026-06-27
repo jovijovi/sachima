@@ -125,7 +125,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         out_path = write_p6b_host_local_dor_evidence(
             report, evidence_root=args.evidence_root, repo_root=args.repo_root
         )
-        print(f"evidence_written: {out_path}")
+        print(f"evidence_written_ref: {out_path.name}")
 
     print(
         json.dumps(

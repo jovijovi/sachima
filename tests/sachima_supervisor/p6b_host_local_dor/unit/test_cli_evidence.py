@@ -89,13 +89,16 @@ def _find_evidence(evidence_root: Path) -> Path:
     return files[0]
 
 
-def test_cli_default_no_binary_is_blocked_and_writes_evidence(tmp_path):
+def test_cli_default_no_binary_is_blocked_and_writes_evidence(tmp_path, capsys):
     repo = tmp_path / "repo"
     evidence_root = tmp_path / "outside" / "evidence"
 
     rc = main(_argv(repo, evidence_root))
 
     assert rc == 0
+    captured = capsys.readouterr().out
+    assert str(evidence_root) not in captured
+    assert "evidence_written_ref" in captured
     loaded = json.loads(_find_evidence(evidence_root).read_text())
     assert loaded["status"] == "blocked"
     assert loaded["crash_proof_status"] == "pass"

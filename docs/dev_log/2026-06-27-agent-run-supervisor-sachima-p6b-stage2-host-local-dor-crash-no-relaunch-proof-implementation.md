@@ -61,6 +61,12 @@ Gateway/Feishu/live ingress, production config, service restart, or real deliver
   `_verify_binary_identity()` to validate the request version and sha pin before the no-probe path.
   Codex blocker-only re-review returned `VERDICT: PASS` / `BLOCKERS: None`; post-review diff hash
   stayed unchanged.
+- Live PR/head Codex review then found a second blocker: `tools/p6b_host_local_dor.py` printed the
+  raw out-of-repo evidence path in `evidence_written: <path>`, violating the sanitized-summary/no
+  raw host path requirement. Hermes added a RED stdout regression assertion, confirmed it failed,
+  changed the CLI to print only `evidence_written_ref: <filename>`, and reran the DoR/full
+  supervisor gates plus a CLI blocked demo that verifies the raw evidence root is absent from stdout.
+  Live blocker re-review is pending.
 - `python tools/sync_roadmap_status.py --file docs/roadmap/current-status.md --check` →
   `machine status block is up to date` (exit 0). The machine-owned block was not edited by this
   branch; Hermes re-runs the live check before opening the PR.

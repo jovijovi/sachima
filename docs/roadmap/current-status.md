@@ -76,7 +76,7 @@
       "baseRefName": "release/sachima",
       "headRefName": "feat/p6b-stage2-host-local-dor-proof",
       "isDraft": false,
-      "mergeStateStatus": "UNSTABLE",
+      "mergeStateStatus": "CLEAN",
       "number": 175,
       "title": "feat: add P6-B host-local DoR proof",
       "url": "https://github.com/jovijovi/sachima/pull/175"

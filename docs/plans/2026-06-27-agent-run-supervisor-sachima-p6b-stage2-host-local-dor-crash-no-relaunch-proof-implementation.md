@@ -140,7 +140,11 @@ Codex primary review initially returned `VERDICT: BLOCKERS` on one real issue: p
 pins (`acpx_version="0.9.0"` or malformed `acpx_binary_sha256`) could pass when no version probe was
 injected. Hermes added RED regression tests for both cases, fixed `_verify_binary_identity()` to fail
 closed before the no-probe path, and reran the gates above. Codex blocker-only re-review returned
-`VERDICT: PASS` / `BLOCKERS: None` with post-review diff hash unchanged.
+`VERDICT: PASS` / `BLOCKERS: None` with post-review diff hash unchanged. A later live PR/head
+review found a second blocker: the CLI printed the raw out-of-repo evidence path to stdout after
+writing evidence. Hermes added a RED stdout regression test, changed the CLI to print only
+`evidence_written_ref: <filename>`, reran the DoR/full supervisor gates, and confirmed the CLI
+blocked demo no longer prints the raw evidence root. Live blocker re-review is pending.
 
 No real acpx/agent ran in any gate; the only executable a test ever runs is a temp `/bin/sh`
 fake that echoes a version line for the argv/no-shell probe.

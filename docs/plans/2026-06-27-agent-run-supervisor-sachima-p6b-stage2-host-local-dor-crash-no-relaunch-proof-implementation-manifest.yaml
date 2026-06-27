@@ -157,6 +157,19 @@ local_verification:
       blockers: none
       post_review_diff_hash: b0e1a6a6a344e1f96731a865aeb792419892b0bd9db46c632d009c6b00f577ec
       provenance: codex_cli_0_142_2_no_bwrap_fallback_repo_aware_blocker_only_read_only_prompt
+    live_pr_review:
+      expected_head: 099cec0716d29463b10c21ba59ac5a48e5bb1403
+      verdict: blockers
+      blocker: cli_stdout_printed_raw_evidence_path
+    hermes_live_review_blocker_fix:
+      added_red_stdout_assertion: true
+      red_result: failed_before_fix
+      fix: cli_prints_evidence_written_ref_filename_only
+      regression_result: passed_1_test
+      full_supervisor_all_extras_after_fix: passed_1012_tests
+      cli_blocked_demo_after_fix: raw_evidence_root_absent_from_stdout
+    live_blocker_rereview:
+      status: pending
   changed_file_scope:
     expectation: >-
       only sachima_supervisor/p6b_host_local_dor.py, tools/p6b_host_local_dor.py,
