@@ -372,22 +372,23 @@ def _read_supervisor_status(caller_result: Any) -> str | None:
     return _sanitize_supervisor_status(raw_status)
 
 
-def _read_artifact_ref_count(caller_result: Any) -> int:
+def _read_artifact_ref_count(mode: str, caller_result: Any) -> int:
     refs = getattr(caller_result, "artifact_refs", None)
     if refs is not None:
         try:
             return len(refs)
         except TypeError:
             return 0
-    return sum(
-        1
-        for value in (
-            getattr(caller_result, "artifact_dir", None),
-            getattr(caller_result, "run_dir", None),
-            getattr(caller_result, "session_dir", None),
-        )
-        if value is not None
-    )
+    artifact_dir = getattr(caller_result, "artifact_dir", None)
+    run_dir = getattr(caller_result, "run_dir", None)
+    session_dir = getattr(caller_result, "session_dir", None)
+    # One-shot exec/dry-run results expose the same logical output through
+    # lower-layer labels (artifact_dir and run_dir). Treat either or both as one
+    # caller-owned output so P6-B's exactly-one-output contract is not tripped by
+    # duplicate bookkeeping labels or path spelling differences.
+    if mode in {"exec", "exec_dry_run"}:
+        return int(artifact_dir is not None or run_dir is not None)
+    return len({value for value in (artifact_dir, run_dir, session_dir) if value is not None})
 
 
 def _digest(core: Mapping[str, Any]) -> str:
@@ -423,7 +424,7 @@ def build_offline_view_model(
         safe_error_code = "invalid_status_code"
 
     supervisor_status = None if safe_error_code is not None else _read_supervisor_status(caller_result)
-    artifact_ref_count = 0 if caller_result is None else _read_artifact_ref_count(caller_result)
+    artifact_ref_count = 0 if caller_result is None else _read_artifact_ref_count(request.mode, caller_result)
 
     core: dict[str, Any] = {
         "type": _VIEW_MODEL_TYPE,
