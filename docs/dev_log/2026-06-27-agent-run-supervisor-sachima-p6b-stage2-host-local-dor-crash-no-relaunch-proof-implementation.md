@@ -66,7 +66,8 @@ Gateway/Feishu/live ingress, production config, service restart, or real deliver
   raw host path requirement. Hermes added a RED stdout regression assertion, confirmed it failed,
   changed the CLI to print only `evidence_written_ref: <filename>`, and reran the DoR/full
   supervisor gates plus a CLI blocked demo that verifies the raw evidence root is absent from stdout.
-  Live blocker re-review is pending.
+  Codex live blocker-only re-review returned `VERDICT: PASS` / `BLOCKERS: None` on head
+  `1e3a0a60c6a23eb7c5e51089a2b198b0bee0aabb`.
 - `python tools/sync_roadmap_status.py --file docs/roadmap/current-status.md --check` →
   `machine status block is up to date` (exit 0). The machine-owned block was not edited by this
   branch; Hermes re-runs the live check before opening the PR.

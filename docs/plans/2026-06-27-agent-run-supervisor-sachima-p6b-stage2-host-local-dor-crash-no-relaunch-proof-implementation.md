@@ -144,7 +144,8 @@ closed before the no-probe path, and reran the gates above. Codex blocker-only r
 review found a second blocker: the CLI printed the raw out-of-repo evidence path to stdout after
 writing evidence. Hermes added a RED stdout regression test, changed the CLI to print only
 `evidence_written_ref: <filename>`, reran the DoR/full supervisor gates, and confirmed the CLI
-blocked demo no longer prints the raw evidence root. Live blocker re-review is pending.
+blocked demo no longer prints the raw evidence root. Codex live blocker-only re-review returned
+`VERDICT: PASS` / `BLOCKERS: None` on head `1e3a0a60c6a23eb7c5e51089a2b198b0bee0aabb`.
 
 No real acpx/agent ran in any gate; the only executable a test ever runs is a temp `/bin/sh`
 fake that echoes a version line for the argv/no-shell probe.

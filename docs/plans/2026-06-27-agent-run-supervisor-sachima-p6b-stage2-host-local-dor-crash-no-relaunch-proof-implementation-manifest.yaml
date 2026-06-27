@@ -169,7 +169,10 @@ local_verification:
       full_supervisor_all_extras_after_fix: passed_1012_tests
       cli_blocked_demo_after_fix: raw_evidence_root_absent_from_stdout
     live_blocker_rereview:
-      status: pending
+      verdict: pass
+      blockers: none
+      reviewed_head: 1e3a0a60c6a23eb7c5e51089a2b198b0bee0aabb
+      provenance: codex_cli_0_142_2_no_bwrap_fallback_live_pr_head_blocker_only_read_only_prompt
   changed_file_scope:
     expectation: >-
       only sachima_supervisor/p6b_host_local_dor.py, tools/p6b_host_local_dor.py,
