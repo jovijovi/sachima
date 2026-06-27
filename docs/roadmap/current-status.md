@@ -11,9 +11,20 @@
 ```json
 {
   "base_branch": "release/sachima",
-  "base_head": "5c506fcd2e5f21f6f40b678f5b152738b99ce179",
+  "base_head": "a7c40bac845d85d4cb2072a701e8cb4e01aa6bb6",
   "base_head_note": "latest first-parent base commit excluding machine status-sync self-commits",
   "latest_merged_prs": [
+    {
+      "baseRefName": "release/sachima",
+      "headRefName": "feat/p6b-durable-claim-store",
+      "mergeCommit": {
+        "oid": "a7c40bac845d85d4cb2072a701e8cb4e01aa6bb6"
+      },
+      "mergedAt": "2026-06-27T12:35:27Z",
+      "number": 179,
+      "title": "feat: add durable controlled exec claim store",
+      "url": "https://github.com/jovijovi/sachima/pull/179"
+    },
     {
       "baseRefName": "release/sachima",
       "headRefName": "docs/p6b-stage2-dor-provisioning",
@@ -57,17 +68,6 @@
       "number": 175,
       "title": "feat: add P6-B host-local DoR proof",
       "url": "https://github.com/jovijovi/sachima/pull/175"
-    },
-    {
-      "baseRefName": "release/sachima",
-      "headRefName": "docs/p6b-stage2-readiness-governance",
-      "mergeCommit": {
-        "oid": "ba87a8d488405ed1618ca018e3dbe3f05f5edbbe"
-      },
-      "mergedAt": "2026-06-26T21:07:31Z",
-      "number": 174,
-      "title": "docs: add P6-B stage 2 readiness gate",
-      "url": "https://github.com/jovijovi/sachima/pull/174"
     }
   ],
   "open_pr_count": 0,
