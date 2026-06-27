@@ -2,7 +2,7 @@
 
 ## One-sentence goal
 
-Sachima should become Dog Brother's own AI workbench inside a custom IM channel: a safe, durable, observable, and recoverable Hermes/FlowWeaver system that can receive real IM requests, orchestrate long AI workflows, deliver results back through the channel, and preserve clear operational control.
+Sachima should become a production-grade AI workbench inside a custom IM channel: a safe, reliable, durable, observable, and recoverable Hermes/FlowWeaver system designed for real production use, able to receive real IM requests, orchestrate long AI workflows, deliver results back through the channel, and preserve clear operational control.
 
 ## Target architecture
 
