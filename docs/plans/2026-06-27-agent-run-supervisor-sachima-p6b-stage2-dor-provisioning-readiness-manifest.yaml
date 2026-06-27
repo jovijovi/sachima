@@ -1,0 +1,112 @@
+schema_version: sachima.plan_manifest.v1
+title: agent-run-supervisor x Sachima P6-B Stage-2 DoR provisioning/readiness packet
+created_at: '2026-06-27'
+status: docs_only_dor_provisioning_readiness_runner_blocked_no_acpx
+repository: jovijovi/sachima
+base_branch: release/sachima
+branch: docs/p6b-stage2-dor-provisioning
+predecessors:
+  p6b_stage_2_readiness:
+    pr: 174
+    merged: true
+    meaning: docs_only_readiness_governance_pass_with_watch_real_smoke_blocked
+  p6b_stage_2_host_local_dor_proof:
+    pr: 175
+    merged: true
+    meaning: default_off_host_local_dor_tooling_fail_closed_crash_no_relaunch_option_b_no_real_agent
+  p6b_status_reconciliation:
+    pr: 177
+    merged: true
+    meaning: current_status_and_tail_register_reconciled_after_pr_175_and_pr_176
+scope:
+  docs_only: true
+  implementation: false
+  source_code_change: false
+  test_code_change: false
+  host_local_acpx_install_or_fetch: false
+  host_local_dor_validation_with_real_acpx: false
+  blocked_dor_assessment_without_runner_params: true
+  real_agent_execution: false
+  real_smoke: false
+  real_acpx_or_npx_invocation: false
+  write_roles: false
+  file_mutation_by_agent_step: false
+  git_mutation_by_agent_step: false
+  network_access_by_agent_step: false
+  gateway_or_feishu: false
+  production_config: false
+  service_restart_or_reload: false
+  real_delivery: false
+artifacts:
+  provisioning_readiness_packet: docs/plans/2026-06-27-agent-run-supervisor-sachima-p6b-stage2-dor-provisioning-readiness.md
+  manifest: docs/plans/2026-06-27-agent-run-supervisor-sachima-p6b-stage2-dor-provisioning-readiness-manifest.yaml
+  user_review_packet: docs/plans/2026-06-27-agent-run-supervisor-sachima-p6b-stage2-dor-provisioning-readiness-user-review-packet.md
+  dev_log: docs/dev_log/2026-06-27-agent-run-supervisor-sachima-p6b-stage2-dor-provisioning-readiness.md
+live_host_observation:
+  acpx_on_path: false
+  codex_cli_present: true
+  claude_code_cli_present: true
+  conclusion: >-
+    Local Codex and Claude CLIs are present, but P6-B DoR validation remains blocked because
+    the repo requires an operator-pinned local acpx 0.10.0 binary and out-of-repo role overlay.
+blocked_dor_assessment_evidence:
+  evidence_ref_class: p6b-stage2-dor-provisioning-readiness/20260627T093824Z
+  report_type: sachima.supervisor.p6b_host_local_dor_report.v1
+  status: blocked
+  runner_pinning_status: blocked
+  crash_proof_status: pass
+  blocker: p6b_dor_runner_params_missing
+  supervisor_launch_count: 0
+  execute_after_store_loss: not_approved_not_attempted
+command_contract:
+  tool: tools/p6b_host_local_dor.py
+  mode: host_local_dor_validation_only
+  requires_probe: true
+  probe_shape: argv_list_no_shell_acpx_binary_version_only
+  required_acpx_version: 0.10.0
+  package_runner_fallback_allowed: false
+role_contract:
+  allowed_roles:
+    sachima.codex.primary_reviewer:
+      adapter: codex
+      preferred_first_candidate: true
+    sachima.claude.read_only_reviewer:
+      adapter: claude
+      preferred_first_candidate: false
+  committed_roles_remain_null_binary: true
+  overlay_location: out_of_repo_only
+  write_execute_fetch_terminal_permissions_required_false: true
+verdicts:
+  provisioning_readiness_packet: PASS_WITH_WATCH
+  host_local_dor_validation_with_real_acpx: BLOCKED_NO_ACPX
+  real_smoke_execution_request: BLOCKED
+hard_blockers_before_real_smoke:
+  B1_cross_process_crash_no_relaunch:
+    option_b_fail_closed_proof: merged_in_pr_175_and_rechecked_blocked_run
+    option_a_durable_claim_store: open_separate_gate
+  B2_exact_runner_role_sink_evidence_pinning:
+    status: blocked_no_operator_supplied_acpx_or_overlay
+watch_items:
+  wp3b_active_run_cancellation: open
+  recover_without_durable_claim_store_is_fail_closed_not_live_reattachment: open_as_limitation
+  raw_path_prompt_output_leakage: must_remain_blocked_by_evidence_contract
+required_gates:
+  - git diff --check
+  - yaml safe_load manifest
+  - docs-only changed-file allowlist
+  - sync_roadmap_status --check
+  - current-status/tail non-approval scan
+  - forbidden source/runtime mutation scan
+  - blocked DoR CLI assessment without runner params
+  - Codex read-only blocker review
+strongest_allowed_outcome_meaning: >-
+  Docs/status-only provisioning/readiness packet for P6-B Stage-2. It fixes the future DoR
+  validation command, role overlay, evidence, and crash/recovery contract, and records that this
+  host is blocked until an operator supplies an out-of-repo pinned acpx binary and overlay. It
+  approves no acpx installation/fetch, no real acpx/npx/agent invocation, no real smoke, no write
+  roles, no Gateway/Feishu/live behavior, no production config, no service restart, and no real delivery.
+next_safe_approval_after_merge: >-
+  Approve either Option-A durable cross-process claim-store implementation, or Option-B
+  operator-supplied out-of-repo pinned acpx 0.10.0 binary + read-only role overlay + artifact sink
+  + evidence root followed by tools/p6b_host_local_dor.py --probe for DoR validation only, still
+  with no real agent step launch and no real smoke.
