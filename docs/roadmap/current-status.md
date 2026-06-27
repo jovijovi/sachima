@@ -70,8 +70,18 @@
       "url": "https://github.com/jovijovi/sachima/pull/170"
     }
   ],
-  "open_pr_count": 0,
-  "open_prs": [],
+  "open_pr_count": 1,
+  "open_prs": [
+    {
+      "baseRefName": "release/sachima",
+      "headRefName": "feat/p6b-stage2-host-local-dor-proof",
+      "isDraft": false,
+      "mergeStateStatus": "UNSTABLE",
+      "number": 175,
+      "title": "feat: add P6-B host-local DoR proof",
+      "url": "https://github.com/jovijovi/sachima/pull/175"
+    }
+  ],
   "repository": "jovijovi/sachima",
   "scope_note": "machine dynamic status only; approvals and phase meaning remain human-authored outside this block"
 }
