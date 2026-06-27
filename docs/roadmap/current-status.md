@@ -11,9 +11,20 @@
 ```json
 {
   "base_branch": "release/sachima",
-  "base_head": "3d02edb8512ef4fef61a01fb976550251db3ec11",
+  "base_head": "9ddd72b04d646f757b16fa28872dfcb08615c5f7",
   "base_head_note": "latest first-parent base commit excluding machine status-sync self-commits",
   "latest_merged_prs": [
+    {
+      "baseRefName": "release/sachima",
+      "headRefName": "docs/status-reconcile-p6b-after-pr176",
+      "mergeCommit": {
+        "oid": "9ddd72b04d646f757b16fa28872dfcb08615c5f7"
+      },
+      "mergedAt": "2026-06-27T07:50:24Z",
+      "number": 177,
+      "title": "docs: reconcile P6-B status after PR 176",
+      "url": "https://github.com/jovijovi/sachima/pull/177"
+    },
     {
       "baseRefName": "release/sachima",
       "headRefName": "docs/sachima-production-grade-goal",
@@ -57,17 +68,6 @@
       "number": 173,
       "title": "docs: slim roadmap status dashboard",
       "url": "https://github.com/jovijovi/sachima/pull/173"
-    },
-    {
-      "baseRefName": "release/sachima",
-      "headRefName": "fix/task-workbench-title-summary",
-      "mergeCommit": {
-        "oid": "b5eb9fb984d32de18175933370aa88ce6b93ae74"
-      },
-      "mergedAt": "2026-06-26T08:24:30Z",
-      "number": 172,
-      "title": "fix: stabilize Feishu task workbench titles",
-      "url": "https://github.com/jovijovi/sachima/pull/172"
     }
   ],
   "open_pr_count": 0,
