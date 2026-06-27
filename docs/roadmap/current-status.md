@@ -81,9 +81,9 @@
 ```text
 last_updated: 2026-06-27
 base_branch: release/sachima
-current_position: P6-B Stage-2 readiness/governance (PR #174) records PASS_WITH_WATCH for readiness and BLOCKED for real smoke. PR #175 merged the host-local DoR / crash-no-relaunch proof (default-off; injected-fake / temp-fake only). The current docs-only provisioning/readiness packet fixes the future DoR validation command, read-only role overlay, evidence, and crash/recovery/no-relaunch contract; on this host no `acpx` binary is pinned, so host-local DoR validation with a real pinned runner remains BLOCKED and real smoke remains unapproved.
-current_mainline: agent-run-supervisor × Sachima P6-B Stage-2 is now at DoR provisioning/readiness. The next mainline choice is either Option-A durable cross-process claim-store work or Option-B operator-supplied out-of-repo pinned `acpx@0.10.0` + role overlay + sink/evidence followed by host-local DoR validation only — still not real execution.
-current_head_evidence: PR #171 merged P6-B Stage-1, PR #173 merged roadmap status dashboard slimdown, PR #174 merged the Stage-2 readiness gate, PR #175 merged host-local DoR / crash-no-relaunch proof, PR #176 merged neutral production-grade GOAL wording, and PR #177 reconciled P6-B status after PR #176; machine block above is git/GitHub evidence only.
+current_position: P6-B Stage-2 readiness/governance records PASS_WITH_WATCH for readiness and BLOCKED for real smoke. PR #175 merged the host-local DoR / crash-no-relaunch proof (default-off; injected-fake / temp-fake only). PR #178 fixed the future DoR validation command, read-only role overlay, evidence, and crash/recovery/no-relaunch contract. PR #179 merged the Option-A durable cross-process claim-store work, closing that blocker. On this host no operator-supplied pinned `acpx` binary is available, so host-local DoR validation with a real pinned runner remains BLOCKED and real smoke remains unapproved.
+current_mainline: agent-run-supervisor × Sachima P6-B Stage-2 is now at post-Option-A host-local DoR readiness. The next mainline action is operator-supplied out-of-repo pinned `acpx@0.10.0` + role overlay + sink/evidence, followed by host-local DoR validation only — still not real execution.
+current_head_evidence: PR #171 merged P6-B Stage-1, PR #173 merged roadmap status dashboard slimdown, PR #174 merged the Stage-2 readiness gate, PR #175 merged host-local DoR / crash-no-relaunch proof, PR #176 merged neutral production-grade GOAL wording, PR #177 reconciled P6-B status after PR #176, PR #178 merged DoR provisioning/readiness, and PR #179 merged the durable controlled exec claim store; machine block above is git/GitHub evidence only.
 detail_ledgers: docs/roadmap/phase-ledger.md, docs/roadmap/tail-register.md, docs/roadmap/evidence-index.md, docs/roadmap/reference-index.md
 ```
 
@@ -101,7 +101,7 @@ detail_ledgers: docs/roadmap/phase-ledger.md, docs/roadmap/tail-register.md, doc
 ```text
 P6-B Stage-1 source implementation is merged in PR #171.
 The Feishu task workbench title-summary fix is merged in PR #172, and the status dashboard slimdown is merged in PR #173.
-P6-B Stage-2 readiness/governance records that the readiness packet may proceed with WATCH items. PR #175 merged B1 Option-B fail-closed crash/no-relaunch proof and B2 host-local pinning tooling. The DoR provisioning/readiness packet now fixes the future validation command/role/evidence/crash contract and records the live blocker: no pinned `acpx` exists on this host. Real smoke execution remains BLOCKED until either Option-A durable cross-process claim-store semantics are implemented or an operator-supplied out-of-repo pinned runner passes host-local DoR validation, followed by separate real-smoke approval.
+P6-B Stage-2 readiness/governance records that the readiness packet may proceed with WATCH items. PR #175 merged B1 Option-B fail-closed crash/no-relaunch proof and B2 host-local pinning tooling. PR #178 fixed the future validation command/role/evidence/crash contract. PR #179 merged Option-A durable cross-process claim-store semantics. The remaining live blocker is host-local runner pinning: no operator-supplied pinned `acpx@0.10.0` exists on this host. Real smoke execution remains BLOCKED until that pinned runner packet passes host-local DoR validation, followed by separate real-smoke approval.
 No real agent/acpx/npx execution, real smoke, write roles, Gateway/Feishu/live behavior, production config, public ingress, service restart, or real delivery is approved by this status page.
 ```
 
@@ -114,9 +114,10 @@ No real agent/acpx/npx execution, real smoke, write roles, Gateway/Feishu/live b
 | P6-A controlled AI FLOW composition | Merged in PR #169 | Default-off outer P6 composition over WP4 + P5 seam; deterministic/injected-fake steps only | `docs/roadmap/phase-ledger.md` |
 | P6-B pre-development governance | Merged in PR #170 | Defines bounded read-only planning/report step gate; docs-only | `docs/roadmap/phase-ledger.md` |
 | P6-B Stage-1 source implementation | Merged in PR #171 | Thin default-off bridge StepExecutor; injected-fake runner gates only; no real smoke | `docs/roadmap/phase-ledger.md` |
-| P6-B Stage-2 readiness/governance | Merged in PR #174 | PASS_WITH_WATCH for readiness; real smoke BLOCKED by B1 cross-process crash/no-relaunch proof and B2 exact runner/role/sink/evidence pinning | `docs/plans/2026-06-27-agent-run-supervisor-sachima-p6b-stage2-bounded-real-smoke-readiness-prd.md` |
+| P6-B Stage-2 readiness/governance | Merged in PR #174 | PASS_WITH_WATCH for readiness; originally identified B1 cross-process crash/no-relaunch proof and B2 exact runner/role/sink/evidence pinning as real-smoke blockers. B1 is now closed by PR #179; B2 runner pinning remains blocked on this host | `docs/plans/2026-06-27-agent-run-supervisor-sachima-p6b-stage2-bounded-real-smoke-readiness-prd.md` |
 | P6-B Stage-2 host-local DoR / crash-no-relaunch proof | Merged in PR #175 | Proves fail-closed no-relaunch recovery (B1 Option B) and adds host-local runner/role-overlay/sink/evidence pinning tooling (B2); runner pinning remains BLOCKED on this host (no runner pinned); real smoke still unapproved | `docs/plans/2026-06-27-agent-run-supervisor-sachima-p6b-stage2-host-local-dor-crash-no-relaunch-proof-implementation.md` |
-| P6-B Stage-2 DoR provisioning/readiness | Docs/status packet | Fixes the future DoR validation command, read-only role overlay invariants, out-of-repo evidence/sink contract, and crash/recovery/no-relaunch interpretation; current host result is `BLOCKED_NO_ACPX`; no real smoke | `docs/plans/2026-06-27-agent-run-supervisor-sachima-p6b-stage2-dor-provisioning-readiness.md` |
+| P6-B Stage-2 DoR provisioning/readiness | Merged in PR #178 | Fixes the future DoR validation command, read-only role overlay invariants, out-of-repo evidence/sink contract, and crash/recovery/no-relaunch interpretation; current host result is `BLOCKED_NO_ACPX`; no real smoke | `docs/plans/2026-06-27-agent-run-supervisor-sachima-p6b-stage2-dor-provisioning-readiness.md` |
+| P6-B Stage-2 durable claim store | Merged in PR #179 | Adds local file-backed controlled-exec claim-store semantics for cross-process restart/replay/recover without duplicate relaunch; closes Option-A blocker; no real smoke or real agent execution | GitHub PR #179 |
 | Feishu task workbench title summary | Merged in PR #172 | Stabilizes task-card title summary behavior; not a phase authority change | GitHub PR #172 |
 | P7 real delivery / ACK closure | Pending | Not started; requires separate approval after fake/local delivery and AI FLOW gates are production-ready | `docs/roadmap/tail-register.md` |
 | P8 product / ops hardening | Pending | Not started; blocked until limited live pilot readiness | `docs/roadmap/tail-register.md` |
@@ -125,7 +126,7 @@ No real agent/acpx/npx execution, real smoke, write roles, Gateway/Feishu/live b
 
 | Tail | Class | Blocks next mainline? | Required before | Detail |
 |---|---|---:|---|---|
-| P6-B Stage-2 real smoke | NEXT_PHASE | Yes, if doing real smoke | Any real acpx/npx/agent execution inside P6-B | BLOCKED. PR #175 merged host-local DoR / crash-no-relaunch proof: it proves fail-closed no-relaunch (B1 Option B only) and adds B2 pinning tooling, but proves no real execution readiness. The DoR provisioning/readiness packet fixes the future validation command/role/evidence/crash contract and records `BLOCKED_NO_ACPX` on this host. Real smoke still needs either the Option-A durable cross-process claim store or an operator-supplied out-of-repo pinned runner that passes host-local DoR, plus a separate approval |
+| P6-B Stage-2 real smoke | NEXT_PHASE | Yes, if doing real smoke | Any real acpx/npx/agent execution inside P6-B | BLOCKED. PR #175 merged host-local DoR / crash-no-relaunch proof and B2 pinning tooling; PR #178 fixed the future DoR command/role/evidence/crash contract and records `BLOCKED_NO_ACPX` on this host; PR #179 closed Option-A durable cross-process claim-store semantics. Real smoke now needs an operator-supplied out-of-repo pinned runner that passes host-local DoR, plus a separate real-smoke approval |
 | WP3b active-run cancellation | WATCH | No for docs/governance; Yes for clean cancellation claims | Any clean active-run cancellation claim | Full tail table in `docs/roadmap/tail-register.md` |
 | P4 Envelope v1 agentic-ui conformance | NEXT_PHASE | No for current supervisor mainline | Any P4 behavior-bearing external-ingress claim | Side tail; do not pivot to it by default |
 | Status dashboard hygiene | WATCH | No | Any phase closure / next-readiness claim | Keep this lean file plus split ledgers aligned |
@@ -165,15 +166,14 @@ controlled_ai_flow_execution beyond approved P6-A deterministic/injected-fake sc
 
 ## Next allowed request
 
-The **P6-B Stage-2 host-local DoR / crash-no-relaunch proof** is merged in PR #175 (default-off; injected-fake / temp-fake only). It proves fail-closed no-relaunch recovery and ships runner/role-overlay/sink/evidence pinning tooling, but it does not prove real execution readiness and pins no runner on this host. The current DoR provisioning/readiness packet fixes the validation runbook and records a blocked assessment on this host: crash proof passes, runner pinning is blocked because `acpx` is not present.
+The **P6-B Stage-2 host-local DoR / crash-no-relaunch proof** is merged in PR #175 (default-off; injected-fake / temp-fake only). PR #178 fixes the validation runbook and records a blocked assessment on this host. PR #179 closes the Option-A durable cross-process claim-store blocker with local file-backed restart/replay/recover semantics and duplicate-relaunch regressions. The remaining live blocker is runner pinning: `acpx` is not present as an operator-supplied pinned out-of-repo binary on this host.
 
-The current allowed mainline request after this packet remains **not** real-smoke execution. The next safe request remains narrower than live/product delivery and still excludes any real AGENT launch:
+The current allowed mainline request remains **not** real-smoke execution. The next safe request remains narrower than live/product delivery and still excludes any real AGENT launch:
 
 ```text
 P6-B Stage-2 next safe gate (still gated):
-  EITHER implement the Option-A durable cross-process claim store
-    OR have an operator supply an out-of-repo pinned local acpx@0.10.0 binary + read-only role overlay + artifact sink + evidence root
-      and run tools/p6b_host_local_dor.py --probe for host-local DoR validation only (Option B)
+  have an operator supply an out-of-repo pinned local acpx@0.10.0 binary + read-only role overlay + artifact sink + evidence root
+  -> run tools/p6b_host_local_dor.py --probe for host-local DoR validation only
   -> verify exact runner/role/provenance/prompt/materializer/artifact-sink/evidence values (B2)
   -> no real agent/acpx/npx step execution yet
   -> no write roles, no file/git mutation by agent step, no Gateway/Feishu/live/production config/real delivery
