@@ -219,9 +219,10 @@ pr:
   status: open
   number: 175
   url: https://github.com/jovijovi/sachima/pull/175
-  current_head: 58514239ded739c48351904cb5a09c87181b1bbf
-  ci_status_on_current_head: passed
+  live_head_authority: github_pr_headRefOid
+  live_ci_authority: github_statusCheckRollup
   note: >-
     Claude does not commit/push/PR. Hermes verified, reviewed, committed, pushed, and opened
-    the PR; live PR head/CI/review remain authoritative. Final exact-head review found these
-    stale manifest fields; this narrow docs fix records the live PR truth for the exact head.
+    the PR; live PR head/CI/review remain authoritative. The manifest intentionally does not
+    pin a self-referential head SHA because any docs commit that records it would immediately
+    supersede it; final merge readiness must use live GitHub PR truth.
