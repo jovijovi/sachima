@@ -11,9 +11,20 @@
 ```json
 {
   "base_branch": "release/sachima",
-  "base_head": "ba87a8d488405ed1618ca018e3dbe3f05f5edbbe",
+  "base_head": "251e26e4549251721bec0f9725caf9d571bbd187",
   "base_head_note": "latest first-parent base commit excluding machine status-sync self-commits",
   "latest_merged_prs": [
+    {
+      "baseRefName": "release/sachima",
+      "headRefName": "feat/p6b-stage2-host-local-dor-proof",
+      "mergeCommit": {
+        "oid": "251e26e4549251721bec0f9725caf9d571bbd187"
+      },
+      "mergedAt": "2026-06-27T05:10:03Z",
+      "number": 175,
+      "title": "feat: add P6-B host-local DoR proof",
+      "url": "https://github.com/jovijovi/sachima/pull/175"
+    },
     {
       "baseRefName": "release/sachima",
       "headRefName": "docs/p6b-stage2-readiness-governance",
@@ -57,31 +68,10 @@
       "number": 171,
       "title": "feat: add P6-B read-only agent step bridge",
       "url": "https://github.com/jovijovi/sachima/pull/171"
-    },
-    {
-      "baseRefName": "release/sachima",
-      "headRefName": "docs/p6b-readonly-real-agent-predev-governance",
-      "mergeCommit": {
-        "oid": "869f3c77f737f14ff16c58f9c16c3e64819f0eb6"
-      },
-      "mergedAt": "2026-06-25T23:37:21Z",
-      "number": 170,
-      "title": "docs: add P6-B read-only real-agent predev governance",
-      "url": "https://github.com/jovijovi/sachima/pull/170"
     }
   ],
-  "open_pr_count": 1,
-  "open_prs": [
-    {
-      "baseRefName": "release/sachima",
-      "headRefName": "feat/p6b-stage2-host-local-dor-proof",
-      "isDraft": false,
-      "mergeStateStatus": "CLEAN",
-      "number": 175,
-      "title": "feat: add P6-B host-local DoR proof",
-      "url": "https://github.com/jovijovi/sachima/pull/175"
-    }
-  ],
+  "open_pr_count": 0,
+  "open_prs": [],
   "repository": "jovijovi/sachima",
   "scope_note": "machine dynamic status only; approvals and phase meaning remain human-authored outside this block"
 }
