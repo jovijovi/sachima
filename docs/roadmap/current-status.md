@@ -11,9 +11,20 @@
 ```json
 {
   "base_branch": "release/sachima",
-  "base_head": "9ddd72b04d646f757b16fa28872dfcb08615c5f7",
+  "base_head": "5c506fcd2e5f21f6f40b678f5b152738b99ce179",
   "base_head_note": "latest first-parent base commit excluding machine status-sync self-commits",
   "latest_merged_prs": [
+    {
+      "baseRefName": "release/sachima",
+      "headRefName": "docs/p6b-stage2-dor-provisioning",
+      "mergeCommit": {
+        "oid": "5c506fcd2e5f21f6f40b678f5b152738b99ce179"
+      },
+      "mergedAt": "2026-06-27T10:10:25Z",
+      "number": 178,
+      "title": "docs: add P6-B Stage-2 DoR provisioning readiness",
+      "url": "https://github.com/jovijovi/sachima/pull/178"
+    },
     {
       "baseRefName": "release/sachima",
       "headRefName": "docs/status-reconcile-p6b-after-pr176",
@@ -57,17 +68,6 @@
       "number": 174,
       "title": "docs: add P6-B stage 2 readiness gate",
       "url": "https://github.com/jovijovi/sachima/pull/174"
-    },
-    {
-      "baseRefName": "release/sachima",
-      "headRefName": "docs/status-dashboard-slimdown-20260626",
-      "mergeCommit": {
-        "oid": "f2a8f4e4dd0c60c22b2d6f222b7ce01af7a88903"
-      },
-      "mergedAt": "2026-06-26T13:16:38Z",
-      "number": 173,
-      "title": "docs: slim roadmap status dashboard",
-      "url": "https://github.com/jovijovi/sachima/pull/173"
     }
   ],
   "open_pr_count": 0,
