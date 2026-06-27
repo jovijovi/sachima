@@ -8,8 +8,13 @@ read resident state only and never relaunch.
 
 from __future__ import annotations
 
+import pytest
+
 from sachima_supervisor.ai_flow_executor import StepExecutionOutcome
-from sachima_supervisor.activity_controlled_exec import ControlledLocalExecClaimStore
+from sachima_supervisor.activity_controlled_exec import (
+    ControlledLocalExecClaimStore,
+    FileControlledLocalExecClaimStore,
+)
 from sachima_supervisor.p5_temporal import contracts as C
 from sachima_supervisor.p6b_read_only_real_agent import P6B_EXECUTION_DISABLED
 
@@ -92,6 +97,47 @@ def test_query_and_recover_after_run_never_relaunch(tmp_path):
 
     assert supervisor.calls == 1  # neither read relaunched
     assert query["state"] == "completed"
+    assert recover["recovery_marker"] == "reattached_no_relaunch"
+    assert C.scan_projection_for_leak(query) is None
+    assert C.scan_projection_for_leak(recover) is None
+
+
+class _SimulatedProcessCrash(BaseException):
+    """Crash after controlled-exec claim, before terminal finalize."""
+
+
+def test_file_query_and_recover_after_restart_reattach_in_progress_without_launch(
+    tmp_path,
+):
+    store_path = tmp_path / "claim-store" / "controlled-local-exec.json"
+    crash_calls = {"count": 0}
+
+    def _crashing_supervisor(_request):
+        crash_calls["count"] += 1
+        raise _SimulatedProcessCrash()
+
+    first_executor = build_executor(
+        tmp_path,
+        invoke_supervisor=_crashing_supervisor,
+        controlled_exec_store=FileControlledLocalExecClaimStore(store_path),
+    )
+    with pytest.raises(_SimulatedProcessCrash):
+        first_executor.execute(step_request(), role_binding=role_binding(), resolved_inputs=())
+    assert crash_calls["count"] == 1
+
+    supervisor = CountingSupervisor()
+    restarted_executor = build_executor(
+        tmp_path,
+        invoke_supervisor=supervisor,
+        controlled_exec_store=FileControlledLocalExecClaimStore(store_path),
+    )
+
+    query = restarted_executor.query(run_id=RUN_ID, step_id=STEP_ID)
+    recover = restarted_executor.recover(run_id=RUN_ID, step_id=STEP_ID)
+
+    assert supervisor.calls == 0
+    assert query["state"] == "claimed_in_progress"
+    assert recover["state"] == "claimed_in_progress"
     assert recover["recovery_marker"] == "reattached_no_relaunch"
     assert C.scan_projection_for_leak(query) is None
     assert C.scan_projection_for_leak(recover) is None

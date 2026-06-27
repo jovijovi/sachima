@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import subprocess
+import sys
+import textwrap
 import threading
 import time
 from inspect import signature
@@ -18,6 +21,7 @@ from sachima_supervisor.activity_controlled_exec import (
     CONTROLLED_LOCAL_EXEC_APPROVAL_TOKEN,
     FORBIDDEN_RUNNER_BASENAMES,
     ControlledLocalExecClaimStore,
+    FileControlledLocalExecClaimStore,
     ControlledLocalExecError,
     ControlledLocalExecRequest,
     PinnedLocalAcpxProvenance,
@@ -318,6 +322,39 @@ def _assert_no_leaks(state: dict[str, Any]) -> None:
     rendered = repr(state).lower()
     for token in FORBIDDEN_RENDER_TOKENS:
         assert token not in rendered
+
+
+# --------------------------------------------------------------------------- #
+# Import portability
+# --------------------------------------------------------------------------- #
+def test_activity_controlled_exec_import_does_not_require_fcntl() -> None:
+    script = textwrap.dedent(
+        """
+        import builtins
+
+        real_import = builtins.__import__
+
+        def blocked_import(name, *args, **kwargs):
+            if name == 'fcntl':
+                raise ModuleNotFoundError("No module named 'fcntl'")
+            return real_import(name, *args, **kwargs)
+
+        builtins.__import__ = blocked_import
+        import sachima_supervisor.activity_controlled_exec as module
+
+        assert hasattr(module, 'ControlledLocalExecClaimStore')
+        assert hasattr(module, 'FileControlledLocalExecClaimStore')
+        """
+    )
+
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
 
 
 # --------------------------------------------------------------------------- #
@@ -1439,6 +1476,150 @@ def test_get_idempotent_rejects_malicious_resident_fingerprint(tmp_path: Path) -
 
     with pytest.raises(ControlledLocalExecError) as exc:
         poisoned.get_idempotent(request.idempotency_key)
+
+    assert exc.value.error_code == "activity_unsafe_material"
+
+
+class _SimulatedProcessCrash(BaseException):
+    """Crash after claim without letting start_controlled_local_exec finalize."""
+
+
+def test_file_claim_store_survives_restart_and_replays_in_progress_without_relaunch(
+    tmp_path: Path,
+) -> None:
+    request, _unused_store, preflight_store, role_root = _env(tmp_path)
+    store_path = tmp_path / "claim-store" / "controlled-local-exec.json"
+    first_store = FileControlledLocalExecClaimStore(store_path)
+    crash_counter: dict[str, Any] = {"calls": 0}
+
+    def _crashing_fake(_seam_request: LocalOfflineSupervisorRequest) -> LocalOfflineSupervisorOutcome:
+        crash_counter["calls"] += 1
+        raise _SimulatedProcessCrash()
+
+    with pytest.raises(_SimulatedProcessCrash):
+        _start(request, first_store, preflight_store, role_root, _crashing_fake)
+    assert crash_counter["calls"] == 1
+
+    restarted_store = FileControlledLocalExecClaimStore(store_path)
+    replay_counter: dict[str, Any] = {"calls": 0}
+    replay = _start(
+        request,
+        restarted_store,
+        preflight_store,
+        role_root,
+        _counting_fake(replay_counter, _success_outcome),
+    ).to_durable_state()
+
+    assert replay_counter["calls"] == 0
+    assert replay["status"] == "claimed_in_progress"
+    assert replay["activity_id"] == request.activity_id
+    assert replay["idempotency_key"] == request.idempotency_key
+    assert query_controlled_local_exec(
+        restarted_store, activity_id=request.activity_id
+    ).to_durable_state() == replay
+    _assert_no_leaks(replay)
+
+
+def test_file_claim_store_persists_terminal_state_across_restart_without_relaunch(
+    tmp_path: Path,
+) -> None:
+    request, _unused_store, preflight_store, role_root = _env(tmp_path)
+    store_path = tmp_path / "claim-store" / "controlled-local-exec.json"
+    first_store = FileControlledLocalExecClaimStore(store_path)
+    counter: dict[str, Any] = {"calls": 0}
+
+    first = _start(
+        request,
+        first_store,
+        preflight_store,
+        role_root,
+        _counting_fake(counter, _success_outcome),
+    ).to_durable_state()
+    restarted_store = FileControlledLocalExecClaimStore(store_path)
+    second = _start(
+        request,
+        restarted_store,
+        preflight_store,
+        role_root,
+        _counting_fake(counter, _success_outcome),
+    ).to_durable_state()
+
+    assert counter["calls"] == 1
+    assert first["status"] == "completed"
+    assert second == first
+    assert query_controlled_local_exec(
+        restarted_store, activity_id=request.activity_id
+    ).to_durable_state() == first
+    _assert_no_leaks(second)
+
+
+def test_file_claim_store_conflicting_replay_after_restart_fails_closed_before_launch(
+    tmp_path: Path,
+) -> None:
+    request, _unused_store, preflight_store, role_root = _env(tmp_path)
+    store_path = tmp_path / "claim-store" / "controlled-local-exec.json"
+    store = FileControlledLocalExecClaimStore(store_path)
+    counter: dict[str, Any] = {"calls": 0}
+    _start(
+        request,
+        store,
+        preflight_store,
+        role_root,
+        _counting_fake(counter, _success_outcome),
+    )
+
+    restarted_store = FileControlledLocalExecClaimStore(store_path)
+    conflicting = _request(
+        role_file_digest=request.role_file_digest,
+        prompt_ref="claim_prompt_exec_conflicting_after_restart",
+    )
+    with pytest.raises(ControlledLocalExecError) as exc:
+        _start(
+            conflicting,
+            restarted_store,
+            preflight_store,
+            role_root,
+            _counting_fake(counter, _success_outcome),
+        )
+
+    assert exc.value.error_code == "activity_idempotency_conflict"
+    assert counter["calls"] == 1
+
+
+def test_file_claim_store_rejects_tampered_persisted_state_without_raw_leak(
+    tmp_path: Path,
+) -> None:
+    request, _unused_store, preflight_store, role_root = _env(tmp_path)
+    store_path = tmp_path / "claim-store" / "controlled-local-exec.json"
+    store = FileControlledLocalExecClaimStore(store_path)
+    _start(
+        request,
+        store,
+        preflight_store,
+        role_root,
+        _counting_fake({"calls": 0}, _success_outcome),
+    )
+
+    payload = json.loads(store_path.read_text(encoding="utf-8"))
+    payload["by_activity"][request.activity_id]["raw_prompt"] = (
+        "raw prompt with secret token at /tmp/private/path"
+    )
+    store_path.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+    restarted_store = FileControlledLocalExecClaimStore(store_path)
+
+    with pytest.raises(ControlledLocalExecError) as exc:
+        query_controlled_local_exec(restarted_store, activity_id=request.activity_id)
+
+    assert exc.value.error_code == "activity_unsafe_material"
+
+
+def test_file_claim_store_corrupt_json_fails_closed(tmp_path: Path) -> None:
+    store_path = tmp_path / "claim-store" / "controlled-local-exec.json"
+    store_path.parent.mkdir(parents=True)
+    store_path.write_text('{"type":"partial"', encoding="utf-8")
+
+    with pytest.raises(ControlledLocalExecError) as exc:
+        FileControlledLocalExecClaimStore(store_path).get_by_activity("activity_probe")
 
     assert exc.value.error_code == "activity_unsafe_material"
 
