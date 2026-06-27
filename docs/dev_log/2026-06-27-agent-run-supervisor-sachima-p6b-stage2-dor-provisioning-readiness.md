@@ -2,7 +2,7 @@
 
 Date: 2026-06-27
 Branch: `docs/p6b-stage2-dor-provisioning`
-Status: Docs/status packet in progress. No real smoke, no real agent, no `acpx` invocation.
+Status: Historical docs/status packet. It did not invoke `acpx` or run real smoke at authoring time; later PR #181 records the separately approved bounded read-only real-smoke PASS.
 
 ## Scope binding
 
@@ -60,7 +60,7 @@ At authoring time, this branch recorded that the next safe operational step was 
 1. Option-A durable cross-process claim-store implementation; or
 2. Option-B operator-supplied pinned `acpx@0.10.0` + out-of-repo read-only role overlay + artifact sink + evidence root, followed by `tools/p6b_host_local_dor.py --probe` as DoR validation only.
 
-Post-PR #179 status: Option A is now closed by the durable controlled-exec claim-store implementation. The remaining next safe gate is Option B host-local DoR validation only, still with no real agent step launch and no real smoke.
+Post-PR #179 status: Option A was closed by the durable controlled-exec claim-store implementation. Post-PR #181 status: the later separately approved bounded read-only real smoke passed after output-count and prompt-affordance repairs. The next safe gate is now a docs-only runtime lifecycle / controlled attach plan before broader real controlled AI FLOW execution.
 
 ## Non-approvals preserved
 
