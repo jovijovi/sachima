@@ -55,10 +55,12 @@ Evidence reference class: `p6b-stage2-dor-provisioning-readiness/20260627T093824
 
 ## Decision recorded by this branch
 
-This branch records that the next safe operational step is not real smoke. It is either:
+At authoring time, this branch recorded that the next safe operational step was not real smoke. It was either:
 
 1. Option-A durable cross-process claim-store implementation; or
 2. Option-B operator-supplied pinned `acpx@0.10.0` + out-of-repo read-only role overlay + artifact sink + evidence root, followed by `tools/p6b_host_local_dor.py --probe` as DoR validation only.
+
+Post-PR #179 status: Option A is now closed by the durable controlled-exec claim-store implementation. The remaining next safe gate is Option B host-local DoR validation only, still with no real agent step launch and no real smoke.
 
 ## Non-approvals preserved
 

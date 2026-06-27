@@ -1,7 +1,7 @@
 # P6-B Stage-2 DoR provisioning/readiness packet
 
 Date: 2026-06-27
-Status: Docs-only provisioning/readiness packet. Host-local DoR validation with a real pinned `acpx` binary is still blocked on this host because no `acpx` binary is present.
+Status: Docs-only provisioning/readiness packet. Superseded in part by PR #179: durable cross-process claim-store semantics are now implemented. Host-local DoR validation with a real pinned `acpx` binary is still blocked on this host because no operator-supplied pinned `acpx` binary is present.
 
 ## 1. Purpose
 
@@ -133,10 +133,7 @@ supervisor_launch_count: 0
 execute_after_store_loss: not_approved_not_attempted
 ```
 
-This is a fail-closed no-relaunch proof, not reattachment to a live run. Without an Option-A durable cross-process claim store, recover-without-relaunch cannot honestly be called reattachment after a real process crash. A future real smoke may proceed only after either:
-
-1. Option A implements and verifies the durable cross-process claim store; or
-2. Option B runs this host-local DoR validation against an operator-supplied pinned `acpx` + role overlay + sink/evidence packet and still preserves a separate real-smoke approval gate.
+This is a fail-closed no-relaunch proof, not reattachment to a live run. PR #179 later implemented and verified the Option-A durable cross-process claim store for the controlled-exec claim path. A future real smoke still may proceed only after host-local DoR validation runs against an operator-supplied pinned `acpx` + role overlay + sink/evidence packet and still preserves a separate real-smoke approval gate.
 
 ## 8. Current outcome
 
@@ -148,16 +145,12 @@ Real smoke execution request: BLOCKED / DO NOT REQUEST YET
 
 ## 9. Next safe approval after this packet
 
-The next safe approval is still **not** real smoke. It is one of:
+After PR #179, the next safe approval remains **not** real smoke. The remaining next safe gate is:
 
 ```text
-Option A:
-  approve implementation of a durable cross-process claim store for P6-B crash/recover/no-relaunch proof
-
-Option B:
-  approve an operator-supplied out-of-repo pinned acpx binary + read-only role overlay + artifact sink + evidence root,
-  then run tools/p6b_host_local_dor.py --probe for DoR validation only,
-  with no real agent step launch and no real smoke
+approve an operator-supplied out-of-repo pinned acpx binary + read-only role overlay + artifact sink + evidence root,
+then run tools/p6b_host_local_dor.py --probe for DoR validation only,
+with no real agent step launch and no real smoke
 ```
 
 A later real-smoke approval must name the exact binary digest, role key, adapter, workflow/step refs, output contract, max turns/time, workdir/evidence/sink refs, and no-write/no-live boundaries.
