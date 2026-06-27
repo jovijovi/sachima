@@ -1,0 +1,204 @@
+schema_version: sachima.plan_manifest.v1
+title: agent-run-supervisor x Sachima P6-B Stage-2 host-local DoR / crash-no-relaunch proof implementation
+created_at: '2026-06-27'
+status: local_gates_passed_pending_hermes_review_and_pr
+repository: jovijovi/sachima
+base_branch: release/sachima
+branch: feat/p6b-stage2-host-local-dor-proof
+approval:
+  stage: stage_2_host_local_dor_and_crash_no_relaunch_proof_only
+  exact_phrase: approve_agent_run_supervisor_sachima_p6b_stage2_host_local_dor_and_crash_no_relaunch_proof_pinned_local_runner_role_overlay_artifact_sink_evidence_only_no_real_agent_launch_no_real_smoke_no_write_no_git_no_network_no_live_no_gateway_no_feishu_no_production_config_no_real_delivery
+  exact_token_required: true
+  default_off: true
+  stage_2_real_smoke: not_approved_separate_gate_required
+implementation:
+  summary: >-
+    Adds a small, default-off P6-B Stage-2 host-local definition-of-ready surface. It (1)
+    pins/validates a host-local runner + role overlay + artifact-sink + evidence-root shape
+    without launching a real agent, returning a controlled BLOCKED report when exact runner
+    parameters are absent/missing/unpinned, and (2) proves the current in-process P6-B path is
+    fail-closed after a simulated crash/restart: over a fresh empty ControlledLocalExecClaimStore
+    and a raising/counting supervisor invoker, recover/query by run/step return not_found /
+    reattached_no_relaunch with a zero launch count and execute is never called. It reuses the
+    merged P6-B bridge and controlled-exec walls unmodified and builds no runner.
+  files:
+    - sachima_supervisor/p6b_host_local_dor.py
+    - tools/p6b_host_local_dor.py
+    - tests/sachima_supervisor/p6b_host_local_dor/**
+    - docs/plans/2026-06-27-agent-run-supervisor-sachima-p6b-stage2-host-local-dor-crash-no-relaunch-proof-implementation.md
+    - docs/plans/2026-06-27-agent-run-supervisor-sachima-p6b-stage2-host-local-dor-crash-no-relaunch-proof-implementation-manifest.yaml
+    - docs/dev_log/2026-06-27-agent-run-supervisor-sachima-p6b-stage2-host-local-dor-crash-no-relaunch-proof-implementation.md
+    - docs/roadmap/current-status.md
+    - docs/roadmap/tail-register.md
+  new_role_file_added: false
+  reused_committed_null_binary_roles:
+    - sachima.claude.read_only_reviewer
+    - sachima.codex.primary_reviewer
+runtime_surface:
+  host_local_dor_assessment_surface: true
+  crash_no_relaunch_fail_closed_proof: true
+  reuses_p6b_bridge_unmodified: true
+  reuses_controlled_local_exec_unmodified: true
+  builds_new_runner_or_claim_store_or_provenance_gate: false
+  real_agent_execution: false
+  real_acpx_or_npx_invocation: false
+  subprocess_or_shell_in_supervisor_source: false
+  subprocess_in_cli_probe_argv_list_no_shell_only: true
+  temp_fake_executable_version_probe_in_tests_only: true
+  durable_cross_process_claim_store: false
+  write_capable_roles: false
+  file_mutation_by_agent_step: false
+  git_mutation_by_agent_step: false
+  network_access: false
+  gateway_or_feishu_surface: false
+  live_or_default_on_behavior: false
+  production_cluster_or_traffic: false
+  production_config_write: false
+  real_delivery: false
+  new_dependencies: false
+safety_properties:
+  default_off: true
+  exact_stage2_dor_token_split_literal: true
+  scope_widen_allow_flags_must_all_be_false: true
+  runner_params_absent_returns_controlled_blocked_not_error_not_launch: true
+  role_overlay_exact_role_adapter_version_permissions_session_validated: true
+  pinned_local_binary_non_launcher_absolute_no_whitespace_enforced: true
+  optional_version_probe_argv_list_no_shell_bounded: true
+  binary_sha_pin_checked_against_request_when_probed: true
+  role_overlay_evidence_sink_roots_must_be_outside_repo: true
+  crash_proof_fresh_empty_store_models_lost_resident_claim_state: true
+  crash_proof_recover_query_return_not_found_reattached_no_relaunch: true
+  crash_proof_supervisor_launch_count_zero: true
+  crash_proof_execute_not_called_marked_not_approved_not_attempted: true
+  report_only_sanitized_refs_digests_counts_statuses: true
+  report_projection_leak_scanned_no_raw_host_paths: true
+  explicit_limitation_recorded_no_durable_cross_process_store: true
+  active_run_cancellation_watch_preserved: true
+proof_result_on_this_host:
+  crash_no_relaunch: proven_fail_closed
+  runner_pinning: blocked_no_acpx_or_role_overlay_provided
+  real_execution_readiness: not_proven_by_this_dor_alone
+  real_smoke: remains_unapproved_and_blocked
+local_verification:
+  execution_status: passed_by_hermes
+  note: >-
+    Claude Code (main programmer) authored source/tests/docs and ran only the focused local
+    gates below via uv. No real acpx/agent ran in any command; the only executable any test runs
+    is a temp /bin/sh fake echoing a version line for the argv/no-shell probe.
+  commands:
+    new_dor_tests:
+      command: uv run --frozen pytest tests/sachima_supervisor/p6b_host_local_dor -q
+      result: passed_48_tests
+    focused_corrected:
+      command: >-
+        uv run --frozen pytest tests/sachima_supervisor/p6b_host_local_dor
+        tests/sachima_supervisor/p6b_read_only_real_agent
+        tests/sachima_supervisor/test_activity_controlled_exec.py
+        tests/sachima_supervisor/test_ai_flow_orchestration.py -q
+      result: passed_339_tests
+    supervisor_non_temporal:
+      command: >-
+        uv run --frozen pytest tests/sachima_supervisor
+        --ignore=tests/sachima_supervisor/p5_temporal
+        --ignore=tests/sachima_supervisor/p6_controlled_ai_flow/hermetic -q
+      result: passed_813_tests
+    temporal_subset_all_extras:
+      command: >-
+        uv run --frozen --all-extras pytest
+        tests/sachima_supervisor/p5_temporal/unit/test_runtime_client.py
+        tests/sachima_supervisor/p5_temporal/unit/test_control_surface.py
+        tests/sachima_supervisor/p5_temporal/unit/test_step_executor_translation.py -q
+      result: passed_53_tests
+    full_supervisor_all_extras:
+      command: uv run --frozen --all-extras pytest tests/sachima_supervisor -q
+      result: passed_1012_tests
+    ruff:
+      command: uv run --frozen --all-extras ruff check sachima_supervisor/p6b_host_local_dor.py tools/p6b_host_local_dor.py tests/sachima_supervisor/p6b_host_local_dor
+      result: passed_all_checks
+    compileall:
+      command: uv run --frozen --all-extras python -m compileall -q sachima_supervisor/p6b_host_local_dor.py tools/p6b_host_local_dor.py tests/sachima_supervisor/p6b_host_local_dor
+      result: passed_clean
+    git_diff_check:
+      command: git diff --check
+      result: passed
+    sync_roadmap_status:
+      command: uv run --frozen --all-extras python tools/sync_roadmap_status.py --file docs/roadmap/current-status.md --check
+      result: passed_machine_status_block_up_to_date_block_unedited_by_this_branch
+    static_scans:
+      command: hermes_python_changed_file_allowlist_secret_and_forbidden_live_surface_scan
+      result: passed
+    cli_blocked_demo:
+      command: >-
+        uv run --frozen --all-extras python tools/p6b_host_local_dor.py --enabled
+        --approval-token <exact token> --repo-root <worktree> --evidence-root <tmp-out-of-repo-evidence>
+      result: >-
+        exit_0_status_blocked_runner_pinning_blocked_crash_proof_pass_supervisor_launch_count_0_execute_after_store_loss_not_approved_not_attempted
+  verifier_notes:
+    direct_full_supervisor_without_all_extras:
+      command: uv run --frozen pytest tests/sachima_supervisor -q
+      result: failed_collection_missing_optional_temporalio
+      classification: verifier_environment_optional_extra_not_active
+      resolution: uv_run_frozen_all_extras_full_supervisor_passed_after_blocker_fix
+  codex_primary_review:
+    initial_review:
+      provenance: codex_cli_0_142_2_no_bwrap_fallback_isolated_worktree_read_only_prompt
+      verdict: blockers
+      blocker: present_invalid_runner_version_or_sha_passed_without_probe
+      pre_review_diff_hash: 2a37882702a050c8e4d32e126d6f849e43c9d58f372bb87611070748c2dd8da0
+      post_review_diff_hash: 2a37882702a050c8e4d32e126d6f849e43c9d58f372bb87611070748c2dd8da0
+    hermes_blocker_fix:
+      added_red_tests: 2
+      red_result: failed_before_fix
+      fix: _verify_binary_identity_validates_request_acpx_version_and_sha_before_no_probe_success
+      regression_result: passed_2_tests
+      full_supervisor_all_extras_after_fix: passed_1012_tests
+    blocker_only_rereview:
+      verdict: pass
+      blockers: none
+      post_review_diff_hash: b0e1a6a6a344e1f96731a865aeb792419892b0bd9db46c632d009c6b00f577ec
+      provenance: codex_cli_0_142_2_no_bwrap_fallback_repo_aware_blocker_only_read_only_prompt
+  changed_file_scope:
+    expectation: >-
+      only sachima_supervisor/p6b_host_local_dor.py, tools/p6b_host_local_dor.py,
+      tests/sachima_supervisor/p6b_host_local_dor/**, and docs/ (plan, manifest, dev_log,
+      current-status.md, tail-register.md). No edits to WP4/P6-A/P5/controlled-exec/bridge source,
+      committed roles, pyproject.toml, or uv.lock.
+    result: held
+review:
+  hermes_owned_pr_gate:
+    status: live_pr_gate_owned_by_hermes
+    verdict: live_github_pr_head_authoritative
+non_approvals:
+  real_agent_launch: false
+  real_smoke: false
+  real_acpx_or_npx_or_claude_or_codex_step_bodies: false
+  host_local_acpx_provisioning_beyond_temp_fake_in_tests: false
+  durable_cross_process_claim_store_implementation: false
+  write_capable_roles: false
+  file_mutation_by_agent_step: false
+  git_mutation_by_agent_step: false
+  network_access: false
+  gateway_involvement_or_mutation: false
+  feishu_or_im_delivery: false
+  live_or_default_on_behavior: false
+  public_ingress: false
+  production_cluster_or_production_traffic: false
+  production_config_write: false
+  service_restart_or_reload: false
+  real_delivery: false
+  clean_active_run_cancellation_claims_beyond_existing_watch: false
+  new_dependencies_or_lockfile_change: false
+open_tails:
+  wp3b_active_run_cancellation_watch: open
+  b1_durable_cross_process_crash_no_relaunch_option_a: open_separate_gate
+  b2_exact_host_pinned_runner_role_sink_evidence_values: open_operator_supplied_out_of_repo
+next_gate_after_merge: >-
+  A bounded real smoke remains a separate Stage-2 approval. It must either implement and verify
+  the Option-A durable cross-process claim store (B1) or run this host-local DoR against an
+  operator-supplied, out-of-repo pinned local acpx binary + role overlay + sink + evidence root
+  (B2), and it must name the exact pinned binary + sha256 + version, the read-only role + adapter,
+  the workflow + single step + output_contract, max turns/wall-time, and assert no
+  file/git/network/Gateway/Feishu/live/production/real-delivery with post-run proof.
+pr:
+  status: not_opened_hermes_owns_pr
+  note: Claude does not commit/push/PR. Hermes verifies, reviews, commits, pushes, and opens the PR; live PR head/CI/review remain authoritative.

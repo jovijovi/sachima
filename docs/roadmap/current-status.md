@@ -81,9 +81,9 @@
 ```text
 last_updated: 2026-06-27
 base_branch: release/sachima
-current_position: P6-B Stage-2 readiness/governance records PASS_WITH_WATCH for readiness and BLOCKED for real smoke until cross-process crash/no-relaunch proof and exact runner/role/sink/evidence pinning are complete.
-current_mainline: agent-run-supervisor × Sachima P6-B Stage-2 readiness/governance is the current mainline authority surface; real smoke remains unapproved.
-current_head_evidence: PR #171 merged P6-B Stage-1, PR #172 merged Feishu task workbench title stabilization, PR #173 merged roadmap status dashboard slimdown; machine block above is git/GitHub evidence only.
+current_position: P6-B Stage-2 readiness/governance (PR #174) records PASS_WITH_WATCH for readiness and BLOCKED for real smoke. A host-local DoR / crash-no-relaunch proof candidate is implemented on feat/p6b-stage2-host-local-dor-proof (default-off; injected-fake / temp-fake only): it proves fail-closed no-relaunch recovery (B1 Option B) and adds runner/role-overlay/sink/evidence pinning tooling (B2), but on this host no real runner is pinned so runner pinning is BLOCKED and real smoke remains unapproved.
+current_mainline: agent-run-supervisor × Sachima P6-B Stage-2 host-local DoR / crash-no-relaunch proof is the current mainline working surface; it proves fail-closed no-relaunch only — not real execution readiness — and real smoke remains unapproved.
+current_head_evidence: PR #171 merged P6-B Stage-1, PR #173 merged roadmap status dashboard slimdown, PR #174 merged the Stage-2 readiness gate; the host-local DoR / crash-no-relaunch proof is an unmerged proof candidate on this branch; machine block above is git/GitHub evidence only.
 detail_ledgers: docs/roadmap/phase-ledger.md, docs/roadmap/tail-register.md, docs/roadmap/evidence-index.md, docs/roadmap/reference-index.md
 ```
 
@@ -114,7 +114,8 @@ No real agent/acpx/npx execution, real smoke, write roles, Gateway/Feishu/live b
 | P6-A controlled AI FLOW composition | Merged in PR #169 | Default-off outer P6 composition over WP4 + P5 seam; deterministic/injected-fake steps only | `docs/roadmap/phase-ledger.md` |
 | P6-B pre-development governance | Merged in PR #170 | Defines bounded read-only planning/report step gate; docs-only | `docs/roadmap/phase-ledger.md` |
 | P6-B Stage-1 source implementation | Merged in PR #171 | Thin default-off bridge StepExecutor; injected-fake runner gates only; no real smoke | `docs/roadmap/phase-ledger.md` |
-| P6-B Stage-2 readiness/governance | Docs-only readiness packet | PASS_WITH_WATCH for readiness; real smoke BLOCKED by B1 cross-process crash/no-relaunch proof and B2 exact runner/role/sink/evidence pinning | `docs/plans/2026-06-27-agent-run-supervisor-sachima-p6b-stage2-bounded-real-smoke-readiness-prd.md` |
+| P6-B Stage-2 readiness/governance | Merged in PR #174 | PASS_WITH_WATCH for readiness; real smoke BLOCKED by B1 cross-process crash/no-relaunch proof and B2 exact runner/role/sink/evidence pinning | `docs/plans/2026-06-27-agent-run-supervisor-sachima-p6b-stage2-bounded-real-smoke-readiness-prd.md` |
+| P6-B Stage-2 host-local DoR / crash-no-relaunch proof | Implementation / proof candidate (this branch) | Proves fail-closed no-relaunch recovery (B1 Option B) and adds host-local runner/role-overlay/sink/evidence pinning tooling (B2); runner pinning BLOCKED on this host (no runner pinned); real smoke still unapproved | `docs/plans/2026-06-27-agent-run-supervisor-sachima-p6b-stage2-host-local-dor-crash-no-relaunch-proof-implementation.md` |
 | Feishu task workbench title summary | Merged in PR #172 | Stabilizes task-card title summary behavior; not a phase authority change | GitHub PR #172 |
 | P7 real delivery / ACK closure | Pending | Not started; requires separate approval after fake/local delivery and AI FLOW gates are production-ready | `docs/roadmap/tail-register.md` |
 | P8 product / ops hardening | Pending | Not started; blocked until limited live pilot readiness | `docs/roadmap/tail-register.md` |
@@ -123,7 +124,7 @@ No real agent/acpx/npx execution, real smoke, write roles, Gateway/Feishu/live b
 
 | Tail | Class | Blocks next mainline? | Required before | Detail |
 |---|---|---:|---|---|
-| P6-B Stage-2 real smoke | NEXT_PHASE | Yes, if doing real smoke | Any real acpx/npx/agent execution inside P6-B | BLOCKED until B1 cross-process crash/no-relaunch proof and B2 exact runner/role/sink/evidence pinning are complete; separate approval still required |
+| P6-B Stage-2 real smoke | NEXT_PHASE | Yes, if doing real smoke | Any real acpx/npx/agent execution inside P6-B | BLOCKED. The host-local DoR / crash-no-relaunch proof candidate proves fail-closed no-relaunch (B1 Option B only) and adds B2 pinning tooling, but proves no real execution readiness; no runner is pinned on this host. Real smoke still needs either the Option-A durable cross-process claim store or an operator-supplied out-of-repo pinned runner, plus a separate approval |
 | WP3b active-run cancellation | WATCH | No for docs/governance; Yes for clean cancellation claims | Any clean active-run cancellation claim | Full tail table in `docs/roadmap/tail-register.md` |
 | P4 Envelope v1 agentic-ui conformance | NEXT_PHASE | No for current supervisor mainline | Any P4 behavior-bearing external-ingress claim | Side tail; do not pivot to it by default |
 | Status dashboard hygiene | WATCH | No | Any phase closure / next-readiness claim | Keep this lean file plus split ledgers aligned |
@@ -163,14 +164,15 @@ controlled_ai_flow_execution beyond approved P6-A deterministic/injected-fake sc
 
 ## Next allowed request
 
-The current allowed mainline request after this readiness packet is **P6-B Stage-2 host-local DoR / crash-no-relaunch proof and parameter pinning**, not real-smoke execution.
+The **P6-B Stage-2 host-local DoR / crash-no-relaunch proof** is now implemented as a proof candidate on this branch (default-off; injected-fake / temp-fake only). It proves fail-closed no-relaunch recovery and ships runner/role-overlay/sink/evidence pinning tooling, but it does not prove real execution readiness and pins no runner on this host. It is in review; Hermes owns its PR.
 
-The next request must stay narrower than live/product delivery and still exclude any real AGENT launch:
+The current allowed mainline request after this proof candidate is still **not** real-smoke execution. The next safe request remains narrower than live/product delivery and still excludes any real AGENT launch:
 
 ```text
-P6-B Stage-2 next safe gate:
-  prove or fail-close crash-after-claim / restart / recover-without-relaunch behavior
-  -> pin exact runner/role/provenance/prompt/materializer/artifact-sink/evidence values
+P6-B Stage-2 next safe gate (still gated):
+  close B1 by EITHER the Option-A durable cross-process claim store OR an operator-supplied,
+    out-of-repo pinned local acpx binary + role overlay run through the host-local DoR (Option B)
+  -> pin exact runner/role/provenance/prompt/materializer/artifact-sink/evidence values (B2)
   -> no real agent/acpx/npx step execution yet
   -> no write roles, no file/git mutation by agent step, no Gateway/Feishu/live/production config/real delivery
 ```
