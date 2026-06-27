@@ -50,6 +50,21 @@ def test_committed_fixture_mirrors_the_builder_byte_for_byte():
     assert materialize_p6b_planning_report_prompt(None) == fixture
 
 
+def test_planning_prompt_uses_inline_fixture_and_forbids_tools():
+    built = build_p6b_planning_report_prompt()
+    prompt = built["prompt"].lower()
+
+    assert "inline deterministic json fixture content" in prompt
+    assert '{"type":"sachima.supervisor.controlled_local_activity_dry_run_evidence.v1"}' in prompt
+    assert "do not use tools" in prompt
+    assert "mcp" in prompt
+    assert "codegraph" in prompt
+    assert "file access" in prompt
+    assert "terminal" in prompt
+    assert "read the committed fixture file" not in prompt
+    assert "do not run commands" not in prompt
+
+
 def test_default_none_materializer_fails_closed_no_run(tmp_path):
     supervisor = CountingSupervisor()
     executor = build_executor(tmp_path, prompt_materializer=None, invoke_supervisor=supervisor)

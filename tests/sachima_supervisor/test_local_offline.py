@@ -294,7 +294,7 @@ def test_build_offline_view_model_keeps_library_verdict_none_and_sanitized() -> 
 
 
 def test_build_offline_view_model_reads_actual_caller_result_shape_without_raw_refs() -> None:
-    request = _request(caller_verdict="caller_says_ok")
+    request = _request(caller_verdict="caller_says_ok", mode="session_send", session_id="session-safe-001")
     caller_result = SimpleNamespace(
         supervisor_status="completed",
         result={"status": "completed", "final_message": "raw-" + "final text"},
@@ -310,6 +310,44 @@ def test_build_offline_view_model_reads_actual_caller_result_shape_without_raw_r
     assert payload["artifact_ref_count"] == 2
     rendered = repr(payload).lower()
     assert "final text" not in rendered
+    assert "/safe/local" not in rendered
+
+
+def test_build_offline_view_model_counts_exec_artifact_and_run_dir_as_one_output() -> None:
+    request = _request(caller_verdict="caller_says_ok", mode="exec")
+    caller_result = SimpleNamespace(
+        supervisor_status="completed",
+        result={"status": "completed"},
+        artifact_dir="/safe/local/artifact-dir",
+        run_dir="/safe/local/run-dir",
+        session_dir=None,
+        business_verdict=None,
+    )
+
+    payload = build_offline_view_model(request, caller_result)
+
+    assert payload["supervisor_status"] == "completed"
+    assert payload["artifact_ref_count"] == 1
+    rendered = repr(payload).lower()
+    assert "/safe/local" not in rendered
+
+
+def test_build_offline_view_model_deduplicates_exec_artifact_and_run_dir() -> None:
+    request = _request(caller_verdict="caller_says_ok")
+    caller_result = SimpleNamespace(
+        supervisor_status="completed",
+        result={"status": "completed"},
+        artifact_dir="/safe/local/same-exec-run",
+        run_dir="/safe/local/same-exec-run",
+        session_dir=None,
+        business_verdict=None,
+    )
+
+    payload = build_offline_view_model(request, caller_result)
+
+    assert payload["supervisor_status"] == "completed"
+    assert payload["artifact_ref_count"] == 1
+    rendered = repr(payload).lower()
     assert "/safe/local" not in rendered
 
 

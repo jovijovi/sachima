@@ -43,15 +43,15 @@ _PROMPT = (
     "You are the read-only Sachima planning reviewer. Perform exactly one\n"
     "bounded, read-only review and nothing else:\n"
     "\n"
-    "1. Read the committed fixture file\n"
-    "   tests/fixtures/sachima_supervisor/controlled_local_activity_dry_run_evidence.v1.json\n"
-    "   relative to the current workspace root.\n"
-    '2. Confirm it parses as JSON and that its top-level "type" field equals\n'
-    '   "sachima.supervisor.controlled_local_activity_dry_run_evidence.v1".\n'
+    "1. Validate this inline deterministic JSON fixture content:\n"
+    "   {\"type\":\"sachima.supervisor.controlled_local_activity_dry_run_evidence.v1\"}\n"
+    "2. Confirm it parses as JSON and that its top-level \"type\" field equals\n"
+    "   \"sachima.supervisor.controlled_local_activity_dry_run_evidence.v1\".\n"
     "\n"
-    "Rules: do not modify any file, do not run commands, do not fetch\n"
-    "resources, do not read any other file, and do not copy file contents\n"
-    "into your reply.\n"
+    "Rules: do not use tools, MCP, CodeGraph, search, file access, terminal,\n"
+    "or shell commands; do not modify any file, do not fetch resources,\n"
+    "do not read any external content, and do not copy any non-inline\n"
+    "content into your reply.\n"
     "\n"
     "Produce a short plain-text planning/report summary. Begin with\n"
     '"VERDICT: PASS" when both checks hold, otherwise "VERDICT: BLOCKERS"\n'
