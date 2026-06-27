@@ -11,9 +11,20 @@
 ```json
 {
   "base_branch": "release/sachima",
-  "base_head": "b2531aeb9d37b77cbcf333c9dea8a7d652239403",
+  "base_head": "42b2ec51aa3ecbf65fef2c0c192e6c31a045e904",
   "base_head_note": "latest first-parent base commit excluding machine status-sync self-commits",
   "latest_merged_prs": [
+    {
+      "baseRefName": "release/sachima",
+      "headRefName": "fix/p6b-real-smoke-blockers",
+      "mergeCommit": {
+        "oid": "42b2ec51aa3ecbf65fef2c0c192e6c31a045e904"
+      },
+      "mergedAt": "2026-06-27T17:03:04Z",
+      "number": 181,
+      "title": "fix: unblock P6-B real smoke output and prompt",
+      "url": "https://github.com/jovijovi/sachima/pull/181"
+    },
     {
       "baseRefName": "release/sachima",
       "headRefName": "docs/status-close-p6b-after-pr179",
@@ -57,17 +68,6 @@
       "number": 177,
       "title": "docs: reconcile P6-B status after PR 176",
       "url": "https://github.com/jovijovi/sachima/pull/177"
-    },
-    {
-      "baseRefName": "release/sachima",
-      "headRefName": "docs/sachima-production-grade-goal",
-      "mergeCommit": {
-        "oid": "3d02edb8512ef4fef61a01fb976550251db3ec11"
-      },
-      "mergedAt": "2026-06-27T06:53:59Z",
-      "number": 176,
-      "title": "docs: clarify Sachima production-grade goal",
-      "url": "https://github.com/jovijovi/sachima/pull/176"
     }
   ],
   "open_pr_count": 0,
