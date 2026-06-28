@@ -1,7 +1,7 @@
 # P6-B Stage-2 DoR provisioning/readiness packet
 
 Date: 2026-06-27
-Status: Docs-only provisioning/readiness packet. Superseded in part by PR #179: durable cross-process claim-store semantics are now implemented. Host-local DoR validation with a real pinned `acpx` binary is still blocked on this host because no operator-supplied pinned `acpx` binary is present.
+Status: Historical docs-only provisioning/readiness packet. Superseded by later Stage-2 work: PR #179 implemented durable cross-process claim-store semantics, and PR #181 fixed the remaining smoke output/prompt blockers and recorded the approved single-run bounded read-only real-smoke PASS.
 
 ## 1. Purpose
 
@@ -133,24 +133,18 @@ supervisor_launch_count: 0
 execute_after_store_loss: not_approved_not_attempted
 ```
 
-This is a fail-closed no-relaunch proof, not reattachment to a live run. PR #179 later implemented and verified the Option-A durable cross-process claim store for the controlled-exec claim path. A future real smoke still may proceed only after host-local DoR validation runs against an operator-supplied pinned `acpx` + role overlay + sink/evidence packet and still preserves a separate real-smoke approval gate.
+This is a fail-closed no-relaunch proof, not reattachment to a live run. PR #179 later implemented and verified the Option-A durable cross-process claim store for the controlled-exec claim path. PR #181 later consumed the DoR/pinning path for the separately approved bounded read-only smoke, repaired the output-count and prompt-affordance blockers, and recorded PASS evidence. Any additional or broader real execution still requires a separate approval gate.
 
 ## 8. Current outcome
 
 ```text
 DoR provisioning/readiness packet: PASS_WITH_WATCH
-Host-local DoR validation with real pinned acpx: BLOCKED_NO_ACPX
-Real smoke execution request: BLOCKED / DO NOT REQUEST YET
+Historical authoring-time host-local DoR validation: BLOCKED_NO_ACPX
+Later approved bounded read-only real smoke after PR #181: PASS
 ```
 
 ## 9. Next safe approval after this packet
 
-After PR #179, the next safe approval remains **not** real smoke. The remaining next safe gate is:
+After PR #181, this packet is historical. The later approved bounded smoke used an out-of-repo pinned `acpx@0.10.0` packet, fixed the prompt/output blockers, and recorded PASS evidence.
 
-```text
-approve an operator-supplied out-of-repo pinned acpx binary + read-only role overlay + artifact sink + evidence root,
-then run tools/p6b_host_local_dor.py --probe for DoR validation only,
-with no real agent step launch and no real smoke
-```
-
-A later real-smoke approval must name the exact binary digest, role key, adapter, workflow/step refs, output contract, max turns/time, workdir/evidence/sink refs, and no-write/no-live boundaries.
+The next safe approval is no longer another P6-B readiness loop. It is a docs-only runtime lifecycle / controlled attach plan before any broader real controlled AI FLOW execution. That future gate still must exclude write roles, Gateway/Feishu/live behavior, production config writes, service restarts, and real delivery unless separately approved.

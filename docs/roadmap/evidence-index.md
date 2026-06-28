@@ -17,3 +17,7 @@ Runtime evidence stays outside PR payloads unless a phase explicitly approves ve
 | Phase D real local smoke summary | `/home/ubuntu/workspace/hermes/outputs/sachima/phase-d-real-local-smoke/phase_d_smoke_v2_20260612165247_summary.json` |
 | Phase D real local smoke post-verify | `/home/ubuntu/workspace/hermes/outputs/sachima/phase-d-real-local-smoke/phase_d_smoke_v2_20260612165247_post_verify.json` |
 | Phase D real local smoke final validation | `/home/ubuntu/workspace/hermes/outputs/sachima/phase-d-real-local-smoke/phase_d_smoke_v2_20260612165247_final_validation.json` |
+| P6-B Stage-2 host-local DoR validation | `/data/agents/workspace/hermes/outputs/sachima/p6b-stage2-host-local-dor-validation/20260627T135503Z/evidence/p6b_host_local_dor_evidence_3632f90e70232c34.json` |
+| P6-B Stage-2 first blocked real-smoke evidence | `/data/agents/workspace/hermes/outputs/sachima/p6b-single-run-real-smoke/20260627T154157Z/p6b_single_run_real_smoke_summary.json` |
+| P6-B Stage-2 bounded read-only real-smoke PASS summary | `/data/agents/workspace/hermes/outputs/sachima/p6b-real-smoke-blocker-fixes/20260627T164124Z/p6b_single_run_real_smoke_summary.json` |
+| P6-B Stage-2 bounded read-only real-smoke PASS result | `/data/agents/workspace/hermes/outputs/sachima/p6b-real-smoke-blocker-fixes/20260627T164124Z/agent-run-supervisor-runs/run_20260627T164124Z_b7e4aad4/result.json` |
