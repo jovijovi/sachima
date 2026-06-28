@@ -1571,6 +1571,10 @@ class FeishuAdapter(BasePlatformAdapter):
         self._approval_counter = itertools.count(1)
         # GitHub PR approval card state (approval_id → PR metadata + message/chat ids)
         self._github_pr_approval_state: Dict[int, Dict[str, str]] = {}
+        # Monotonic issuance watermark by normalized (repo, pr_number).  This
+        # prevents an older in-flight card send from reactivating stale head
+        # state after a newer card has already won or been resolved.
+        self._github_pr_latest_approval_id_by_pr: Dict[tuple[str, str], int] = {}
         self._github_pr_approval_counter = itertools.count(1)
         # Update prompt button state (prompt_id → {session_key, message_id, chat_id})
         self._update_prompt_state: Dict[int, Dict[str, str]] = {}
@@ -2154,6 +2158,23 @@ class FeishuAdapter(BasePlatformAdapter):
         return "\n".join(line for line in detail_lines if line)
 
     @staticmethod
+    def _github_pr_approval_key_from_state(state: Dict[str, str]) -> tuple[str, str]:
+        return (str(state.get("repo", "")).strip().lower(), str(state.get("pr_number", "")).strip())
+
+    def _is_current_github_pr_approval(self, approval_id: Any, state: Dict[str, str]) -> bool:
+        try:
+            current_approval_id = int(approval_id)
+        except (TypeError, ValueError):
+            return False
+        latest_approval_id = self._github_pr_latest_approval_id_by_pr.get(
+            self._github_pr_approval_key_from_state(state)
+        )
+        return latest_approval_id is None or latest_approval_id == current_approval_id
+
+    def _drop_stale_github_pr_approval(self, approval_id: Any) -> None:
+        self._github_pr_approval_state.pop(approval_id, None)
+
+    @staticmethod
     def _build_github_pr_approval_card(
         *,
         approval_id: int,
@@ -2254,6 +2275,8 @@ class FeishuAdapter(BasePlatformAdapter):
                 "locale": locale_text,
                 "session_key": str(session_key or ""),
             }
+            approval_key = self._github_pr_approval_key_from_state(state)
+            self._github_pr_latest_approval_id_by_pr[approval_key] = approval_id
             payload = json.dumps(
                 self._build_github_pr_approval_card(
                     approval_id=approval_id,
@@ -2279,7 +2302,25 @@ class FeishuAdapter(BasePlatformAdapter):
             result = self._finalize_send_result(response, "send_github_pr_approval_card failed")
             if result.success:
                 state["message_id"] = result.message_id or ""
-                self._github_pr_approval_state[approval_id] = state
+                if self._github_pr_latest_approval_id_by_pr.get(approval_key) != approval_id:
+                    return result
+                target_repo, target_pr_number = approval_key
+                stale_approval_ids = []
+                superseded = False
+                for stored_approval_id, stored_state in self._github_pr_approval_state.items():
+                    if not (
+                        str(stored_state.get("repo", "")).strip().lower() == target_repo
+                        and str(stored_state.get("pr_number", "")).strip() == target_pr_number
+                    ):
+                        continue
+                    if stored_approval_id > approval_id:
+                        superseded = True
+                        break
+                    stale_approval_ids.append(stored_approval_id)
+                if not superseded:
+                    for stored_approval_id in stale_approval_ids:
+                        self._github_pr_approval_state.pop(stored_approval_id, None)
+                    self._github_pr_approval_state[approval_id] = state
             return result
         except Exception as exc:
             logger.warning("[Feishu] send_github_pr_approval_card failed: %s", exc)
@@ -3065,6 +3106,10 @@ class FeishuAdapter(BasePlatformAdapter):
         if action not in _GITHUB_PR_APPROVAL_ACTIONS:
             logger.debug("[Feishu] GitHub PR approval has invalid action=%r", action)
             return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+        if not self._is_current_github_pr_approval(approval_id, state):
+            logger.info("[Feishu] GitHub PR approval %s is stale after a newer card was issued", approval_id)
+            self._drop_stale_github_pr_approval(approval_id)
+            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
 
         operator = getattr(event, "operator", None)
         open_id = str(getattr(operator, "open_id", "") or "")
@@ -3244,6 +3289,10 @@ class FeishuAdapter(BasePlatformAdapter):
             return
         if action not in _GITHUB_PR_APPROVAL_ACTIONS:
             logger.debug("[Feishu] GitHub PR approval %s invalid action=%r", approval_id, action)
+            return
+        if not self._is_current_github_pr_approval(approval_id, state):
+            logger.info("[Feishu] GitHub PR approval %s is stale after a newer card was issued", approval_id)
+            self._drop_stale_github_pr_approval(approval_id)
             return
         if not self._is_interactive_operator_authorized(open_id):
             logger.warning(
