@@ -1,0 +1,49 @@
+type: sachima.governance.phase_manifest.v1
+phase: p6_runtime_lifecycle_controlled_attach_plan
+status: draft_docs_only
+created_at: '2026-06-28'
+branch: docs/runtime-lifecycle-controlled-attach-plan
+base_branch: release/sachima
+base_head_at_authoring: 890ed3f89b2a995dc3bf910d4a4a4cc57f54e7c9
+scope:
+  docs_only: true
+  source_implementation: false
+  runtime_start: false
+  worker_start: false
+  gateway_involvement: false
+  feishu_or_im_delivery: false
+  production_config_write: false
+  service_restart: false
+  real_delivery: false
+  additional_real_agent_execution: false
+  additional_acpx_or_npx_execution: false
+  write_roles: false
+prerequisites:
+  pr181_bounded_read_only_real_smoke: pass
+  pr182_status_closure: merged
+  p6a_controlled_deterministic_composition: merged
+  p5_temporal_slice1: merged_default_off
+  wp3b_active_run_cancellation: watch_preserved
+strongest_allowed_outcome: >-
+  Docs-only P6 runtime lifecycle / controlled attach governance packet. It may define future attach,
+  start/query/update/cancel/recover/close semantics, health, rollback, no-duplicate-relaunch, and no-leak
+  gates. It does not approve source implementation, runtime/Worker start, Gateway/Feishu/live behavior,
+  production config, service restart, real delivery, write roles, or additional real agent/acpx/npx execution.
+required_artifacts:
+  prd: docs/plans/2026-06-28-agent-run-supervisor-sachima-p6-runtime-lifecycle-controlled-attach-plan-prd.md
+  technical_solution: docs/plans/2026-06-28-agent-run-supervisor-sachima-p6-runtime-lifecycle-controlled-attach-plan-technical-solution.md
+  claude_teach_back: docs/plans/2026-06-28-agent-run-supervisor-sachima-p6-runtime-lifecycle-controlled-attach-plan-claude-teach-back.md
+  user_review_packet: docs/plans/2026-06-28-agent-run-supervisor-sachima-p6-runtime-lifecycle-controlled-attach-plan-user-review-packet.md
+  dev_log: docs/dev_log/2026-06-28-agent-run-supervisor-sachima-p6-runtime-lifecycle-controlled-attach-plan.md
+required_gates:
+  - docs-only changed-file allowlist
+  - yaml safe_load manifest
+  - git diff --check
+  - tools/sync_roadmap_status.py --check
+  - CodeGraph sync/status
+  - stale wording scan for PR #181/#182/P6 runtime lifecycle state
+  - forbidden implementation/runtime/live surface scan
+  - Claude architecture teach-back
+  - Codex read-only blocker review
+future_implementation_approval_phrase: >-
+  approve_agent_run_supervisor_sachima_p6_runtime_lifecycle_controlled_attach_implementation_default_off_caller_owned_attach_only_no_runtime_or_worker_start_no_additional_real_agent_execution_no_write_roles_no_live_no_gateway_no_feishu_no_production_config_no_real_delivery
