@@ -11,9 +11,20 @@
 ```json
 {
   "base_branch": "release/sachima",
-  "base_head": "0db95bb710ffd4606a2437e908caeebd8ce19ac4",
+  "base_head": "70d9ae3220265ef3f314ca4758c0bc20d3ea9c3b",
   "base_head_note": "latest first-parent base commit excluding machine status-sync self-commits",
   "latest_merged_prs": [
+    {
+      "baseRefName": "release/sachima",
+      "headRefName": "feat/p6-runtime-controlled-attach",
+      "mergeCommit": {
+        "oid": "70d9ae3220265ef3f314ca4758c0bc20d3ea9c3b"
+      },
+      "mergedAt": "2026-06-28T09:22:07Z",
+      "number": 184,
+      "title": "feat: add P6 runtime controlled attach shell",
+      "url": "https://github.com/jovijovi/sachima/pull/184"
+    },
     {
       "baseRefName": "release/sachima",
       "headRefName": "docs/runtime-lifecycle-controlled-attach-plan",
@@ -57,17 +68,6 @@
       "number": 180,
       "title": "docs: close P6-B status after PR 179",
       "url": "https://github.com/jovijovi/sachima/pull/180"
-    },
-    {
-      "baseRefName": "release/sachima",
-      "headRefName": "feat/p6b-durable-claim-store",
-      "mergeCommit": {
-        "oid": "a7c40bac845d85d4cb2072a701e8cb4e01aa6bb6"
-      },
-      "mergedAt": "2026-06-27T12:35:27Z",
-      "number": 179,
-      "title": "feat: add durable controlled exec claim store",
-      "url": "https://github.com/jovijovi/sachima/pull/179"
     }
   ],
   "open_pr_count": 0,
