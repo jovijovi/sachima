@@ -53,6 +53,10 @@
 - PE-2 design packet: `docs/plans/2026-05-12-flowweaver-pe2-design-packet.md`
 - Latest PE-2A dev log: `docs/dev_log/2026-05-12-flowweaver-pe2a-controlled-runtime-fake-delivery.md`
 
+
+- agent-run-supervisor Sachima P6 runtime lifecycle / controlled attach plan (docs-only candidate): `docs/plans/2026-06-28-agent-run-supervisor-sachima-p6-runtime-lifecycle-controlled-attach-plan-prd.md`, `docs/plans/2026-06-28-agent-run-supervisor-sachima-p6-runtime-lifecycle-controlled-attach-plan-technical-solution.md`, `docs/plans/2026-06-28-agent-run-supervisor-sachima-p6-runtime-lifecycle-controlled-attach-plan-user-review-packet.md` (+ manifest)
+- agent-run-supervisor Sachima P6 runtime lifecycle / controlled attach plan dev log: `docs/dev_log/2026-06-28-agent-run-supervisor-sachima-p6-runtime-lifecycle-controlled-attach-plan.md`
+
 ## Side capability references
 
 These references are not phase approvals, but they preserve implementation state
