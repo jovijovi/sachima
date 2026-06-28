@@ -82,7 +82,7 @@
 last_updated: 2026-06-28
 base_branch: release/sachima
 current_position: P6-B Stage-2 has advanced from readiness/blocker closure to a recorded single-run bounded read-only real-smoke PASS. PR #175 merged host-local DoR / crash-no-relaunch proof, PR #178 fixed the DoR provisioning contract, PR #179 merged durable cross-process claim-store semantics, and PR #181 fixed the output-count/prompt blockers and recorded a pinned `acpx@0.10.0` + `sachima.codex.primary_reviewer` one-shot PASS.
-current_mainline: agent-run-supervisor × Sachima is now on the P6 runtime lifecycle / controlled attach docs-only governance branch. This branch plans caller-owned attach/start/query/update/cancel/recover/close semantics before broader real controlled AI FLOW execution or live delivery; it approves no implementation or runtime start by itself.
+current_mainline: agent-run-supervisor × Sachima is now on the P6 runtime lifecycle / controlled attach implementation branch. This branch implements a default-off caller-owned attach shell over an already supplied P6 session; it starts no runtime/Worker/service/subprocess and approves no additional real agent/acpx execution or live delivery.
 current_head_evidence: PR #171 merged P6-B Stage-1, PR #173 merged roadmap status dashboard slimdown, PR #174 merged the Stage-2 readiness gate, PR #175 merged host-local DoR / crash-no-relaunch proof, PR #176 merged neutral production-grade GOAL wording, PR #177 reconciled P6-B status after PR #176, PR #178 merged DoR provisioning/readiness, PR #179 merged the durable controlled exec claim store, and PR #181 merged the P6-B bounded real-smoke blocker fixes and PASS evidence; machine block above is git/GitHub evidence only.
 detail_ledgers: docs/roadmap/phase-ledger.md, docs/roadmap/tail-register.md, docs/roadmap/evidence-index.md, docs/roadmap/reference-index.md
 ```
@@ -100,8 +100,8 @@ detail_ledgers: docs/roadmap/phase-ledger.md, docs/roadmap/tail-register.md, doc
 
 ```text
 P6-B Stage-2 bounded read-only real smoke is recorded as PASS by PR #181 and status-closed by PR #182.
-The active branch is a docs-only P6 runtime lifecycle / controlled attach plan: it defines caller-owned runtime attach semantics, operation gates, health, rollback, no-duplicate-relaunch, leases/epochs/idempotency, no-leak evidence, and WP3b WATCH handling.
-No source implementation, runtime/Worker start, additional real agent/acpx/npx execution, write roles, Gateway/Feishu/live behavior, production config, public ingress, service restart, broader controlled AI FLOW execution, or real delivery is approved by this status page or by this branch.
+The active branch is the approved P6 runtime lifecycle / controlled attach implementation slice: it adds a default-off caller-owned attach shell and local control wrappers for an already supplied P6 session, with fail-closed admission, sanitized attach state, idempotent duplicate start handling, no-relaunch recover, and WP3b WATCH preservation.
+No runtime/Worker/service/subprocess start, additional real agent/acpx/npx execution, write roles, Gateway/Feishu/live behavior, production config, public ingress, service restart, broader real controlled AI FLOW execution, or real delivery is approved by this status page or by this branch.
 ```
 
 ## Current phase summary
@@ -118,7 +118,7 @@ No source implementation, runtime/Worker start, additional real agent/acpx/npx e
 | P6-B Stage-2 DoR provisioning/readiness | Merged in PR #178 | Fixes the DoR validation command, read-only role overlay invariants, out-of-repo evidence/sink contract, and crash/recovery/no-relaunch interpretation; the authoring-time `BLOCKED_NO_ACPX` state was later superseded by PR #181's approved bounded smoke PASS | `docs/plans/2026-06-27-agent-run-supervisor-sachima-p6b-stage2-dor-provisioning-readiness.md` |
 | P6-B Stage-2 durable claim store | Merged in PR #179 | Adds local file-backed controlled-exec claim-store semantics for cross-process restart/replay/recover without duplicate relaunch; closes Option-A blocker; no real smoke by itself | GitHub PR #179 |
 | P6-B Stage-2 bounded read-only real smoke | Blocker fixes merged in PR #181; smoke PASS recorded | Fixes exec output-ref counting and the deterministic prompt affordance, then records one pinned `acpx@0.10.0` / Codex read-only one-shot PASS with no duplicate replay/recover, no repo mutation, and no live surfaces | GitHub PR #181; `docs/roadmap/evidence-index.md` |
-| P6 runtime lifecycle / controlled attach plan | Candidate docs-only governance in this branch | Defines caller-owned attach/start/query/update/cancel/recover/close, health, rollback, leases/epochs/idempotency, no-duplicate-relaunch, no-leak evidence, and WP3b WATCH handling before broader real controlled AI FLOW execution; no implementation/runtime/live approval | `docs/plans/2026-06-28-agent-run-supervisor-sachima-p6-runtime-lifecycle-controlled-attach-plan-prd.md` |
+| P6 runtime lifecycle / controlled attach implementation | Candidate implementation in this branch | Adds a default-off caller-owned attach shell over an already supplied P6 session; no runtime/Worker/service/subprocess start, no additional real agent/acpx execution, no live/Gateway/Feishu/production config/real delivery | `docs/plans/2026-06-28-agent-run-supervisor-sachima-p6-runtime-lifecycle-controlled-attach-implementation.md` |
 | Feishu task workbench title summary | Merged in PR #172 | Stabilizes task-card title summary behavior; not a phase authority change | GitHub PR #172 |
 | P7 real delivery / ACK closure | Pending | Not started; requires separate approval after fake/local delivery and AI FLOW gates are production-ready | `docs/roadmap/tail-register.md` |
 | P8 product / ops hardening | Pending | Not started; blocked until limited live pilot readiness | `docs/roadmap/tail-register.md` |
@@ -127,7 +127,7 @@ No source implementation, runtime/Worker start, additional real agent/acpx/npx e
 
 | Tail | Class | Blocks next mainline? | Required before | Detail |
 |---|---|---:|---|---|
-| Runtime lifecycle / controlled attach plan | NEXT_PHASE | This branch is the docs-only gate | Any broader real controlled AI FLOW execution, durable runtime/worker attach, live pilot, or real delivery claim | Defines caller-owned attach/control semantics, operation gates, health, rollback, no-duplicate-relaunch, no-leak evidence, and WP3b WATCH preservation. Still excludes implementation, Gateway/Feishu/live/production config, write roles, additional real execution, and real delivery |
+| Runtime lifecycle / controlled attach implementation | NEXT_PHASE | This branch is the default-off implementation slice | Any broader real controlled AI FLOW execution, durable runtime/worker attach, live pilot, or real delivery claim | Implements a caller-owned attach/control shell over an already supplied P6 session. Still excludes runtime/Worker/service/subprocess start, Gateway/Feishu/live/production config, write roles, additional real execution, and real delivery |
 | WP3b active-run cancellation | WATCH | No for docs/governance; Yes for clean cancellation claims | Any clean active-run cancellation claim | Full tail table in `docs/roadmap/tail-register.md` |
 | P4 Envelope v1 agentic-ui conformance | NEXT_PHASE | No for current supervisor mainline | Any P4 behavior-bearing external-ingress claim | Side tail; do not pivot to it by default |
 | Status dashboard hygiene | WATCH | No | Any phase closure / next-readiness claim | Keep this lean file plus split ledgers aligned |
@@ -169,16 +169,15 @@ controlled_ai_flow_execution beyond approved P6-A deterministic/injected-fake sc
 
 The **P6-B Stage-2 bounded read-only real smoke** has passed for the single approved one-shot after PR #181. PR #175 provided host-local DoR / crash-no-relaunch proof, PR #178 fixed DoR provisioning contracts, PR #179 closed the durable cross-process claim-store blocker, and PR #181 fixed the output-count/prompt blockers and records the PASS evidence.
 
-The current branch is that **docs-only runtime lifecycle / controlled attach gate**. The allowed next request after this PR passes is still not live/product delivery; it is a narrow implementation request for default-off caller-owned attach only:
+The current branch is that **default-off runtime lifecycle / controlled attach implementation slice**. The allowed next request after this PR passes is still not live/product delivery; it is a later narrow follow-up for status closure or for the next separately approved local/offline control capability:
 
 ```text
-P6 current docs-only gate:
-  define caller-owned runtime/control-surface attach semantics
-  -> define start/query/update/cancel/recover/close operator gates and health checks
-  -> define idempotency, leases, epochs, no-duplicate-relaunch, rollback, and no-leak evidence
-  -> preserve WP3b active-run cancellation WATCH and PR #181 one-shot smoke boundary
-  -> no source implementation or runtime/Worker start in this PR
-  -> no additional real agent/acpx/npx execution yet
+P6 current implementation slice:
+  implement default-off caller-owned attach over an already supplied P6 session
+  -> gate start/query/cancel/recover/close behind sanitized attach state
+  -> enforce idempotency, no-duplicate-relaunch, no-leak projections, and WP3b WATCH preservation
+  -> no runtime/Worker/service/subprocess start in this PR
+  -> no additional real agent/acpx/npx execution
   -> no write roles, Gateway/Feishu/live/production config, service restart, or real delivery
 ```
 

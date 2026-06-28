@@ -1,0 +1,42 @@
+id: agent-run-supervisor-sachima-p6-runtime-lifecycle-controlled-attach-implementation
+status: candidate_implementation_branch
+base_branch: release/sachima
+branch: feat/p6-runtime-controlled-attach
+approval_token: approve_agent_run_supervisor_sachima_p6_runtime_lifecycle_controlled_attach_implementation_default_off_caller_owned_attach_only_no_runtime_or_worker_start_no_additional_real_agent_execution_no_write_roles_no_live_no_gateway_no_feishu_no_production_config_no_real_delivery
+scope:
+  source_implementation: true
+  runtime_or_worker_start: false
+  temporal_service_start: false
+  service_restart: false
+  subprocess_or_socket_launch: false
+  additional_real_agent_execution: false
+  write_roles: false
+  gateway_or_feishu_or_live: false
+  production_config_write: false
+  public_ingress: false
+  platform_adapter_mutation: false
+  real_delivery: false
+files:
+  source:
+    - sachima_supervisor/p6_runtime_attach.py
+    - sachima_supervisor/__init__.py
+  tests:
+    - tests/sachima_supervisor/p6_runtime_attach/unit/test_runtime_attach.py
+  docs:
+    - docs/plans/2026-06-28-agent-run-supervisor-sachima-p6-runtime-lifecycle-controlled-attach-implementation.md
+    - docs/plans/2026-06-28-agent-run-supervisor-sachima-p6-runtime-lifecycle-controlled-attach-implementation-manifest.yaml
+    - docs/dev_log/2026-06-28-agent-run-supervisor-sachima-p6-runtime-lifecycle-controlled-attach-implementation.md
+verification_so_far:
+  focused_runtime_attach_tests: 22 passed
+  focused_runtime_attach_plus_p6_control_tests: 49 passed
+verification_completed:
+  - full tests/sachima_supervisor suite: 1045 passed
+  - ruff: passed
+  - compileall: passed
+  - git diff --check: passed
+  - sync_roadmap_status check: passed
+  - forbidden surface and stale scans: passed
+  - CodeGraph impact snapshot: captured
+pending_before_merge:
+  - Codex exact-head blocker review
+  - GitHub PR CI

@@ -146,6 +146,22 @@ from sachima_supervisor.activity_ai_flow_orchestration import (
     step_workflow_run,
     summarize_workflow_run,
 )
+from sachima_supervisor.p6_runtime_attach import (
+    P6_ATTACH_APPROVAL_MISMATCH,
+    P6_ATTACH_BACKEND_UNAVAILABLE,
+    P6_ATTACH_DISABLED,
+    P6_ATTACH_GATE_BLOCKED,
+    P6_ATTACH_HEALTH_DEGRADED,
+    P6_ATTACH_IDEMPOTENCY_CONFLICT,
+    P6_ATTACH_NOT_ATTACHED,
+    P6_ATTACH_PRECONDITION_UNMET,
+    P6_ATTACH_UNSAFE_MATERIAL,
+    P6_RUNTIME_ATTACH_IMPLEMENTATION_APPROVAL_TOKEN,
+    P6_RUNTIME_ATTACH_STABLE_CODES,
+    P6RuntimeAttachOutcome,
+    P6RuntimeAttachSession,
+    RuntimeAttachRequest,
+)
 
 __all__ = [
     # local/offline seam (PR #97)
@@ -263,4 +279,20 @@ __all__ = [
     "request_workflow_cancellation",
     "step_workflow_run",
     "summarize_workflow_run",
+    # P6 runtime lifecycle / controlled attach (default-off, caller-owned;
+    # no runtime/Worker start, no live/default-on behavior, no real delivery)
+    "P6_ATTACH_APPROVAL_MISMATCH",
+    "P6_ATTACH_BACKEND_UNAVAILABLE",
+    "P6_ATTACH_DISABLED",
+    "P6_ATTACH_GATE_BLOCKED",
+    "P6_ATTACH_HEALTH_DEGRADED",
+    "P6_ATTACH_IDEMPOTENCY_CONFLICT",
+    "P6_ATTACH_NOT_ATTACHED",
+    "P6_ATTACH_PRECONDITION_UNMET",
+    "P6_ATTACH_UNSAFE_MATERIAL",
+    "P6_RUNTIME_ATTACH_IMPLEMENTATION_APPROVAL_TOKEN",
+    "P6_RUNTIME_ATTACH_STABLE_CODES",
+    "P6RuntimeAttachOutcome",
+    "P6RuntimeAttachSession",
+    "RuntimeAttachRequest",
 ]
