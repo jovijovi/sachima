@@ -56,6 +56,8 @@
 
 - agent-run-supervisor Sachima P6 runtime lifecycle / controlled attach plan (docs-only candidate): `docs/plans/2026-06-28-agent-run-supervisor-sachima-p6-runtime-lifecycle-controlled-attach-plan-prd.md`, `docs/plans/2026-06-28-agent-run-supervisor-sachima-p6-runtime-lifecycle-controlled-attach-plan-technical-solution.md`, `docs/plans/2026-06-28-agent-run-supervisor-sachima-p6-runtime-lifecycle-controlled-attach-plan-user-review-packet.md` (+ manifest)
 - agent-run-supervisor Sachima P6 runtime lifecycle / controlled attach plan dev log: `docs/dev_log/2026-06-28-agent-run-supervisor-sachima-p6-runtime-lifecycle-controlled-attach-plan.md`
+- agent-run-supervisor Sachima P6 runtime lifecycle / controlled attach implementation: `docs/plans/2026-06-28-agent-run-supervisor-sachima-p6-runtime-lifecycle-controlled-attach-implementation.md` (+ manifest)
+- agent-run-supervisor Sachima P6 runtime lifecycle / controlled attach implementation dev log: `docs/dev_log/2026-06-28-agent-run-supervisor-sachima-p6-runtime-lifecycle-controlled-attach-implementation.md`
 
 ## Side capability references
 
