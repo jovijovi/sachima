@@ -11,9 +11,20 @@
 ```json
 {
   "base_branch": "release/sachima",
-  "base_head": "70d9ae3220265ef3f314ca4758c0bc20d3ea9c3b",
+  "base_head": "9e426a36083445dbe0dd3e1af7e9008dd1e7d91a",
   "base_head_note": "latest first-parent base commit excluding machine status-sync self-commits",
   "latest_merged_prs": [
+    {
+      "baseRefName": "release/sachima",
+      "headRefName": "fix/feishu-pr-approval-stale-card",
+      "mergeCommit": {
+        "oid": "9e426a36083445dbe0dd3e1af7e9008dd1e7d91a"
+      },
+      "mergedAt": "2026-06-28T14:25:39Z",
+      "number": 185,
+      "title": "fix: invalidate stale Feishu PR approval cards",
+      "url": "https://github.com/jovijovi/sachima/pull/185"
+    },
     {
       "baseRefName": "release/sachima",
       "headRefName": "feat/p6-runtime-controlled-attach",
@@ -57,17 +68,6 @@
       "number": 181,
       "title": "fix: unblock P6-B real smoke output and prompt",
       "url": "https://github.com/jovijovi/sachima/pull/181"
-    },
-    {
-      "baseRefName": "release/sachima",
-      "headRefName": "docs/status-close-p6b-after-pr179",
-      "mergeCommit": {
-        "oid": "b2531aeb9d37b77cbcf333c9dea8a7d652239403"
-      },
-      "mergedAt": "2026-06-27T13:41:26Z",
-      "number": 180,
-      "title": "docs: close P6-B status after PR 179",
-      "url": "https://github.com/jovijovi/sachima/pull/180"
     }
   ],
   "open_pr_count": 0,
