@@ -1,5 +1,6 @@
 """Tests for Feishu interactive card approval buttons."""
 
+import asyncio
 import importlib.util
 import json
 import sys
@@ -915,6 +916,145 @@ class TestFeishuGitHubPrApprovalCard:
         assert "head_sha" in (result.error or "")
         mock_send.assert_not_awaited()
 
+    @pytest.mark.asyncio
+    async def test_resending_same_pr_invalidates_older_pending_card(self):
+        adapter = _make_adapter()
+        send_count = 0
+
+        async def _send_success(**_kwargs):
+            nonlocal send_count
+            send_count += 1
+            return SimpleNamespace(
+                success=lambda: True,
+                data=SimpleNamespace(message_id=f"msg_pr_{send_count:03d}"),
+            )
+
+        with patch.object(adapter, "_feishu_send_with_retry", new_callable=AsyncMock, side_effect=_send_success):
+            await adapter.send_github_pr_approval_card(
+                chat_id="oc_12345",
+                repo="jovijovi/sachima",
+                pr_number=1,
+                title="Initial approval",
+                head_sha="oldhead111",
+            )
+            await adapter.send_github_pr_approval_card(
+                chat_id="oc_12345",
+                repo="jovijovi/sachima",
+                pr_number=2,
+                title="Different PR should remain pending",
+                head_sha="otherhead222",
+            )
+            await adapter.send_github_pr_approval_card(
+                chat_id="oc_12345",
+                repo="jovijovi/sachima",
+                pr_number=1,
+                title="Re-approval after blocker fix",
+                head_sha="newhead333",
+            )
+
+        assert 1 not in adapter._github_pr_approval_state
+        assert adapter._github_pr_approval_state[2]["head_sha"] == "otherhead222"
+        assert adapter._github_pr_approval_state[3]["head_sha"] == "newhead333"
+        assert adapter._github_pr_approval_state[3]["message_id"] == "msg_pr_003"
+
+    @pytest.mark.asyncio
+    async def test_out_of_order_same_pr_card_send_completion_keeps_newer_head(self):
+        adapter = _make_adapter()
+        send_count = 0
+        first_send_started = asyncio.Event()
+        release_first_send = asyncio.Event()
+
+        async def _send_success(**_kwargs):
+            nonlocal send_count
+            send_count += 1
+            current_send = send_count
+            if current_send == 1:
+                first_send_started.set()
+                await release_first_send.wait()
+            return SimpleNamespace(
+                success=lambda: True,
+                data=SimpleNamespace(message_id=f"msg_pr_{current_send:03d}"),
+            )
+
+        with patch.object(adapter, "_feishu_send_with_retry", new_callable=AsyncMock, side_effect=_send_success):
+            old_card_task = asyncio.create_task(
+                adapter.send_github_pr_approval_card(
+                    chat_id="oc_12345",
+                    repo="jovijovi/sachima",
+                    pr_number=1,
+                    title="Initial approval",
+                    head_sha="oldhead111",
+                )
+            )
+            await first_send_started.wait()
+            new_card_result = await adapter.send_github_pr_approval_card(
+                chat_id="oc_12345",
+                repo="jovijovi/sachima",
+                pr_number=1,
+                title="Re-approval after blocker fix",
+                head_sha="newhead333",
+            )
+            release_first_send.set()
+            old_card_result = await old_card_task
+
+        assert old_card_result.success is True
+        assert new_card_result.success is True
+        assert 1 not in adapter._github_pr_approval_state
+        assert adapter._github_pr_approval_state[2]["head_sha"] == "newhead333"
+        assert adapter._github_pr_approval_state[2]["message_id"] == "msg_pr_002"
+
+    @pytest.mark.asyncio
+    async def test_older_in_flight_card_cannot_reactivate_after_newer_card_resolves(self):
+        adapter = _make_adapter()
+        send_count = 0
+        first_send_started = asyncio.Event()
+        release_first_send = asyncio.Event()
+
+        async def _send_success(**_kwargs):
+            nonlocal send_count
+            send_count += 1
+            current_send = send_count
+            if current_send == 1:
+                first_send_started.set()
+                await release_first_send.wait()
+            return SimpleNamespace(
+                success=lambda: True,
+                data=SimpleNamespace(message_id=f"msg_pr_{current_send:03d}"),
+            )
+
+        with patch.object(adapter, "_feishu_send_with_retry", new_callable=AsyncMock, side_effect=_send_success):
+            old_card_task = asyncio.create_task(
+                adapter.send_github_pr_approval_card(
+                    chat_id="oc_12345",
+                    repo="jovijovi/sachima",
+                    pr_number=1,
+                    title="Initial approval",
+                    head_sha="oldhead111",
+                )
+            )
+            await first_send_started.wait()
+            new_card_result = await adapter.send_github_pr_approval_card(
+                chat_id="oc_12345",
+                repo="jovijovi/sachima",
+                pr_number=1,
+                title="Re-approval after blocker fix",
+                head_sha="newhead333",
+            )
+            await adapter._resolve_github_pr_approval(
+                2,
+                "ignore",
+                "Bob",
+                open_id="ou_bob",
+                chat_id="oc_12345",
+                token="tok_pr_ignore",
+            )
+            release_first_send.set()
+            old_card_result = await old_card_task
+
+        assert old_card_result.success is True
+        assert new_card_result.success is True
+        assert adapter._github_pr_approval_state == {}
+
 
 class TestGitHubPrApprovalResolution:
     """Test PR approval button effects stay inside the controlled merge flow."""
@@ -1015,6 +1155,37 @@ class TestGitHubPrApprovalResolution:
         assert "批准合并 PR #123" in synthetic_event.text
 
     @pytest.mark.asyncio
+    async def test_approve_ignores_stale_card_after_newer_card_is_issued(self):
+        adapter = _make_adapter()
+        adapter._github_pr_approval_state[1] = {
+            "chat_id": "oc_12345",
+            "message_id": "msg_pr_001",
+            "repo": "NousResearch/hermes-agent",
+            "pr_number": "123",
+            "title": "Add Feishu PR approval card",
+            "pr_url": "https://github.com/NousResearch/hermes-agent/pull/123",
+            "author": "octocat",
+            "head_sha": "oldhead111",
+            "base_ref": "release/sachima",
+            "head_ref": "feature/feishu-pr-approval-card",
+            "session_key": "agent:main:feishu:group:oc_12345",
+        }
+        adapter._github_pr_latest_approval_id_by_pr[("nousresearch/hermes-agent", "123")] = 2
+
+        with patch.object(adapter, "_handle_message_with_guards", new_callable=AsyncMock) as mock_handle:
+            await adapter._resolve_github_pr_approval(
+                1,
+                "approve",
+                "Bob",
+                open_id="ou_bob",
+                chat_id="oc_12345",
+                token="tok_pr_approve",
+            )
+
+        mock_handle.assert_not_awaited()
+        assert 1 not in adapter._github_pr_approval_state
+
+    @pytest.mark.asyncio
     async def test_reject_records_status_without_routing_merge_request(self):
         adapter = _make_adapter()
         adapter._github_pr_approval_state[2] = {
@@ -1094,6 +1265,34 @@ class TestGitHubPrApprovalCallbackResponse:
         assert "PR #123" in card["header"]["title"]["content"]
         assert "fresh pre-merge checks" in card["elements"][0]["content"]
         assert "Bob" in card["elements"][0]["content"]
+
+    def test_stale_pr_action_after_newer_card_is_issued_returns_no_status_card(self, _patch_callback_card_types):
+        adapter = _make_adapter()
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._allowed_group_users = {"ou_bob"}
+        adapter._github_pr_approval_state[1] = {
+            "chat_id": "oc_12345",
+            "message_id": "msg_pr_001",
+            "repo": "NousResearch/hermes-agent",
+            "pr_number": "123",
+            "head_sha": "oldhead111",
+            "locale": "en",
+        }
+        adapter._github_pr_latest_approval_id_by_pr[("nousresearch/hermes-agent", "123")] = 2
+        adapter._sender_name_cache["ou_bob"] = ("Bob", 9999999999)
+        data = _make_card_action_data(
+            {"hermes_github_pr_action": "approve", "github_pr_approval_id": 1},
+            open_id="ou_bob",
+        )
+
+        with patch("asyncio.run_coroutine_threadsafe") as mock_submit:
+            response = adapter._on_card_action_trigger(data)
+
+        assert response is not None
+        assert response.card is None
+        assert 1 not in adapter._github_pr_approval_state
+        mock_submit.assert_not_called()
 
     def test_returns_localized_ignore_status_card_with_original_pr_details(self, _patch_callback_card_types):
         adapter = _make_adapter()
