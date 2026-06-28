@@ -11,9 +11,20 @@
 ```json
 {
   "base_branch": "release/sachima",
-  "base_head": "7d8b635744ad2054ff1cbe9e986f24e7d1de548f",
+  "base_head": "0db95bb710ffd4606a2437e908caeebd8ce19ac4",
   "base_head_note": "latest first-parent base commit excluding machine status-sync self-commits",
   "latest_merged_prs": [
+    {
+      "baseRefName": "release/sachima",
+      "headRefName": "docs/runtime-lifecycle-controlled-attach-plan",
+      "mergeCommit": {
+        "oid": "0db95bb710ffd4606a2437e908caeebd8ce19ac4"
+      },
+      "mergedAt": "2026-06-28T04:42:07Z",
+      "number": 183,
+      "title": "docs: plan P6 runtime lifecycle controlled attach",
+      "url": "https://github.com/jovijovi/sachima/pull/183"
+    },
     {
       "baseRefName": "release/sachima",
       "headRefName": "docs/status-close-p6b-after-pr181",
@@ -57,17 +68,6 @@
       "number": 179,
       "title": "feat: add durable controlled exec claim store",
       "url": "https://github.com/jovijovi/sachima/pull/179"
-    },
-    {
-      "baseRefName": "release/sachima",
-      "headRefName": "docs/p6b-stage2-dor-provisioning",
-      "mergeCommit": {
-        "oid": "5c506fcd2e5f21f6f40b678f5b152738b99ce179"
-      },
-      "mergedAt": "2026-06-27T10:10:25Z",
-      "number": 178,
-      "title": "docs: add P6-B Stage-2 DoR provisioning readiness",
-      "url": "https://github.com/jovijovi/sachima/pull/178"
     }
   ],
   "open_pr_count": 0,
