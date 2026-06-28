@@ -11,9 +11,20 @@
 ```json
 {
   "base_branch": "release/sachima",
-  "base_head": "42b2ec51aa3ecbf65fef2c0c192e6c31a045e904",
+  "base_head": "7d8b635744ad2054ff1cbe9e986f24e7d1de548f",
   "base_head_note": "latest first-parent base commit excluding machine status-sync self-commits",
   "latest_merged_prs": [
+    {
+      "baseRefName": "release/sachima",
+      "headRefName": "docs/status-close-p6b-after-pr181",
+      "mergeCommit": {
+        "oid": "7d8b635744ad2054ff1cbe9e986f24e7d1de548f"
+      },
+      "mergedAt": "2026-06-28T02:07:27Z",
+      "number": 182,
+      "title": "docs: close P6-B real smoke status after PR 181",
+      "url": "https://github.com/jovijovi/sachima/pull/182"
+    },
     {
       "baseRefName": "release/sachima",
       "headRefName": "fix/p6b-real-smoke-blockers",
@@ -57,17 +68,6 @@
       "number": 178,
       "title": "docs: add P6-B Stage-2 DoR provisioning readiness",
       "url": "https://github.com/jovijovi/sachima/pull/178"
-    },
-    {
-      "baseRefName": "release/sachima",
-      "headRefName": "docs/status-reconcile-p6b-after-pr176",
-      "mergeCommit": {
-        "oid": "9ddd72b04d646f757b16fa28872dfcb08615c5f7"
-      },
-      "mergedAt": "2026-06-27T07:50:24Z",
-      "number": 177,
-      "title": "docs: reconcile P6-B status after PR 176",
-      "url": "https://github.com/jovijovi/sachima/pull/177"
     }
   ],
   "open_pr_count": 0,
