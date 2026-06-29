@@ -104,24 +104,6 @@ def collect_snapshot(
         ],
         cwd=workdir,
     )
-    latest_merged_prs = _gh_json(
-        [
-            "gh",
-            "pr",
-            "list",
-            "--repo",
-            repository,
-            "--base",
-            base_branch,
-            "--state",
-            "merged",
-            "--limit",
-            "5",
-            "--json",
-            "number,title,headRefName,baseRefName,url,mergedAt,mergeCommit",
-        ],
-        cwd=workdir,
-    )
     return {
         "repository": repository,
         "base_branch": base_branch,
@@ -129,8 +111,7 @@ def collect_snapshot(
         "base_head_note": "latest first-parent base commit excluding machine status-sync self-commits",
         "open_pr_count": len(open_prs),
         "open_prs": open_prs,
-        "latest_merged_prs": latest_merged_prs,
-        "scope_note": "machine dynamic status only; approvals and phase meaning remain human-authored outside this block",
+        "scope_note": "machine dynamic status only; GitHub remains the authority for PR/merge/CI history, and approvals/phase meaning remain human-authored outside this block",
     }
 
 

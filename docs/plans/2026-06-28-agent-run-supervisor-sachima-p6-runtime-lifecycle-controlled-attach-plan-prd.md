@@ -42,8 +42,7 @@ pr182_merge_commit: 7d8b635744ad2054ff1cbe9e986f24e7d1de548f
 Authority inputs:
 
 - `GOAL.md` — production-grade AI workbench target, low-intrusion runtime ownership, claim-check discipline, no-leak rules.
-- `docs/roadmap/current-status.md` — current decision and explicit non-approvals.
-- `docs/roadmap/tail-register.md` — active tail `ROADMAP-NEXT-ARS-P6-RUNTIME-LIFECYCLE-CONTROLLED-ATTACH`.
+- `docs/roadmap/current-status.md` — current decision, P6 runtime lifecycle / controlled attach dashboard row, and explicit non-approvals.
 - P5 design/readiness and Temporal Slice 1 docs — caller-owned Temporal/control-surface semantics.
 - P6/P6-A docs and code — default-off controlled AI FLOW composition, control operations, WATCH propagation.
 - P6-B docs and PR #181 evidence — one bounded read-only real-smoke PASS only, no broader execution approval.

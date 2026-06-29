@@ -24,15 +24,7 @@ SNAPSHOT = {
             "url": "https://github.com/jovijovi/sachima/pull/42",
         }
     ],
-    "latest_merged_prs": [
-        {
-            "number": 41,
-            "title": "feat: previous phase",
-            "mergedAt": "2026-06-14T00:00:00Z",
-            "mergeCommit": {"oid": "def456"},
-            "url": "https://github.com/jovijovi/sachima/pull/41",
-        }
-    ],
+    "scope_note": "machine dynamic status only; GitHub remains the authority for PR/merge/CI history, and approvals/phase meaning remain human-authored outside this block",
 }
 
 
@@ -75,7 +67,8 @@ def test_render_status_block_is_machine_owned_and_json_parsable() -> None:
     assert payload["base_branch"] == "release/sachima"
     assert payload["base_head"] == "abc123"
     assert payload["open_pr_count"] == 1
-    assert payload["latest_merged_prs"][0]["mergeCommit"]["oid"] == "def456"
+    assert "latest_merged_prs" not in payload
+    assert "GitHub remains the authority for PR/merge/CI history" in payload["scope_note"]
 
 
 def test_sync_document_inserts_block_after_intro_when_missing() -> None:
@@ -127,7 +120,10 @@ def test_collect_snapshot_uses_repository_remote_when_default_origin_base_missin
     _git(tmp_path, "remote", "add", "origin", "https://github.com/NousResearch/hermes-agent.git")
     _git(tmp_path, "remote", "add", "sachima", "https://github.com/jovijovi/sachima.git")
 
+    calls = []
+
     def fake_gh_json(command, *, cwd):
+        calls.append(command)
         return []
 
     monkeypatch.setattr(sync_roadmap_status, "_gh_json", fake_gh_json)
@@ -141,6 +137,11 @@ def test_collect_snapshot_uses_repository_remote_when_default_origin_base_missin
 
     assert feature_head != base_head
     assert snapshot["base_head"] == base_head
+    assert len(calls) == 1
+    assert "--state" in calls[0]
+    assert "open" in calls[0]
+    assert "merged" not in calls[0]
+    assert "latest_merged_prs" not in snapshot
 
 
 def test_ref_head_ignores_machine_status_sync_commit(tmp_path: Path) -> None:
