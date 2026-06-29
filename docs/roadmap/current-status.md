@@ -83,20 +83,10 @@ A roadmap/phase task is complete only when:
 ```json
 {
   "base_branch": "release/sachima",
-  "base_head": "456d564358e3073777d13f915f6c2552183786ca",
+  "base_head": "ac26c0448c197b9de1dbde8e084db236c78b4389",
   "base_head_note": "latest first-parent base commit excluding machine status-sync self-commits",
-  "open_pr_count": 1,
-  "open_prs": [
-    {
-      "baseRefName": "release/sachima",
-      "headRefName": "docs/p7-real-delivery-ack-design",
-      "isDraft": false,
-      "mergeStateStatus": "UNSTABLE",
-      "number": 187,
-      "title": "docs: add P7 delivery ACK design gate",
-      "url": "https://github.com/jovijovi/sachima/pull/187"
-    }
-  ],
+  "open_pr_count": 0,
+  "open_prs": [],
   "repository": "jovijovi/sachima",
   "scope_note": "machine dynamic status only; GitHub remains the authority for PR/merge/CI history, and approvals/phase meaning remain human-authored outside this block"
 }
