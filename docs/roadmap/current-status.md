@@ -14,8 +14,8 @@
 | Field | Current truth |
 |---|---|
 | Product goal | Production-grade AI workbench inside a custom IM channel, with safe durable FlowWeaver/Hermes orchestration and controlled delivery surfaces. |
-| Current phase | P7 — real delivery / ACK closure design gate. |
-| Current implementation focus | Docs-only P7 design gate for real delivery / ACK closure; no real delivery, live/default-on behavior, or implementation is approved by this status. |
+| Current phase | P7 — real delivery / ACK closure. |
+| Current implementation focus | P7 real delivery / ACK closure design gate task is complete; no real delivery, live/default-on behavior, or implementation is approved by this status. |
 | Current repo state | `release/sachima` is the integration branch; GitHub/open-PR state is reflected only in the generated machine block below. |
 | Not yet started | P7 source implementation, bounded real-send canary, limited live pilot, and P8 product/ops hardening. |
 
@@ -29,7 +29,7 @@
 | P6 runtime lifecycle / controlled attach | Done as implementation slice | Adds a default-off caller-owned attach shell over an already supplied P6 session, with fail-closed admission, sanitized state, idempotency, no-relaunch recovery, and WP3b WATCH preservation. | If more runtime lifecycle work is needed, start a new narrow gate; do not treat this as Worker/runtime startup approval. |
 | Feishu task workbench title summary | Done | Task-card title summary stabilization is merged. | No phase change. |
 | Feishu PR approval-card stale-head hardening | Done | Reissuing a PR approval card invalidates older unresolved same-PR cards and fails closed on stale callbacks/resolvers. | Runtime deployment/restart is operational, not a roadmap phase. |
-| P7 real delivery / ACK closure | Design gate in progress | Docs-only design is being prepared to define slot lifecycle, ACK source-of-truth, retry/duplicate/WATCH behavior, rollback, and no-leak rules. | If merged, request separate default-off implementation approval; real send/canary/live rollout remain separate gates. |
+| P7 real delivery / ACK closure | Done | Design gate task complete. | — |
 | P8 product / ops hardening | Not started | Product/ops hardening after limited live-pilot readiness. | Requires P7/live-pilot readiness first. |
 
 ## Active blockers / gates
@@ -47,7 +47,7 @@
 The next safe mainline request should be one of:
 
 1. **P6 status/implementation follow-up** — only if a concrete runtime lifecycle gap is found, still default-off and local/offline unless separately approved.
-2. **P7 implementation gate** — only after the P7 design gate is merged and a separate implementation approval is given; keep default-off and avoid real sends.
+2. **P7 implementation gate** — separate implementation approval is required; keep default-off and avoid real sends.
 3. **Docs/status hygiene** — keep this dashboard lean and aligned with live repo truth without recreating PR ledgers or tail registers.
 
 ## Explicit non-approvals
