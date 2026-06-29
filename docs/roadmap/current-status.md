@@ -83,7 +83,7 @@ A roadmap/phase task is complete only when:
 ```json
 {
   "base_branch": "release/sachima",
-  "base_head": "ac26c0448c197b9de1dbde8e084db236c78b4389",
+  "base_head": "df4b956102d6bec8e9cd7384d0fc1bb5a3ef3f46",
   "base_head_note": "latest first-parent base commit excluding machine status-sync self-commits",
   "open_pr_count": 0,
   "open_prs": [],
