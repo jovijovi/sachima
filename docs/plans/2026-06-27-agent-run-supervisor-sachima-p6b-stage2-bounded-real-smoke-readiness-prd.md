@@ -95,7 +95,7 @@ The exact binary path, binary sha256, acpx version, role overlay digest, workflo
 
 - Docs-only changed-file allowlist passes.
 - Manifest parses and all execution/live/write booleans remain false.
-- `current-status.md`, `tail-register.md`, and `boundary-register.md` preserve real-smoke non-approval.
+- `current-status.md` and `boundary-register.md` preserve real-smoke non-approval.
 - Claude Code architect/docs review is recorded and labels real smoke BLOCKED.
 - Codex primary read-only blocker review passes on the final docs revision or blockers are fixed and re-reviewed.
 - Local docs gates pass: `git diff --check`, roadmap sync check before PR opening, stale wording scan, forbidden source/runtime mutation scan.

@@ -1,6 +1,78 @@
 # Sachima Roadmap Current Status
 
-> Lean living dashboard. This file tracks the current roadmap position, current decision, high-signal tails, explicit non-approvals, and next allowed request for Sachima / FlowWeaver work. It does not replace the canonical roadmap or the split detail ledgers under `docs/roadmap/`.
+> Lean project dashboard. This file records the current project phase, feature/task implementation status, active blockers, and next allowed work. It is not a GitHub/PR log.
+
+## How to read this file
+
+- GitHub is the authority for PRs, commits, CI, and merge history.
+- `current-status.md` is the authority for the current project dashboard only: phase, feature/task state, blockers, boundaries, and next decision.
+- Historical PR ledgers, tail registers, and evidence indexes are not routine status surfaces for this project.
+- External evidence is referenced only when it materially supports a current stage decision and is not already represented by GitHub/CI/PR metadata.
+
+## Current project position
+
+| Field | Current truth |
+|---|---|
+| Product goal | Production-grade AI workbench inside a custom IM channel, with safe durable FlowWeaver/Hermes orchestration and controlled delivery surfaces. |
+| Current phase | P6 — controlled AI FLOW and runtime lifecycle foundations. |
+| Current implementation focus | Runtime lifecycle / controlled attach is implemented as a default-off, caller-owned attach shell. |
+| Current repo state | `release/sachima` is the integration branch; GitHub/open-PR state is reflected only in the generated machine block below. |
+| Not yet started | P7 real delivery / ACK closure and P8 product/ops hardening. |
+
+## Stage / feature board
+
+| Stage / feature | Status | Meaning | Next |
+|---|---|---|---|
+| P5 Temporal Slice 1 | Done | Default-off caller-owned Temporal Slice 1 with controlled-deterministic step body. | Use only as prerequisite evidence for later runtime work; no production traffic implied. |
+| P6-A controlled AI FLOW composition | Done | Default-off outer P6 composition over WP4 + P5 seam; deterministic/injected-fake step bodies only. | No real agent execution or live delivery implied. |
+| P6-B bounded read-only real-agent step | Done for the single approved smoke | One pinned local `acpx@0.10.0` / Codex read-only one-shot PASS was recorded; no duplicate replay/recover and no live surfaces. | Any additional real agent/acpx/npx execution requires separate approval. |
+| P6 runtime lifecycle / controlled attach | Done as implementation slice | Adds a default-off caller-owned attach shell over an already supplied P6 session, with fail-closed admission, sanitized state, idempotency, no-relaunch recovery, and WP3b WATCH preservation. | If more runtime lifecycle work is needed, start a new narrow gate; do not treat this as Worker/runtime startup approval. |
+| Feishu task workbench title summary | Done | Task-card title summary stabilization is merged. | No phase change. |
+| Feishu PR approval-card stale-head hardening | Done | Reissuing a PR approval card invalidates older unresolved same-PR cards and fails closed on stale callbacks/resolvers. | Runtime deployment/restart is operational, not a roadmap phase. |
+| P7 real delivery / ACK closure | Not started | Real IM delivery/ACK behavior is still outside the approved implementation scope. | Requires separate design/implementation/live approval. |
+| P8 product / ops hardening | Not started | Product/ops hardening after limited live-pilot readiness. | Requires P7/live-pilot readiness first. |
+
+## Active blockers / gates
+
+| Gate | Status | Required before |
+|---|---|---|
+| Additional real agent/acpx/npx execution | Not approved | Any new real agent run, real smoke beyond the recorded one-shot, or broader controlled AI FLOW real execution. |
+| Write-capable Claude/Codex roles | Not approved | Any role that can modify files or perform non-read-only agent execution through Sachima. |
+| Gateway/Feishu/live/default-on behavior | Not approved by roadmap status | Any live IM behavior, automatic delivery, platform adapter mutation, public ingress, or default-on route. |
+| Production config / service lifecycle | Not approved by roadmap status | Production config writes, Gateway-owned Temporal/Worker lifecycle, runtime/Worker/service/subprocess startup, or production traffic. |
+| WP3b active-run cancellation | WATCH | Any claim that active host/ACP runs can be reliably interrupted mid-run. |
+
+## Next allowed work
+
+The next safe mainline request should be one of:
+
+1. **P6 status/implementation follow-up** — only if a concrete runtime lifecycle gap is found, still default-off and local/offline unless separately approved.
+2. **P7 design gate** — real delivery / ACK closure design, explicitly separating fake/local delivery evidence from real IM delivery.
+3. **Docs/status hygiene** — keep this dashboard lean and aligned with live repo truth without recreating PR ledgers or tail registers.
+
+## Explicit non-approvals
+
+This status page does **not** approve:
+
+- real external Sachima ingress;
+- real external delivery or production delivery control;
+- Gateway/Feishu/live/default-on behavior;
+- public webhook exposure;
+- production config writes or service restarts;
+- Gateway-owned Temporal/Worker/service/subprocess lifecycle;
+- additional real acpx/npx/agent execution beyond the recorded approved bounded smoke;
+- write-capable Claude/Codex roles;
+- Satine or Hermes-profile ACP execution;
+- production cluster or production traffic.
+
+## Completion rule
+
+A roadmap/phase task is complete only when:
+
+- the feature/task row above reflects its current implementation status;
+- blockers and non-approvals remain explicit;
+- GitHub/CI/PR facts are left to GitHub instead of copied here as a ledger;
+- any non-GitHub evidence is referenced only when it materially affects the current decision.
 
 ## Machine-owned dynamic status
 
@@ -13,223 +85,10 @@
   "base_branch": "release/sachima",
   "base_head": "9e426a36083445dbe0dd3e1af7e9008dd1e7d91a",
   "base_head_note": "latest first-parent base commit excluding machine status-sync self-commits",
-  "latest_merged_prs": [
-    {
-      "baseRefName": "release/sachima",
-      "headRefName": "fix/feishu-pr-approval-stale-card",
-      "mergeCommit": {
-        "oid": "9e426a36083445dbe0dd3e1af7e9008dd1e7d91a"
-      },
-      "mergedAt": "2026-06-28T14:25:39Z",
-      "number": 185,
-      "title": "fix: invalidate stale Feishu PR approval cards",
-      "url": "https://github.com/jovijovi/sachima/pull/185"
-    },
-    {
-      "baseRefName": "release/sachima",
-      "headRefName": "feat/p6-runtime-controlled-attach",
-      "mergeCommit": {
-        "oid": "70d9ae3220265ef3f314ca4758c0bc20d3ea9c3b"
-      },
-      "mergedAt": "2026-06-28T09:22:07Z",
-      "number": 184,
-      "title": "feat: add P6 runtime controlled attach shell",
-      "url": "https://github.com/jovijovi/sachima/pull/184"
-    },
-    {
-      "baseRefName": "release/sachima",
-      "headRefName": "docs/runtime-lifecycle-controlled-attach-plan",
-      "mergeCommit": {
-        "oid": "0db95bb710ffd4606a2437e908caeebd8ce19ac4"
-      },
-      "mergedAt": "2026-06-28T04:42:07Z",
-      "number": 183,
-      "title": "docs: plan P6 runtime lifecycle controlled attach",
-      "url": "https://github.com/jovijovi/sachima/pull/183"
-    },
-    {
-      "baseRefName": "release/sachima",
-      "headRefName": "docs/status-close-p6b-after-pr181",
-      "mergeCommit": {
-        "oid": "7d8b635744ad2054ff1cbe9e986f24e7d1de548f"
-      },
-      "mergedAt": "2026-06-28T02:07:27Z",
-      "number": 182,
-      "title": "docs: close P6-B real smoke status after PR 181",
-      "url": "https://github.com/jovijovi/sachima/pull/182"
-    },
-    {
-      "baseRefName": "release/sachima",
-      "headRefName": "fix/p6b-real-smoke-blockers",
-      "mergeCommit": {
-        "oid": "42b2ec51aa3ecbf65fef2c0c192e6c31a045e904"
-      },
-      "mergedAt": "2026-06-27T17:03:04Z",
-      "number": 181,
-      "title": "fix: unblock P6-B real smoke output and prompt",
-      "url": "https://github.com/jovijovi/sachima/pull/181"
-    }
-  ],
   "open_pr_count": 0,
   "open_prs": [],
   "repository": "jovijovi/sachima",
-  "scope_note": "machine dynamic status only; approvals and phase meaning remain human-authored outside this block"
+  "scope_note": "machine dynamic status only; GitHub remains the authority for PR/merge/CI history, and approvals/phase meaning remain human-authored outside this block"
 }
 ```
 <!-- sachima-status-sync:end -->
-
-```text
-last_updated: 2026-06-28
-base_branch: release/sachima
-current_position: P6-B Stage-2 has advanced from readiness/blocker closure to a recorded single-run bounded read-only real-smoke PASS. PR #175 merged host-local DoR / crash-no-relaunch proof, PR #178 fixed the DoR provisioning contract, PR #179 merged durable cross-process claim-store semantics, and PR #181 fixed the output-count/prompt blockers and recorded a pinned `acpx@0.10.0` + `sachima.codex.primary_reviewer` one-shot PASS.
-current_mainline: agent-run-supervisor × Sachima is now on the P6 runtime lifecycle / controlled attach implementation branch. This branch implements a default-off caller-owned attach shell over an already supplied P6 session; it starts no runtime/Worker/service/subprocess and approves no additional real agent/acpx execution or live delivery.
-current_head_evidence: PR #171 merged P6-B Stage-1, PR #173 merged roadmap status dashboard slimdown, PR #174 merged the Stage-2 readiness gate, PR #175 merged host-local DoR / crash-no-relaunch proof, PR #176 merged neutral production-grade GOAL wording, PR #177 reconciled P6-B status after PR #176, PR #178 merged DoR provisioning/readiness, PR #179 merged the durable controlled exec claim store, and PR #181 merged the P6-B bounded real-smoke blocker fixes and PASS evidence; machine block above is git/GitHub evidence only.
-detail_ledgers: docs/roadmap/phase-ledger.md, docs/roadmap/tail-register.md, docs/roadmap/evidence-index.md, docs/roadmap/reference-index.md
-```
-
-## How to use this file
-
-- Treat this file as the **current decision entrypoint**, not as a historical database.
-- Use `GOAL.md` for the north-star and `docs/roadmap/reference-index.md` for stable authority links.
-- Use `docs/roadmap/phase-ledger.md` for long phase/PR history.
-- Use `docs/roadmap/tail-register.md` for the full tail table.
-- Use `docs/roadmap/evidence-index.md` for long evidence paths.
-- The `Machine-owned dynamic status` block is generated by `tools/sync_roadmap_status.py`; it records git/GitHub evidence only and grants no approval.
-
-## Current decision
-
-```text
-P6-B Stage-2 bounded read-only real smoke is recorded as PASS by PR #181 and status-closed by PR #182.
-The active branch is the approved P6 runtime lifecycle / controlled attach implementation slice: it adds a default-off caller-owned attach shell and local control wrappers for an already supplied P6 session, with fail-closed admission, sanitized attach state, idempotent duplicate start handling, no-relaunch recover, and WP3b WATCH preservation.
-No runtime/Worker/service/subprocess start, additional real agent/acpx/npx execution, write roles, Gateway/Feishu/live behavior, production config, public ingress, service restart, broader real controlled AI FLOW execution, or real delivery is approved by this status page or by this branch.
-```
-
-## Current phase summary
-
-| Area | Current status | Strongest current meaning | Detail |
-|---|---|---|---|
-| P5 Temporal Slice 1 | Merged in PR #166 | Default-off caller-owned Temporal Slice 1 with controlled-deterministic step body; no production cluster/traffic or Gateway-owned lifecycle | `docs/roadmap/phase-ledger.md` |
-| P6 pre-development governance | Merged in PR #168 | PRD/architecture/technical-solution/review gate completed; docs-only | `docs/roadmap/phase-ledger.md` |
-| P6-A controlled AI FLOW composition | Merged in PR #169 | Default-off outer P6 composition over WP4 + P5 seam; deterministic/injected-fake steps only | `docs/roadmap/phase-ledger.md` |
-| P6-B pre-development governance | Merged in PR #170 | Defines bounded read-only planning/report step gate; docs-only | `docs/roadmap/phase-ledger.md` |
-| P6-B Stage-1 source implementation | Merged in PR #171 | Thin default-off bridge StepExecutor; injected-fake runner gates only; no real smoke | `docs/roadmap/phase-ledger.md` |
-| P6-B Stage-2 readiness/governance | Merged in PR #174 | PASS_WITH_WATCH for readiness; originally identified B1 cross-process crash/no-relaunch proof and B2 exact runner/role/sink/evidence pinning as real-smoke blockers. B1 closed by PR #179 and B2 / prompt-output blockers closed for the approved bounded smoke by PR #181 | `docs/plans/2026-06-27-agent-run-supervisor-sachima-p6b-stage2-bounded-real-smoke-readiness-prd.md` |
-| P6-B Stage-2 host-local DoR / crash-no-relaunch proof | Merged in PR #175 | Proves fail-closed no-relaunch recovery (B1 Option B) and adds host-local runner/role-overlay/sink/evidence pinning tooling (B2); later PR #181 records a pinned out-of-repo `acpx@0.10.0` one-shot PASS for the approved bounded smoke | `docs/plans/2026-06-27-agent-run-supervisor-sachima-p6b-stage2-host-local-dor-crash-no-relaunch-proof-implementation.md` |
-| P6-B Stage-2 DoR provisioning/readiness | Merged in PR #178 | Fixes the DoR validation command, read-only role overlay invariants, out-of-repo evidence/sink contract, and crash/recovery/no-relaunch interpretation; the authoring-time `BLOCKED_NO_ACPX` state was later superseded by PR #181's approved bounded smoke PASS | `docs/plans/2026-06-27-agent-run-supervisor-sachima-p6b-stage2-dor-provisioning-readiness.md` |
-| P6-B Stage-2 durable claim store | Merged in PR #179 | Adds local file-backed controlled-exec claim-store semantics for cross-process restart/replay/recover without duplicate relaunch; closes Option-A blocker; no real smoke by itself | GitHub PR #179 |
-| P6-B Stage-2 bounded read-only real smoke | Blocker fixes merged in PR #181; smoke PASS recorded | Fixes exec output-ref counting and the deterministic prompt affordance, then records one pinned `acpx@0.10.0` / Codex read-only one-shot PASS with no duplicate replay/recover, no repo mutation, and no live surfaces | GitHub PR #181; `docs/roadmap/evidence-index.md` |
-| P6 runtime lifecycle / controlled attach implementation | Candidate implementation in this branch | Adds a default-off caller-owned attach shell over an already supplied P6 session; no runtime/Worker/service/subprocess start, no additional real agent/acpx execution, no live/Gateway/Feishu/production config/real delivery | `docs/plans/2026-06-28-agent-run-supervisor-sachima-p6-runtime-lifecycle-controlled-attach-implementation.md` |
-| Feishu task workbench title summary | Merged in PR #172 | Stabilizes task-card title summary behavior; not a phase authority change | GitHub PR #172 |
-| P7 real delivery / ACK closure | Pending | Not started; requires separate approval after fake/local delivery and AI FLOW gates are production-ready | `docs/roadmap/tail-register.md` |
-| P8 product / ops hardening | Pending | Not started; blocked until limited live pilot readiness | `docs/roadmap/tail-register.md` |
-
-## High-signal active tails
-
-| Tail | Class | Blocks next mainline? | Required before | Detail |
-|---|---|---:|---|---|
-| Runtime lifecycle / controlled attach implementation | NEXT_PHASE | This branch is the default-off implementation slice | Any broader real controlled AI FLOW execution, durable runtime/worker attach, live pilot, or real delivery claim | Implements a caller-owned attach/control shell over an already supplied P6 session. Still excludes runtime/Worker/service/subprocess start, Gateway/Feishu/live/production config, write roles, additional real execution, and real delivery |
-| WP3b active-run cancellation | WATCH | No for docs/governance; Yes for clean cancellation claims | Any clean active-run cancellation claim | Full tail table in `docs/roadmap/tail-register.md` |
-| P4 Envelope v1 agentic-ui conformance | NEXT_PHASE | No for current supervisor mainline | Any P4 behavior-bearing external-ingress claim | Side tail; do not pivot to it by default |
-| Status dashboard hygiene | WATCH | No | Any phase closure / next-readiness claim | Keep this lean file plus split ledgers aligned |
-
-## Detail indexes
-
-| Concern | Home |
-|---|---|
-| Stable references / side capability references | `docs/roadmap/reference-index.md` |
-| Long phase map and bridge PR ledger | `docs/roadmap/phase-ledger.md` |
-| Full tail register | `docs/roadmap/tail-register.md` |
-| Full boundary / non-approval register | `docs/roadmap/boundary-register.md` |
-| Evidence paths and manifests | `docs/roadmap/evidence-index.md` |
-| Per-task execution notes | `docs/dev_log/` |
-| Extracted legacy status metadata | `docs/roadmap/status-metadata-legacy.md` |
-| Implementation plans and manifests | `docs/plans/` |
-
-## Explicit non-approvals summary
-
-The current state still does **not** approve real or live operation outside the specifically recorded local/offline slices. Full boundary text lives in `docs/roadmap/boundary-register.md`.
-
-High-signal non-approvals remain:
-
-```text
-real_external_sachima_ingress
-real_external_delivery / production_delivery_control
-production_agent_tool_execution_expansion
-gateway_restart_or_reload
-public_webhook_exposure
-Gateway / Feishu / IM / public ingress / real delivery
-production config writes, service restarts, platform adapter mutation
-additional P6-B/P6 real acpx/npx/agent execution beyond recorded bounded smokes without separate approval
-write_capable_claude_or_codex_roles
-Satine or Hermes-profile ACP execution
-controlled_ai_flow_execution beyond approved P6-A deterministic/injected-fake scope
-```
-
-## Next allowed request
-
-The **P6-B Stage-2 bounded read-only real smoke** has passed for the single approved one-shot after PR #181. PR #175 provided host-local DoR / crash-no-relaunch proof, PR #178 fixed DoR provisioning contracts, PR #179 closed the durable cross-process claim-store blocker, and PR #181 fixed the output-count/prompt blockers and records the PASS evidence.
-
-The current branch is that **default-off runtime lifecycle / controlled attach implementation slice**. The allowed next request after this PR passes is still not live/product delivery; it is a later narrow follow-up for status closure or for the next separately approved local/offline control capability:
-
-```text
-P6 current implementation slice:
-  implement default-off caller-owned attach over an already supplied P6 session
-  -> gate start/query/cancel/recover/close behind sanitized attach state
-  -> enforce idempotency, no-duplicate-relaunch, no-leak projections, and WP3b WATCH preservation
-  -> no runtime/Worker/service/subprocess start in this PR
-  -> no additional real agent/acpx/npx execution
-  -> no write roles, Gateway/Feishu/live/production config, service restart, or real delivery
-```
-
-Still requires separate explicit approval before any future work:
-
-```text
-additional P6-B real acpx/npx/agent execution beyond already recorded bounded smokes
-real acpx/npx/agent execution beyond already recorded bounded smokes
-additional or unbounded persistent session execution beyond the approved Phase E-2 bounded lifecycle
-additional_or_unbounded_cancellation_execution
-write_capable_claude_or_codex_roles
-Satine or Hermes-profile ACP execution
-Gateway / Feishu / IM / public ingress / real delivery
-production cluster or production traffic
-production config writes, service restarts, platform adapter mutation
-```
-
-Do not pivot to agentic-ui by default: the agentic-ui Sachima Envelope v1 conformance work remains an open side tail, not the default next step for the current supervisor → Sachima integration mainline.
-
-FlowWeaver continuity note: Sachima protocol work and the supervisor integration are high-priority insertions, not a cancellation or shelving of the existing FlowWeaver roadmap.
-
-## Drift guard
-
-Do not infer any of these from the completed phases:
-
-- PE-2A fake delivery success does not prove real delivery safety.
-- Loopback/synthetic ingress success does not prove public external ingress safety.
-- A design packet does not approve implementation.
-- The supervised local Activity design packet by itself does not approve runtime code, controlled AI FLOW execution, live/default-on behavior, Gateway involvement, real ingress, or real delivery.
-- The supervised local Activity implementation first slice does not approve real local `exec`, persistent sessions, cancellation/rollback, controlled AI FLOW execution, live/default-on behavior, Gateway involvement, real ingress, or real delivery.
-- The durable runtime ownership & controlled local execution design packet is docs-only and uses design labels; it does not approve implementation, durable-runtime code, real local `exec`, persistent sessions, cancellation execution, real AGENT execution, controlled AI FLOW execution, a Gateway-owned or Worker-owned runtime lifecycle, live/default-on behavior, Gateway involvement, real ingress, or real delivery.
-- The durable-state preflight implementation validates durable preconditions and stores sanitized query state only; it does not approve real local `exec`, persistent sessions, cancellation execution, real AGENT execution, controlled AI FLOW execution, a Gateway-owned or Worker-owned runtime lifecycle, live/default-on behavior, Gateway involvement, real ingress, or real delivery.
-- The local/offline supervisor seam does not approve controlled AI FLOW execution, live/default-on behavior, Gateway involvement, real ingress, or real delivery.
-- The Phase C controlled local exec first slice is a wrapper implementation only; it did not by itself prove a real local agent smoke. The later Phase D smoke proof came only after separate host-local DoR provisioning and separate user approval.
-- The Phase D readiness packet is docs-only. Codex CLI substituting for interrupted Claude Code architecture/docs authoring is not the Codex primary review and is not execution approval.
-- The Phase D smoke prerequisites implementation shipped verifiers, builders, and checkers exercised with injected fakes only. The later host-local DoR and real smoke were separate approvals and local evidence steps; PR #119 itself did not approve live/Gateway/Feishu/production behavior.
-- The single Phase D real local smoke PASS proves only a bounded local read-only Codex one-shot. It does not approve persistent sessions, controlled AI FLOW, live/default-on behavior, Gateway/Feishu involvement, public ingress, production config writes, or real delivery.
-- The Phase E persistent sessions / cancellation design packet is docs-only and uses design labels; it does not approve implementation, persistent session execution, cancellation execution, session-capable role configs, real AGENT/acpx execution, controlled AI FLOW execution, live/default-on behavior, Gateway/Feishu involvement, public ingress, production config writes, or real delivery — and its merged design status confers no implementation or execution approval.
-- The P5 Temporal Slice 1 implementation proves a default-off controlled-deterministic Temporal runtime slice behind the caller-owned control surface. It does not approve production cluster/traffic, Gateway-owned lifecycle, P6 real acpx/npx/agent execution, write roles, live/default-on behavior, production config writes, or real delivery.
-- Sachima Envelope v1 Sachima-side local conformance does not approve agentic-ui conformance, cross-repo probes, public external ingress, or real delivery.
-- Callback HTTP 2xx means receiver acceptance only; it does not prove browser-visible or IM-visible delivery.
-- A local runtime bridge does not approve production durable runtime ownership.
-- ACK evidence from fake-send does not approve real IM ACK reconciliation.
-- Completed PRs do not close open `WATCH` tails unless this file records the closure.
-- A roadmap/phase PR is not complete if this file should have changed and did not.
-
-
-## Completion rule for agents
-
-A roadmap or phase task is not complete until:
-
-- tests, reviews, and evidence pass where applicable;
-- PR / merge / post-merge status is recorded where applicable;
-- this file reflects the new phase state;
-- remaining tails are classified as `BLOCKER`, `NEXT_PHASE`, `WATCH`, or `PARKED`.

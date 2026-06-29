@@ -102,7 +102,7 @@ These are not all needed immediately, but each must be resolved before its phase
 
 Every phase must update or create:
 
-- `docs/roadmap/current-status.md` for roadmap position, tails, non-approvals, evidence links, and next allowed request
+- `docs/roadmap/current-status.md` only when the phase changes the current dashboard: phase position, feature/task status, active blockers/gates, explicit non-approvals, or next allowed work
 - `docs/plans/YYYY-MM-DD-<phase>.md`
 - `docs/runbooks/<phase>.md` when an operator action exists
 - `docs/dev_log/YYYY-MM-DD-<phase>.md`
