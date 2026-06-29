@@ -1,0 +1,45 @@
+type: sachima.governance.phase_manifest.v1
+phase: p7_real_delivery_ack_closure_design_gate
+status: draft_docs_only
+created_at: '2026-06-29'
+branch: docs/p7-real-delivery-ack-design
+base_branch: release/sachima
+scope:
+  docs_only: true
+  source_implementation: false
+  real_external_ingress: false
+  real_external_delivery: false
+  gateway_or_feishu_live_behavior: false
+  production_config_write: false
+  service_restart: false
+  runtime_or_worker_start: false
+  platform_adapter_mutation: false
+  additional_real_agent_execution: false
+  additional_acpx_or_npx_execution: false
+  write_roles: false
+  bounded_canary_send: false
+prerequisites:
+  p5_temporal_slice1: merged_default_off
+  p6a_controlled_ai_flow: merged_default_off
+  p6b_bounded_read_only_real_agent_step: single_approved_smoke_only
+  p6_runtime_lifecycle_controlled_attach: implemented_default_off
+  phase_b_fake_send_simulator: local_evidence_only
+  pe2a_controlled_runtime_fake_delivery: local_fake_delivery_only
+strongest_allowed_outcome: >-
+  Docs-only P7 real delivery / ACK closure design gate. It may define future delivery-slot,
+  ACK, retry, duplicate, rollback, no-leak, and approval semantics. It does not approve source
+  implementation, real delivery, live/default-on behavior, production config, service restart,
+  platform-adapter mutation, Sachima runtime agent/acpx/npx execution, or production traffic.
+required_artifacts:
+  prd: docs/plans/2026-06-29-sachima-p7-real-delivery-ack-closure-design-gate-prd.md
+  technical_solution: docs/plans/2026-06-29-sachima-p7-real-delivery-ack-closure-design-gate-technical-solution.md
+  user_review_packet: docs/plans/2026-06-29-sachima-p7-real-delivery-ack-closure-design-gate-user-review-packet.md
+  dev_log: docs/dev_log/2026-06-29-sachima-p7-real-delivery-ack-closure-design-gate.md
+required_gates:
+  - docs and status changes only; no source/config/runtime/live surface
+  - manifest parses and all scope flags remain false
+  - no wording claims implementation, live delivery, or production approval
+  - slot/ACK/retry/duplicate/rollback/no-leak semantics are each specified
+future_implementation_approval_phrase: >-
+  approve_sachima_p7_real_delivery_ack_closure_implementation_default_off_bounded_adapter_path_no_live_default_on_no_public_ingress_no_production_config_write_no_gateway_restart_no_real_agent_execution_no_write_roles_no_unbounded_delivery
+future_canary_approval_required: true

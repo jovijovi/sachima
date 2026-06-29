@@ -14,10 +14,10 @@
 | Field | Current truth |
 |---|---|
 | Product goal | Production-grade AI workbench inside a custom IM channel, with safe durable FlowWeaver/Hermes orchestration and controlled delivery surfaces. |
-| Current phase | P6 — controlled AI FLOW and runtime lifecycle foundations. |
-| Current implementation focus | Runtime lifecycle / controlled attach is implemented as a default-off, caller-owned attach shell. |
+| Current phase | P7 — real delivery / ACK closure design gate. |
+| Current implementation focus | Docs-only P7 design gate for real delivery / ACK closure; no real delivery, live/default-on behavior, or implementation is approved by this status. |
 | Current repo state | `release/sachima` is the integration branch; GitHub/open-PR state is reflected only in the generated machine block below. |
-| Not yet started | P7 real delivery / ACK closure and P8 product/ops hardening. |
+| Not yet started | P7 source implementation, bounded real-send canary, limited live pilot, and P8 product/ops hardening. |
 
 ## Stage / feature board
 
@@ -29,7 +29,7 @@
 | P6 runtime lifecycle / controlled attach | Done as implementation slice | Adds a default-off caller-owned attach shell over an already supplied P6 session, with fail-closed admission, sanitized state, idempotency, no-relaunch recovery, and WP3b WATCH preservation. | If more runtime lifecycle work is needed, start a new narrow gate; do not treat this as Worker/runtime startup approval. |
 | Feishu task workbench title summary | Done | Task-card title summary stabilization is merged. | No phase change. |
 | Feishu PR approval-card stale-head hardening | Done | Reissuing a PR approval card invalidates older unresolved same-PR cards and fails closed on stale callbacks/resolvers. | Runtime deployment/restart is operational, not a roadmap phase. |
-| P7 real delivery / ACK closure | Not started | Real IM delivery/ACK behavior is still outside the approved implementation scope. | Requires separate design/implementation/live approval. |
+| P7 real delivery / ACK closure | Design gate in progress | Docs-only design is being prepared to define slot lifecycle, ACK source-of-truth, retry/duplicate/WATCH behavior, rollback, and no-leak rules. | If merged, request separate default-off implementation approval; real send/canary/live rollout remain separate gates. |
 | P8 product / ops hardening | Not started | Product/ops hardening after limited live-pilot readiness. | Requires P7/live-pilot readiness first. |
 
 ## Active blockers / gates
@@ -47,7 +47,7 @@
 The next safe mainline request should be one of:
 
 1. **P6 status/implementation follow-up** — only if a concrete runtime lifecycle gap is found, still default-off and local/offline unless separately approved.
-2. **P7 design gate** — real delivery / ACK closure design, explicitly separating fake/local delivery evidence from real IM delivery.
+2. **P7 implementation gate** — only after the P7 design gate is merged and a separate implementation approval is given; keep default-off and avoid real sends.
 3. **Docs/status hygiene** — keep this dashboard lean and aligned with live repo truth without recreating PR ledgers or tail registers.
 
 ## Explicit non-approvals
@@ -85,8 +85,18 @@ A roadmap/phase task is complete only when:
   "base_branch": "release/sachima",
   "base_head": "456d564358e3073777d13f915f6c2552183786ca",
   "base_head_note": "latest first-parent base commit excluding machine status-sync self-commits",
-  "open_pr_count": 0,
-  "open_prs": [],
+  "open_pr_count": 1,
+  "open_prs": [
+    {
+      "baseRefName": "release/sachima",
+      "headRefName": "docs/p7-real-delivery-ack-design",
+      "isDraft": false,
+      "mergeStateStatus": "UNSTABLE",
+      "number": 187,
+      "title": "docs: add P7 delivery ACK design gate",
+      "url": "https://github.com/jovijovi/sachima/pull/187"
+    }
+  ],
   "repository": "jovijovi/sachima",
   "scope_note": "machine dynamic status only; GitHub remains the authority for PR/merge/CI history, and approvals/phase meaning remain human-authored outside this block"
 }
