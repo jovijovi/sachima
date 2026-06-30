@@ -32,6 +32,14 @@ from .step_executor import (
     P5_TEMPORAL_RUNTIME_IMPLEMENTATION_APPROVAL_TOKEN,
     P5TemporalStepExecutor,
 )
+from .s2_supervisor_adapter import (
+    S2_SUPERVISOR_ADAPTER_SEAM_APPROVAL_TOKEN,
+    ActivitySeamOutcome,
+    FakeDeterministicSupervisorSeam,
+    S2LocalOfflineSupervisorAdapter,
+    SupervisorSeam,
+    SupervisorStepResult,
+)
 
 # Lazily-resolved, temporalio-dependent public names → (module, attribute).
 _LAZY_EXPORTS = {
@@ -61,6 +69,12 @@ __all__ = [
     "P5_TEMPORAL_TASK_QUEUE",
     "P5_TEMPORAL_RUNTIME_IMPLEMENTATION_APPROVAL_TOKEN",
     "P5TemporalStepExecutor",
+    "S2_SUPERVISOR_ADAPTER_SEAM_APPROVAL_TOKEN",
+    "S2LocalOfflineSupervisorAdapter",
+    "SupervisorSeam",
+    "SupervisorStepResult",
+    "ActivitySeamOutcome",
+    "FakeDeterministicSupervisorSeam",
     "P5TemporalRuntimeClient",
     "P5TemporalControlSurface",
     "StepWorkflow",
