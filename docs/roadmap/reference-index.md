@@ -7,6 +7,7 @@
 - North star: `GOAL.md`
 - Gap basis: `docs/sachima-final-goal-gap-analysis.md`
 - Canonical roadmap: `docs/plans/2026-05-11-sachima-final-goal-phase-development-plan.md`
+- Current direction — mainline calibration (Sachima × agent-run-supervisor × Temporal integration plan; reclassifies P5/P6/P7 as support foundation; S0–S5 path): `docs/plans/2026-06-30-sachima-mainline-calibration-agent-run-supervisor-temporal-integration-plan.md`
 - Canonical external protocol: `jovijovi/sachima-protocols` → <https://github.com/jovijovi/sachima-protocols/blob/main/protocols/envelope/v1.md> (`https://github.com/jovijovi/sachima-protocols/blob/main/protocols/envelope/v1.md`)
 - Local protocol pointer: `docs/protocols/sachima-envelope-v1.md`
 - Latest P4 design packet: `docs/plans/2026-05-12-sachima-envelope-v1-agentic-ui-p4-design-packet.md`
