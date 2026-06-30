@@ -1,0 +1,74 @@
+type: sachima.governance.phase_manifest.v1
+phase: s3_activity_controller_design_packet
+status: design_packet_candidate
+title: "Sachima S3 — Temporal Activity/Controller × S2 Supervisor-Adapter Seam Design Packet"
+date: 2026-06-30
+
+base_branch: release/sachima
+branch: feat/s3-activity-controller-design-packet
+
+summary: >-
+  Docs-only design gate. Refines how a Temporal Activity body and its caller-owned
+  controller call the already-merged S2 local/offline supervisor-adapter seam
+  (sachima_supervisor/p5_temporal/s2_supervisor_adapter.py). Fixes the
+  Activity-to-adapter request/response contract, claim-check/evidence refs, stable
+  ids and codes, intent-class-to-role-key mapping with fail-closed cases, the
+  start/query/update/recover/retry/close lifecycle, the duplicate/recover/no-relaunch/
+  ambiguous mapping, the Temporal-history no-leak boundary, and Worker/task-queue/
+  ops ownership. Adds no source. Grants no implementation/runtime/live/real-agent/
+  Gateway/delivery approval.
+
+# Naming boundary: this gate refines the FUTURE S3 implementation; it does not
+# approve it, and it does not approve starting a Temporal Worker.
+refines_future_stage: s3_hermetic_local_temporal_activity_implementation
+next_implementation_gate:
+  name: "S3 hermetic-local Temporal Activity implementation"
+  posture: injected_fake_deterministic_body_only_namespace_and_task_queue_scoped_no_real_agent
+  requires: separate_named_implementation_approval
+
+# Authority consumed (not redefined). agent-run-supervisor is cross-checked and unmodified.
+authority_inputs:
+  - GOAL.md
+  - docs/roadmap/current-status.md
+  - docs/plans/2026-06-30-sachima-mainline-calibration-agent-run-supervisor-temporal-integration-plan.md
+  - docs/plans/2026-06-30-sachima-s1-agent-run-supervisor-temporal-integration-architecture-design-packet.md
+  - sachima_supervisor/p5_temporal/contracts.py
+  - sachima_supervisor/p5_temporal/s2_supervisor_adapter.py
+
+scope:
+  docs_only: true
+  source_implementation: false
+  temporal_worker_start: false
+  runtime_or_service_start: false
+  subprocess_start: false
+  real_agent_execution: false
+  acpx_or_npx_execution: false
+  gateway_or_feishu_live_behavior: false
+  real_delivery: false
+  production_config_write: false
+  write_roles: false
+
+allowed_changed_paths:
+  - docs/plans/2026-06-30-sachima-s3-activity-controller-design-packet.md
+  - docs/plans/2026-06-30-sachima-s3-activity-controller-design-packet-manifest.yaml
+  - docs/roadmap/current-status.md
+
+required_markers:
+  - DESIGN_ONLY
+  - IMPLEMENTATION_NOT_APPROVED
+  - LIVE_NOT_APPROVED
+  - GATEWAY_NOT_APPROVED
+  - REAL_DELIVERY_NOT_APPROVED
+  - CONTROLLED_AI_FLOW_EXECUTION_NOT_APPROVED
+  - TEMPORAL_WORKER_START_NOT_APPROVED
+  - REAL_AGENT_EXECUTION_NOT_APPROVED
+  - PRODUCTION_CONFIG_NOT_APPROVED
+
+strongest_allowed_outcome: >-
+  This design packet may at most request a later, separately-named S3 implementation
+  approval ("S3 hermetic-local Temporal Activity implementation"): injected-fake /
+  controlled-deterministic body only, namespace- and task-queue-scoped, ops-owned
+  Worker, hermetic-local/offline tests. It does NOT approve runtime/Worker startup,
+  live/default-on behavior, real-agent/acpx/npx execution, controlled real AI FLOW
+  execution, Gateway/Feishu behavior, real delivery/send, production config, or
+  write-capable roles. Each of those remains a separate, named future gate.
