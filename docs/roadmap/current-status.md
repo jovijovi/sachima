@@ -112,7 +112,7 @@ A roadmap/phase task is complete only when:
       "baseRefName": "release/sachima",
       "headRefName": "feat/s3-hermetic-local-temporal-activity",
       "isDraft": false,
-      "mergeStateStatus": "UNSTABLE",
+      "mergeStateStatus": "CLEAN",
       "number": 195,
       "title": "feat(sachima): add S3 hermetic Temporal activity controller",
       "url": "https://github.com/jovijovi/sachima/pull/195"
