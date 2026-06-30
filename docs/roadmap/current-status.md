@@ -106,8 +106,18 @@ A roadmap/phase task is complete only when:
   "base_branch": "release/sachima",
   "base_head": "abd0e58fa7955283108ff00dc74029e1f6bb9fdb",
   "base_head_note": "latest first-parent base commit excluding machine status-sync self-commits",
-  "open_pr_count": 0,
-  "open_prs": [],
+  "open_pr_count": 1,
+  "open_prs": [
+    {
+      "baseRefName": "release/sachima",
+      "headRefName": "feat/s3-hermetic-local-temporal-activity",
+      "isDraft": false,
+      "mergeStateStatus": "UNSTABLE",
+      "number": 195,
+      "title": "feat(sachima): add S3 hermetic Temporal activity controller",
+      "url": "https://github.com/jovijovi/sachima/pull/195"
+    }
+  ],
   "repository": "jovijovi/sachima",
   "scope_note": "machine dynamic status only; GitHub remains the authority for PR/merge/CI history, and approvals/phase meaning remain human-authored outside this block"
 }
