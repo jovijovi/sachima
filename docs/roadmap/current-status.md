@@ -14,24 +14,34 @@
 | Field | Current truth |
 |---|---|
 | Product goal | Production-grade AI workbench inside a custom IM channel, with safe durable FlowWeaver/Hermes orchestration and controlled delivery surfaces. |
-| Current phase | P7 — real delivery / ACK closure. |
-| Current implementation focus | P7 delivery/ACK closure controller is implemented and default-off; the current slice is the bounded real-send canary **request** preparation gate, which fixes the request-packet contract and its block conditions. No real delivery, controller enablement, live/default-on behavior, public ingress, or bounded canary send is approved by this status. |
+| Current phase | Mainline calibration — Sachima × agent-run-supervisor × Temporal integration-planning gate (docs/status only). |
+| Current core mainlines | (1) Integrate agent-run-supervisor as the supervised real-agent step boundary; (2) integrate Temporal as the durable orchestration backbone. Completed P5/P6/P7 work is the **support foundation** for these two mainlines — not wasted work, and not the mainline itself (see the board below and the integration plan). |
+| Current implementation focus | Docs-only design/status calibration that re-centers the roadmap on the two core mainlines and reclassifies completed P5/P6/P7 work as support foundation. This gate writes documentation only: no P7 canary execution, no real send, no controller enablement, no Temporal Worker/service/subprocess start, no real agent/acpx/npx run, no Gateway/Feishu/live/default-on/public-ingress behavior, and no production config writes. |
 | Current repo state | `release/sachima` is the integration branch; GitHub/open-PR state is reflected only in the generated machine block below. |
-| Not yet started | Bounded real-send canary, limited live pilot, and P8 product/ops hardening. |
+| Not yet started | The Sachima × agent-run-supervisor × Temporal integration design packet (plan stage S1) and its later implementation slices (S2–S5); the paused P7 bounded real-send canary execute; limited live pilot; and P8 product/ops hardening. |
+
+## Current core mainlines
+
+Two integration mainlines are the active direction. Everything completed so far is **support foundation** for them.
+
+1. **Integrate agent-run-supervisor** — make the supervised, role-bound, read-only-first real-agent step the controlled execution boundary FlowWeaver/Hermes drives. P6-B is the prerequisite capability (the read-only bridge from the WP4/P6 step seam into agent-run-supervisor controlled local exec); P6 runtime attach is the caller-owned lifecycle / recover boundary.
+2. **Integrate Temporal** — make Temporal the durable workflow state / retry / query / update / recovery backbone for FlowWeaver orchestration, with Worker/service lifecycle ops-owned and never Gateway-owned. P5 is the Temporal foundation; P6-A is the controlled AI FLOW composition over the P5 step seam.
+
+The downstream Gateway delivery/ACK surface (P7) is **downstream delivery safety support**, not the current orchestration mainline. The next-stage design/implementation path for both mainlines is `docs/plans/2026-06-30-sachima-mainline-calibration-agent-run-supervisor-temporal-integration-plan.md`.
 
 ## Stage / feature board
 
-| Stage / feature | Status | Meaning | Next |
+| Stage / feature | Status | Role in mainline | Next |
 |---|---|---|---|
-| P5 Temporal Slice 1 | Done | Default-off caller-owned Temporal Slice 1 with controlled-deterministic step body. | Use only as prerequisite evidence for later runtime work; no production traffic implied. |
-| P6-A controlled AI FLOW composition | Done | Default-off outer P6 composition over WP4 + P5 seam; deterministic/injected-fake step bodies only. | No real agent execution or live delivery implied. |
-| P6-B bounded read-only real-agent step | Done for the single approved smoke | One pinned local `acpx@0.10.0` / Codex read-only one-shot PASS was recorded; no duplicate replay/recover and no live surfaces. | Any additional real agent/acpx/npx execution requires separate approval. |
-| P6 runtime lifecycle / controlled attach | Done as implementation slice | Adds a default-off caller-owned attach shell over an already supplied P6 session, with fail-closed admission, sanitized state, idempotency, no-relaunch recovery, and WP3b WATCH preservation. | If more runtime lifecycle work is needed, start a new narrow gate; do not treat this as Worker/runtime startup approval. |
-| Feishu task workbench title summary | Done | Task-card title summary stabilization is merged. | No phase change. |
-| Feishu PR approval-card stale-head hardening | Done | Reissuing a PR approval card invalidates older unresolved same-PR cards and fails closed on stale callbacks/resolvers. | Runtime deployment/restart is operational, not a roadmap phase. |
-| P7 real delivery / ACK closure | Done as implementation slice | Default-off delivery/ACK closure controller and offline TDD tests are complete. Bounded adapter seam only; no real delivery. | Bounded canary remains a separate approval. |
-| P7 bounded real-send canary request prep | Prep slice (default-off) | Preparation gate fixing the bounded canary request-packet contract, block conditions, and pipeline-vs-business evidence interpretation. No send, no controller enablement, no concrete recipient supplied. | A real bounded canary send remains a separate, named approval that supplies concrete safe values and binds one execution packet. |
-| P8 product / ops hardening | Not started | Product/ops hardening after limited live-pilot readiness. | Requires P7/live-pilot readiness first. |
+| P5 Temporal Slice 1 | Done (support foundation) | **Temporal foundation.** Default-off caller-owned Temporal Slice 1 with controlled-deterministic step body; hermetic-local/staging namespace only, Worker/service ops-owned. | Durable backbone for the Temporal mainline; no production cluster/traffic implied. |
+| P6-A controlled AI FLOW composition | Done (support foundation) | **Controlled AI FLOW composition control.** Default-off outer composition over the unmodified WP4 orchestrator + the P5 `StepExecutor` seam; deterministic/injected-fake step bodies only. | Orchestration seam the Temporal mainline drives; no real agent execution or live delivery implied. |
+| P6-B bounded read-only real-agent step | Done for the single approved smoke (support foundation) | **Controlled real-agent step / agent-run-supervisor prerequisite.** Default-off read-only bridge from the WP4/P6 step seam into agent-run-supervisor controlled local exec; one pinned-local read-only smoke recorded, no duplicate replay/recover, no live surfaces. | Prerequisite capability for the agent-run-supervisor mainline; any additional real agent/acpx/npx execution requires separate approval. |
+| P6 runtime lifecycle / controlled attach | Done as implementation slice (support foundation) | **Caller-owned lifecycle / recover boundary.** Default-off caller-owned attach shell over an already supplied P6 session: fail-closed admission, sanitized state, idempotent no-relaunch recovery, WP3b WATCH preserved; starts no runtime/Worker/service/subprocess. | Recover/attach boundary for both mainlines; not a Worker/runtime startup approval. |
+| Feishu task workbench title summary | Done | Downstream IM surface; task-card title summary stabilization is merged. | No phase change. |
+| Feishu PR approval-card stale-head hardening | Done | Downstream IM surface; reissuing a PR approval card invalidates older unresolved same-PR cards and fails closed on stale callbacks/resolvers. | Runtime deployment/restart is operational, not a roadmap phase. |
+| P7 real delivery / ACK closure | Done as implementation slice (support foundation) | **Downstream delivery safety support — NOT the current mainline.** Default-off delivery/ACK closure controller and offline TDD tests; bounded caller-supplied adapter seam only; no real delivery. | Reconnect downstream only after the orchestration mainline is safe (plan stage S5). |
+| P7 bounded real-send canary request prep | Prep slice (default-off) — paused | **Downstream delivery safety support.** Preparation gate fixing the bounded canary request-packet contract and block conditions; no send, no controller enablement, no concrete recipient supplied. | **Paused.** P7 real-send canary execute requires a separate, named future send approval binding one execution packet; it is not the current mainline. |
+| P8 product / ops hardening | Not started | Product/ops hardening after limited live-pilot readiness. | Requires orchestration-mainline + live-pilot readiness first. |
 
 ## Active blockers / gates
 
@@ -41,15 +51,17 @@
 | Write-capable Claude/Codex roles | Not approved | Any role that can modify files or perform non-read-only agent execution through Sachima. |
 | Gateway/Feishu/live/default-on behavior | Not approved by roadmap status | Any live IM behavior, automatic delivery, platform adapter mutation, public ingress, or default-on route. |
 | Production config / service lifecycle | Not approved by roadmap status | Production config writes, Gateway-owned Temporal/Worker lifecycle, runtime/Worker/service/subprocess startup, or production traffic. |
+| P7 real-send canary execute | Paused — separate approval required | A real send needs a separate, named future approval binding one execution packet with concrete safe values (see `docs/runbooks/sachima-p7-bounded-real-send-canary-request.md`). Pausing it is a deliberate calibration decision; it is downstream delivery safety support, not the current mainline. |
 | WP3b active-run cancellation | WATCH | Any claim that active host/ACP runs can be reliably interrupted mid-run. |
 
 ## Next allowed work
 
 The next safe mainline request should be one of:
 
-1. **P6 status/implementation follow-up** — only if a concrete runtime lifecycle gap is found, still default-off and local/offline unless separately approved.
-2. **P7 bounded canary request** — the request-packet contract and block conditions are now fixed (`docs/plans/2026-06-30-sachima-p7-bounded-real-send-canary-request-prep-gate-*`); an actual send still requires an operator-supplied concrete safe recipient plus a separate, named send approval binding one execution packet. Keep default-off until that approval exists.
-3. **Docs/status hygiene** — keep this dashboard lean and aligned with live repo truth without recreating PR ledgers or tail registers.
+1. **Integration design packet (plan stage S1)** — build the Sachima × agent-run-supervisor × Temporal integration architecture/design packet defined in `docs/plans/2026-06-30-sachima-mainline-calibration-agent-run-supervisor-temporal-integration-plan.md`. Docs/status first; code lands only under separate, named implementation approvals (stages S2–S5).
+2. **Docs/status hygiene** — keep this dashboard lean and aligned with live repo truth without recreating PR ledgers or tail registers.
+
+P7 bounded real-send canary execute is **paused**: it is downstream delivery safety support, not the current mainline, and a real send requires a separate, named future approval binding one execution packet (`docs/runbooks/sachima-p7-bounded-real-send-canary-request.md`). Keep the controller default-off until that approval exists.
 
 ## Explicit non-approvals
 
@@ -57,14 +69,18 @@ This status page does **not** approve:
 
 - real external Sachima ingress;
 - real external delivery or production delivery control;
+- P7 real-send canary execute (paused; separate, named future approval required);
 - Gateway/Feishu/live/default-on behavior;
 - public webhook exposure;
 - production config writes or service restarts;
 - Gateway-owned Temporal/Worker/service/subprocess lifecycle;
+- Temporal Worker/service/runtime/subprocess startup by this calibration gate;
 - additional real acpx/npx/agent execution beyond the recorded approved bounded smoke;
 - write-capable Claude/Codex roles;
 - Satine or Hermes-profile ACP execution;
 - production cluster or production traffic.
+
+This calibration gate is **docs/status only**: it starts no Temporal Worker/service/runtime/subprocess, runs no agent/acpx/npx, performs no real send, and writes no production config. The scoped P5 hermetic-local/staging Temporal lifecycle grant remains ops-owned and is not exercised here; the later integration slices (S2–S5) each require their own named approval before any runtime, real-agent step, or delivery reconnection.
 
 ## Completion rule
 
