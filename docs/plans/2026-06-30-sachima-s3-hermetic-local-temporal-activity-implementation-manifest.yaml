@@ -1,0 +1,84 @@
+type: sachima.governance.phase_manifest.v1
+phase: s3_hermetic_local_temporal_activity_implementation
+status: implementation_candidate
+title: "Sachima S3 — Hermetic-local Temporal Activity implementation"
+date: 2026-06-30
+
+base_branch: release/sachima
+branch: feat/s3-hermetic-local-temporal-activity
+
+summary: >-
+  Implementation candidate for the separately approved S3 hermetic-local Temporal
+  Activity gate. Adds an Activity-compatible body that wraps the merged S2
+  local/offline supervisor-adapter seam, plus a caller-owned controller for
+  start/query/update/recover/retry/close. Scope remains injected-fake and
+  controlled-deterministic only: no real agent, no acpx/npx, no Gateway/Feishu/live
+  behavior, no real send, no production config, and no write-capable roles.
+
+authority_inputs:
+  - GOAL.md
+  - docs/roadmap/current-status.md
+  - docs/plans/2026-06-30-sachima-mainline-calibration-agent-run-supervisor-temporal-integration-plan.md
+  - docs/plans/2026-06-30-sachima-s1-agent-run-supervisor-temporal-integration-architecture-design-packet.md
+  - docs/plans/2026-06-30-sachima-s3-activity-controller-design-packet.md
+  - sachima_supervisor/p5_temporal/contracts.py
+  - sachima_supervisor/p5_temporal/s2_supervisor_adapter.py
+
+scope:
+  docs_only: false
+  source_implementation: true
+  hermetic_local_temporal_only: true
+  injected_fake_deterministic_body_only: true
+  calls_merged_s2_adapter_seam: true
+  real_agent_execution: false
+  acpx_or_npx_execution: false
+  gateway_or_feishu_live_behavior: false
+  real_delivery: false
+  production_config_write: false
+  write_roles: false
+  gateway_owned_worker_or_lifecycle: false
+
+allowed_changed_paths:
+  - sachima_supervisor/p5_temporal/s3_activity_controller.py
+  - sachima_supervisor/p5_temporal/__init__.py
+  - sachima_supervisor/p5_temporal/control_surface.py
+  - sachima_supervisor/p5_temporal/runtime_client.py
+  - tests/sachima_supervisor/p5_temporal/unit/test_s3_activity_controller_contract.py
+  - tests/sachima_supervisor/p5_temporal/unit/test_runtime_client.py
+  - tests/sachima_supervisor/p5_temporal/hermetic/test_s3_activity_failure_no_leak.py
+  - docs/plans/2026-06-30-sachima-s3-hermetic-local-temporal-activity-implementation-manifest.yaml
+  - docs/roadmap/current-status.md
+
+required_coverage:
+  - ActivityInput_to_S2_adapter_to_ActivityOutput
+  - start_query_update_recover_retry_close
+  - duplicate_recover_no_relaunch_ambiguous_recovery
+  - role_mapping_intent_class_to_role_key_fail_closed
+  - claim_check_and_evidence_refs_stable_codes
+  - scan1_json_projection_and_scan2_serialized_bytes_no_leak
+  - default_off_token_mismatch_missing_seam_zero_call
+  - worker_task_queue_ops_owned_gateway_excluded
+
+required_gates:
+  - targeted_s3_s2_runtime_control_surface_tests
+  - full_tests_sachima_supervisor_p5_temporal
+  - python_compileall_p5_temporal
+  - git_diff_check
+  - docs_only_or_allowlist_scan_for_this_gate
+  - secret_no_leak_forbidden_surface_scan
+  - manifest_status_parse
+  - codex_read_only_blocker_review
+  - github_ci_green_before_merge
+
+explicit_non_approvals:
+  - real external Sachima ingress
+  - real external delivery or production delivery control
+  - P7 real-send canary execute
+  - Gateway/Feishu/live/default-on behavior
+  - public webhook exposure
+  - production config writes or service restarts
+  - Gateway-owned Temporal/Worker/service/subprocess lifecycle
+  - real agent/acpx/npx execution
+  - write-capable Claude/Codex roles
+  - broader controlled real AI FLOW execution
+  - production cluster or production traffic

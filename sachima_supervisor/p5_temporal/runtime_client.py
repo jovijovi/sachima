@@ -35,6 +35,14 @@ _NO_RELAUNCH_ID_CONFLICT_POLICY = WorkflowIDConflictPolicy.FAIL
 #: States in which the controlled-deterministic step body has finished running.
 _WORK_DONE_STATES = frozenset({"completed", "cancelled", "closed", "failed"})
 
+#: Pinned Slice 1 update routing — exactly ``{resume, request_cancel}`` map to the
+#: deterministic ``StepWorkflow`` update handlers. Any other (delivery / approval /
+#: rejection / malformed) event type is rejected before any client call.
+_UPDATE_FN_BY_EVENT_TYPE = {
+    "resume": StepWorkflow.resume,
+    "request_cancel": StepWorkflow.request_cancel,
+}
+
 # Query paths must not block on a workflow that intentionally stays open after
 # completing its step body. A query failure may still inspect a terminal/closed
 # result, but only with a short bound so open workflows fail closed instead of
@@ -187,7 +195,42 @@ class P5TemporalRuntimeClient:
             # The run may already be terminal; the executor preserves the WATCH.
             return _err("cancel", C.ACTIVE_RUN_CANCELLATION_WATCH, workflow_id=workflow_id)
         safe = self._sanitize(_extract_snapshot(result))
+        if safe is None:
+            return _err("cancel", C.RUNTIME_HISTORY_LEAK_DETECTED, workflow_id=workflow_id)
         return _ok("cancel", workflow_id=workflow_id, snapshot=safe)
+
+    async def update(self, *, workflow_id: str, update: Any) -> dict[str, Any]:
+        """No-throw pinned update — route ``{resume, request_cancel}`` to the workflow.
+
+        Generic counterpart to ``signal_cancel`` (which stays request_cancel-only
+        for compatibility). A malformed or off-list payload (incl. delivery /
+        approval / rejection) fails closed before any client call; an
+        ``execute_update`` failure collapses to a stable code without echoing the
+        exception — ``request_cancel`` keeps the WP3b WATCH, ``resume`` maps to
+        ``runtime_error``. Owns no Worker / task-queue lifecycle.
+        """
+
+        try:
+            workflow_id = C.validate_workflow_id(workflow_id)
+        except C.ContractError as exc:
+            return _err("update", _stable(exc.code, C.INVALID_START_PAYLOAD))
+        try:
+            C.validate_update_payload(update)
+        except C.ContractError as exc:
+            return _err("update", _stable(exc.code, C.INVALID_START_PAYLOAD), workflow_id=workflow_id)
+        update_fn = _UPDATE_FN_BY_EVENT_TYPE.get(update.event_type)
+        if update_fn is None:
+            return _err("update", C.INVALID_START_PAYLOAD, workflow_id=workflow_id)
+        try:
+            handle = self._client.get_workflow_handle(workflow_id)
+            result = await handle.execute_update(update_fn, update)
+        except BaseException:  # noqa: BLE001 - cooperative update is best-effort, no-throw
+            code = C.ACTIVE_RUN_CANCELLATION_WATCH if update.event_type == "request_cancel" else C.RUNTIME_ERROR
+            return _err("update", code, workflow_id=workflow_id)
+        safe = self._sanitize(_extract_snapshot(result))
+        if safe is None:
+            return _err("update", C.RUNTIME_HISTORY_LEAK_DETECTED, workflow_id=workflow_id)
+        return _ok("update", workflow_id=workflow_id, snapshot=safe)
 
     async def close(self) -> dict[str, Any]:
         # No hidden lifecycle: the caller owns the Temporal client; close is only a

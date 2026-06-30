@@ -50,6 +50,21 @@ class P5TemporalControlSurface:
             return _err("cancel", _stable(exc.code))
         return await self._guard("cancel", self._runtime_client.signal_cancel(workflow_id=workflow_id, update=update))
 
+    async def update(self, *, workflow_id: str, update: Any) -> dict[str, Any]:
+        """No-throw generic update dispatch — pinned ``{resume, request_cancel}``.
+
+        Delegates to the runtime client's ``update`` (which routes resume /
+        request_cancel and fails closed on any off-list / malformed payload). The
+        existing ``cancel`` → ``signal_cancel`` path is unchanged; Worker / queue
+        ownership is unaffected.
+        """
+
+        try:
+            workflow_id = C.validate_workflow_id(workflow_id)
+        except C.ContractError as exc:
+            return _err("update", _stable(exc.code))
+        return await self._guard("update", self._runtime_client.update(workflow_id=workflow_id, update=update))
+
     async def recover(self, *, workflow_id: str) -> dict[str, Any]:
         try:
             workflow_id = C.validate_workflow_id(workflow_id)
@@ -73,6 +88,8 @@ class P5TemporalControlSurface:
             return await self.query(workflow_id=workflow_id)
         if operation == "cancel":
             return await self.cancel(workflow_id=workflow_id, update=request.get("update"))
+        if operation == "update":
+            return await self.update(workflow_id=workflow_id, update=request.get("update"))
         if operation == "recover":
             return await self.recover(workflow_id=workflow_id)
         if operation == "close":
