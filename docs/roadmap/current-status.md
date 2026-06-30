@@ -14,11 +14,11 @@
 | Field | Current truth |
 |---|---|
 | Product goal | Production-grade AI workbench inside a custom IM channel, with safe durable FlowWeaver/Hermes orchestration and controlled delivery surfaces. |
-| Current phase | Mainline calibration — Sachima × agent-run-supervisor × Temporal integration-planning gate (docs/status only). |
+| Current phase | S1 — Sachima × agent-run-supervisor × Temporal integration architecture/design packet task complete (docs/status only). |
 | Current core mainlines | (1) Integrate agent-run-supervisor as the supervised real-agent step boundary; (2) integrate Temporal as the durable orchestration backbone. Completed P5/P6/P7 work is the **support foundation** for these two mainlines — not wasted work, and not the mainline itself (see the board below and the integration plan). |
-| Current implementation focus | Docs-only design/status calibration that re-centers the roadmap on the two core mainlines and reclassifies completed P5/P6/P7 work as support foundation. This gate writes documentation only: no P7 canary execution, no real send, no controller enablement, no Temporal Worker/service/subprocess start, no real agent/acpx/npx run, no Gateway/Feishu/live/default-on/public-ingress behavior, and no production config writes. |
+| Current implementation focus | S1 docs/status design packet completed as the current design surface: it fixes the Activity↔agent-run-supervisor seam contract, the cross-boundary claim-check data model, the failure/recovery/duplicate-start/no-relaunch mapping, the Temporal-history no-leak boundary, and the S2–S5 implementation/verification path. Docs only: no P7 canary execution, no real send, no controller enablement, no Temporal Worker/service/subprocess start, no real agent/acpx/npx run, no Gateway/Feishu/live/default-on/public-ingress behavior, and no production config writes. |
 | Current repo state | `release/sachima` is the integration branch; GitHub/open-PR state is reflected only in the generated machine block below. |
-| Not yet started | The Sachima × agent-run-supervisor × Temporal integration design packet (plan stage S1) and its later implementation slices (S2–S5); the paused P7 bounded real-send canary execute; limited live pilot; and P8 product/ops hardening. |
+| Not yet started | The S1 packet's later implementation slices (S2–S5); the paused P7 bounded real-send canary execute; limited live pilot; and P8 product/ops hardening. |
 
 ## Current core mainlines
 
@@ -27,12 +27,13 @@ Two integration mainlines are the active direction. Everything completed so far 
 1. **Integrate agent-run-supervisor** — make the supervised, role-bound, read-only-first real-agent step the controlled execution boundary FlowWeaver/Hermes drives. P6-B is the prerequisite capability (the read-only bridge from the WP4/P6 step seam into agent-run-supervisor controlled local exec); P6 runtime attach is the caller-owned lifecycle / recover boundary.
 2. **Integrate Temporal** — make Temporal the durable workflow state / retry / query / update / recovery backbone for FlowWeaver orchestration, with Worker/service lifecycle ops-owned and never Gateway-owned. P5 is the Temporal foundation; P6-A is the controlled AI FLOW composition over the P5 step seam.
 
-The downstream Gateway delivery/ACK surface (P7) is **downstream delivery safety support**, not the current orchestration mainline. The next-stage design/implementation path for both mainlines is `docs/plans/2026-06-30-sachima-mainline-calibration-agent-run-supervisor-temporal-integration-plan.md`.
+The downstream Gateway delivery/ACK surface (P7) is **downstream delivery safety support**, not the current orchestration mainline. The next-stage path for both mainlines is the S0 calibration plan (`docs/plans/2026-06-30-sachima-mainline-calibration-agent-run-supervisor-temporal-integration-plan.md`) and its S1 architecture/design packet (`docs/plans/2026-06-30-sachima-s1-agent-run-supervisor-temporal-integration-architecture-design-packet.md`).
 
 ## Stage / feature board
 
 | Stage / feature | Status | Role in mainline | Next |
 |---|---|---|---|
+| S1 integration architecture/design packet | Done (docs/status design packet) | **Current design surface for both mainlines.** Fixes the Activity↔agent-run-supervisor seam contract, the cross-boundary claim-check data model, the failure/recovery/no-relaunch mapping, the Temporal-history no-leak boundary, and the S2–S5 path. Docs/status only; grants no implementation/runtime/live approval. | S2 local/offline adapter seam (fake/injected) is the next request and requires separate named implementation approval. |
 | P5 Temporal Slice 1 | Done (support foundation) | **Temporal foundation.** Default-off caller-owned Temporal Slice 1 with controlled-deterministic step body; hermetic-local/staging namespace only, Worker/service ops-owned. | Durable backbone for the Temporal mainline; no production cluster/traffic implied. |
 | P6-A controlled AI FLOW composition | Done (support foundation) | **Controlled AI FLOW composition control.** Default-off outer composition over the unmodified WP4 orchestrator + the P5 `StepExecutor` seam; deterministic/injected-fake step bodies only. | Orchestration seam the Temporal mainline drives; no real agent execution or live delivery implied. |
 | P6-B bounded read-only real-agent step | Done for the single approved smoke (support foundation) | **Controlled real-agent step / agent-run-supervisor prerequisite.** Default-off read-only bridge from the WP4/P6 step seam into agent-run-supervisor controlled local exec; one pinned-local read-only smoke recorded, no duplicate replay/recover, no live surfaces. | Prerequisite capability for the agent-run-supervisor mainline; any additional real agent/acpx/npx execution requires separate approval. |
@@ -56,9 +57,9 @@ The downstream Gateway delivery/ACK surface (P7) is **downstream delivery safety
 
 ## Next allowed work
 
-The next safe mainline request should be one of:
+The next safe request should be one of:
 
-1. **Integration design packet (plan stage S1)** — build the Sachima × agent-run-supervisor × Temporal integration architecture/design packet defined in `docs/plans/2026-06-30-sachima-mainline-calibration-agent-run-supervisor-temporal-integration-plan.md`. Docs/status first; code lands only under separate, named implementation approvals (stages S2–S5).
+1. **S2 local/offline adapter seam (implementation)** — implement the Temporal-Activity-boundary → agent-run-supervisor adapter seam **fake/injected only by default**, with offline tests, per stage S2 of `docs/plans/2026-06-30-sachima-s1-agent-run-supervisor-temporal-integration-architecture-design-packet.md`. This requires a **separate, named implementation approval**; it starts no Worker/runtime and runs no real agent/acpx/npx.
 2. **Docs/status hygiene** — keep this dashboard lean and aligned with live repo truth without recreating PR ledgers or tail registers.
 
 P7 bounded real-send canary execute is **paused**: it is downstream delivery safety support, not the current mainline, and a real send requires a separate, named future approval binding one execution packet (`docs/runbooks/sachima-p7-bounded-real-send-canary-request.md`). Keep the controller default-off until that approval exists.
@@ -74,13 +75,13 @@ This status page does **not** approve:
 - public webhook exposure;
 - production config writes or service restarts;
 - Gateway-owned Temporal/Worker/service/subprocess lifecycle;
-- Temporal Worker/service/runtime/subprocess startup by this calibration gate;
+- Temporal Worker/service/runtime/subprocess startup by this S1 gate;
 - additional real acpx/npx/agent execution beyond the recorded approved bounded smoke;
 - write-capable Claude/Codex roles;
 - Satine or Hermes-profile ACP execution;
 - production cluster or production traffic.
 
-This calibration gate is **docs/status only**: it starts no Temporal Worker/service/runtime/subprocess, runs no agent/acpx/npx, performs no real send, and writes no production config. The scoped P5 hermetic-local/staging Temporal lifecycle grant remains ops-owned and is not exercised here; the later integration slices (S2–S5) each require their own named approval before any runtime, real-agent step, or delivery reconnection.
+This S1 gate is **docs/status only**: it starts no Temporal Worker/service/runtime/subprocess, runs no agent/acpx/npx, performs no real send, and writes no production config. The scoped P5 hermetic-local/staging Temporal lifecycle grant remains ops-owned and is not exercised here; the later integration slices (S2–S5) each require their own named approval before any runtime, real-agent step, or delivery reconnection.
 
 ## Completion rule
 
