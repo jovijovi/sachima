@@ -1,0 +1,93 @@
+type: sachima.governance.phase_manifest.v1
+phase: p7_bounded_real_send_canary_request_prep_gate
+status: draft_docs_only
+created_at: '2026-06-30'
+branch: docs/p7-bounded-canary-request-prep
+base_branch: release/sachima
+scope:
+  docs_only: true
+  source_implementation: false
+  controller_enablement: false
+  enable_token_use: false
+  real_send: false
+  bounded_canary_send: false
+  canary_execution: false
+  real_external_ingress: false
+  real_external_delivery: false
+  gateway_or_feishu_live_behavior: false
+  default_on_behavior: false
+  public_ingress: false
+  production_config_write: false
+  service_restart: false
+  runtime_or_worker_start: false
+  subprocess_start: false
+  platform_adapter_mutation: false
+  additional_real_agent_execution: false
+  additional_acpx_or_npx_execution: false
+  write_roles: false
+  concrete_recipient_supplied: false
+prerequisites:
+  p7_design_gate: docs_only_design_complete
+  p7_real_delivery_ack_controller: implemented_default_off
+  p7_controller_verdict: p7_delivery_ack_closure_implementation_ready_for_canary_request_only
+  bounded_canary_send_approval: not_yet_requested
+strongest_allowed_outcome: >-
+  Docs-only P7 bounded real-send canary request preparation gate. It may define the canary
+  request packet contract, its acceptance/block conditions, and the separated pipeline-vs-business
+  evidence interpretation. It does not approve or perform a real send, does not supply a concrete
+  recipient, does not enable the controller, and does not approve live/default-on behavior, public
+  ingress, production config writes, service/runtime/Worker/subprocess startup, platform adapter
+  mutation, or Sachima runtime agent/acpx/npx execution.
+request_packet:
+  type: sachima.p7.bounded_canary_request_packet.v0
+  default_off: true
+  execution_authorized: false
+  required_fields:
+    - recipient_safe_label
+    - recipient_class
+    - surface_allowlist
+    - max_attempts
+    - time_budget_class
+    - rollback_control_ref
+    - evidence_root_ref
+    - observability
+    - canary_send_approval_phrase
+  surface_default: final_text_only_unless_later_approval_widens
+  canary_attempt_ceiling: 2
+  forbidden_in_packet:
+    - raw_chat_user_group_message_id
+    - url_secret_or_signed_url_secret
+    - credential_or_token_or_bearer
+    - private_filesystem_path
+    - unbounded_surface_set
+    - out_of_canary_scope_surface
+  block_conditions:
+    - recipient_safe_label_missing_or_empty
+    - any_raw_id_url_secret_credential_or_private_path_present
+    - surface_allowlist_empty_unbounded_or_outside_tiny_set
+    - max_attempts_absent_non_integer_or_above_canary_ceiling
+    - time_budget_class_absent_or_unbounded
+    - rollback_control_ref_absent_or_requires_gateway_restart
+    - evidence_root_ref_outside_allowed_class
+    - any_gateway_feishu_live_default_on_public_ingress_prodconfig_service_worker_subprocess_agent_acpx_npx_or_write_role_surface_named
+    - execution_authorized_not_false_in_this_prep_gate
+evidence_interpretation:
+  pipeline_and_business_reported_separately: true
+  accepted_send_not_proof_of_delivery_without_matching_ack: true
+  unknown_or_timeout_is_watch_not_success: true
+required_artifacts:
+  prd: docs/plans/2026-06-30-sachima-p7-bounded-real-send-canary-request-prep-gate-prd.md
+  technical_solution: docs/plans/2026-06-30-sachima-p7-bounded-real-send-canary-request-prep-gate-technical-solution.md
+  user_review_packet: docs/plans/2026-06-30-sachima-p7-bounded-real-send-canary-request-prep-gate-user-review-packet.md
+  dev_log: docs/dev_log/2026-06-30-sachima-p7-bounded-real-send-canary-request-prep-gate.md
+  runbook: docs/runbooks/sachima-p7-bounded-real-send-canary-request.md
+required_gates:
+  - docs and status changes only; no source/config/runtime/live surface
+  - manifest parses and all scope flags remain false
+  - no wording claims a send, controller enablement, live delivery, or production approval
+  - request packet schema, block conditions, and pipeline-vs-business interpretation are each specified
+  - no concrete recipient, raw id, url, token, credential, or endpoint is invented
+implementation_enable_token_ref: SACHIMA_P7_DELIVERY_ENABLE_TOKEN
+bounded_canary_send_approval_required: true
+bounded_canary_send_approval_phrase_template: >-
+  approve_sachima_p7_bounded_real_send_canary_execute_recipient_safe_label_<operator_supplied_safe_label>_surface_allowlist_<final_text_or_named_subset>_max_attempts_<integer_at_or_below_2>_time_budget_<single_short_bounded_window>_rollback_control_ref_<disable_without_gateway_restart>_evidence_root_ref_<allowed_evidence_class>_single_bounded_send_no_live_default_on_no_public_ingress_no_production_config_write_no_gateway_restart_no_worker_lifecycle_no_real_agent_execution_no_write_roles_no_unbounded_delivery
