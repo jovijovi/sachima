@@ -15,7 +15,7 @@
 |---|---|
 | Product goal | Production-grade AI workbench inside a custom IM channel, with safe durable FlowWeaver/Hermes orchestration and controlled delivery surfaces. |
 | Current phase | P7 — real delivery / ACK closure. |
-| Current implementation focus | P7 default-off delivery/ACK closure implementation gate task is complete. No real delivery, live/default-on behavior, public ingress, or bounded canary is approved by this status. |
+| Current implementation focus | P7 delivery/ACK closure controller is implemented and default-off; the current slice is the bounded real-send canary **request** preparation gate, which fixes the request-packet contract and its block conditions. No real delivery, controller enablement, live/default-on behavior, public ingress, or bounded canary send is approved by this status. |
 | Current repo state | `release/sachima` is the integration branch; GitHub/open-PR state is reflected only in the generated machine block below. |
 | Not yet started | Bounded real-send canary, limited live pilot, and P8 product/ops hardening. |
 
@@ -30,6 +30,7 @@
 | Feishu task workbench title summary | Done | Task-card title summary stabilization is merged. | No phase change. |
 | Feishu PR approval-card stale-head hardening | Done | Reissuing a PR approval card invalidates older unresolved same-PR cards and fails closed on stale callbacks/resolvers. | Runtime deployment/restart is operational, not a roadmap phase. |
 | P7 real delivery / ACK closure | Done as implementation slice | Default-off delivery/ACK closure controller and offline TDD tests are complete. Bounded adapter seam only; no real delivery. | Bounded canary remains a separate approval. |
+| P7 bounded real-send canary request prep | Prep slice (default-off) | Preparation gate fixing the bounded canary request-packet contract, block conditions, and pipeline-vs-business evidence interpretation. No send, no controller enablement, no concrete recipient supplied. | A real bounded canary send remains a separate, named approval that supplies concrete safe values and binds one execution packet. |
 | P8 product / ops hardening | Not started | Product/ops hardening after limited live-pilot readiness. | Requires P7/live-pilot readiness first. |
 
 ## Active blockers / gates
@@ -47,7 +48,7 @@
 The next safe mainline request should be one of:
 
 1. **P6 status/implementation follow-up** — only if a concrete runtime lifecycle gap is found, still default-off and local/offline unless separately approved.
-2. **P7 bounded canary request** — requires separate approval with recipient, surfaces, attempt budget, rollback path, and evidence root; keep default-off until that approval exists.
+2. **P7 bounded canary request** — the request-packet contract and block conditions are now fixed (`docs/plans/2026-06-30-sachima-p7-bounded-real-send-canary-request-prep-gate-*`); an actual send still requires an operator-supplied concrete safe recipient plus a separate, named send approval binding one execution packet. Keep default-off until that approval exists.
 3. **Docs/status hygiene** — keep this dashboard lean and aligned with live repo truth without recreating PR ledgers or tail registers.
 
 ## Explicit non-approvals
