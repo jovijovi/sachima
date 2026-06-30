@@ -15,9 +15,9 @@
 |---|---|
 | Product goal | Production-grade AI workbench inside a custom IM channel, with safe durable FlowWeaver/Hermes orchestration and controlled delivery surfaces. |
 | Current phase | P7 — real delivery / ACK closure. |
-| Current implementation focus | P7 real delivery / ACK closure design gate task is complete; no real delivery, live/default-on behavior, or implementation is approved by this status. |
+| Current implementation focus | P7 default-off delivery/ACK closure implementation gate task is complete. No real delivery, live/default-on behavior, public ingress, or bounded canary is approved by this status. |
 | Current repo state | `release/sachima` is the integration branch; GitHub/open-PR state is reflected only in the generated machine block below. |
-| Not yet started | P7 source implementation, bounded real-send canary, limited live pilot, and P8 product/ops hardening. |
+| Not yet started | Bounded real-send canary, limited live pilot, and P8 product/ops hardening. |
 
 ## Stage / feature board
 
@@ -29,7 +29,7 @@
 | P6 runtime lifecycle / controlled attach | Done as implementation slice | Adds a default-off caller-owned attach shell over an already supplied P6 session, with fail-closed admission, sanitized state, idempotency, no-relaunch recovery, and WP3b WATCH preservation. | If more runtime lifecycle work is needed, start a new narrow gate; do not treat this as Worker/runtime startup approval. |
 | Feishu task workbench title summary | Done | Task-card title summary stabilization is merged. | No phase change. |
 | Feishu PR approval-card stale-head hardening | Done | Reissuing a PR approval card invalidates older unresolved same-PR cards and fails closed on stale callbacks/resolvers. | Runtime deployment/restart is operational, not a roadmap phase. |
-| P7 real delivery / ACK closure | Done | Design gate task complete. | — |
+| P7 real delivery / ACK closure | Done as implementation slice | Default-off delivery/ACK closure controller and offline TDD tests are complete. Bounded adapter seam only; no real delivery. | Bounded canary remains a separate approval. |
 | P8 product / ops hardening | Not started | Product/ops hardening after limited live-pilot readiness. | Requires P7/live-pilot readiness first. |
 
 ## Active blockers / gates
@@ -47,7 +47,7 @@
 The next safe mainline request should be one of:
 
 1. **P6 status/implementation follow-up** — only if a concrete runtime lifecycle gap is found, still default-off and local/offline unless separately approved.
-2. **P7 implementation gate** — separate implementation approval is required; keep default-off and avoid real sends.
+2. **P7 bounded canary request** — requires separate approval with recipient, surfaces, attempt budget, rollback path, and evidence root; keep default-off until that approval exists.
 3. **Docs/status hygiene** — keep this dashboard lean and aligned with live repo truth without recreating PR ledgers or tail registers.
 
 ## Explicit non-approvals
