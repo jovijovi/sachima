@@ -103,20 +103,10 @@ A roadmap/phase task is complete only when:
 ```json
 {
   "base_branch": "release/sachima",
-  "base_head": "d9a9baee3d02e4eac843094cb94a9d450447d0bd",
+  "base_head": "abd0e58fa7955283108ff00dc74029e1f6bb9fdb",
   "base_head_note": "latest first-parent base commit excluding machine status-sync self-commits",
-  "open_pr_count": 1,
-  "open_prs": [
-    {
-      "baseRefName": "release/sachima",
-      "headRefName": "feat/s3-activity-controller-design-packet",
-      "isDraft": false,
-      "mergeStateStatus": "CLEAN",
-      "number": 194,
-      "title": "docs(sachima): add S3 activity controller design packet",
-      "url": "https://github.com/jovijovi/sachima/pull/194"
-    }
-  ],
+  "open_pr_count": 0,
+  "open_prs": [],
   "repository": "jovijovi/sachima",
   "scope_note": "machine dynamic status only; GitHub remains the authority for PR/merge/CI history, and approvals/phase meaning remain human-authored outside this block"
 }
