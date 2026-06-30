@@ -14,11 +14,11 @@
 | Field | Current truth |
 |---|---|
 | Product goal | Production-grade AI workbench inside a custom IM channel, with safe durable FlowWeaver/Hermes orchestration and controlled delivery surfaces. |
-| Current phase | S1 — Sachima × agent-run-supervisor × Temporal integration architecture/design packet task complete (docs/status only). |
+| Current phase | S3 Activity/controller design — docs/status design packet refining how the Temporal Activity/controller calls the merged S2 supervisor-adapter seam. The S1 design packet and the S2 local/offline adapter seam (default-off, fake/injected) are merged. Docs/status only. |
 | Current core mainlines | (1) Integrate agent-run-supervisor as the supervised real-agent step boundary; (2) integrate Temporal as the durable orchestration backbone. Completed P5/P6/P7 work is the **support foundation** for these two mainlines — not wasted work, and not the mainline itself (see the board below and the integration plan). |
-| Current implementation focus | S1 docs/status design packet completed as the current design surface: it fixes the Activity↔agent-run-supervisor seam contract, the cross-boundary claim-check data model, the failure/recovery/duplicate-start/no-relaunch mapping, the Temporal-history no-leak boundary, and the S2–S5 implementation/verification path. Docs only: no P7 canary execution, no real send, no controller enablement, no Temporal Worker/service/subprocess start, no real agent/acpx/npx run, no Gateway/Feishu/live/default-on/public-ingress behavior, and no production config writes. |
+| Current implementation focus | S3 Activity/controller design packet as the current design surface: it fixes the Temporal Activity↔merged-S2-adapter request/response contract, the claim-check/evidence refs and stable ids/codes, the intent-class→role-key mapping (unknown / arbitrary / platform-derived roles fail closed), the start/query/update/recover/retry/close lifecycle, the duplicate/recover/no-relaunch/ambiguous mapping, the Temporal-history no-leak boundary, and Worker/task-queue/ops ownership. Docs only: no Temporal Worker/service/subprocess start, no real agent/acpx/npx run, no controller enablement, no Gateway/Feishu/live/default-on/public-ingress behavior, no real send, and no production config writes. |
 | Current repo state | `release/sachima` is the integration branch; GitHub/open-PR state is reflected only in the generated machine block below. |
-| Not yet started | The S1 packet's later implementation slices (S2–S5); the paused P7 bounded real-send canary execute; limited live pilot; and P8 product/ops hardening. |
+| Not yet started | The S3 hermetic-local Temporal Activity implementation and the later slices (S4 read-only real-agent step, S5 downstream delivery reconnect); the paused P7 bounded real-send canary execute; limited live pilot; and P8 product/ops hardening. |
 
 ## Current core mainlines
 
@@ -27,13 +27,15 @@ Two integration mainlines are the active direction. Everything completed so far 
 1. **Integrate agent-run-supervisor** — make the supervised, role-bound, read-only-first real-agent step the controlled execution boundary FlowWeaver/Hermes drives. P6-B is the prerequisite capability (the read-only bridge from the WP4/P6 step seam into agent-run-supervisor controlled local exec); P6 runtime attach is the caller-owned lifecycle / recover boundary.
 2. **Integrate Temporal** — make Temporal the durable workflow state / retry / query / update / recovery backbone for FlowWeaver orchestration, with Worker/service lifecycle ops-owned and never Gateway-owned. P5 is the Temporal foundation; P6-A is the controlled AI FLOW composition over the P5 step seam.
 
-The downstream Gateway delivery/ACK surface (P7) is **downstream delivery safety support**, not the current orchestration mainline. The next-stage path for both mainlines is the S0 calibration plan (`docs/plans/2026-06-30-sachima-mainline-calibration-agent-run-supervisor-temporal-integration-plan.md`) and its S1 architecture/design packet (`docs/plans/2026-06-30-sachima-s1-agent-run-supervisor-temporal-integration-architecture-design-packet.md`).
+The downstream Gateway delivery/ACK surface (P7) is **downstream delivery safety support**, not the current orchestration mainline. The staged path for both mainlines is set by the S0 calibration plan (`docs/plans/2026-06-30-sachima-mainline-calibration-agent-run-supervisor-temporal-integration-plan.md`) and the S1 architecture/design packet (`docs/plans/2026-06-30-sachima-s1-agent-run-supervisor-temporal-integration-architecture-design-packet.md`); the current design surface is the S3 Activity/controller design packet (`docs/plans/2026-06-30-sachima-s3-activity-controller-design-packet.md`), which refines how the Temporal Activity/controller calls the merged S2 supervisor-adapter seam.
 
 ## Stage / feature board
 
 | Stage / feature | Status | Role in mainline | Next |
 |---|---|---|---|
-| S1 integration architecture/design packet | Done (docs/status design packet) | **Current design surface for both mainlines.** Fixes the Activity↔agent-run-supervisor seam contract, the cross-boundary claim-check data model, the failure/recovery/no-relaunch mapping, the Temporal-history no-leak boundary, and the S2–S5 path. Docs/status only; grants no implementation/runtime/live approval. | S2 local/offline adapter seam (fake/injected) is the next request and requires separate named implementation approval. |
+| S1 integration architecture/design packet | Done (docs/status design packet) | Fixed the Activity↔agent-run-supervisor seam contract, the cross-boundary claim-check data model, the failure/recovery/no-relaunch mapping, the Temporal-history no-leak boundary, and the S2–S5 path. Docs/status only; grants no implementation/runtime/live approval. | Superseded as the active design surface by the S3 Activity/controller design packet. |
+| S2 local/offline adapter seam | Done (default-off, fake/injected) | **agent-run-supervisor + Temporal seam.** Merged Activity-boundary→supervisor adapter (`sachima_supervisor/p5_temporal/s2_supervisor_adapter.py`): admission-gated default-off, injected fake/deterministic body only, claim-check idempotency keyed on `(run_ref, step_ref)`, no-relaunch recovery, dual no-leak scans. Starts no Worker/runtime; runs no real agent. | Driven by the S3 Activity/controller design; the S3 implementation is a separate named approval. |
+| S3 Activity/controller design packet | Done (docs/status design packet) | **Current design surface for both mainlines.** Fixes how the Temporal Activity/controller calls the merged S2 adapter seam: request/response contract, claim-check/evidence refs and stable ids/codes, intent-class→role-key mapping (fail-closed), start/query/update/recover/retry/close lifecycle, duplicate/no-relaunch/ambiguous mapping, no-leak boundary, and Worker/task-queue/ops ownership. Docs/status only; grants no implementation/runtime/live approval. | S3 hermetic-local Temporal Activity implementation (injected-fake, namespace/task-queue scoped, no real agent) is the next request and requires separate named implementation approval. |
 | P5 Temporal Slice 1 | Done (support foundation) | **Temporal foundation.** Default-off caller-owned Temporal Slice 1 with controlled-deterministic step body; hermetic-local/staging namespace only, Worker/service ops-owned. | Durable backbone for the Temporal mainline; no production cluster/traffic implied. |
 | P6-A controlled AI FLOW composition | Done (support foundation) | **Controlled AI FLOW composition control.** Default-off outer composition over the unmodified WP4 orchestrator + the P5 `StepExecutor` seam; deterministic/injected-fake step bodies only. | Orchestration seam the Temporal mainline drives; no real agent execution or live delivery implied. |
 | P6-B bounded read-only real-agent step | Done for the single approved smoke (support foundation) | **Controlled real-agent step / agent-run-supervisor prerequisite.** Default-off read-only bridge from the WP4/P6 step seam into agent-run-supervisor controlled local exec; one pinned-local read-only smoke recorded, no duplicate replay/recover, no live surfaces. | Prerequisite capability for the agent-run-supervisor mainline; any additional real agent/acpx/npx execution requires separate approval. |
@@ -59,7 +61,7 @@ The downstream Gateway delivery/ACK surface (P7) is **downstream delivery safety
 
 The next safe request should be one of:
 
-1. **S2 local/offline adapter seam (implementation)** — implement the Temporal-Activity-boundary → agent-run-supervisor adapter seam **fake/injected only by default**, with offline tests, per stage S2 of `docs/plans/2026-06-30-sachima-s1-agent-run-supervisor-temporal-integration-architecture-design-packet.md`. This requires a **separate, named implementation approval**; it starts no Worker/runtime and runs no real agent/acpx/npx.
+1. **S3 hermetic-local Temporal Activity implementation** — implement the Temporal Activity body and the caller-owned controller that drive the merged S2 supervisor-adapter seam, with an **injected-fake / controlled-deterministic body only**, namespace- and task-queue-scoped, ops-owned Worker, and hermetic-local/offline tests, per the S3 Activity/controller design packet (`docs/plans/2026-06-30-sachima-s3-activity-controller-design-packet.md`). This requires a **separate, named implementation approval**; it runs no real agent/acpx/npx, enables no Gateway/Feishu/live/default-on behavior, performs no real send, and writes no production config.
 2. **Docs/status hygiene** — keep this dashboard lean and aligned with live repo truth without recreating PR ledgers or tail registers.
 
 P7 bounded real-send canary execute is **paused**: it is downstream delivery safety support, not the current mainline, and a real send requires a separate, named future approval binding one execution packet (`docs/runbooks/sachima-p7-bounded-real-send-canary-request.md`). Keep the controller default-off until that approval exists.
@@ -75,13 +77,13 @@ This status page does **not** approve:
 - public webhook exposure;
 - production config writes or service restarts;
 - Gateway-owned Temporal/Worker/service/subprocess lifecycle;
-- Temporal Worker/service/runtime/subprocess startup by this S1 gate;
+- Temporal Worker/service/runtime/subprocess startup by this design gate;
 - additional real acpx/npx/agent execution beyond the recorded approved bounded smoke;
 - write-capable Claude/Codex roles;
 - Satine or Hermes-profile ACP execution;
 - production cluster or production traffic.
 
-This S1 gate is **docs/status only**: it starts no Temporal Worker/service/runtime/subprocess, runs no agent/acpx/npx, performs no real send, and writes no production config. The scoped P5 hermetic-local/staging Temporal lifecycle grant remains ops-owned and is not exercised here; the later integration slices (S2–S5) each require their own named approval before any runtime, real-agent step, or delivery reconnection.
+The current S3 Activity/controller design gate is **docs/status only**: it starts no Temporal Worker/service/runtime/subprocess, runs no agent/acpx/npx, performs no real send, and writes no production config. The scoped P5 hermetic-local/staging Temporal lifecycle grant remains ops-owned and is not exercised here; the S3 implementation and the later integration slices (S4–S5) each require their own named approval before any runtime, real-agent step, or delivery reconnection.
 
 ## Completion rule
 
@@ -103,8 +105,18 @@ A roadmap/phase task is complete only when:
   "base_branch": "release/sachima",
   "base_head": "d9a9baee3d02e4eac843094cb94a9d450447d0bd",
   "base_head_note": "latest first-parent base commit excluding machine status-sync self-commits",
-  "open_pr_count": 0,
-  "open_prs": [],
+  "open_pr_count": 1,
+  "open_prs": [
+    {
+      "baseRefName": "release/sachima",
+      "headRefName": "feat/s3-activity-controller-design-packet",
+      "isDraft": false,
+      "mergeStateStatus": "CLEAN",
+      "number": 194,
+      "title": "docs(sachima): add S3 activity controller design packet",
+      "url": "https://github.com/jovijovi/sachima/pull/194"
+    }
+  ],
   "repository": "jovijovi/sachima",
   "scope_note": "machine dynamic status only; GitHub remains the authority for PR/merge/CI history, and approvals/phase meaning remain human-authored outside this block"
 }
