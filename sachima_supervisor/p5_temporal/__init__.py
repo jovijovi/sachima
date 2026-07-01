@@ -57,6 +57,34 @@ _LAZY_EXPORTS = {
     ),
     "S4ReadOnlyRealAgentSupervisorSeam": ("s4_read_only_real_agent_step", "S4ReadOnlyRealAgentSupervisorSeam"),
     "s4_activity_failure_for_code": ("s4_read_only_real_agent_step", "s4_activity_failure_for_code"),
+    "S5_DOWNSTREAM_DELIVERY_RECONNECT_APPROVAL_TOKEN": (
+        "s5_downstream_delivery_reconnect",
+        "S5_DOWNSTREAM_DELIVERY_RECONNECT_APPROVAL_TOKEN",
+    ),
+    "S5DeliveryReconnectController": (
+        "s5_downstream_delivery_reconnect",
+        "S5DeliveryReconnectController",
+    ),
+    "S5DurableDeliveryClaimStore": (
+        "s5_downstream_delivery_reconnect",
+        "S5DurableDeliveryClaimStore",
+    ),
+    "build_s5_delivery_reconnect_request": (
+        "s5_downstream_delivery_reconnect",
+        "build_s5_delivery_reconnect_request",
+    ),
+    "describe_sachima_s5_downstream_delivery_reconnect_contract": (
+        "s5_downstream_delivery_reconnect",
+        "describe_sachima_s5_downstream_delivery_reconnect_contract",
+    ),
+    "s5_delivery_failure_for_code": (
+        "s5_downstream_delivery_reconnect",
+        "s5_delivery_failure_for_code",
+    ),
+    "scan_sachima_s5_no_leak": (
+        "s5_downstream_delivery_reconnect",
+        "scan_sachima_s5_no_leak",
+    ),
     "P5TemporalRuntimeClient": ("runtime_client", "P5TemporalRuntimeClient"),
     "P5TemporalControlSurface": ("control_surface", "P5TemporalControlSurface"),
     "StepWorkflow": ("workflow", "StepWorkflow"),
@@ -97,6 +125,13 @@ __all__ = [
     "S4_HISTORY_SAFE_ROLE_TO_CONTROLLED_EXEC_ROLE",
     "S4ReadOnlyRealAgentSupervisorSeam",
     "s4_activity_failure_for_code",
+    "S5_DOWNSTREAM_DELIVERY_RECONNECT_APPROVAL_TOKEN",
+    "S5DeliveryReconnectController",
+    "S5DurableDeliveryClaimStore",
+    "build_s5_delivery_reconnect_request",
+    "describe_sachima_s5_downstream_delivery_reconnect_contract",
+    "s5_delivery_failure_for_code",
+    "scan_sachima_s5_no_leak",
     "P5TemporalRuntimeClient",
     "P5TemporalControlSurface",
     "StepWorkflow",
