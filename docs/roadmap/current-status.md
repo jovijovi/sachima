@@ -105,20 +105,10 @@ A roadmap/phase task is complete only when:
 ```json
 {
   "base_branch": "release/sachima",
-  "base_head": "c3bac158be986a01605ac96931202ad8c45f32ee",
+  "base_head": "357880c4647c4b52fc2c34c78616122d240cfe25",
   "base_head_note": "latest first-parent base commit excluding machine status-sync self-commits",
-  "open_pr_count": 1,
-  "open_prs": [
-    {
-      "baseRefName": "release/sachima",
-      "headRefName": "docs/s4-read-only-real-agent-step-design",
-      "isDraft": false,
-      "mergeStateStatus": "UNSTABLE",
-      "number": 196,
-      "title": "docs: add S4 read-only real-agent step design packet",
-      "url": "https://github.com/jovijovi/sachima/pull/196"
-    }
-  ],
+  "open_pr_count": 0,
+  "open_prs": [],
   "repository": "jovijovi/sachima",
   "scope_note": "machine dynamic status only; GitHub remains the authority for PR/merge/CI history, and approvals/phase meaning remain human-authored outside this block"
 }
