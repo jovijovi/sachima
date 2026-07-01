@@ -1,4 +1,4 @@
-name: Roadmap status sync
+name: Roadmap status guard
 
 on:
   workflow_dispatch:
@@ -6,16 +6,14 @@ on:
     branches: [release/sachima]
 
 permissions:
-  contents: write
-  pull-requests: read
+  contents: read
 
 concurrency:
-  group: roadmap-status-sync-${{ github.ref }}
+  group: roadmap-status-guard-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  sync:
-    if: github.event_name != 'push' || !contains(github.event.head_commit.message, '[skip status-sync]')
+  guard:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -25,27 +23,9 @@ jobs:
           fetch-depth: 0
           ref: release/sachima
 
-      - name: Sync machine-owned roadmap status block
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Guard current-status dashboard shape
         run: |
           set -euo pipefail
           python3 tools/sync_roadmap_status.py \
             --file docs/roadmap/current-status.md \
-            --repo jovijovi/sachima \
-            --base-branch release/sachima \
-            --base-remote origin \
-            --write
-
-      - name: Commit generated status if changed
-        run: |
-          set -euo pipefail
-          if git diff --quiet -- docs/roadmap/current-status.md; then
-            echo "Roadmap machine status already up to date."
-            exit 0
-          fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add docs/roadmap/current-status.md
-          git commit -m "docs: sync machine roadmap status [skip status-sync]"
-          git push
+            --check
