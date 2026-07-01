@@ -16,9 +16,9 @@
 |---|---|
 | Product goal | Production-grade AI workbench inside a custom IM channel, with safe durable FlowWeaver/Hermes orchestration and controlled delivery surfaces. |
 | Active mainlines | (1) Integrate agent-run-supervisor as the supervised real-agent step boundary. (2) Integrate Temporal as the durable orchestration backbone. |
-| Current stage | S4 read-only real-agent step implementation is the next implementation gate, but it has **not started** and requires separate named approval. |
+| Current stage | S4 read-only real-agent step implementation is **in progress** under a bounded implementation gate. |
 | Current completed foundation | S1 integration design, S2 local/offline adapter seam, S3 Activity/controller design, S3 hermetic-local Activity implementation, and S4 read-only real-agent step design are all done as project tasks. |
-| Current design authority | `docs/plans/2026-07-01-sachima-s4-read-only-real-agent-step-design-packet.md` defines the future S4 implementation boundary. |
+| Current design authority | `docs/plans/2026-07-01-sachima-s4-read-only-real-agent-step-design-packet.md` defines the S4 implementation boundary. |
 | Current boundary | The project is still local/offline and controlled by named gates. No live/default-on behavior, real delivery, production config, or write-capable agent role is approved by this status page. |
 
 ## Stage / task board
@@ -31,7 +31,7 @@
 | S3 Activity/controller design | Done | Activity/controller design task complete. | Defines how Temporal Activity/controller calls the S2 seam: contracts, role mapping, lifecycle, stable refs/codes, and Worker/task-queue ownership. |
 | S3 hermetic-local Activity implementation | Done | Hermetic-local implementation task complete. | Adds Activity-compatible body and caller-owned controller over the S2 seam using injected-fake deterministic execution only. |
 | S4 read-only real-agent step design | Done | Read-only real-agent step design task complete. | Defines how a future implementation would replace the injected fake with one bounded read-only real-agent step through agent-run-supervisor. |
-| S4 read-only real-agent step implementation | Not started | Requires separate named implementation approval before any code or real-agent execution. | Would bind the S3 Activity/controller to the bounded read-only real-agent step while preserving no-leak, fail-closed, idempotency, and ops-owned lifecycle boundaries. |
+| S4 read-only real-agent step implementation | In progress | Bounded read-only seam implementation is being prepared under the named gate; review/verification gates remain before task closure. | Binds the S3 Activity/controller to the bounded read-only real-agent step while preserving no-leak, fail-closed, idempotency, and ops-owned lifecycle boundaries. |
 | S5 downstream delivery reconnect | Not started | Deferred until orchestration-mainline safety is proven. | Would reconnect downstream delivery/ACK surfaces after S4-class orchestration gates. |
 | P7 bounded real-send canary execute | Paused | Deliberately paused; requires a separate one-execution approval packet with concrete safe values. | Downstream delivery safety support, not the current mainline. |
 | P8 product / ops hardening | Not started | Requires orchestration-mainline and limited-live readiness first. | Later production/ops hardening stage. |
@@ -50,7 +50,7 @@
 
 | Gate | Status | Required before |
 |---|---|---|
-| S4 implementation approval | Required | Any S4 source implementation work or real read-only agent-step binding. |
+| S4 implementation review and verification | Required | Closing the S4 implementation task. |
 | Real agent / acpx / npx execution | Not approved | Any new real agent run, read-only smoke, or broader controlled AI FLOW real execution. |
 | Write-capable Claude/Codex roles | Not approved | Any Sachima-run agent step that can mutate files, state, delivery surfaces, or repositories. |
 | Gateway / Feishu / live / default-on behavior | Not approved | Any live IM behavior, automatic delivery, platform adapter mutation, public ingress, or default-on route. |
@@ -62,7 +62,7 @@
 
 The next safe request should be one of:
 
-1. **S4 read-only real-agent step implementation gate** — separate named approval required. It should remain bounded, read-only, role-pinned, no-leak, fail-closed, duplicate/recover/no-relaunch tested, and still exclude live delivery expansion.
+1. **Close the S4 read-only real-agent step implementation gate** — finish review, no-leak/forbidden-surface verification, idempotency checks, and independent blocker review before marking the task done.
 2. **Docs/status hygiene** — keep this dashboard lean and aligned with project task truth without recreating ledgers or review histories.
 3. **S5 downstream delivery reconnect design** — only after the S4 implementation gate is complete enough to justify reconnecting downstream delivery surfaces.
 
