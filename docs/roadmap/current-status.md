@@ -16,9 +16,9 @@
 |---|---|
 | Product goal | Production-grade AI workbench inside a custom IM channel, with safe durable FlowWeaver/Hermes orchestration and controlled delivery surfaces. |
 | Active mainlines | (1) Integrate agent-run-supervisor as the supervised real-agent step boundary. (2) Integrate Temporal as the durable orchestration backbone. |
-| Current stage | S4 read-only real-agent step implementation is **done as a project task**; S5 downstream delivery reconnect **design** is complete as a task-state conclusion. The next stage is a separately-approved S5 implementation gate. |
-| Current completed foundation | S1 integration design, S2 local/offline adapter seam, S3 Activity/controller design, S3 hermetic-local Activity implementation, S4 read-only real-agent step design, S4 read-only real-agent step implementation, and S5 downstream delivery reconnect design are all done as project tasks. |
-| Current design authority | `docs/plans/2026-07-01-sachima-s5-downstream-delivery-reconnect-design-packet.md` defines the downstream delivery/ACK reconnect boundary, downstream of the completed S4 read-only real-agent step. |
+| Current stage | S5 downstream delivery reconnect implementation is **done as a project-task implementation candidate** under the named S5 gate: default-off reconnect with injected/fake send seam and S5-owned durable pre-claim; quality control and later stage approvals remain separate. |
+| Current completed foundation | S1 integration design, S2 local/offline adapter seam, S3 Activity/controller design, S3 hermetic-local Activity implementation, S4 read-only real-agent step design, S4 read-only real-agent step implementation, S5 downstream delivery reconnect design, and S5 downstream delivery reconnect implementation are all done as project-task candidates. |
+| Current design authority | `docs/plans/2026-07-01-sachima-s5-downstream-delivery-reconnect-design-packet.md` defines the downstream delivery/ACK reconnect boundary, and `docs/plans/2026-07-02-sachima-s5-downstream-delivery-reconnect-implementation-manifest.yaml` records the implementation-gate scope. |
 | Current boundary | The project is still local/offline and controlled by named gates. No live/default-on behavior, real delivery, production config, or write-capable agent role is approved by this status page. |
 
 ## Stage / task board
@@ -33,7 +33,7 @@
 | S4 read-only real-agent step design | Done | Read-only real-agent step design task complete. | Defines how a future implementation would replace the injected fake with one bounded read-only real-agent step through agent-run-supervisor. |
 | S4 read-only real-agent step implementation | Done | Bounded read-only real-agent seam implementation task complete. | Binds the S3 Activity/controller to the bounded read-only real-agent step while preserving no-leak, fail-closed, idempotency, and ops-owned lifecycle boundaries. |
 | S5 downstream delivery reconnect design | Done | Downstream delivery/ACK reconnect design task complete. | Defines how the completed S4 orchestration output would reconnect to the default-off delivery/ACK surface through an injected (fake) send seam, with no real send. |
-| S5 downstream delivery reconnect implementation | Not started | Requires a separate named approval; would wire the reconnect default-off with an injected/fake send seam only. | Would bind the S4 orchestration output to the delivery/ACK controller while preserving no-leak, fail-closed, delivery idempotency, and ops-owned lifecycle boundaries. |
+| S5 downstream delivery reconnect implementation | Done | Default-off reconnect implementation candidate complete with injected/fake send seam, S5-owned durable pre-claim, no-double-send recovery, closed mapping, no-leak, and ACK/WATCH semantics. | Binds the S4 orchestration output to the delivery/ACK controller while preserving no-leak, fail-closed, delivery idempotency, and ops-owned lifecycle boundaries. |
 | P7 bounded real-send canary execute | Paused | Deliberately paused; requires a separate one-execution approval packet with concrete safe values. | Downstream delivery safety support, not the current mainline. |
 | P8 product / ops hardening | Not started | Requires orchestration-mainline and limited-live readiness first. | Later production/ops hardening stage. |
 
@@ -51,7 +51,7 @@
 
 | Gate | Status | Required before |
 |---|---|---|
-| S5 implementation gate | Not approved | Any S5 downstream delivery reconnect implementation; a separate named approval binds the default-off, injected/fake-send-seam scope. |
+| S5 implementation quality gate | WATCH | Quality control for the S5 implementation candidate before any later stage request; this status page does not replace verification. |
 | Real agent / acpx / npx execution | Not approved | Any new real agent run, read-only smoke, or broader controlled AI FLOW real execution. |
 | Write-capable Claude/Codex roles | Not approved | Any Sachima-run agent step that can mutate files, state, delivery surfaces, or repositories. |
 | Gateway / Feishu / live / default-on behavior | Not approved | Any live IM behavior, automatic delivery, platform adapter mutation, public ingress, or default-on route. |
@@ -63,7 +63,7 @@
 
 The next safe request should be one of:
 
-1. **Open the S5 downstream delivery reconnect implementation gate** — a separate named approval to wire the reconnect default-off, with an injected/fake send seam only and no real send, per the S5 design packet.
+1. **Review the S5 downstream delivery reconnect implementation candidate** — verify the default-off injected/fake send seam, S5-owned durable pre-claim, no-double-send recovery, closed mapping, no-leak, and ACK/WATCH semantics before any later stage request.
 2. **Later, the P7 bounded real-send canary gate** — still paused; a separate named approval binding one execution packet with concrete safe values before any real send.
 3. **Docs/status hygiene** — keep this dashboard lean and aligned with project task truth without recreating ledgers or review histories.
 

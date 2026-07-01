@@ -1,0 +1,96 @@
+type: sachima.governance.phase_manifest.v1
+phase: s5_downstream_delivery_reconnect_implementation
+status: implementation_candidate
+title: "Sachima S5 — Downstream delivery reconnect implementation"
+date: 2026-07-02
+
+base_branch: release/sachima
+branch: feat/s5-downstream-delivery-reconnect-implementation
+
+summary: >-
+  Implementation candidate for the separately approved S5 downstream delivery
+  reconnect gate. Adds a default-off S5 controller that consumes the completed S4
+  sanitized ActivityOutput and reconnects it to the already-merged P7
+  SachimaP7DeliveryAckController through an injected/fake send seam only. The
+  implementation owns a durable delivery pre-claim before deliver_slot(...), so
+  duplicate/recover/retry paths reconcile resident state and never double-send.
+  It preserves closed mapping, no-leak scans, receipt-only ACK semantics,
+  timeout/unknown WATCH handling, and the Gateway boundary: Gateway is not the
+  Temporal caller, lifecycle owner, or Worker owner. This gate performs no real
+  send and does not approve live/default-on behavior.
+
+authority_inputs:
+  - GOAL.md
+  - docs/roadmap/current-status.md
+  - docs/plans/2026-07-01-sachima-s5-downstream-delivery-reconnect-design-packet.md
+  - docs/plans/2026-07-01-sachima-s5-downstream-delivery-reconnect-design-packet-manifest.yaml
+  - docs/plans/2026-07-01-sachima-s4-read-only-real-agent-step-implementation-manifest.yaml
+  - sachima_supervisor/p5_temporal/contracts.py
+  - sachima_supervisor/p5_temporal/s3_activity_controller.py
+  - sachima_supervisor/p5_temporal/s4_read_only_real_agent_step.py
+  - gateway/sachima_delivery_ack.py
+  - gateway/flowweaver_delivery_activity.py
+
+scope:
+  docs_only: false
+  source_implementation: true
+  s5_downstream_delivery_reconnect: true
+  default_off: true
+  injected_fake_send_seam_only: true
+  s5_owned_durable_preclaim_before_deliver_slot: true
+  real_send: false
+  real_delivery: false
+  gateway_or_feishu_live_behavior: false
+  public_ingress: false
+  platform_adapter_construction: false
+  temporal_worker_or_runtime_start: false
+  gateway_owned_worker_or_lifecycle: false
+  production_config_write: false
+  write_roles: false
+  p7_real_send_canary_execute: false
+
+allowed_changed_paths:
+  - sachima_supervisor/p5_temporal/s5_downstream_delivery_reconnect.py
+  - sachima_supervisor/p5_temporal/__init__.py
+  - tests/sachima_supervisor/p5_temporal/unit/test_s5_downstream_delivery_reconnect.py
+  - docs/plans/2026-07-02-sachima-s5-downstream-delivery-reconnect-implementation-manifest.yaml
+  - docs/roadmap/current-status.md
+
+required_coverage:
+  - s4_sanitized_activity_output_to_default_off_p7_delivery_ack_reconnect
+  - s5_owned_preclaim_before_deliver_slot
+  - duplicate_recover_retry_no_relaunch_no_double_send
+  - default_off_token_mismatch_missing_adapter_zero_send
+  - closed_mapping_unknown_platform_write_live_default_on_fail_closed
+  - receipt_only_ack_accepted_without_receipt_timeout_unknown_watch
+  - temporal_failure_retryability_split
+  - no_leak_projection_query_export_and_serialized_bytes
+  - forbidden_live_surface_scan_gateway_not_caller_lifecycle_worker_owner
+
+required_gates:
+  - tdd_red_captured_before_implementation
+  - focused_s5_unit_tests
+  - adjacent_p7_s3_s4_regression_tests
+  - compileall_changed_runtime_surfaces
+  - no_leak_forbidden_surface_scan
+  - current_status_dashboard_guard
+  - git_diff_check
+  - codex_read_only_blocker_review
+  - github_ci_green_before_closeout
+  - feishu_approval_card_bound_to_latest_head_sha
+
+explicit_non_approvals:
+  - real external Sachima ingress
+  - real external delivery or production delivery control
+  - P7 real-send canary execute
+  - Gateway/Feishu/live/default-on behavior
+  - public webhook or ingress exposure
+  - platform adapter construction or mutation
+  - production config writes or service restart/reload
+  - Gateway restart/reload
+  - Gateway-owned Temporal/Worker/service/subprocess lifecycle
+  - Temporal Worker/service/runtime/subprocess startup by this gate
+  - real agent/acpx/npx execution by the verification gates in this PR
+  - write-capable Claude/Codex roles or file/git/state/delivery mutation by agent steps
+  - broader real controlled AI FLOW execution
+  - production cluster or production traffic
