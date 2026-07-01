@@ -96,11 +96,20 @@ def _reject(op: str, code: str, *, workflow_id: str | None = None) -> dict[str, 
     }
 
 
+_RETRYABLE_ACTIVITY_ERROR_CODES = frozenset({C.RUNTIME_ERROR})
+
+
 def _activity_failure(code: str) -> ApplicationError:
-    """Non-retryable Temporal Activity failure carrying only a stable code."""
+    """Temporal Activity failure carrying only a bare stable code.
+
+    Deterministic fail-closed codes stay non-retryable. A transient
+    ``runtime_error`` is retryable so an Activity retry can re-enter the resident
+    claim and reconcile without relaunching real work.
+    """
 
     safe_code = code if code in C.STABLE_CODES else C.RUNTIME_ERROR
-    return ApplicationError(safe_code, type=safe_code, non_retryable=True)
+    non_retryable = safe_code not in _RETRYABLE_ACTIVITY_ERROR_CODES
+    return ApplicationError(safe_code, type=safe_code, non_retryable=non_retryable)
 
 
 # --------------------------------------------------------------------------- #

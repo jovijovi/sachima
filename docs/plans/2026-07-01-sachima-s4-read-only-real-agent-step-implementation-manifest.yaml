@@ -1,0 +1,93 @@
+type: sachima.governance.phase_manifest.v1
+phase: s4_read_only_real_agent_step_implementation
+status: implementation_candidate
+title: "Sachima S4 — Read-only real-agent step implementation"
+date: 2026-07-01
+
+base_branch: release/sachima
+branch: feat/s4-read-only-real-agent-step-implementation
+
+summary: >-
+  Implementation candidate for the separately approved S4 bounded read-only
+  real-agent step gate. Adds a default-off S4 SupervisorSeam that plugs into the
+  already-merged S2 adapter and S3 Activity body/controller, delegates exactly one
+  bounded read-only step to the merged P6-B controlled-exec wall via injected
+  local seams, and maps the result back to the frozen SupervisorStepResult /
+  ActivityOutput contract. The gate preserves no-leak, fail-closed role mapping,
+  stable refs/status/error codes, duplicate/recover/no-relaunch behavior, and
+  ops-owned lifecycle boundaries. Verification remains offline/hermetic with
+  injected fakes only; this manifest does not approve any real runtime execution.
+
+authority_inputs:
+  - GOAL.md
+  - docs/roadmap/current-status.md
+  - docs/plans/2026-07-01-sachima-s4-read-only-real-agent-step-design-packet.md
+  - docs/plans/2026-06-30-sachima-s3-hermetic-local-temporal-activity-implementation-manifest.yaml
+  - sachima_supervisor/p5_temporal/contracts.py
+  - sachima_supervisor/p5_temporal/s2_supervisor_adapter.py
+  - sachima_supervisor/p5_temporal/s3_activity_controller.py
+  - sachima_supervisor/p6b_read_only_real_agent.py
+  - sachima_supervisor/activity_controlled_exec.py
+
+scope:
+  docs_only: false
+  source_implementation: true
+  bounded_read_only_real_agent_seam: true
+  default_off: true
+  injected_offline_test_seams_only: true
+  real_agent_runtime_execution_by_this_gate: false
+  acpx_or_npx_runtime_execution_by_this_gate: false
+  temporal_worker_or_runtime_start: false
+  write_roles: false
+  gateway_or_live_behavior: false
+  real_delivery: false
+  production_config_write: false
+  s5_downstream_delivery_reconnect: false
+  p7_real_send_canary_execute: false
+
+allowed_changed_paths:
+  - sachima_supervisor/p5_temporal/s4_read_only_real_agent_step.py
+  - sachima_supervisor/p5_temporal/s3_activity_controller.py
+  - sachima_supervisor/p5_temporal/__init__.py
+  - tests/sachima_supervisor/p5_temporal/unit/test_s4_read_only_real_agent_step.py
+  - docs/plans/2026-07-01-sachima-s4-read-only-real-agent-step-implementation-manifest.yaml
+  - docs/roadmap/current-status.md
+
+required_coverage:
+  - s4_supervisor_seam_default_off_token_mismatch_missing_dependency_zero_launch
+  - s4_history_safe_role_to_controlled_exec_role_closed_mapping
+  - s4_activity_input_to_p6b_controlled_exec_to_supervisor_step_result
+  - no_leak_json_projection_and_serialized_history_bytes
+  - duplicate_divergent_restart_replay_no_relaunch
+  - read_only_role_boundary_unknown_platform_writeish_fail_closed
+  - s4_activity_failure_retryability_split_runtime_error_vs_deterministic_codes
+  - s4_retryability_enforced_on_actual_s3_activity_path
+  - forbidden_live_surface_scan
+
+required_gates:
+  - tdd_red_captured_before_implementation
+  - focused_s4_unit_tests
+  - adjacent_s3_p6b_regression_tests
+  - full_p5_temporal_and_p6b_related_tests
+  - compileall_changed_runtime_surfaces
+  - no_leak_forbidden_surface_scan
+  - current_status_dashboard_guard
+  - git_diff_check
+  - codex_read_only_blocker_review
+  - github_ci_green_before_closeout
+  - feishu_approval_card_bound_to_latest_head_sha
+
+explicit_non_approvals:
+  - real external Sachima ingress
+  - real external delivery or production delivery control
+  - P7 real-send canary execute
+  - Gateway/Feishu/live/default-on behavior
+  - public webhook or ingress exposure
+  - production config writes or service restart/reload
+  - Gateway-owned Temporal/Worker/service/subprocess lifecycle
+  - production Temporal Worker/service/runtime startup
+  - real agent/acpx/npx execution by the verification gates in this PR
+  - write-capable Claude/Codex roles or file/git mutation by agent steps
+  - broader real controlled AI FLOW execution
+  - S5 downstream delivery reconnect
+  - production cluster or production traffic
