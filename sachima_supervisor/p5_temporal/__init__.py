@@ -43,6 +43,10 @@ from .s2_supervisor_adapter import (
 
 # Lazily-resolved, temporalio-dependent public names → (module, attribute).
 _LAZY_EXPORTS = {
+    "S3_SUPERVISOR_ACTIVITY_APPROVAL_TOKEN": ("s3_activity_controller", "S3_SUPERVISOR_ACTIVITY_APPROVAL_TOKEN"),
+    "INTENT_CLASS_TO_ROLE_KEY": ("s3_activity_controller", "INTENT_CLASS_TO_ROLE_KEY"),
+    "S3SupervisorActivityBody": ("s3_activity_controller", "S3SupervisorActivityBody"),
+    "S3TemporalActivityController": ("s3_activity_controller", "S3TemporalActivityController"),
     "P5TemporalRuntimeClient": ("runtime_client", "P5TemporalRuntimeClient"),
     "P5TemporalControlSurface": ("control_surface", "P5TemporalControlSurface"),
     "StepWorkflow": ("workflow", "StepWorkflow"),
@@ -75,6 +79,10 @@ __all__ = [
     "SupervisorStepResult",
     "ActivitySeamOutcome",
     "FakeDeterministicSupervisorSeam",
+    "S3_SUPERVISOR_ACTIVITY_APPROVAL_TOKEN",
+    "INTENT_CLASS_TO_ROLE_KEY",
+    "S3SupervisorActivityBody",
+    "S3TemporalActivityController",
     "P5TemporalRuntimeClient",
     "P5TemporalControlSurface",
     "StepWorkflow",

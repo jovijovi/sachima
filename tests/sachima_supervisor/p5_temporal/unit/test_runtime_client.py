@@ -398,3 +398,30 @@ def test_query_result_fallback_still_reads_fast_terminal_result():
     assert flags == {"query_awaited": True, "result_awaited": True}
     assert result["ok"] is True
     assert result["snapshot"]["state"] == "closed"
+
+
+class _LeakyUpdateHandle:
+    async def execute_update(self, update_fn, update):
+        return {"snapshot": {"leak": "raw_prompt body"}}
+
+
+class _LeakyUpdateClient:
+    def __init__(self) -> None:
+        self.handle_calls = 0
+
+    def get_workflow_handle(self, workflow_id: str) -> _LeakyUpdateHandle:
+        self.handle_calls += 1
+        return _LeakyUpdateHandle()
+
+
+def test_update_rejects_leaky_or_malformed_update_result():
+    client = P5TemporalRuntimeClient(_LeakyUpdateClient())
+    update = C.build_update_payload(event_key="evt_resume_0001", event_type="resume", ref=None)
+    wid = "p5wf_" + "3" * 48
+
+    result = asyncio.run(client.update(workflow_id=wid, update=update))
+
+    assert result["ok"] is False
+    assert result["error_code"] == C.RUNTIME_HISTORY_LEAK_DETECTED
+    assert result["snapshot"] is None
+    assert C.scan_projection_for_leak(result) is None
