@@ -376,10 +376,14 @@ class S5DeliveryReconnectController:
 
         terminal_projections = [claim.get("projection") for _, claim in claim_records if claim.get("terminal") is True]
         if terminal_projections and len(terminal_projections) == len(claim_records):
-            projection = terminal_projections[-1]
-            if isinstance(projection, dict):
-                return copy.deepcopy(projection)
-            return _result(status="watch", error_code="p7_send_unknown", **refs)
+            for projection in terminal_projections:
+                if not isinstance(projection, dict):
+                    return _result(status="watch", error_code="p7_send_unknown", **refs)
+                try:
+                    _ensure_clean(projection)
+                except ValueError:
+                    return _result(status="watch", error_code="p7_send_unknown", **refs)
+            return copy.deepcopy(terminal_projections[-1])
         if any(_claim_preexisted_without_terminal(claim) for _, claim in claim_records):
             return _result(status="watch", error_code="p7_send_unknown", **refs)
 
