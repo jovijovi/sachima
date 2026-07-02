@@ -24,6 +24,8 @@ from typing import Any, Callable
 from temporalio.exceptions import ApplicationError
 
 from gateway.sachima_delivery_ack import (
+    SACHIMA_P7_ACK_EVENT_TYPE,
+    SACHIMA_P7_DELIVERY_ACK_VERSION,
     SACHIMA_P7_DELIVERY_ATTEMPT_TYPE,
     SACHIMA_P7_DELIVERY_ENABLE_TOKEN,
     SACHIMA_P7_DELIVERY_RESULT_TYPE,
@@ -57,12 +59,20 @@ _ALLOWED_DELIVERY_ROLES = frozenset({"sachima_delivery_read_only_reporter"})
 _SAFE_LABEL_RE = re.compile(r"^safe_[a-z0-9_]{1,91}$")
 _DELIVERY_REF_RE = re.compile(r"^runtime_delivery_(0|[1-9][0-9]*)$")
 _ATTEMPT_ID_RE = re.compile(r"^runtime_delivery_attempt_(0|[1-9][0-9]*)$")
+_ACK_REF_RE = re.compile(r"^runtime_delivery_ack_(0|[1-9][0-9]*)$")
 _RUNTIME_ARTIFACT_RE = re.compile(r"^runtime_artifact_(0|[1-9][0-9]*)$")
 _IDEMPOTENCY_KEY_RE = re.compile(r"^p7key_[a-z0-9_]{1,64}$")
 _SLOT_KEYS = frozenset({"type", "delivery_ref", "surface", "artifact_ref", "required", "side_effects"})
 _ATTEMPT_KEYS = frozenset(
     {"type", "attempt_id", "delivery_ref", "surface", "idempotency_key", "target_ref", "artifact_ref", "side_effects"}
 )
+_RESULT_PROJECTION_KEYS = frozenset(
+    {"type", "version", "status", "delivery_ref", "surface", "attempt_id", "idempotency_key", "slot_state", "ack", "error_code", "side_effects"}
+)
+_ACK_EVENT_KEYS = frozenset(
+    {"type", "ack_ref", "delivery_ref", "surface", "status", "source", "duplicate", "state_version", "side_effects"}
+)
+_RESULT_STATUSES = frozenset({"delivered", "watch", "failed"})
 _FORBIDDEN_SAFE_LABEL_PARTS = (
     "default_on",
     "live",
@@ -282,6 +292,17 @@ class S5DurableDeliveryClaimStore:
             self._claims[idempotency_key] = copy.deepcopy(record)
             return copy.deepcopy(record)
 
+    def peek(self, *, idempotency_key: str) -> dict[str, object] | None:
+        """Return a copy of a resident claim without writing or mutating it."""
+
+        with self._lock:
+            existing = self._claims.get(idempotency_key)
+            if existing is None:
+                return None
+            resident = copy.deepcopy(existing)
+            resident["preexisting"] = True
+            return resident
+
     def finalize(self, *, idempotency_key: str, fingerprint: str, projection: dict[str, object]) -> dict[str, object]:
         _ensure_clean(projection)
         with self._lock:
@@ -367,23 +388,17 @@ class S5DeliveryReconnectController:
 
         fingerprint = _fingerprint(safe_request)
         claim_records: list[tuple[str, dict[str, object]]] = []
-        for attempt in safe_request["delivery_attempts"]:
+        attempts = safe_request["delivery_attempts"]
+        for attempt in attempts:
             key = _idempotency_key(attempt["idempotency_key"])
             claim = self.claim_store.preclaim(idempotency_key=key, fingerprint=fingerprint)
             if claim["state"] == "divergent":
                 return _result(status="rejected", error_code="p7_divergent_replay", **refs)
             claim_records.append((key, claim))
 
-        terminal_projections = [claim.get("projection") for _, claim in claim_records if claim.get("terminal") is True]
-        if terminal_projections and len(terminal_projections) == len(claim_records):
-            for projection in terminal_projections:
-                if not isinstance(projection, dict):
-                    return _result(status="watch", error_code="p7_send_unknown", **refs)
-                try:
-                    _ensure_clean(projection)
-                except ValueError:
-                    return _result(status="watch", error_code="p7_send_unknown", **refs)
-            return copy.deepcopy(terminal_projections[-1])
+        replay = _resident_terminal_replay([claim for _, claim in claim_records], refs, attempts)
+        if replay is not None:
+            return replay
         if any(_claim_preexisted_without_terminal(claim) for _, claim in claim_records):
             return _result(status="watch", error_code="p7_send_unknown", **refs)
 
@@ -459,10 +474,24 @@ class S5DeliveryReconnectController:
     def cancel(self, *, request: object) -> dict[str, object]:
         try:
             safe_request = _validate_request(request)
-            refs = _result_refs(safe_request)
-        except ValueError:
-            refs = {}
-        return _result(status="cancelled", error_code="delivery_cancelled", **refs)
+            attempts = safe_request["delivery_attempts"]
+            keys = [_idempotency_key(attempt["idempotency_key"]) for attempt in attempts]
+        except (ValueError, KeyError):
+            return _result(status="cancelled", error_code="delivery_cancelled")
+        refs = _result_refs(safe_request)
+        fingerprint = _fingerprint(safe_request)
+        residents = []
+        for key in keys:
+            resident = self.claim_store.peek(idempotency_key=key)
+            if resident is not None and resident.get("fingerprint") != fingerprint:
+                return _result(status="rejected", error_code="p7_divergent_replay", **refs)
+            residents.append(resident)
+        if all(claim is None for claim in residents):
+            return _result(status="cancelled", error_code="delivery_cancelled", **refs)
+        replay = _resident_terminal_replay(residents, refs, attempts)
+        if replay is not None:
+            return replay
+        return _result(status="watch", error_code="p7_send_unknown", **refs)
 
     def query(self) -> dict[str, object]:
         return self.claim_store.query()
@@ -660,6 +689,147 @@ def _first_key(request: dict[str, object]) -> str:
 def _fingerprint(request: dict[str, object]) -> str:
     material = json.dumps(request, sort_keys=True, separators=(",", ":"))
     return "sha256:" + hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
+def _resident_terminal_replay(
+    claims: list[dict[str, object] | None], refs: dict[str, object], expected_attempts: object
+) -> dict[str, object] | None:
+    if any(claim is None for claim in claims):
+        return None
+    if type(expected_attempts) is not list or len(expected_attempts) != len(claims):
+        return _result(
+            status="watch",
+            error_code="p7_send_unknown",
+            delivery_ref=refs.get("delivery_ref"),
+            surface=refs.get("surface"),
+            attempt_id=refs.get("attempt_id"),
+            idempotency_key=refs.get("idempotency_key"),
+        )
+    resident_claims = [claim for claim in claims if claim is not None]
+    if any(claim.get("terminal") is not True for claim in resident_claims):
+        return None
+    safe_projections: list[dict[str, object]] = []
+    for claim, expected_attempt in zip(resident_claims, expected_attempts, strict=True):
+        projection = claim.get("projection")
+        if (
+            not isinstance(projection, dict)
+            or type(expected_attempt) is not dict
+            or not _terminal_projection_is_well_formed(projection, claim=claim, expected_attempt=expected_attempt)
+        ):
+            return _result(
+                status="watch",
+                error_code="p7_send_unknown",
+                delivery_ref=refs.get("delivery_ref"),
+                surface=refs.get("surface"),
+                attempt_id=refs.get("attempt_id"),
+                idempotency_key=refs.get("idempotency_key"),
+            )
+        try:
+            _ensure_clean(projection)
+        except ValueError:
+            return _result(
+                status="watch",
+                error_code="p7_send_unknown",
+                delivery_ref=refs.get("delivery_ref"),
+                surface=refs.get("surface"),
+                attempt_id=refs.get("attempt_id"),
+                idempotency_key=refs.get("idempotency_key"),
+            )
+        safe_projections.append(projection)
+    return copy.deepcopy(safe_projections[-1])
+
+
+def _terminal_projection_is_well_formed(
+    projection: dict[str, object], *, claim: dict[str, object], expected_attempt: dict[str, object]
+) -> bool:
+    if set(projection) != _RESULT_PROJECTION_KEYS:
+        return False
+    if projection.get("type") != SACHIMA_P7_DELIVERY_RESULT_TYPE:
+        return False
+    if projection.get("version") != SACHIMA_P7_DELIVERY_ACK_VERSION:
+        return False
+    status = projection.get("status")
+    if type(status) is not str or status not in _RESULT_STATUSES:
+        return False
+    if projection.get("side_effects") != []:
+        return False
+    error_code = projection.get("error_code")
+    if error_code is not None and (
+        type(error_code) is not str
+        or error_code == "delivery_cancelled"
+        or (error_code not in _NON_RETRYABLE_CODES and error_code not in _TRANSIENT_RETRYABLE_CODES)
+    ):
+        return False
+    for key in ("delivery_ref", "surface", "attempt_id", "idempotency_key", "slot_state"):
+        value = projection.get(key)
+        if value is not None and type(value) is not str:
+            return False
+    delivery_ref = projection.get("delivery_ref")
+    surface = projection.get("surface")
+    attempt_id = projection.get("attempt_id")
+    idempotency_key = projection.get("idempotency_key")
+    if type(delivery_ref) is not str or _DELIVERY_REF_RE.fullmatch(delivery_ref) is None:
+        return False
+    if surface not in _ALLOWED_SURFACES:
+        return False
+    if type(attempt_id) is not str or _ATTEMPT_ID_RE.fullmatch(attempt_id) is None:
+        return False
+    if type(idempotency_key) is not str or _IDEMPOTENCY_KEY_RE.fullmatch(idempotency_key) is None:
+        return False
+    if claim.get("idempotency_key") != idempotency_key:
+        return False
+    if delivery_ref != expected_attempt.get("delivery_ref"):
+        return False
+    if surface != expected_attempt.get("surface"):
+        return False
+    if attempt_id != expected_attempt.get("attempt_id"):
+        return False
+    if idempotency_key != expected_attempt.get("idempotency_key"):
+        return False
+    ack = projection.get("ack")
+    if status == "delivered":
+        if projection.get("slot_state") != "acked":
+            return False
+        if type(ack) is not dict or not _ack_event_is_well_formed(ack, projection):
+            return False
+        if error_code is not None:
+            return False
+    elif ack is not None:
+        return False
+    elif status == "watch":
+        if projection.get("slot_state") != "watch" or error_code not in _TRANSIENT_RETRYABLE_CODES:
+            return False
+    elif status == "failed":
+        if projection.get("slot_state") != "failed" or error_code != "p7_send_rejected":
+            return False
+    elif status == "rejected":
+        if projection.get("slot_state") not in {None, "unknown"} or error_code is None:
+            return False
+    return True
+
+
+def _ack_event_is_well_formed(ack: dict[str, object], projection: dict[str, object]) -> bool:
+    if set(ack) != _ACK_EVENT_KEYS:
+        return False
+    if ack.get("type") != SACHIMA_P7_ACK_EVENT_TYPE:
+        return False
+    ack_ref = ack.get("ack_ref")
+    if type(ack_ref) is not str or _ACK_REF_RE.fullmatch(ack_ref) is None:
+        return False
+    if ack.get("delivery_ref") != projection.get("delivery_ref"):
+        return False
+    if ack.get("surface") != projection.get("surface"):
+        return False
+    if ack.get("status") != "acknowledged" or ack.get("source") != "send_response":
+        return False
+    if ack.get("duplicate") is not False:
+        return False
+    state_version = ack.get("state_version")
+    if type(state_version) is not int or state_version < 0:
+        return False
+    if ack.get("side_effects") != []:
+        return False
+    return True
 
 
 def _claim_preexisted_without_terminal(claim: dict[str, object]) -> bool:
