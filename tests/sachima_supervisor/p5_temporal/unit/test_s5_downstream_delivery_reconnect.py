@@ -19,7 +19,7 @@ from typing import Any
 import pytest
 from temporalio.exceptions import ApplicationError
 
-from gateway.sachima_delivery_ack import SACHIMA_P7_DELIVERY_RESULT_TYPE
+from gateway.sachima_delivery_ack import SACHIMA_P7_ACK_EVENT_TYPE, SACHIMA_P7_DELIVERY_RESULT_TYPE
 from sachima_supervisor.p5_temporal import contracts as C
 
 # Future module under contract — RED: importing it is expected to fail until the
@@ -189,6 +189,161 @@ def test_s5_durable_preclaim_blocks_crash_recover_from_double_send() -> None:
     assert recovered["ack"] is None
     assert adapter.calls == []
     assert scan_sachima_s5_no_leak(recovered)["passed"] is True
+
+
+def test_cancel_after_durable_preclaim_is_watch_and_preserves_resident_claim() -> None:
+    store = S5DurableDeliveryClaimStore()
+    controller = _controller(store=store)
+    request = _request(idempotency_key="p7key_s5_cancel_after_preclaim_0")
+
+    # A durable pre-claim exists but no terminal projection has landed yet: the
+    # send may have already crossed the pre-claim boundary, so cancellation must
+    # resolve to WATCH, never a clean not-sent result, and must touch neither the
+    # send seam nor the resident claim.
+    preclaim = controller.preclaim(request=request)
+    assert preclaim["state"] == "claimed"
+    assert preclaim["terminal"] is False
+
+    cancelled = controller.cancel(request=request)
+
+    assert cancelled["status"] == "watch"
+    assert cancelled["error_code"] == "p7_send_unknown"
+    assert cancelled["ack"] is None
+    assert scan_sachima_s5_no_leak(cancelled)["passed"] is True
+
+    query = store.query()
+    claims = query["claims"]
+    assert isinstance(claims, dict)
+    resident = claims["p7key_s5_cancel_after_preclaim_0"]
+    assert isinstance(resident, dict)
+    assert resident["state"] == "claimed"
+    assert resident["terminal"] is False
+
+
+def test_cancel_replays_clean_terminal_projection_and_rejects_divergent_request() -> None:
+    store = S5DurableDeliveryClaimStore()
+    controller = _controller(store=store)
+    adapter = FakeSendAdapter(store=store)
+    request = _request(idempotency_key="p7key_s5_cancel_terminal_0")
+
+    first = controller.deliver(request=request, adapter=adapter)
+    replay = controller.cancel(request=request)
+    divergent = controller.cancel(
+        request=_request(idempotency_key="p7key_s5_cancel_terminal_0", target_ref="safe_recipient_group_b")
+    )
+
+    assert first["status"] == "delivered"
+    assert replay == first
+    assert divergent["status"] == "rejected"
+    assert divergent["error_code"] == "p7_divergent_replay"
+    assert len(adapter.calls) == 1
+
+
+def test_cancel_malformed_resident_terminal_projection_fails_closed() -> None:
+    store = S5DurableDeliveryClaimStore()
+    controller = _controller(store=store)
+    adapter = FakeSendAdapter(store=store)
+    request = _request(idempotency_key="p7key_s5_cancel_malformed_terminal_0")
+
+    first = controller.deliver(request=request, adapter=adapter)
+    claims = store.query()["claims"]
+    assert isinstance(claims, dict)
+    resident_claim = claims["p7key_s5_cancel_malformed_terminal_0"]
+    assert isinstance(resident_claim, dict)
+    resident_claim["projection"] = {
+        "type": SACHIMA_P7_DELIVERY_RESULT_TYPE,
+        "version": "sachima.p7.delivery_ack_controller.v0",
+        "status": "delivered",
+        "delivery_ref": "runtime_delivery_9",
+        "surface": "rich_card",
+        "attempt_id": "runtime_delivery_attempt_9",
+        "idempotency_key": "p7key_clean_other",
+        "slot_state": "acked",
+        "ack": {
+            "type": SACHIMA_P7_ACK_EVENT_TYPE,
+            "ack_ref": "runtime_delivery_ack_0",
+            "delivery_ref": "runtime_delivery_9",
+            "surface": "rich_card",
+            "status": "acknowledged",
+            "source": "send_response",
+            "duplicate": False,
+            "state_version": 1,
+            "side_effects": [],
+        },
+        "error_code": None,
+        "side_effects": [],
+    }
+    forged_store = S5DurableDeliveryClaimStore(initial={"p7key_s5_cancel_malformed_terminal_0": resident_claim})
+
+    recovered = _controller(store=forged_store).cancel(request=request)
+
+    assert first["status"] == "delivered"
+    assert recovered["status"] == "watch"
+    assert recovered["error_code"] == "p7_send_unknown"
+    assert scan_sachima_s5_no_leak(recovered)["passed"] is True
+    assert len(adapter.calls) == 1
+
+
+def test_cancel_terminal_projection_requires_stable_error_and_slot_state() -> None:
+    store = S5DurableDeliveryClaimStore()
+    controller = _controller(store=store)
+    adapter = FakeSendAdapter(store=store)
+    request = _request(idempotency_key="p7key_s5_cancel_bad_failed_terminal_0")
+
+    first = controller.deliver(request=request, adapter=adapter)
+    claims = store.query()["claims"]
+    assert isinstance(claims, dict)
+    resident_claim = claims["p7key_s5_cancel_bad_failed_terminal_0"]
+    assert isinstance(resident_claim, dict)
+    resident_claim["projection"] = {
+        "type": SACHIMA_P7_DELIVERY_RESULT_TYPE,
+        "version": "sachima.p7.delivery_ack_controller.v0",
+        "status": "failed",
+        "delivery_ref": "runtime_delivery_0",
+        "surface": "final_text",
+        "attempt_id": "runtime_delivery_attempt_0",
+        "idempotency_key": "p7key_s5_cancel_bad_failed_terminal_0",
+        "slot_state": "acked",
+        "ack": None,
+        "error_code": "clean_but_not_stable",
+        "side_effects": [],
+    }
+    forged_store = S5DurableDeliveryClaimStore(initial={"p7key_s5_cancel_bad_failed_terminal_0": resident_claim})
+
+    recovered = _controller(store=forged_store).cancel(request=request)
+
+    assert first["status"] == "delivered"
+    assert recovered["status"] == "watch"
+    assert recovered["error_code"] == "p7_send_unknown"
+    assert scan_sachima_s5_no_leak(recovered)["passed"] is True
+    assert len(adapter.calls) == 1
+
+
+def test_cancel_terminal_projection_rejects_duplicate_ack_replay() -> None:
+    store = S5DurableDeliveryClaimStore()
+    controller = _controller(store=store)
+    adapter = FakeSendAdapter(store=store)
+    request = _request(idempotency_key="p7key_s5_cancel_duplicate_ack_0")
+
+    first = controller.deliver(request=request, adapter=adapter)
+    claims = store.query()["claims"]
+    assert isinstance(claims, dict)
+    resident_claim = claims["p7key_s5_cancel_duplicate_ack_0"]
+    assert isinstance(resident_claim, dict)
+    projection = resident_claim["projection"]
+    assert isinstance(projection, dict)
+    ack = projection["ack"]
+    assert isinstance(ack, dict)
+    ack["duplicate"] = True
+    forged_store = S5DurableDeliveryClaimStore(initial={"p7key_s5_cancel_duplicate_ack_0": resident_claim})
+
+    recovered = _controller(store=forged_store).cancel(request=request)
+
+    assert first["status"] == "delivered"
+    assert recovered["status"] == "watch"
+    assert recovered["error_code"] == "p7_send_unknown"
+    assert scan_sachima_s5_no_leak(recovered)["passed"] is True
+    assert len(adapter.calls) == 1
 
 
 def test_identical_replay_returns_resident_projection_and_divergent_replay_fails_closed() -> None:
