@@ -211,6 +211,33 @@ def test_identical_replay_returns_resident_projection_and_divergent_replay_fails
     assert len(adapter.calls) == 1
 
 
+def test_dirty_resident_terminal_projection_fails_closed_without_resend() -> None:
+    store = S5DurableDeliveryClaimStore()
+    controller = _controller(store=store)
+    adapter = FakeSendAdapter(store=store)
+    request = _request(idempotency_key="p7key_s5_dirty_replay_0")
+
+    first = controller.deliver(request=request, adapter=adapter)
+    resident_claims = store.query()["claims"]
+    assert isinstance(resident_claims, dict)
+    resident_claim = resident_claims["p7key_s5_dirty_replay_0"]
+    assert isinstance(resident_claim, dict)
+    resident_projection = resident_claim["projection"]
+    assert isinstance(resident_projection, dict)
+    resident_projection["message_id"] = "om_" + "private_platform_id"
+    resident_projection["card_json"] = "raw card payload"
+    forged_store = S5DurableDeliveryClaimStore(initial={"p7key_s5_dirty_replay_0": resident_claim})
+    recovered_adapter = FakeSendAdapter(store=forged_store)
+    recovered = _controller(store=forged_store).deliver(request=request, adapter=recovered_adapter)
+
+    assert first["status"] == "delivered"
+    assert recovered["status"] == "watch"
+    assert recovered["error_code"] == "p7_send_unknown"
+    assert scan_sachima_s5_no_leak(recovered)["passed"] is True
+    assert recovered_adapter.calls == []
+    assert len(adapter.calls) == 1
+
+
 def test_multi_surface_reconnect_preclaims_every_attempt_before_any_send_and_replays() -> None:
     store = S5DurableDeliveryClaimStore()
     controller = _controller(store=store)
