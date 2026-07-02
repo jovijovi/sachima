@@ -1,6 +1,6 @@
 # Sachima Roadmap Current Status
 
-> AGENT-facing project dashboard. This file aligns the active product goal, stage, task progress, blockers, non-approvals, and next allowed work. It is not a version-control ledger, review log, automation-results page, or historical diary.
+> Lean project dashboard for AGENT-facing project state. This file aligns the active product goal, stage, task progress, blockers, non-approvals, and next allowed work. It is not a version-control ledger, review log, automation-results page, or historical diary.
 
 ## How to read this file
 
@@ -10,18 +10,22 @@
 - Do not record version-control state, submitted-review identifiers, revision hashes, automation matrices, external-check matrices, revision bookkeeping, or process流水账 here.
 - Long design details live in the referenced plans/runbooks. Runtime truth still requires fresh checks before any live or production-facing action.
 
+## Dynamic status policy
+
+Machine-owned dynamic status is intentionally absent from this lean dashboard. Live GitHub/CI truth stays outside this file and must be checked fresh for PR, merge, and runtime decisions.
+
 ## Current project position
 
 | Field | Current truth |
 |---|---|
 | Product goal | Production-grade AI workbench inside a custom IM channel, with safe durable FlowWeaver/Hermes orchestration and controlled delivery surfaces. |
 | Active mainlines | (1) Integrate agent-run-supervisor as the supervised real-agent step boundary. (2) Integrate Temporal as the durable orchestration backbone. |
-| Current stage | S5 downstream delivery reconnect implementation is **done as a project-task implementation candidate** under the named S5 gate: default-off reconnect with injected/fake send seam and S5-owned durable pre-claim; quality control and later stage approvals remain separate. |
+| Current stage | S5 downstream delivery reconnect implementation and its quality-review closeout are **done as project-task candidates** under the named S5 gate: default-off reconnect with injected/fake send seam and S5-owned durable pre-claim; later stage approvals remain separate. |
 | Current completed foundation | S1 integration design, S2 local/offline adapter seam, S3 Activity/controller design, S3 hermetic-local Activity implementation, S4 read-only real-agent step design, S4 read-only real-agent step implementation, S5 downstream delivery reconnect design, and S5 downstream delivery reconnect implementation are all done as project-task candidates. |
 | Current design authority | `docs/plans/2026-07-01-sachima-s5-downstream-delivery-reconnect-design-packet.md` defines the downstream delivery/ACK reconnect boundary, and `docs/plans/2026-07-02-sachima-s5-downstream-delivery-reconnect-implementation-manifest.yaml` records the implementation-gate scope. |
 | Current boundary | The project is still local/offline and controlled by named gates. No live/default-on behavior, real delivery, production config, or write-capable agent role is approved by this status page. |
 
-## Stage / task board
+## Stage / feature board
 
 | Stage / task | Status | Work-state note | Role in the mainline |
 |---|---|---|---|
@@ -51,7 +55,7 @@
 
 | Gate | Status | Required before |
 |---|---|---|
-| S5 implementation quality gate | WATCH | Quality control for the S5 implementation candidate before any later stage request; this status page does not replace verification. |
+| S5 implementation quality gate | Done | Quality review closeout complete for the S5 implementation candidate; required before P7 bounded real-send canary request-packet preparation. This status page does not authorize P7 execution. |
 | Real agent / acpx / npx execution | Not approved | Any new real agent run, read-only smoke, or broader controlled AI FLOW real execution. |
 | Write-capable Claude/Codex roles | Not approved | Any Sachima-run agent step that can mutate files, state, delivery surfaces, or repositories. |
 | Gateway / Feishu / live / default-on behavior | Not approved | Any live IM behavior, automatic delivery, platform adapter mutation, public ingress, or default-on route. |
@@ -63,8 +67,8 @@
 
 The next safe request should be one of:
 
-1. **Review the S5 downstream delivery reconnect implementation candidate** — verify the default-off injected/fake send seam, S5-owned durable pre-claim, no-double-send recovery, closed mapping, no-leak, and ACK/WATCH semantics before any later stage request.
-2. **Later, the P7 bounded real-send canary gate** — still paused; a separate named approval binding one execution packet with concrete safe values before any real send.
+1. **Prepare the P7 bounded real-send canary request packet** — docs/status/request-packet preparation only, with concrete safe values and explicit stop conditions; it still does not execute a real send.
+2. **Later, the P7 bounded real-send canary execute gate** — still paused; requires a separate named approval that binds one concrete execution packet before any real send.
 3. **Docs/status hygiene** — keep this dashboard lean and aligned with project task truth without recreating ledgers or review histories.
 
 ## Explicit non-approvals
