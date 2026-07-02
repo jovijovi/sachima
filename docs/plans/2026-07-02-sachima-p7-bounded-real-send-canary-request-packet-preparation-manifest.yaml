@@ -102,7 +102,7 @@ request_packet_preparation:
       and resolves no label to any platform identity.
     surface_allowlist:
       - final_text
-    delivery_url_class: p7_delivery_url_class_canary
+    delivery_url_class: safe_p7_delivery_url_class_canary
     max_attempts: 1
     time_budget_class: single_short_bounded_window
     rollback_control_ref: controller.rollback
