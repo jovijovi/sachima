@@ -1,0 +1,241 @@
+type: sachima.governance.phase_manifest.v1
+phase: p7_bounded_real_send_canary_request_packet_preparation
+status: draft_docs_only
+created_at: '2026-07-02'
+branch: docs/p7-s5-real-send-canary-request-packet
+base_branch: release/sachima
+
+summary: >-
+  Docs/status-only preparation of one bounded P7 real-send canary request packet, now
+  that the S5 downstream delivery reconnect implementation is a completed project-task
+  candidate (default-off, injected/fake send seam, S5-owned durable pre-claim,
+  no-double-send, receipt-only ACK, WATCH recovery). It assembles a single bounded
+  request packet as safe labels/classes only, binds it to the merged S5 reuse boundary
+  and the default-off P7 controller, and pins the pre-execution and post-execution
+  gates a later single execution must clear. It prepares a later execution approval and
+  does not itself authorize or perform execution. No source/config/runtime/live change,
+  no real send, no controller enablement, no enable-token use, and no concrete recipient
+  are part of this gate.
+
+scope:
+  docs_only: true
+  source_implementation: false
+  real_send: false
+  bounded_canary_execute: false
+  canary_execution: false
+  controller_enablement: false
+  enable_token_use: false
+  concrete_recipient_supplied: false
+  real_external_ingress: false
+  real_external_delivery: false
+  gateway_or_feishu_live_behavior: false
+  live_behavior: false
+  default_on_behavior: false
+  public_ingress: false
+  production_config_write: false
+  service_restart_or_reload: false
+  runtime_or_worker_start: false
+  subprocess_start: false
+  temporal_worker_service_runtime_subprocess_startup: false
+  gateway_restart_or_reload: false
+  gateway_owned_temporal_worker_service_lifecycle: false
+  platform_adapter_construction_or_mutation: false
+  additional_real_agent_execution: false
+  additional_acpx_or_npx_execution: false
+  write_roles: false
+
+allowed_changed_paths:
+  - docs/plans/2026-07-02-sachima-p7-bounded-real-send-canary-request-packet-preparation.md
+  - docs/plans/2026-07-02-sachima-p7-bounded-real-send-canary-request-packet-preparation-manifest.yaml
+  - docs/roadmap/current-status.md
+
+prerequisites:
+  s5_downstream_delivery_reconnect_implementation: done_project_task_candidate
+  s5_implementation_quality_gate: done
+  p7_real_delivery_ack_controller: implemented_default_off
+  p7_controller_verdict: p7_delivery_ack_closure_implementation_ready_for_canary_request_only
+  p7_bounded_canary_request_prep_gate: docs_only_contract_complete
+  bounded_canary_send_approval: not_yet_requested
+  p7_bounded_real_send_canary_execute: paused
+
+authority_inputs:
+  - GOAL.md
+  - docs/roadmap/current-status.md
+  - docs/runbooks/sachima-p7-bounded-real-send-canary-request.md
+  - docs/plans/2026-06-30-sachima-p7-bounded-real-send-canary-request-prep-gate-technical-solution.md
+  - docs/plans/2026-06-30-sachima-p7-bounded-real-send-canary-request-prep-gate-user-review-packet.md
+  - docs/plans/2026-06-30-sachima-p7-bounded-real-send-canary-request-prep-gate-manifest.yaml
+  - docs/plans/2026-07-01-sachima-s5-downstream-delivery-reconnect-design-packet.md
+  - docs/plans/2026-07-02-sachima-s5-downstream-delivery-reconnect-implementation-manifest.yaml
+  - https://docs.temporal.io/
+
+strongest_allowed_outcome: >-
+  Docs/status-only preparation of one bounded P7 real-send canary request packet. It may
+  fix the closed mapping (canary intent, channel, role, permission, target_ref,
+  artifact_ref), the concrete safe-value bounded execution shape, the S5 delivery/ACK
+  reuse boundary, the no-leak boundary, the Gateway boundary, and the pre-/post-execution
+  gate set. It does not approve or perform a real send, does not enable the controller,
+  does not use the enable token, does not supply or invent a concrete recipient, and does
+  not approve live/default-on behavior, public ingress, production config writes,
+  service/runtime/Worker/subprocess startup, Gateway restart, platform adapter
+  construction/mutation, real agent/acpx/npx execution, or write-capable roles.
+
+request_packet_preparation:
+  type: sachima.p7.bounded_canary_request_packet.v0
+  default_off: true
+  execution_authorized: false
+  prepares_later_execution_approval: true
+  authorizes_execution: false
+  executions: 1
+  canary_attempt_ceiling: 1
+  surface_default: final_text_exactly
+  values_are_safe_labels_only: true
+  no_platform_derived_values: true
+  operator_binding_required_at_approval: true
+  prepared_safe_values:
+    recipient_class: single_bounded_test_recipient
+    recipient_safe_label: safe_p7_canary_target_01
+    recipient_safe_label_note: >-
+      Illustrative safe-label placeholder only, not a platform identifier and not a
+      supplied recipient. The operator binds the actual operator-approved target into
+      policy.approved_targets at approval time; this preparation supplies no recipient
+      and resolves no label to any platform identity.
+    surface_allowlist:
+      - final_text
+    delivery_url_class: safe_p7_delivery_url_class_canary
+    max_attempts: 1
+    time_budget_class: single_short_bounded_window
+    rollback_control_ref: controller.rollback
+    evidence_root_ref: p7_canary_evidence_root_class
+    idempotency_key_shape: p7key_<safe_suffix_from_sanitized_s4_refs_plus_surface>
+    artifact_ref_shape: runtime_artifact_N
+  required_fields:
+    - recipient_safe_label
+    - recipient_class
+    - surface_allowlist
+    - max_attempts
+    - time_budget_class
+    - rollback_control_ref
+    - evidence_root_ref
+    - observability
+    - canary_send_approval_phrase
+  forbidden_in_packet:
+    - raw_chat_user_group_message_id
+    - platform_derived_recipient_or_mention_or_oc_ou_om_id
+    - url_secret_or_signed_url_secret_or_endpoint
+    - credential_or_token_or_bearer
+    - private_filesystem_path
+    - card_json_or_raw_platform_payload
+    - unbounded_surface_set
+    - out_of_canary_scope_surface
+  block_conditions:
+    - recipient_safe_label_missing_or_empty
+    - any_raw_id_url_secret_credential_or_private_path_present
+    - surface_allowlist_empty_unbounded_or_outside_tiny_set
+    - max_attempts_absent_non_integer_or_not_equal_to_one
+    - time_budget_class_absent_or_unbounded
+    - rollback_control_ref_absent_or_requires_gateway_restart
+    - evidence_root_ref_outside_allowed_class
+    - any_gateway_feishu_live_default_on_public_ingress_prodconfig_service_worker_subprocess_agent_acpx_npx_or_write_role_surface_named
+    - execution_authorized_not_false_in_this_prep_gate
+
+closed_mapping:
+  canary_intent_to_surface: s4_artifact_kind_report_plus_caller_pass -> final_text
+  channel_to_target_ref: operator_approved_policy_approved_targets -> safe_label_only
+  role_to_capability: read_only_report_emission_only_no_write_roles
+  permission_to_admission: default_off_plus_exact_enable_token_only_at_execution
+  target_ref: safe_label_class_only_never_platform_id_url_or_credential
+  artifact_ref: s4_stepartifactref_reprojected_to_runtime_artifact_N_refs_and_sha256_digest_only
+  unknown_or_platform_derived_or_write_or_live_values: fail_closed_before_any_adapter_call
+
+s5_reuse_boundary:
+  reuses_merged_default_off_s5_reconnect_and_p7_controller_unchanged: true
+  s5_owned_durable_preclaim_before_deliver_slot: true
+  one_adapter_call_per_idempotency_key: true
+  ack_from_safe_receipt_ref_only: true
+  accepted_without_receipt_is_watch_not_delivered: true
+  timeout_or_unknown_or_crash_after_preclaim_recovers_to_watch_never_resend: true
+  identical_replay_returns_resident_projection_no_second_send: true
+  divergent_replay_fail_closed_p7_divergent_replay: true
+  temporal_retries_reconcile_over_preclaim_never_double_send: true
+
+no_leak:
+  raw_material_out_of_history_query_log_status_evidence: true
+  card_json_never_in_projection_state_history_or_export: true
+  platform_identifiers_never_carried_only_safe_label_class: true
+  receipts_carry_safe_receipt_ref_only_raw_callbacks_denied_and_scrubbed: true
+  evidence_and_status_hold_sanitized_counts_refs_codes_digests_only: true
+  enforced_by_construction_and_by_scan: true
+  scan_refs:
+    - scan_sachima_p7_no_leak
+    - json_projection_scan
+    - serialized_event_bytes_scan
+
+gateway_boundary:
+  gateway_is_temporal_caller: false
+  gateway_is_lifecycle_owner: false
+  gateway_is_worker_owner: false
+  gateway_is_active_delivery_driver: false
+  gateway_is_passive_injected_leaf_future_surface_only: true
+  rollback_requires_no_gateway_restart: true
+
+evidence_interpretation:
+  pipeline_and_business_reported_separately: true
+  accepted_send_not_proof_of_delivery_without_matching_ack: true
+  unknown_or_timeout_is_watch_not_success: true
+  card_or_media_ack_never_implies_final_text_delivery: true
+
+pre_execution_gates:
+  - packet_passes_block_conditions_fail_closed_first_failure_eligible_not_execution
+  - pr_opened_and_ci_green_before_closeout
+  - codex_read_only_blocker_review
+  - feishu_approval_card_bound_to_latest_head_sha
+  - human_canary_execute_approval_bound_to_one_exact_packet_with_operator_supplied_safe_values
+
+post_execution_gates_for_later_execution:
+  - single_send_evidence_exactly_one_adapter_call_per_idempotency_key_pipeline_axis
+  - ack_result_from_safe_receipt_ref_only_business_axis_reported_separately
+  - no_double_send_evidence_preclaim_reconcile_identical_replay_resident_divergent_fail_closed
+  - rollback_disables_new_sends_without_gateway_restart_preserves_watch_and_query_export
+  - stop_conditions_fail_closed_on_divergence_or_leak_watch_on_unknown_timeout_halt_at_ceiling
+
+required_artifacts:
+  packet_preparation: docs/plans/2026-07-02-sachima-p7-bounded-real-send-canary-request-packet-preparation.md
+  packet_preparation_manifest: docs/plans/2026-07-02-sachima-p7-bounded-real-send-canary-request-packet-preparation-manifest.yaml
+  roadmap_status: docs/roadmap/current-status.md
+
+required_gates:
+  - docs and status changes only; no source/config/runtime/live surface
+  - manifest parses and all scope flags remain false (docs_only true)
+  - no wording claims a send, controller enablement, enable-token use, live delivery, or production approval
+  - closed mapping, bounded execution shape, S5 reuse boundary, no-leak, Gateway boundary, and pre-/post-execution gates each specified
+  - no concrete recipient, raw id, url, endpoint, token, credential, or secret supplied or invented; safe labels are labels only
+  - no exact send/enable shell command frozen into the docs
+  - current-status.md remains a lean dashboard, preserves every explicit non-approval, and records no PR/head/CI/merge fact
+  - pr opened and CI green before closeout (live GitHub is the authority; not recorded here)
+  - codex read-only blocker review with no scope creep and no implied execution approval
+  - feishu approval card bound to the latest head SHA
+  - a real send stays a separate named canary-execute approval binding one concrete packet with operator-supplied safe values
+
+explicit_non_approvals:
+  - real external Sachima ingress
+  - real external delivery or production delivery control
+  - P7 real-send canary execute (paused; separate approval required)
+  - Gateway/Feishu/live/default-on behavior
+  - public webhook or ingress exposure
+  - platform adapter construction or mutation
+  - production config writes or service restart/reload
+  - Gateway restart/reload
+  - Gateway-owned Temporal/Worker/service/subprocess lifecycle
+  - Temporal Worker/service/runtime/subprocess startup by this gate
+  - controller enablement or enable-token use
+  - real agent/acpx/npx execution, including any real read-only smoke
+  - write-capable Claude/Codex roles or file/git/state/delivery mutation by agent steps
+  - Satine or Hermes-profile ACP execution
+  - broader real controlled AI FLOW execution
+  - production cluster or production traffic
+
+implementation_enable_token_ref: SACHIMA_P7_DELIVERY_ENABLE_TOKEN
+bounded_canary_send_approval_required: true
+bounded_canary_send_approval_phrase_template: >-
+  approve_sachima_p7_bounded_real_send_canary_execute_recipient_safe_label_<operator_supplied_safe_label>_surface_allowlist_<final_text>_max_attempts_<1>_time_budget_<single_short_bounded_window>_rollback_control_ref_<disable_without_gateway_restart>_evidence_root_ref_<allowed_evidence_class>_single_bounded_send_no_live_default_on_no_public_ingress_no_production_config_write_no_gateway_restart_no_worker_lifecycle_no_real_agent_execution_no_write_roles_no_unbounded_delivery

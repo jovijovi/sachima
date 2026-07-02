@@ -20,9 +20,9 @@ Machine-owned dynamic status is intentionally absent from this lean dashboard. L
 |---|---|
 | Product goal | Production-grade AI workbench inside a custom IM channel, with safe durable FlowWeaver/Hermes orchestration and controlled delivery surfaces. |
 | Active mainlines | (1) Integrate agent-run-supervisor as the supervised real-agent step boundary. (2) Integrate Temporal as the durable orchestration backbone. |
-| Current stage | S5 downstream delivery reconnect implementation and its quality-review closeout are **done as project-task candidates** under the named S5 gate: default-off reconnect with injected/fake send seam and S5-owned durable pre-claim; later stage approvals remain separate. |
+| Current stage | S5 downstream delivery reconnect implementation and its quality-review closeout are **done as project-task candidates** under the named S5 gate (default-off reconnect, injected/fake send seam, S5-owned durable pre-claim). **P7 bounded real-send canary request-packet preparation is now done as a docs/status preparation candidate**: it prepares one bounded safe-label request packet plus its pre-/post-execution gates and **does not authorize execution**; the P7 real-send canary execute gate stays separate and paused. |
 | Current completed foundation | S1 integration design, S2 local/offline adapter seam, S3 Activity/controller design, S3 hermetic-local Activity implementation, S4 read-only real-agent step design, S4 read-only real-agent step implementation, S5 downstream delivery reconnect design, and S5 downstream delivery reconnect implementation are all done as project-task candidates. |
-| Current design authority | `docs/plans/2026-07-01-sachima-s5-downstream-delivery-reconnect-design-packet.md` defines the downstream delivery/ACK reconnect boundary, and `docs/plans/2026-07-02-sachima-s5-downstream-delivery-reconnect-implementation-manifest.yaml` records the implementation-gate scope. |
+| Current design authority | `docs/plans/2026-07-01-sachima-s5-downstream-delivery-reconnect-design-packet.md` defines the downstream delivery/ACK reconnect boundary, `docs/plans/2026-07-02-sachima-s5-downstream-delivery-reconnect-implementation-manifest.yaml` records the implementation-gate scope, and `docs/plans/2026-07-02-sachima-p7-bounded-real-send-canary-request-packet-preparation.md` prepares the bounded real-send canary request packet (docs-only; prepares a later execution approval, does not authorize execution). |
 | Current boundary | The project is still local/offline and controlled by named gates. No live/default-on behavior, real delivery, production config, or write-capable agent role is approved by this status page. |
 
 ## Stage / feature board
@@ -38,6 +38,7 @@ Machine-owned dynamic status is intentionally absent from this lean dashboard. L
 | S4 read-only real-agent step implementation | Done | Bounded read-only real-agent seam implementation task complete. | Binds the S3 Activity/controller to the bounded read-only real-agent step while preserving no-leak, fail-closed, idempotency, and ops-owned lifecycle boundaries. |
 | S5 downstream delivery reconnect design | Done | Downstream delivery/ACK reconnect design task complete. | Defines how the completed S4 orchestration output would reconnect to the default-off delivery/ACK surface through an injected (fake) send seam, with no real send. |
 | S5 downstream delivery reconnect implementation | Done | Default-off reconnect implementation candidate complete with injected/fake send seam, S5-owned durable pre-claim, no-double-send recovery, closed mapping, no-leak, and ACK/WATCH semantics. | Binds the S4 orchestration output to the delivery/ACK controller while preserving no-leak, fail-closed, delivery idempotency, and ops-owned lifecycle boundaries. |
+| P7 bounded real-send canary request-packet preparation | Done | Docs/status preparation candidate complete: prepares one bounded safe-label request packet (closed intent/channel/role/permission/target_ref/artifact_ref mapping), the S5 delivery/ACK reuse boundary, and the pre-/post-execution gates. Prepares a later execution approval; **does not authorize execution** and supplies no concrete recipient. | Downstream delivery safety support, not the current mainline. |
 | P7 bounded real-send canary execute | Paused | Deliberately paused; requires a separate one-execution approval packet with concrete safe values. | Downstream delivery safety support, not the current mainline. |
 | P8 product / ops hardening | Not started | Requires orchestration-mainline and limited-live readiness first. | Later production/ops hardening stage. |
 
@@ -67,8 +68,8 @@ Machine-owned dynamic status is intentionally absent from this lean dashboard. L
 
 The next safe request should be one of:
 
-1. **Prepare the P7 bounded real-send canary request packet** — docs/status/request-packet preparation only, with concrete safe values and explicit stop conditions; it still does not execute a real send.
-2. **Later, the P7 bounded real-send canary execute gate** — still paused; requires a separate named approval that binds one concrete execution packet before any real send.
+1. **Request the P7 bounded real-send canary execute gate** — still paused; requires a separate named approval that binds one concrete execution packet with operator-supplied safe values before any real send.
+2. **Review or refine the prepared request packet** — docs/status only, if the operator wants to adjust safe labels/classes, stop conditions, or evidence requirements without executing.
 3. **Docs/status hygiene** — keep this dashboard lean and aligned with project task truth without recreating ledgers or review histories.
 
 ## Explicit non-approvals
