@@ -5,6 +5,9 @@
 ## Canonical references
 
 - North star: `GOAL.md`
+- Highest architecture guidance: `docs/architecture/private-hermes-runtime-spine-design.md`
+- Highest architecture diagram: `docs/architecture/private-hermes-runtime-spine-architecture.svg`
+- Architecture directory index: `docs/architecture/README.md`
 - Gap basis: `docs/sachima-final-goal-gap-analysis.md`
 - Canonical roadmap: `docs/plans/2026-05-11-sachima-final-goal-phase-development-plan.md`
 - Current direction — mainline calibration (Sachima × agent-run-supervisor × Temporal integration plan; reclassifies P5/P6/P7 as support foundation; S0–S5 path): `docs/plans/2026-06-30-sachima-mainline-calibration-agent-run-supervisor-temporal-integration-plan.md`
