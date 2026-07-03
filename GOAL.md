@@ -2,16 +2,20 @@
 
 ## One-sentence goal
 
-Sachima should become a production-grade AI workbench inside a custom IM channel: a safe, reliable, durable, observable, and recoverable Hermes/FlowWeaver system designed for real production use, able to receive real IM requests, orchestrate long AI workflows, deliver results back through the channel, and preserve clear operational control.
+Sachima should become a production-grade AI workbench inside a custom IM channel: a safe, reliable, durable, observable, and recoverable private-Hermes runtime-spine system designed for real production use, able to receive real IM requests, coordinate external local AGENT work, orchestrate durable long tasks, deliver results back through the channel, and preserve clear operational control.
 
 ## Target architecture
 
 ```text
-Sachima = custom IM entrypoint and product surface
-FlowWeaver = long-task transaction / intent / operation / artifact / delivery state machine
-Hermes Agent = reasoning and tool execution engine
-Hermes Gateway = platform rendering, delivery, and ACK boundary
-Temporal / durable runtime = recoverable execution, retry, query, update, audit, and rollback backbone
+Private Hermes Agent = per-user product brain and user-facing decision surface
+Thin Dispatcher + Task Registry(task_id) = one task spine, with needs_agent / needs_durable as mode flags rather than lanes
+Execution Port = single runtime boundary for create_or_attach / stream / signal / status / kill / liveness
+agent-run-supervisor = external local AGENT event-stream runtime and liveness/permission boundary
+Temporal / durable runtime = optional durable workflow backbone when needs_durable=true; workflow orchestrates, activities append
+Task Event Log + Status Projection = spine-owned canonical truth and deterministic user-visible state
+Evidence / Blob Store = raw prompt/stdout/tool/artifact/platform material by ref only
+Hermes Gateway = platform rendering, delivery, and ACK boundary; not the runtime-spine owner
+FlowWeaver / Delivery / Admission = deferred heavy layers that return only when a concrete driver requires them
 ```
 
 ## Final product behavior
@@ -20,8 +24,8 @@ The final Sachima experience should let an operator use IM as a real AI workbenc
 
 1. Send a natural-language request, text or supported media, through Sachima.
 2. Have Hermes classify and split the request into high-density intent summaries, never raw-text fallback cards.
-3. Start a durable FlowWeaver transaction with sanitized state only.
-4. Show progress, approvals, blockers, artifacts, and delivery state in the IM surface.
+3. Register the request on the private-Hermes runtime spine with a stable `task_id`; use Temporal when the task needs durable execution.
+4. Show progress, approvals, blockers, artifacts, and delivery state through deterministic status projection into the IM surface.
 5. Run long AI FLOW tasks such as planning, coding, testing, PR creation, CI wait, merge coordination, report generation, and recovery.
 6. Deliver final text, rich cards, media, and artifacts without suppressing or confusing delivery surfaces.
 7. Survive process restarts, retries, duplicate messages, partial failures, and operator rollback.
@@ -36,22 +40,25 @@ The final Sachima experience should let an operator use IM as a real AI workbenc
 - Claim-check discipline: durable state carries sanitized refs, counts, digests, statuses, and stable error codes, not raw material.
 - Delivery separation: final text, rich cards, progress cards, media, and ACKs are tracked as separate surfaces.
 
-## Current phase line
+## Current architecture line
 
-Current stable state after PE-1D / PE-2 readiness decision:
+Current stable direction after the private-Hermes runtime-spine roundtable:
 
 ```text
-PE-1 controlled Sachima shadow observation: proven locally and rollback-tested.
-PE-1D longer controlled local observation: eligible for separate approval.
-PE-2 design packet: eligible for separate approval.
-PE-2 implementation / live / default-on: NO-GO.
+Private Hermes Runtime Spine = highest guidance for Hermes, Claude Code, Codex CLI, and engineers.
+P0 = one task_id spine + static Capability Registry + typed LaunchSpec + Execution Port + Task Event Log + Status Projection + Evidence refs + workspace lease + supervisor create_or_attach/liveness + Temporal attach-only AgentRunActivity.
+Deferred = B→D live promotion, agent-death respawn resume, heavy Admission/Delivery/FlowWeaver, and live/default-on behavior.
 ```
+
+The architecture guide and SVG live in `docs/architecture/private-hermes-runtime-spine-design.md` and `docs/architecture/private-hermes-runtime-spine-architecture.svg`. Implementation, real delivery, production config, Gateway lifecycle, Temporal Worker/service startup, and write-capable AGENT roles still require separate named approvals.
 
 ## Planning basis
 
 Use these documents as the canonical project compass:
 
 - `GOAL.md` — this project goal and boundary summary.
+- `docs/architecture/private-hermes-runtime-spine-design.md` — highest architecture guidance for the current private-Hermes runtime spine.
+- `docs/architecture/private-hermes-runtime-spine-architecture.svg` — architecture diagram for the same runtime-spine design.
 - `docs/sachima-final-goal-gap-analysis.md` — detailed gap analysis and phase-planning basis.
 - `docs/plans/2026-05-11-flowweaver-pe1d-pe2-readiness-decision-packet.md` — latest readiness decision and explicit non-approvals.
 - `docs/sachima-channel.md` — current Sachima adapter/channel behavior.

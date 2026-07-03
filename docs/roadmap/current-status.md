@@ -18,18 +18,20 @@ Machine-owned dynamic status is intentionally absent from this lean dashboard. L
 
 | Field | Current truth |
 |---|---|
-| Product goal | Production-grade AI workbench inside a custom IM channel, with safe durable FlowWeaver/Hermes orchestration and controlled delivery surfaces. |
-| Active mainlines | (1) Integrate agent-run-supervisor as the supervised real-agent step boundary. (2) Integrate Temporal as the durable orchestration backbone. |
-| Current stage | S5 downstream delivery reconnect implementation and its quality-review closeout are **done as project-task candidates** under the named S5 gate (default-off reconnect, injected/fake send seam, S5-owned durable pre-claim). **P7 bounded real-send canary request-packet preparation is now done as a docs/status preparation candidate**: it prepares one bounded safe-label request packet plus its pre-/post-execution gates and **does not authorize execution**; the P7 real-send canary execute gate stays separate and paused. |
-| Current completed foundation | S1 integration design, S2 local/offline adapter seam, S3 Activity/controller design, S3 hermetic-local Activity implementation, S4 read-only real-agent step design, S4 read-only real-agent step implementation, S5 downstream delivery reconnect design, and S5 downstream delivery reconnect implementation are all done as project-task candidates. |
-| Current design authority | `docs/plans/2026-07-01-sachima-s5-downstream-delivery-reconnect-design-packet.md` defines the downstream delivery/ACK reconnect boundary, `docs/plans/2026-07-02-sachima-s5-downstream-delivery-reconnect-implementation-manifest.yaml` records the implementation-gate scope, and `docs/plans/2026-07-02-sachima-p7-bounded-real-send-canary-request-packet-preparation.md` prepares the bounded real-send canary request packet (docs-only; prepares a later execution approval, does not authorize execution). |
-| Current boundary | The project is still local/offline and controlled by named gates. No live/default-on behavior, real delivery, production config, or write-capable agent role is approved by this status page. |
+| Product goal | Production-grade AI workbench inside a custom IM channel, guided by the private-Hermes runtime spine: one per-user Hermes Agent, one `task_id` spine, supervised external local AGENT event streams, optional Temporal durability, and controlled delivery surfaces. |
+| Active mainlines | (1) Preserve the Private Hermes Runtime Spine as the highest architecture guidance for Hermes, Claude Code, Codex CLI, and engineers. (2) Implement/validate the runtime-spine P0 only under separate approval. (3) Keep P7 downstream real-send canary execution paused as delivery-safety support, not the mainline. |
+| Current stage | Private Hermes Runtime Spine architecture is the current top-level design authority and is saved under `docs/architecture/`. P0 implementation is not started. Earlier S1–S5/P7 work remains useful support foundation and must be interpreted through the runtime-spine boundary. |
+| Current completed foundation | S1 integration design, S2 local/offline adapter seam, S3 Activity/controller design, S3 hermetic-local Activity implementation, S4 read-only real-agent step design, S4 read-only real-agent step implementation, S5 downstream delivery reconnect design, S5 downstream delivery reconnect implementation, and P7 bounded real-send canary request-packet preparation are all done as project-task candidates/support foundation. |
+| Current design authority | `docs/architecture/private-hermes-runtime-spine-design.md` and `docs/architecture/private-hermes-runtime-spine-architecture.svg` are the highest architecture guidance. They supersede phase-label/topology interpretations that imply four independent lanes, Gateway-owned runtime lifecycle, Temporal-owned AGENT processes, or heavy Admission/Delivery/FlowWeaver as P0 components. |
+| Current boundary | The architecture authority is docs/design guidance only. It does not approve runtime/source implementation, live/default-on behavior, real delivery, production config, Gateway lifecycle, Temporal Worker/service startup, real agent/acpx/npx execution, or write-capable agent roles. |
 
 ## Stage / feature board
 
 | Stage / task | Status | Work-state note | Role in the mainline |
 |---|---|---|---|
-| Mainline calibration | Done | Current core direction is agent-run-supervisor integration plus Temporal integration. | Reclassified earlier P5/P6/P7 work as support foundation rather than wasted work. |
+| Mainline calibration | Done | Current core direction is the Private Hermes Runtime Spine: one per-user Hermes Agent, one `task_id` spine, `needs_agent` / `needs_durable` mode flags, and deferred heavy layers. | Reclassified earlier P5/P6/P7 work as support foundation rather than wasted work. |
+| Private Hermes Runtime Spine architecture | Done | Claude Code Architect authored the final design and SVG after Hermes/Codex roundtable review. | Highest guiding architecture for Hermes, Claude Code, Codex CLI, and engineers. |
+| Runtime-spine P0 implementation/spike | Not started | Requires separate named approval before any source/runtime implementation. | Would validate the spine invariants: monotonic Event Log seq, refs-only evidence, projection replay, supervisor liveness/permission, workspace lease, and AgentRunActivity attach-not-spawn. |
 | S1 integration architecture/design | Done | Architecture/design task complete. | Defines Activity ↔ supervisor seam, claim-check model, failure mapping, no-leak boundary, and S2–S5 path. |
 | S2 local/offline adapter seam | Done | Local/offline fake/injected seam task complete. | Provides the Activity-boundary → supervisor adapter seam with default-off admission, claim-check idempotency, no-relaunch recovery, and no-leak checks. |
 | S3 Activity/controller design | Done | Activity/controller design task complete. | Defines how Temporal Activity/controller calls the S2 seam: contracts, role mapping, lifecycle, stable refs/codes, and Worker/task-queue ownership. |
@@ -57,6 +59,7 @@ Machine-owned dynamic status is intentionally absent from this lean dashboard. L
 | Gate | Status | Required before |
 |---|---|---|
 | S5 implementation quality gate | Done | Quality review closeout complete for the S5 implementation candidate; required before P7 bounded real-send canary request-packet preparation. This status page does not authorize P7 execution. |
+| Runtime-spine P0 implementation/spike | Not approved | Any source/runtime implementation or spike for the new architecture authority. |
 | Real agent / acpx / npx execution | Not approved | Any new real agent run, read-only smoke, or broader controlled AI FLOW real execution. |
 | Write-capable Claude/Codex roles | Not approved | Any Sachima-run agent step that can mutate files, state, delivery surfaces, or repositories. |
 | Gateway / Feishu / live / default-on behavior | Not approved | Any live IM behavior, automatic delivery, platform adapter mutation, public ingress, or default-on route. |
@@ -68,14 +71,16 @@ Machine-owned dynamic status is intentionally absent from this lean dashboard. L
 
 The next safe request should be one of:
 
-1. **Request the P7 bounded real-send canary execute gate** — still paused; requires a separate named approval that binds one concrete execution packet with operator-supplied safe values before any real send.
-2. **Review or refine the prepared request packet** — docs/status only, if the operator wants to adjust safe labels/classes, stop conditions, or evidence requirements without executing.
-3. **Docs/status hygiene** — keep this dashboard lean and aligned with project task truth without recreating ledgers or review histories.
+1. **Request the runtime-spine P0 implementation/spike gate** — source/runtime work is not approved by this status page; a separate named approval must bind the exact P0 slice, tests, non-approvals, and AGENT role split.
+2. **Review or refine the architecture authority** — docs/status only, if the operator wants wording or diagram adjustments without implementation.
+3. **Review or refine the prepared P7 request packet** — docs/status only, if the operator wants to adjust safe labels/classes, stop conditions, or evidence requirements without executing.
+4. **Request the P7 bounded real-send canary execute gate** — still paused; requires a separate named approval that binds one concrete execution packet with operator-supplied safe values before any real send.
 
 ## Explicit non-approvals
 
 This status page does **not** approve:
 
+- runtime-spine P0 source/runtime implementation or spike;
 - real external Sachima ingress;
 - real external delivery or production delivery control;
 - P7 real-send canary execute;

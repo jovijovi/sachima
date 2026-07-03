@@ -1,0 +1,146 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 800" font-family="Segoe UI,Arial,sans-serif">
+<defs>
+<marker id="a" markerWidth="10" markerHeight="8" refX="8" refY="3.2" orient="auto" markerUnits="userSpaceOnUse"><path d="M0 0L9 3.2L0 6.4Z" fill="#5a5f66"/></marker>
+</defs>
+<style>
+rect{stroke-width:1.5}
+.spine{fill:#e8f0fe;stroke:#3f6fd0}
+.prod{fill:#eaf6ec;stroke:#3f9a55}
+.tmp{fill:#f7f0fc;stroke:#8a5ac0}
+.tmpi{fill:#fff;stroke:#8a5ac0}
+.canon{fill:#fff3d9;stroke:#d69a2a}
+.side{fill:#f1f2f5;stroke:#7f8790}
+.tt{font-size:16px;font-weight:700;fill:#111827}
+.h{font-size:12.5px;font-weight:700;fill:#1f2937}
+.s{font-size:10px;fill:#4b5563}
+.s9{font-size:9px;fill:#4b5563}
+.n{font-size:10px;font-style:italic;fill:#6d4aa8}
+.ft{font-size:9.5px;fill:#9aa0a8}
+.arr{fill:none;stroke:#5a5f66;stroke-width:1.6;marker-end:url(#a)}
+.ln{fill:none;stroke:#5a5f66;stroke-width:1.6}
+.dsh{fill:none;stroke:#8a8f98;stroke-width:1.4;stroke-dasharray:5 4;marker-end:url(#a)}
+text{fill:#1f2937}
+</style>
+
+<rect x="0" y="0" width="1280" height="800" fill="#fff"/>
+
+<text class="tt" x="24" y="27">Private Hermes Runtime Spine</text>
+<text class="s" x="300" y="27">one task_id spine · two mode flags · not four lanes</text>
+
+<rect class="spine" x="28" y="44" width="104" height="50" rx="8"/>
+<rect class="spine" x="168" y="44" width="160" height="50" rx="8"/>
+<rect class="spine" x="364" y="44" width="140" height="50" rx="8"/>
+<rect class="spine" x="540" y="44" width="176" height="50" rx="8"/>
+<rect class="spine" x="752" y="44" width="150" height="50" rx="8"/>
+<rect class="side" x="960" y="38" width="296" height="60" rx="8"/>
+<rect class="side" x="352" y="128" width="240" height="60" rx="8"/>
+<rect class="prod" x="136" y="230" width="150" height="62" rx="8"/>
+<rect class="prod" x="322" y="222" width="244" height="74" rx="8"/>
+<rect class="tmp" x="600" y="206" width="656" height="226" rx="10"/>
+<rect class="tmpi" x="760" y="246" width="188" height="58" rx="8"/>
+<rect class="tmpi" x="620" y="344" width="200" height="64" rx="8"/>
+<rect class="tmpi" x="1028" y="344" width="184" height="64" rx="8"/>
+<rect class="side" x="340" y="358" width="180" height="56" rx="8"/>
+<rect class="canon" x="108" y="540" width="1148" height="56" rx="8"/>
+<rect class="side" x="108" y="640" width="240" height="56" rx="8"/>
+<rect class="side" x="1024" y="640" width="232" height="56" rx="8"/>
+
+<path class="arr" d="M132 69 L168 69"/>
+<path class="arr" d="M328 69 L364 69"/>
+<path class="arr" d="M504 69 L540 69"/>
+<path class="arr" d="M716 69 L752 69"/>
+
+<path class="ln" d="M827 96 L827 196"/>
+<path class="ln" d="M211 196 L856 196"/>
+<path class="arr" d="M211 196 L211 228"/>
+<path class="arr" d="M444 196 L444 220"/>
+<path class="arr" d="M854 196 L854 244"/>
+
+<path class="arr" d="M211 292 L211 538"/>
+<path class="arr" d="M530 296 L530 538"/>
+<path class="arr" d="M722 408 L722 538"/>
+<path class="arr" d="M1120 408 L1120 538"/>
+
+<path class="arr" d="M820 304 L744 342"/>
+<path class="arr" d="M888 304 L1092 342"/>
+<path class="arr" d="M620 372 L568 288"/>
+<path class="arr" d="M444 296 L432 356"/>
+
+<path class="arr" d="M228 596 L228 638"/>
+<path class="dsh" d="M1140 596 L1140 638"/>
+<path class="arr" d="M108 668 L20 668 L20 69 L26 69"/>
+<path class="dsh" d="M434 94 L434 126"/>
+<path class="dsh" d="M248 94 L248 212 L360 212 L360 220"/>
+
+<text class="h" x="80" y="73" text-anchor="middle">User / IM</text>
+<text class="h" x="248" y="67" text-anchor="middle">Private Hermes Agent</text>
+<text class="s9" x="248" y="83" text-anchor="middle">conversation · decision · user exit</text>
+<text class="h" x="434" y="67" text-anchor="middle">Thin Dispatcher</text>
+<text class="s9" x="434" y="83" text-anchor="middle">stateless · LaunchSpec · sets flags</text>
+<text class="h" x="628" y="66" text-anchor="middle">Task Registry (task_id)</text>
+<text class="s9" x="628" y="83" text-anchor="middle">meta · flags · snapshot(cache) · refs</text>
+<text class="h" x="827" y="66" text-anchor="middle">Execution Port</text>
+<text class="s9" x="827" y="79" text-anchor="middle">attach · stream · signal</text>
+<text class="s9" x="827" y="90" text-anchor="middle">kill · liveness · status</text>
+
+<text class="h" x="972" y="57" text-anchor="start">two mode flags (orthogonal)</text>
+<text class="s" x="972" y="75" text-anchor="start">needs_agent — external local AGENT</text>
+<text class="s" x="972" y="91" text-anchor="start">needs_durable — Temporal durable exec</text>
+
+<text class="h" x="472" y="145" text-anchor="middle">Tiny Capability Registry</text>
+<text class="s9" x="472" y="159" text-anchor="middle">static table keyed by agent_kind (no plugins)</text>
+<text class="s9" x="472" y="171" text-anchor="middle">attach_resume · permission_events ·</text>
+<text class="s9" x="472" y="182" text-anchor="middle">workspace_isolation · liveness · stream_resume</text>
+<text class="s9" x="452" y="112" text-anchor="middle">validate LaunchSpec</text>
+
+<text class="s9" x="690" y="190" text-anchor="middle">Execution Port routes to producers by flags</text>
+<text class="s9" x="304" y="206" text-anchor="middle">permission answer → supervisor.signal(task_id, decision/ref)</text>
+
+<text class="h" x="211" y="256" text-anchor="middle">Inline Tools</text>
+<text class="s9" x="211" y="272" text-anchor="middle">needs_agent = false</text>
+<text class="s9" x="211" y="284" text-anchor="middle">append inline</text>
+
+<text class="h" x="444" y="243" text-anchor="middle">agent-run-supervisor</text>
+<text class="s9" x="444" y="258" text-anchor="middle">external local AGENT runtime</text>
+<text class="s9" x="444" y="270" text-anchor="middle">create_or_attach·stream·signal·kill·liveness</text>
+<text class="s9" x="444" y="282" text-anchor="middle">≤ 1 live session / task_id</text>
+<text class="s9" x="444" y="293" text-anchor="middle">+ orphan reaper · permission-wait = alive</text>
+
+<text class="h" x="612" y="226" text-anchor="start">Temporal</text>
+<text class="s" x="678" y="226" text-anchor="start">present only when needs_durable = true</text>
+<text class="n" x="612" y="424" text-anchor="start">activities append; workflow orchestrates</text>
+<text class="h" x="854" y="269" text-anchor="middle">Workflow</text>
+<text class="s9" x="854" y="285" text-anchor="middle">orchestrator, not producer</text>
+<text class="h" x="720" y="364" text-anchor="middle">AgentRunActivity</text>
+<text class="s9" x="720" y="379" text-anchor="middle">attach-existing only · no create branch</text>
+<text class="s9" x="720" y="391" text-anchor="middle">no OS process · never owns runtime</text>
+<text class="s9" x="720" y="402" text-anchor="middle">heartbeat: cursor · phase · refs</text>
+<text class="h" x="1120" y="368" text-anchor="middle">Plain Activity</text>
+<text class="s9" x="1120" y="384" text-anchor="middle">does work · appends</text>
+<text class="s9" x="1120" y="396" text-anchor="middle">events (refs)</text>
+
+<text class="s9" x="556" y="316" text-anchor="middle">attach existing</text>
+<text class="s9" x="556" y="327" text-anchor="middle">session only —</text>
+<text class="s9" x="556" y="338" text-anchor="middle">not create/spawn</text>
+
+<text class="h" x="430" y="378" text-anchor="middle">Isolated Workspace</text>
+<text class="s9" x="430" y="393" text-anchor="middle">per run · single-writer lease</text>
+<text class="s9" x="430" y="405" text-anchor="middle">git worktree = one impl</text>
+
+<text class="s9" x="905" y="524" text-anchor="middle">producers append events (refs only)</text>
+<text class="h" x="682" y="562" text-anchor="middle">Task Event Log — spine-owned canonical truth · append-only</text>
+<text class="s" x="682" y="580" text-anchor="middle">single monotonic seq authority per task_id · events carry refs, never raw output</text>
+
+<text class="h" x="228" y="662" text-anchor="middle">Status Projection</text>
+<text class="s9" x="228" y="677" text-anchor="middle">deterministic · read-only · not on launch path</text>
+<text class="s9" x="228" y="689" text-anchor="middle">drives IM: edit · milestone · permission · query</text>
+<text class="s9" transform="rotate(-90 16 360)" x="16" y="360" text-anchor="middle">status → User / IM</text>
+
+<text class="h" x="1140" y="662" text-anchor="middle">Evidence / Blob Store</text>
+<text class="s9" x="1140" y="677" text-anchor="middle">raw prompt · stdout · tool logs</text>
+<text class="s9" x="1140" y="689" text-anchor="middle">artifacts · platform IDs</text>
+<text class="s9" x="1178" y="620" text-anchor="middle">refs only</text>
+
+<text class="ft" x="24" y="770">Deferred (not P0): B→D live promotion · agent-death respawn+resume · heavy Admission / Delivery / FlowWeaver.</text>
+<text class="ft" x="24" y="784">Add heavy layers only for: shared/team · real ACK/send · quota/scheduler · compliance · plugin-risk · complex DAG.</text>
+</svg>
