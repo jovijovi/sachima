@@ -7,6 +7,7 @@ This directory contains the lean roadmap status surface for long-running Sachima
 - `current-status.md` — current project dashboard: phase, feature/task implementation state, active blockers, explicit non-approvals, and next allowed work.
 - `reference-index.md` — stable canonical references and side capability pointers.
 - `boundary-register.md` — stable non-approval / drift-guard boundary notes when a boundary needs more detail than the dashboard.
+- `superseded-plans.md` — historical roadmap categories that are superseded as active roadmap but retained as support foundation.
 - `status-metadata-legacy.md` — extracted legacy metadata kept for archaeology, not current decision-making.
 
 Do **not** recreate routine PR-history ledgers, tail registers, or evidence indexes for Sachima status maintenance. GitHub is the authority for PRs, commits, merge history, CI, and PR review metadata. External evidence paths should be referenced only when they materially support a current stage decision and are not already represented by GitHub/CI/PR metadata.
@@ -18,6 +19,7 @@ GOAL.md = final goal, north-star principles, and durable product direction
 docs/architecture/ = durable architecture authority and diagrams for the current runtime-spine mainline
 current-status.md = current phase/task dashboard and next decision surface
 reference-index.md = stable references and canonical external links
+superseded-plans.md = historical plan categories superseded as active roadmap, retained as support foundation
 boundary-register.md = stable boundary detail when the dashboard needs a pointer
 GitHub = PR/commit/CI/merge history authority
 outputs/ = runtime evidence artifacts, not a roadmap ledger

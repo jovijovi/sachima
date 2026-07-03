@@ -4,14 +4,19 @@
 
 ## Canonical references
 
+> Current roadmap authority is the Private Hermes Runtime Spine architecture plus the R0-R5 development plan. Older PE, P5/P6/P7, and S1-S5 plans remain discoverable below as historical/support-foundation references; see `docs/roadmap/superseded-plans.md`.
+
 - North star: `GOAL.md`
 - Highest architecture guidance: `docs/architecture/private-hermes-runtime-spine-design.md`
 - Highest architecture diagram: `docs/architecture/private-hermes-runtime-spine-architecture.svg`
+- Active runtime-spine development roadmap: `docs/plans/2026-07-03-sachima-private-hermes-runtime-spine-development-plan.md`
+- Runtime-spine development plan manifest: `docs/plans/2026-07-03-sachima-private-hermes-runtime-spine-development-plan-manifest.yaml`
+- Superseded active-roadmap register: `docs/roadmap/superseded-plans.md`
 - Architecture directory index: `docs/architecture/README.md`
 - Gap basis: `docs/sachima-final-goal-gap-analysis.md`
-- Canonical roadmap: `docs/plans/2026-05-11-sachima-final-goal-phase-development-plan.md`
-- Current direction — mainline calibration (Sachima × agent-run-supervisor × Temporal integration plan; reclassifies P5/P6/P7 as support foundation; S0–S5 path): `docs/plans/2026-06-30-sachima-mainline-calibration-agent-run-supervisor-temporal-integration-plan.md`
-- S1 integration architecture/design packet (docs/status only; Activity↔agent-run-supervisor seam contract, cross-boundary claim-check data model, failure/recovery/no-relaunch mapping, Temporal-history no-leak boundary, S2–S5 path): `docs/plans/2026-06-30-sachima-s1-agent-run-supervisor-temporal-integration-architecture-design-packet.md`
+- Historical / superseded final-goal roadmap reference: `docs/plans/2026-05-11-sachima-final-goal-phase-development-plan.md`
+- Historical / superseded mainline calibration reference (support foundation; S0-S5 path is no longer active roadmap): `docs/plans/2026-06-30-sachima-mainline-calibration-agent-run-supervisor-temporal-integration-plan.md`
+- Historical / superseded S1 integration architecture/design packet (support foundation; Activity↔agent-run-supervisor seam contract, cross-boundary claim-check model, failure/recovery/no-relaunch mapping, Temporal-history no-leak boundary): `docs/plans/2026-06-30-sachima-s1-agent-run-supervisor-temporal-integration-architecture-design-packet.md`
 - Canonical external protocol: `jovijovi/sachima-protocols` → <https://github.com/jovijovi/sachima-protocols/blob/main/protocols/envelope/v1.md> (`https://github.com/jovijovi/sachima-protocols/blob/main/protocols/envelope/v1.md`)
 - Local protocol pointer: `docs/protocols/sachima-envelope-v1.md`
 - Latest P4 design packet: `docs/plans/2026-05-12-sachima-envelope-v1-agentic-ui-p4-design-packet.md`
