@@ -1,0 +1,59 @@
+schema_version: sachima.r5_controlled_canary_product_hardening.v1
+phase: R5 controlled canary / product hardening
+scope:
+  docs_status: true
+  local_offline_source: true
+  local_offline_tests: true
+  real_send: false
+  real_delivery: false
+  live_default_on: false
+  public_ingress: false
+  gateway_lifecycle: false
+  production_config: false
+  production_rollout: false
+  temporal_worker_service_runtime: false
+  real_agent_acpx_npx: false
+  write_capable_roles: false
+authority:
+  - docs/architecture/private-hermes-runtime-spine-design.md
+  - docs/plans/2026-07-03-sachima-private-hermes-runtime-spine-development-plan.md
+  - docs/roadmap/current-status.md
+r5_contract:
+  packet_type: sachima.runtime_spine.canary_request_packet.v1
+  report_type: sachima.runtime_spine.canary_dry_run_report.v1
+  default_off: true
+  dry_run_only: true
+  execution_authorized: false
+  surface: final_text
+  max_attempts: 1
+  safe_label_prefix: safe_
+  receiver_mapping_in_core: false
+  concrete_receiver_target_in_core: false
+stop_conditions:
+  - approval_missing
+  - duplicate_attempt
+  - leak_detected
+  - receiver_unavailable
+  - unexpected_surface
+observability:
+  report_status: dry_run_ready
+  send_attempts: 0
+  sent_counter: 0
+  stable_codes_only: true
+  raw_exception_output_allowed: false
+verification:
+  focused_tests:
+    - tests/sachima_supervisor/runtime_spine/test_canary.py
+  regression_tests:
+    - tests/sachima_supervisor/runtime_spine
+  adjacent_baseline:
+    - tests/sachima_supervisor/p5_temporal/unit/test_contracts.py
+    - tests/sachima_supervisor/test_ai_flow_store.py
+  static_gates:
+    - git diff --check
+    - ruff
+    - ty
+    - no-leak scan
+    - forbidden-surface scan
+    - current-status dashboard semantics scan
+next_approval_boundary: separate bounded real-send / production approval outside this R5 gate
