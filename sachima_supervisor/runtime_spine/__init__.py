@@ -49,6 +49,22 @@ from .events import (
     validate_event_body,
     verify_seq_contiguous,
 )
+from .execution_port import (
+    LIVE_SESSION_STATES,
+    PORT_STABLE_CODES,
+    REAPABLE_SESSION_STATES,
+    RUNTIME_INVALID_SESSION,
+    SESSION_STATES,
+    TERMINAL_SESSION_STATES,
+    ExecutionPort,
+    LivenessState,
+    SessionRef,
+    SessionStatus,
+    validate_liveness_state,
+    validate_session_ref,
+    validate_session_status,
+)
+from .fake_supervisor_port import FakeSupervisorPort
 from .launch_spec import (
     KNOWN_MODE_FLAGS,
     LaunchSpec,
@@ -75,6 +91,8 @@ __all__ = [
     "RUNTIME_INVALID_TASK_RECORD",
     "RUNTIME_UNKNOWN_CAPABILITY",
     "RUNTIME_INVALID_LAUNCH_SPEC",
+    "RUNTIME_INVALID_SESSION",
+    "PORT_STABLE_CODES",
     # events / log
     "FORBIDDEN_MARKERS",
     "EVENT_TYPES",
@@ -92,6 +110,19 @@ __all__ = [
     "safe_task_id",
     "safe_role_key",
     "safe_error_code",
+    # execution port
+    "SESSION_STATES",
+    "LIVE_SESSION_STATES",
+    "TERMINAL_SESSION_STATES",
+    "REAPABLE_SESSION_STATES",
+    "ExecutionPort",
+    "SessionRef",
+    "LivenessState",
+    "SessionStatus",
+    "validate_session_ref",
+    "validate_liveness_state",
+    "validate_session_status",
+    "FakeSupervisorPort",
     # projection
     "PROJECTION_TYPE",
     "ALLOWED_PROJECTION_KEYS",
