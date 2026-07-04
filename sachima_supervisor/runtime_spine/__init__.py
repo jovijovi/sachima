@@ -78,6 +78,19 @@ from .projection import (
     serialize_projection,
 )
 from .registry import TaskRecord, TaskRegistry
+from .temporal_bridge import (
+    BRIDGE_PHASES,
+    BRIDGE_STABLE_CODES,
+    RUNTIME_INVALID_TEMPORAL_BRIDGE,
+    AgentRunActivityInput,
+    AgentRunActivityResult,
+    HeartbeatPayload,
+    TemporalAttachOnlyBridge,
+    TemporalWorkflowContract,
+    validate_agent_run_activity_input,
+    validate_heartbeat_payload,
+    validate_workflow_contract,
+)
 
 __all__ = [
     # errors / stable codes
@@ -131,6 +144,18 @@ __all__ = [
     # registry
     "TaskRecord",
     "TaskRegistry",
+    # temporal attach-only bridge (R3)
+    "RUNTIME_INVALID_TEMPORAL_BRIDGE",
+    "BRIDGE_STABLE_CODES",
+    "BRIDGE_PHASES",
+    "HeartbeatPayload",
+    "AgentRunActivityInput",
+    "AgentRunActivityResult",
+    "TemporalWorkflowContract",
+    "TemporalAttachOnlyBridge",
+    "validate_heartbeat_payload",
+    "validate_agent_run_activity_input",
+    "validate_workflow_contract",
     # capabilities
     "Capability",
     "CAPABILITY_FIELDS",

@@ -19,11 +19,11 @@ Machine-owned dynamic status is intentionally absent from this lean dashboard. L
 | Field | Current truth |
 |---|---|
 | Product goal | Production-grade AI workbench inside a custom IM channel, guided by the private-Hermes runtime spine: one per-user Hermes Agent, one `task_id` spine, supervised external local AGENT event streams, optional Temporal durability, and controlled delivery surfaces. |
-| Active mainlines | (1) Preserve the Private Hermes Runtime Spine as the highest architecture guidance for Hermes, Claude Code, Codex CLI, and engineers. (2) Follow the R0-R5 development roadmap in `docs/plans/2026-07-03-sachima-private-hermes-runtime-spine-development-plan.md`; R1 and R2 are done as local/offline slices, and R3 Temporal attach-only durable bridge is the next candidate gate. (3) Keep P7 downstream real-send canary execution paused as delivery-safety support, not the mainline. |
-| Current stage | R0 planning reset is done as a docs/status planning task, R1 runtime-spine core is done as a local/offline implementation task, and R2 supervisor execution port is done as a deterministic fake/offline implementation task. The runtime-spine architecture is saved under `docs/architecture/`, the active R0-R5 development roadmap is saved under `docs/plans/`, and old phase plans are registered as superseded active roadmap / retained support foundation. Earlier S1-S5/P7 work remains useful support foundation and must be interpreted through the runtime-spine boundary. |
-| Current completed foundation | R1 runtime-spine core, R2 supervisor execution port, S1 integration design, S2 local/offline adapter seam, S3 Activity/controller design, S3 hermetic-local Activity implementation, S4 read-only real-agent step design, S4 read-only real-agent step implementation, S5 downstream delivery reconnect design, S5 downstream delivery reconnect implementation, and P7 bounded real-send canary request-packet preparation are all done as project-task candidates/support foundation. |
+| Active mainlines | (1) Preserve the Private Hermes Runtime Spine as the highest architecture guidance for Hermes, Claude Code, Codex CLI, and engineers. (2) Follow the R0-R5 development roadmap in `docs/plans/2026-07-03-sachima-private-hermes-runtime-spine-development-plan.md`; R1, R2, and R3 are done as local/offline slices, and R4 workspace + permission + projection integration is the next candidate gate. (3) Keep P7 downstream real-send canary execution paused as delivery-safety support, not the mainline. |
+| Current stage | R0 planning reset is done as a docs/status planning task, R1 runtime-spine core is done as a local/offline implementation task, R2 supervisor execution port is done as a deterministic fake/offline implementation task, and R3 Temporal attach-only durable bridge is done as a local/offline implementation task. The runtime-spine architecture is saved under `docs/architecture/`, the active R0-R5 development roadmap is saved under `docs/plans/`, and old phase plans are registered as superseded active roadmap / retained support foundation. Earlier S1-S5/P7 work remains useful support foundation and must be interpreted through the runtime-spine boundary. |
+| Current completed foundation | R1 runtime-spine core, R2 supervisor execution port, R3 Temporal attach-only durable bridge, S1 integration design, S2 local/offline adapter seam, S3 Activity/controller design, S3 hermetic-local Activity implementation, S4 read-only real-agent step design, S4 read-only real-agent step implementation, S5 downstream delivery reconnect design, S5 downstream delivery reconnect implementation, and P7 bounded real-send canary request-packet preparation are all done as project-task candidates/support foundation. |
 | Current design authority | `docs/architecture/private-hermes-runtime-spine-design.md` and `docs/architecture/private-hermes-runtime-spine-architecture.svg` are the highest architecture guidance. `docs/plans/2026-07-03-sachima-private-hermes-runtime-spine-development-plan.md` is the active development roadmap under that architecture, and `docs/roadmap/superseded-plans.md` records old roadmap supersession. They supersede phase-label/topology interpretations that imply four independent lanes, Gateway-owned runtime lifecycle, Temporal-owned AGENT processes, or heavy Admission/Delivery/FlowWeaver as P0 components. |
-| Current boundary | R1/R2 runtime-spine work is local/offline only. This status page does not approve R3-R5 runtime/source implementation, live/default-on behavior, real delivery, production config, Gateway lifecycle, Temporal Worker/service startup, real agent/acpx/npx execution, or write-capable agent roles. |
+| Current boundary | R1/R2/R3 runtime-spine work is local/offline only. This status page does not approve R4-R5 runtime/source implementation, live/default-on behavior, real delivery, production config, Gateway lifecycle, Temporal Worker/service startup, real agent/acpx/npx execution, or write-capable agent roles. |
 
 ## Stage / feature board
 
@@ -34,7 +34,7 @@ Machine-owned dynamic status is intentionally absent from this lean dashboard. L
 | R0 runtime-spine planning reset | Done | New R0-R5 development plan and superseded-plans register define the active roadmap. | Makes old S1-S5/P5/P6/P7 plans support foundation rather than active roadmap. |
 | R1 runtime-spine core | Done | Local/offline core implementation task complete. | Provides Task Registry, refs-only Event Log, monotonic seq authority, deterministic Status Projection, static Capability Registry, and typed LaunchSpec for the next candidate gate. |
 | R2 supervisor execution port | Done | Deterministic fake/offline execution-port implementation task complete. | Adds offline/fake supervisor port semantics only. |
-| R3 Temporal attach-only durable bridge | Not started | Requires separate named approval after R2. | Adds attach-only durable bridge contracts without Worker/service startup. |
+| R3 Temporal attach-only durable bridge | Done | Local/offline attach-only durable bridge implementation task complete. | Adds attach-only durable bridge contracts without Worker/service startup. |
 | R4 workspace + permission + projection integration | Not started | Requires separate named approval after R3. | Adds lease, permission roundtrip, and platform-neutral view model. |
 | R5 controlled canary / product hardening | Not started | Requires separate named approval after R4. | Keeps canary/product hardening default-off; real send remains separate. |
 | S1 integration architecture/design | Done | Architecture/design task complete. | Defines Activity ↔ supervisor seam, claim-check model, failure mapping, no-leak boundary, and S2–S5 path. |
@@ -63,7 +63,7 @@ Machine-owned dynamic status is intentionally absent from this lean dashboard. L
 | Gate | Status | Required before |
 |---|---|---|
 | S5 implementation quality gate | Done | Quality review closeout complete for the S5 implementation candidate; required before P7 bounded real-send canary request-packet preparation. This status page does not authorize P7 execution. |
-| R3 Temporal attach-only durable bridge implementation | Not approved | Any durable bridge source implementation for attach-only Temporal semantics. |
+| R3 Temporal attach-only durable bridge implementation | Done | R3 attach-only durable bridge source implementation is complete as a local/offline task; this status page does not approve Worker/service startup or live execution. |
 | Real agent / acpx / npx execution | Not approved | Any new real agent run, read-only smoke, or broader controlled AI FLOW real execution. |
 | Write-capable Claude/Codex roles | Not approved | Any Sachima-run agent step that can mutate files, state, delivery surfaces, or repositories. |
 | Gateway / Feishu / live / default-on behavior | Not approved | Any live IM behavior, automatic delivery, platform adapter mutation, public ingress, or default-on route. |
@@ -75,7 +75,7 @@ Machine-owned dynamic status is intentionally absent from this lean dashboard. L
 
 The next safe request should be one of:
 
-1. **Request the R3 Temporal attach-only durable bridge implementation gate** — source/runtime work for R3 is not approved by this status page; use the R3 approval text in `docs/plans/2026-07-03-sachima-private-hermes-runtime-spine-development-plan.md`.
+1. **Request the R4 workspace + permission + projection integration gate** — source/runtime work for R4 is not approved by this status page; use the R4 approval text in `docs/plans/2026-07-03-sachima-private-hermes-runtime-spine-development-plan.md`.
 2. **Review or refine the architecture/development-plan authority** — docs/status only, if the operator wants wording or diagram adjustments without implementation.
 3. **Review or refine the prepared P7 request packet** — docs/status only, if the operator wants to adjust safe labels/classes, stop conditions, or evidence requirements without executing.
 4. **Request the P7 bounded real-send canary execute gate** — still paused; requires a separate named approval that binds one concrete execution packet with operator-supplied safe values before any real send.
@@ -84,7 +84,7 @@ The next safe request should be one of:
 
 This status page does **not** approve:
 
-- R3-R5 runtime-spine source/runtime implementation without the matching named gate;
+- R4-R5 runtime-spine source/runtime implementation without the matching named gate;
 - real external Sachima ingress;
 - real external delivery or production delivery control;
 - P7 real-send canary execute;
