@@ -49,6 +49,21 @@ from .events import (
     validate_event_body,
     verify_seq_contiguous,
 )
+from .canary import (
+    CANARY_PACKET_TYPE,
+    CANARY_REPORT_TYPE,
+    CANARY_STABLE_CODES,
+    RUNTIME_CANARY_NOT_AUTHORIZED,
+    RUNTIME_INVALID_CANARY_PACKET,
+    CanaryDryRunReport,
+    CanaryRequestPacket,
+    build_bounded_canary_packet,
+    build_canary_dry_run_report,
+    serialize_canary_dry_run_report,
+    serialize_canary_request_packet,
+    validate_canary_dry_run_report,
+    validate_canary_request_packet,
+)
 from .execution_port import (
     LIVE_SESSION_STATES,
     PORT_STABLE_CODES,
@@ -157,6 +172,20 @@ __all__ = [
     "safe_task_id",
     "safe_role_key",
     "safe_error_code",
+    # R5 controlled canary / product hardening
+    "RUNTIME_INVALID_CANARY_PACKET",
+    "RUNTIME_CANARY_NOT_AUTHORIZED",
+    "CANARY_STABLE_CODES",
+    "CANARY_PACKET_TYPE",
+    "CANARY_REPORT_TYPE",
+    "CanaryRequestPacket",
+    "CanaryDryRunReport",
+    "build_bounded_canary_packet",
+    "build_canary_dry_run_report",
+    "validate_canary_request_packet",
+    "validate_canary_dry_run_report",
+    "serialize_canary_request_packet",
+    "serialize_canary_dry_run_report",
     # execution port
     "SESSION_STATES",
     "LIVE_SESSION_STATES",
