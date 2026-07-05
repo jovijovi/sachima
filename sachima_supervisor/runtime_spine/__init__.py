@@ -80,6 +80,14 @@ from .execution_port import (
     validate_session_status,
 )
 from .fake_supervisor_port import FakeSupervisorPort
+from .agent_run_supervisor_port import (
+    RUNTIME_SUPERVISOR_BACKEND_FAILURE,
+    RUNTIME_SUPERVISOR_POLICY_DENIED,
+    SUPERVISOR_PORT_STABLE_CODES,
+    AgentRunSupervisorBackend,
+    AgentRunSupervisorPort,
+    DefaultAgentRunSupervisorBackend,
+)
 from .launch_spec import (
     KNOWN_MODE_FLAGS,
     LaunchSpec,
@@ -199,6 +207,12 @@ __all__ = [
     "validate_liveness_state",
     "validate_session_status",
     "FakeSupervisorPort",
+    "RUNTIME_SUPERVISOR_BACKEND_FAILURE",
+    "RUNTIME_SUPERVISOR_POLICY_DENIED",
+    "SUPERVISOR_PORT_STABLE_CODES",
+    "AgentRunSupervisorBackend",
+    "AgentRunSupervisorPort",
+    "DefaultAgentRunSupervisorBackend",
     # projection
     "PROJECTION_TYPE",
     "ALLOWED_PROJECTION_KEYS",
