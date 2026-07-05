@@ -84,9 +84,8 @@ Machine-owned dynamic status is intentionally absent from this lean dashboard. L
 
 The next safe work is:
 
-1. **Merge the docs-only live-stream integration plan** — `docs/plans/2026-07-05-ars-live-stream-integration-plan.md` plus lean dashboard/reference updates; no source implementation, live runtime, Gateway/Feishu, service lifecycle, or production config.
-2. **After that plan merges, request PR-LS1 implementation explicitly** — local/offline workbench composition of `AgentRunSupervisorWorkbenchView` + `LiveProgressProjection`, with fakes/tests/docs only and no real AGENT/Gateway/Feishu behavior.
-3. **Then proceed only through separately approved PR-LS2/PR-LS3/PR-LS4 gates** — private source binding, synthetic-artifact caller-API compatibility smoke, and later runtime/query activation respectively.
+1. **PR-LS1 local/offline workbench composition — the current approved implementation slice** — compose `AgentRunSupervisorWorkbenchView` + `LiveProgressProjection` into a refs-only, fail-closed combined workbench view, with fakes/tests/docs only and no real AGENT/Gateway/Feishu/live/default-on behavior, real delivery, service lifecycle, or production config.
+2. **Then proceed only through separately approved PR-LS2/PR-LS3/PR-LS4 gates** — private source binding, synthetic-artifact caller-API compatibility smoke, and later runtime/query activation respectively; each remains separately gated and needs its own named approval.
 
 P7 real-send canary execution remains paused and separate from this mainline.
 

@@ -178,6 +178,15 @@ from .agent_run_supervisor_workbench import (
     serialize_agent_run_supervisor_workbench_view,
     validate_agent_run_supervisor_workbench_view,
 )
+from .agent_run_supervisor_live_workbench import (
+    LIVE_WORKBENCH_STABLE_CODES,
+    LIVE_WORKBENCH_VIEW_TYPE,
+    RUNTIME_INVALID_LIVE_WORKBENCH_VIEW,
+    AgentRunSupervisorLiveWorkbenchView,
+    build_agent_run_supervisor_live_workbench_view,
+    serialize_agent_run_supervisor_live_workbench_view,
+    validate_agent_run_supervisor_live_workbench_view,
+)
 from .agent_run_supervisor_production_e2e import (
     E2E_BACKEND_FAILURE,
     E2E_INVALID_FIXTURE,
@@ -342,6 +351,14 @@ __all__ = [
     "build_agent_run_supervisor_workbench_view",
     "validate_agent_run_supervisor_workbench_view",
     "serialize_agent_run_supervisor_workbench_view",
+    # PR-LS1 ARS live-progress + task workbench composite view
+    "RUNTIME_INVALID_LIVE_WORKBENCH_VIEW",
+    "LIVE_WORKBENCH_STABLE_CODES",
+    "LIVE_WORKBENCH_VIEW_TYPE",
+    "AgentRunSupervisorLiveWorkbenchView",
+    "build_agent_run_supervisor_live_workbench_view",
+    "validate_agent_run_supervisor_live_workbench_view",
+    "serialize_agent_run_supervisor_live_workbench_view",
     # PR5 single-user production-shaped E2E
     "E2E_INVALID_FIXTURE",
     "E2E_INVALID_REPORT",
