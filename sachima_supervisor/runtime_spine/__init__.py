@@ -152,6 +152,15 @@ from .view_model import (
     serialize_task_view_model,
     validate_task_view_model,
 )
+from .agent_run_supervisor_workbench import (
+    RUNTIME_INVALID_WORKBENCH_VIEW,
+    WORKBENCH_STABLE_CODES,
+    WORKBENCH_VIEW_TYPE,
+    AgentRunSupervisorWorkbenchView,
+    build_agent_run_supervisor_workbench_view,
+    serialize_agent_run_supervisor_workbench_view,
+    validate_agent_run_supervisor_workbench_view,
+)
 from .workspace import (
     RUNTIME_INVALID_WORKSPACE_LEASE,
     RUNTIME_WORKSPACE_LEASE_CONFLICT,
@@ -292,6 +301,14 @@ __all__ = [
     "build_task_view_model",
     "validate_task_view_model",
     "serialize_task_view_model",
+    # PR4 StatusProjection + task workbench view
+    "RUNTIME_INVALID_WORKBENCH_VIEW",
+    "WORKBENCH_STABLE_CODES",
+    "WORKBENCH_VIEW_TYPE",
+    "AgentRunSupervisorWorkbenchView",
+    "build_agent_run_supervisor_workbench_view",
+    "validate_agent_run_supervisor_workbench_view",
+    "serialize_agent_run_supervisor_workbench_view",
     # capabilities
     "Capability",
     "CAPABILITY_FIELDS",
