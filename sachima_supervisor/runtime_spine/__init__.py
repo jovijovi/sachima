@@ -88,6 +88,18 @@ from .agent_run_supervisor_port import (
     AgentRunSupervisorPort,
     DefaultAgentRunSupervisorBackend,
 )
+from .agent_run_supervisor_readonly_smoke import (
+    AGENT_RUN_SUPERVISOR_READ_ONLY_SMOKE_APPROVAL_TOKEN,
+    READ_ONLY_SMOKE_READINESS_LIMITATION,
+    REQUIRED_RUNNER_VERSION,
+    SMOKE_STABLE_CODES,
+    ReadOnlySmokeFixture,
+    ReadOnlySmokeReadinessReport,
+    ReadOnlySmokeReadinessRequest,
+    ReadOnlySmokeReport,
+    assess_read_only_smoke_readiness,
+    run_read_only_smoke,
+)
 from .launch_spec import (
     KNOWN_MODE_FLAGS,
     LaunchSpec,
@@ -213,6 +225,17 @@ __all__ = [
     "AgentRunSupervisorBackend",
     "AgentRunSupervisorPort",
     "DefaultAgentRunSupervisorBackend",
+    # PR2 host-local read-only smoke harness + readiness probe
+    "AGENT_RUN_SUPERVISOR_READ_ONLY_SMOKE_APPROVAL_TOKEN",
+    "READ_ONLY_SMOKE_READINESS_LIMITATION",
+    "REQUIRED_RUNNER_VERSION",
+    "SMOKE_STABLE_CODES",
+    "ReadOnlySmokeFixture",
+    "ReadOnlySmokeReport",
+    "ReadOnlySmokeReadinessRequest",
+    "ReadOnlySmokeReadinessReport",
+    "run_read_only_smoke",
+    "assess_read_only_smoke_readiness",
     # projection
     "PROJECTION_TYPE",
     "ALLOWED_PROJECTION_KEYS",
