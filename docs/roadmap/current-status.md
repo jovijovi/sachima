@@ -38,7 +38,7 @@ Machine-owned dynamic status is intentionally absent from this lean dashboard. L
 | R4 workspace + permission + projection integration | Done | Local/offline implementation task complete: workspace single-writer lease, permission roundtrip, read-only/default-deny role policy, and platform-neutral refs-only view model. | Adds lease, permission roundtrip, and platform-neutral view model. |
 | R5 controlled canary / product hardening | Done | Default-off local/offline preparation task complete: controlled canary packet, dry-run observability report, stable stop/rollback semantics, and safe-label receiver-bridge boundary. | Keeps canary/product hardening default-off; real send remains separate. |
 | AgentRunSupervisorPort adapter | Done | Local/offline PR1 implementation task complete: injected/default-fake backend adapter only, no real process startup. | Adds a Sachima-side adapter from runtime-spine `ExecutionPort` semantics to an injected supervisor backend surface. |
-| Host-local read-only real AGENT smoke | Not started | Governed PR2 slice; allowed only as a controlled host-local read-only smoke harness with safe cwd/artifact dir and no file/git/network/API mutation by the tested AGENT. | First real local supervisor smoke after PR1 adapter gate. |
+| Host-local read-only real AGENT smoke | Done | Local/offline PR2 implementation task complete: bounded read-only smoke harness over the PR1 adapter plus fail-closed real-supervisor readiness gate; no real launch by default and no runner is marked ready without a local path whose bytes match the pinned digest. | Proves the first host-local read-only supervisor-smoke shape after PR1 while preserving default-off/non-live boundaries. |
 | Persistent session lifecycle | Not started | Governed PR3 slice; persistent create/attach/stream/signal/kill/close/liveness/orphan semantics through the adapter. | Hardens lifecycle and lease/task binding. |
 | StatusProjection + task workbench view | Not started | Governed PR4 slice; deterministic projection/workbench mapping with no raw log/prompt/platform leakage. | Makes supervised task state visible through safe refs-only fields. |
 | Single-user production-shaped E2E | Not started | Governed PR5 slice; default-off single-task fixture with cleanup/health/rollback proof and no live ingress/delivery/config. | End-to-end proof while preserving non-approvals. |
@@ -81,11 +81,10 @@ Machine-owned dynamic status is intentionally absent from this lean dashboard. L
 
 The next safe work under the current operator approval is:
 
-1. **Finish PR1 AgentRunSupervisorPort adapter** — Sachima source/tests/docs/runbook only; injected/default-fake backend; no real process startup.
-2. **After PR1 merges, start PR2 host-local read-only real AGENT smoke** — controlled local harness only; no file/git/network/API mutation by the tested AGENT.
-3. **Then PR3 persistent session lifecycle** — adapter lifecycle semantics only; no Gateway/Temporal Worker/service ownership.
-4. **Then PR4 StatusProjection + task workbench view** — refs-only view fields; no raw logs/stdout/prompts/platform IDs.
-5. **Then PR5 single-user production-shaped E2E** — default-off fixture with cleanup/health/rollback proof; no real ingress/delivery/production config.
+1. **Finish PR2 host-local read-only real AGENT smoke** — candidate source/tests/docs/runbook only; controlled local harness and fail-closed readiness gate; no default-on real launch.
+2. **After PR2 merges, start PR3 persistent session lifecycle** — adapter lifecycle semantics only; no Gateway/Temporal Worker/service ownership.
+3. **Then PR4 StatusProjection + task workbench view** — refs-only view fields; no raw logs/stdout/prompts/platform IDs.
+4. **Then PR5 single-user production-shaped E2E** — default-off fixture with cleanup/health/rollback proof; no real ingress/delivery/production config.
 
 P7 real-send canary execution remains paused and separate from this mainline.
 
