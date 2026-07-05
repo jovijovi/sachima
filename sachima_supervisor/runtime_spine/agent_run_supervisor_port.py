@@ -11,6 +11,26 @@ The adapter owns the Sachima spine mapping: validate a read-only/default-deny
 store a single ``SessionRef`` per ``task_id``, append refs-only events to the
 ``TaskRegistry``, and collapse backend failures to stable port-side codes without
 leaking raw backend material.
+
+PR3 persistent session lifecycle hardening layers on this without widening the
+surface: a port reconstructed over the *same* ``TaskRegistry`` + backend re-attaches
+an existing session (running or ``permission_wait``) with no duplicate
+``agent_attached`` event, while reconstruction over a fresh/missing backend fails
+closed and never respawns. ``stream`` accepts an optional ``since_seq`` cursor so a
+caller can resume only the events after a last-seen seq (no duplicate replay), and
+:class:`LifecycleSnapshot` / :meth:`AgentRunSupervisorPort.lifecycle_snapshot`
+expose refs-only ``last_seq`` / ``event_count`` / ``attach_count`` safe resume data
+read from persisted Sachima state alone (no backend call). :meth:`close` is an
+adapter-local, default-off port handoff that drops local tracking only — it kills
+no backend session, appends no event, and mutates no registry state, so the
+supervisor keeps owning the real session lifecycle. **PR3 status/liveness
+read-failure policy (made explicit):** a *later* status/liveness backend read
+failure on an existing session collapses to the stable
+``runtime_supervisor_backend_failure`` code and never marks, kills, orphans, or
+otherwise mutates that persisted session/log — it is a transient read fault, and a
+subsequent successful read resumes the preserved session. An ``orphaned`` backend
+state is surfaced as reapable via ``liveness`` but is deliberately NOT auto-written
+as a terminal event into the canonical log; that reap decision belongs to a reaper.
 """
 
 from __future__ import annotations
@@ -183,6 +203,127 @@ class DefaultAgentRunSupervisorBackend:
             return session
 
 
+#: The persisted lifecycle states a snapshot can carry — the projection statuses
+#: the adapter ever mirrors into the canonical log (``orphaned``/``ambiguous`` are
+#: transient/health states, never a persisted lifecycle state).
+_LIFECYCLE_STATES = frozenset(
+    {"running", "permission_wait", "completed", "failed", "cancelled"}
+)
+
+LIFECYCLE_SNAPSHOT_TYPE = "sachima.runtime_spine.agent_run_supervisor_lifecycle_snapshot.v1"
+
+
+def _check_lifecycle_snapshot_fields(snap: Any) -> None:
+    """Exact fail-closed validation of a lifecycle snapshot's fields.
+
+    Fails closed on: an unsafe ``task_id`` / ``session_id``; a non-lifecycle
+    ``state``; a non-``bool`` flag; a flag inconsistent with ``state``; a negative /
+    non-``int`` count; or the cross-field invariants a genuine snapshot always holds
+    (``last_seq == event_count`` for a gap-free ``1..N`` log, ``attach_count`` never
+    exceeding ``event_count``). It never echoes the rejected material.
+    """
+
+    try:
+        task_id = snap.task_id
+        session_id = snap.session_id
+        state = snap.state
+        alive = snap.alive
+        terminal = snap.terminal
+        permission_wait = snap.permission_wait
+        resumable = snap.resumable
+        last_seq = snap.last_seq
+        event_count = snap.event_count
+        attach_count = snap.attach_count
+    except AttributeError as exc:
+        raise SpineError(RUNTIME_INVALID_SESSION) from exc
+
+    safe_task_id(task_id, code=RUNTIME_INVALID_SESSION)
+    if type(session_id) is not str or not session_id.startswith("sess_"):
+        raise SpineError(RUNTIME_INVALID_SESSION)
+    _safe_id(session_id, code=RUNTIME_INVALID_SESSION)
+    if state not in _LIFECYCLE_STATES:
+        raise SpineError(RUNTIME_INVALID_SESSION)
+    for flag in (alive, terminal, permission_wait, resumable):
+        if type(flag) is not bool:
+            raise SpineError(RUNTIME_INVALID_SESSION)
+    if alive is not (state in LIVE_SESSION_STATES):
+        raise SpineError(RUNTIME_INVALID_SESSION)
+    if terminal is not (state in TERMINAL_SESSION_STATES):
+        raise SpineError(RUNTIME_INVALID_SESSION)
+    if permission_wait is not (state == "permission_wait"):
+        raise SpineError(RUNTIME_INVALID_SESSION)
+    if resumable is not alive:
+        raise SpineError(RUNTIME_INVALID_SESSION)
+    # bool is an int subclass — exclude it so a flag can't pose as a count.
+    for count in (last_seq, event_count, attach_count):
+        if type(count) is not int or count < 0:
+            raise SpineError(RUNTIME_INVALID_SESSION)
+    if last_seq != event_count or attach_count > event_count:
+        raise SpineError(RUNTIME_INVALID_SESSION)
+
+
+@dataclass(frozen=True)
+class LifecycleSnapshot:
+    """Refs-only persistent-lifecycle snapshot for safe stream resume.
+
+    Built by :meth:`AgentRunSupervisorPort.lifecycle_snapshot` / :meth:`close` from
+    persisted Sachima state only (the Status Projection + Task Event Log) — it makes
+    no backend call and mutates nothing, so it is a stable read even while the
+    injected backend is unreachable. It carries only refs / counts / states /
+    booleans: ``last_seq`` (the cursor a caller passes to ``stream(since_seq=...)``),
+    ``event_count`` (equal to ``last_seq`` for a gap-free ``1..N`` log), and
+    ``attach_count`` (the number of ``agent_attached`` events, which stays ``1``
+    across a lifecycle re-attach — proof that reconstruction replays no duplicate
+    attach). ``__post_init__`` re-runs the full allowlist so a directly constructed
+    or forged snapshot fails closed instead of being trusted.
+    """
+
+    task_id: str
+    session_id: str
+    state: str
+    alive: bool
+    terminal: bool
+    permission_wait: bool
+    resumable: bool
+    last_seq: int
+    event_count: int
+    attach_count: int
+
+    def __post_init__(self) -> None:
+        _check_lifecycle_snapshot_fields(self)
+
+    def to_projection(self) -> dict[str, Any]:
+        """Deterministic refs-only projection, safe to surface as evidence."""
+
+        return {
+            "type": LIFECYCLE_SNAPSHOT_TYPE,
+            "task_id": self.task_id,
+            "session_id": self.session_id,
+            "state": self.state,
+            "alive": self.alive,
+            "terminal": self.terminal,
+            "permission_wait": self.permission_wait,
+            "resumable": self.resumable,
+            "last_seq": self.last_seq,
+            "event_count": self.event_count,
+            "attach_count": self.attach_count,
+        }
+
+
+def validate_lifecycle_snapshot(snap: LifecycleSnapshot) -> LifecycleSnapshot:
+    """Re-validate a snapshot at a trust boundary and return it unchanged.
+
+    Defends against ``object.__new__`` forgery and hostile subclasses that skip
+    ``__post_init__``: a non-exact type or any unsafe / inconsistent field fails
+    closed with the stable ``runtime_invalid_session`` code, never echoing material.
+    """
+
+    if type(snap) is not LifecycleSnapshot:
+        raise SpineError(RUNTIME_INVALID_SESSION)
+    _check_lifecycle_snapshot_fields(snap)
+    return snap
+
+
 @dataclass
 class _PortSession:
     ref: SessionRef
@@ -312,13 +453,27 @@ class AgentRunSupervisorPort(ExecutionPort):
             self._sync_backend_state_locked(safe_task, session, state)
             return ref
 
-    def stream(self, ref: str | SessionRef) -> tuple[dict[str, Any], ...]:
+    def stream(
+        self, ref: str | SessionRef, *, since_seq: int | None = None
+    ) -> tuple[dict[str, Any], ...]:
+        """Return refs-only registry projections, optionally resumed from a cursor.
+
+        ``since_seq`` is a resume cursor (a last-seen ``seq``): when given, only
+        events with ``seq > since_seq`` are returned, so a caller resumes exactly the
+        tail it has not seen with no duplicate replay. A lifecycle re-attach appends
+        no events, so resuming from the pre-attach ``last_seq`` yields nothing.
+        """
+
         safe_task = self._resolve_task(ref)
+        cursor = self._validate_cursor(since_seq)
         with self._lock:
             session = self._get_session(safe_task)
             state = self._backend_state(session.handle, op="status")
             self._sync_backend_state_locked(safe_task, session, state)
-            return tuple(event_projection(event) for event in self._registry.log.events_for(safe_task))
+            events = self._registry.log.events_for(safe_task)
+            if cursor is not None:
+                events = tuple(event for event in events if event.seq > cursor)
+            return tuple(event_projection(event) for event in events)
 
     def signal(self, task_id: str, decision_ref: str) -> SessionStatus:
         safe_task = safe_task_id(task_id)
@@ -348,6 +503,14 @@ class AgentRunSupervisorPort(ExecutionPort):
             return self.status(session.ref)
 
     def status(self, ref: str | SessionRef) -> SessionStatus:
+        """Return projection-derived + backend-mapped status for a session.
+
+        PR3 read-failure policy: a backend status read fault collapses to the stable
+        ``runtime_supervisor_backend_failure`` code (raised by ``_backend_state``)
+        before anything is appended, so the existing persisted session/log is neither
+        marked, killed, nor mutated; a subsequent successful read resumes it.
+        """
+
         safe_task = self._resolve_task(ref)
         with self._lock:
             session = self._get_session(safe_task)
@@ -391,6 +554,16 @@ class AgentRunSupervisorPort(ExecutionPort):
             raise SpineError(RUNTIME_SUPERVISOR_BACKEND_FAILURE)
 
     def liveness(self, ref: str | SessionRef) -> LivenessState:
+        """Return liveness for an existing session; ``permission_wait`` is alive.
+
+        PR3 read-failure policy: a backend liveness read fault collapses to the
+        stable ``runtime_supervisor_backend_failure`` code (raised by
+        ``_backend_liveness``) and never marks, kills, or orphans the existing
+        session — nothing is appended, so a later successful read resumes it. An
+        ``orphaned`` backend state is surfaced as ``reapable`` here but is not
+        auto-written to the canonical log; the reap decision belongs to a reaper.
+        """
+
         safe_task = self._resolve_task(ref)
         session = self._get_session(safe_task)
         terminal_state = self._projected_terminal_state(safe_task)
@@ -403,6 +576,74 @@ class AgentRunSupervisorPort(ExecutionPort):
             permission_wait=state == "permission_wait",
             reapable=state == "orphaned",
         )
+
+    def lifecycle_snapshot(self, ref: str | SessionRef) -> LifecycleSnapshot:
+        """Refs-only persistent-lifecycle snapshot (no backend call, no mutation).
+
+        Reads persisted Sachima state only (Status Projection + log), so it is a
+        stable resume-data read even while the injected backend is unreachable — the
+        PR3 policy that a transient backend read failure never marks/kills/mutates an
+        existing session holds here by construction (there is no backend call). The
+        snapshot's ``last_seq`` is the cursor to pass to ``stream(since_seq=...)``.
+        """
+
+        safe_task = self._resolve_task(ref)
+        with self._lock:
+            return self._lifecycle_snapshot_locked(safe_task)
+
+    def close(self, ref: str | SessionRef) -> LifecycleSnapshot:
+        """Adapter-local, default-off port handoff — drop local tracking only.
+
+        Releases *this* port's in-memory tracking for ``task_id`` WITHOUT killing the
+        backend session, appending any event, or mutating the registry, so a port
+        reconstructed over the same registry + backend re-attaches the still-live
+        session (no respawn, no duplicate ``agent_attached``). It is never called
+        automatically anywhere in the adapter — the supervisor owns the real session
+        lifecycle — and fails closed on an untracked/forged ref, so it can never
+        resurrect a session and a second ``close`` is rejected. Returns the refs-only
+        snapshot captured just before the drop.
+        """
+
+        safe_task = self._resolve_task(ref)
+        with self._lock:
+            snapshot = self._lifecycle_snapshot_locked(safe_task)
+            self._sessions.pop(safe_task, None)
+            return snapshot
+
+    def _lifecycle_snapshot_locked(self, safe_task: str) -> LifecycleSnapshot:
+        session = self._get_session(safe_task)  # fail closed unless locally tracked
+        state = self._projected_session_state(safe_task)
+        snapshot = self._registry.snapshot(safe_task)
+        last_seq = snapshot["last_seq"] if snapshot is not None else 0
+        event_count = snapshot["event_count"] if snapshot is not None else 0
+        return LifecycleSnapshot(
+            task_id=safe_task,
+            session_id=session.ref.session_id,
+            state=state,
+            alive=state in LIVE_SESSION_STATES,
+            terminal=state in TERMINAL_SESSION_STATES,
+            permission_wait=state == "permission_wait",
+            resumable=state in LIVE_SESSION_STATES,
+            last_seq=last_seq,
+            event_count=event_count,
+            attach_count=self._attach_event_count(safe_task),
+        )
+
+    def _attach_event_count(self, safe_task: str) -> int:
+        return sum(
+            1
+            for event in self._registry.log.events_for(safe_task)
+            if event.event_type == "agent_attached"
+        )
+
+    @staticmethod
+    def _validate_cursor(since_seq: int | None) -> int | None:
+        if since_seq is None:
+            return None
+        # bool is an int subclass — exclude it so a flag can't pose as a cursor.
+        if type(since_seq) is not int or since_seq < 0:
+            raise SpineError(RUNTIME_INVALID_SESSION)
+        return since_seq
 
     @staticmethod
     def _validate_launch_for_supervisor(safe_task: str, spec: LaunchSpec) -> None:
@@ -632,7 +873,10 @@ __all__ = [
     "RUNTIME_SUPERVISOR_BACKEND_FAILURE",
     "RUNTIME_SUPERVISOR_POLICY_DENIED",
     "SUPERVISOR_PORT_STABLE_CODES",
+    "LIFECYCLE_SNAPSHOT_TYPE",
     "AgentRunSupervisorBackend",
     "DefaultAgentRunSupervisorBackend",
     "AgentRunSupervisorPort",
+    "LifecycleSnapshot",
+    "validate_lifecycle_snapshot",
 ]

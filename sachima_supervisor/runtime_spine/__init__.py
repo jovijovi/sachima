@@ -81,12 +81,15 @@ from .execution_port import (
 )
 from .fake_supervisor_port import FakeSupervisorPort
 from .agent_run_supervisor_port import (
+    LIFECYCLE_SNAPSHOT_TYPE,
     RUNTIME_SUPERVISOR_BACKEND_FAILURE,
     RUNTIME_SUPERVISOR_POLICY_DENIED,
     SUPERVISOR_PORT_STABLE_CODES,
     AgentRunSupervisorBackend,
     AgentRunSupervisorPort,
     DefaultAgentRunSupervisorBackend,
+    LifecycleSnapshot,
+    validate_lifecycle_snapshot,
 )
 from .agent_run_supervisor_readonly_smoke import (
     AGENT_RUN_SUPERVISOR_READ_ONLY_SMOKE_APPROVAL_TOKEN,
@@ -225,6 +228,10 @@ __all__ = [
     "AgentRunSupervisorBackend",
     "AgentRunSupervisorPort",
     "DefaultAgentRunSupervisorBackend",
+    # PR3 persistent session lifecycle
+    "LIFECYCLE_SNAPSHOT_TYPE",
+    "LifecycleSnapshot",
+    "validate_lifecycle_snapshot",
     # PR2 host-local read-only smoke harness + readiness probe
     "AGENT_RUN_SUPERVISOR_READ_ONLY_SMOKE_APPROVAL_TOKEN",
     "READ_ONLY_SMOKE_READINESS_LIMITATION",
