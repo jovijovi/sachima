@@ -40,7 +40,7 @@ Machine-owned dynamic status is intentionally absent from this lean dashboard. L
 | AgentRunSupervisorPort adapter | Done | Local/offline PR1 implementation task complete: injected/default-fake backend adapter only, no real process startup. | Adds a Sachima-side adapter from runtime-spine `ExecutionPort` semantics to an injected supervisor backend surface. |
 | Host-local read-only real AGENT smoke | Done | Local/offline PR2 implementation task complete: bounded read-only smoke harness over the PR1 adapter plus fail-closed real-supervisor readiness gate; no real launch by default and no runner is marked ready without a local path whose bytes match the pinned digest. | Proves the first host-local read-only supervisor-smoke shape after PR1 while preserving default-off/non-live boundaries. |
 | Persistent session lifecycle | Done | Local/offline PR3 implementation task complete: persistent create/attach re-attach over a reconstructed port (no duplicate `agent_attached`; fresh/missing backend fails closed, no respawn), `stream(since_seq=...)` resume cursor + refs-only `LifecycleSnapshot` safe resume data, adapter-local default-off `close` handoff, explicit status/liveness backend-read-failure policy (transient stable code, no mark/kill/mutation), and no role/workspace-ref drift on re-attach. | Hardens lifecycle and lease/task binding. |
-| StatusProjection + task workbench view | Not started | Governed PR4 slice; deterministic projection/workbench mapping with no raw log/prompt/platform leakage. | Makes supervised task state visible through safe refs-only fields. |
+| StatusProjection + task workbench view | Done | Local/offline PR4 implementation task complete: a refs-only workbench view composing the `TaskViewModel` Status Projection with the PR3 `LifecycleSnapshot` for a locally tracked session — deterministic, byte-stable, fail-closed, no-leak — plus a focused test file, a runbook, and package exports. No live UI/IM/delivery. CI / merge gates remain separate. | Makes supervised task state visible through safe refs-only fields. |
 | Single-user production-shaped E2E | Not started | Governed PR5 slice; default-off single-task fixture with cleanup/health/rollback proof and no live ingress/delivery/config. | End-to-end proof while preserving non-approvals. |
 | S1 integration architecture/design | Done | Architecture/design task complete. | Defines Activity ↔ supervisor seam, claim-check model, failure mapping, no-leak boundary, and S2–S5 path. |
 | S2 local/offline adapter seam | Done | Local/offline fake/injected seam task complete. | Provides the Activity-boundary → supervisor adapter seam with default-off admission, claim-check idempotency, no-relaunch recovery, and no-leak checks. |
@@ -81,9 +81,8 @@ Machine-owned dynamic status is intentionally absent from this lean dashboard. L
 
 The next safe work under the current operator approval is:
 
-1. **Finish PR3 persistent session lifecycle merge gates** — adapter lifecycle semantics only; no Gateway/Temporal Worker/service ownership.
-2. **After PR3 merges, start PR4 StatusProjection + task workbench view** — refs-only view fields; no raw logs/stdout/prompts/platform IDs.
-3. **Then PR5 single-user production-shaped E2E** — default-off fixture with cleanup/health/rollback proof; no real ingress/delivery/production config.
+1. **Finish PR4 StatusProjection + task workbench view merge gates** — refs-only view fields; no raw logs/stdout/prompts/platform IDs.
+2. **After PR4 merges, start PR5 single-user production-shaped E2E** — default-off fixture with cleanup/health/rollback proof; no real ingress/delivery/production config.
 
 P7 real-send canary execution remains paused and separate from this mainline.
 
