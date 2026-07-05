@@ -187,6 +187,17 @@ from .agent_run_supervisor_live_workbench import (
     serialize_agent_run_supervisor_live_workbench_view,
     validate_agent_run_supervisor_live_workbench_view,
 )
+from .live_progress_sources import (
+    LIVE_PROGRESS_SOURCE_STABLE_CODES,
+    LIVE_PROGRESS_SOURCE_TYPE,
+    RUNTIME_INVALID_LIVE_PROGRESS_SOURCE,
+    LiveProgressSource,
+    LiveProgressSourceBindings,
+    ResolvedLiveProgressSource,
+    build_agent_run_supervisor_live_workbench_from_source,
+    serialize_live_progress_source,
+    validate_live_progress_source,
+)
 from .agent_run_supervisor_production_e2e import (
     E2E_BACKEND_FAILURE,
     E2E_INVALID_FIXTURE,
@@ -359,6 +370,16 @@ __all__ = [
     "build_agent_run_supervisor_live_workbench_view",
     "validate_agent_run_supervisor_live_workbench_view",
     "serialize_agent_run_supervisor_live_workbench_view",
+    # PR-LS2 host-owned live-progress source binding
+    "RUNTIME_INVALID_LIVE_PROGRESS_SOURCE",
+    "LIVE_PROGRESS_SOURCE_STABLE_CODES",
+    "LIVE_PROGRESS_SOURCE_TYPE",
+    "LiveProgressSource",
+    "ResolvedLiveProgressSource",
+    "LiveProgressSourceBindings",
+    "build_agent_run_supervisor_live_workbench_from_source",
+    "validate_live_progress_source",
+    "serialize_live_progress_source",
     # PR5 single-user production-shaped E2E
     "E2E_INVALID_FIXTURE",
     "E2E_INVALID_REPORT",
