@@ -10,6 +10,7 @@
 - Highest architecture guidance: `docs/architecture/private-hermes-runtime-spine-design.md`
 - Highest architecture diagram: `docs/architecture/private-hermes-runtime-spine-architecture.svg`
 - Active runtime-spine development roadmap: `docs/plans/2026-07-03-sachima-private-hermes-runtime-spine-development-plan.md`
+- Live-stream integration plan: `docs/plans/2026-07-05-ars-live-stream-integration-plan.md`
 - Runtime-spine development plan manifest: `docs/plans/2026-07-03-sachima-private-hermes-runtime-spine-development-plan-manifest.yaml`
 - Superseded active-roadmap register: `docs/roadmap/superseded-plans.md`
 - Architecture directory index: `docs/architecture/README.md`
