@@ -243,7 +243,7 @@ def _persistent_role(acpx_binary: str | None) -> dict[str, Any]:
         "description": "Local persistent-session worker. Operator overlay pins acpx.",
         "runner": {
             "type": "acpx",
-            "acpx_version": "0.10.0",
+            "acpx_version": "0.12.0",
             "acpx_binary": acpx_binary,
             "adapter_agent": "codex",
             "model": None,
@@ -990,7 +990,7 @@ def test_smoke_real_post_verify_requires_business_marker(tmp_path: Path) -> None
     session_json = Path(config.sessions_dir) / config.runtime_session_id / "session.json"
     session_json.parent.mkdir(parents=True, exist_ok=True)
     session_json.write_text(
-        json.dumps({"state": "closed", "acpx_version": "0.10.0", "adapter_agent": "codex", "role_id": "sachima.session_worker.persistent"}),
+        json.dumps({"state": "closed", "acpx_version": "0.12.0", "adapter_agent": "codex", "role_id": "sachima.session_worker.persistent"}),
         encoding="utf-8",
     )
     (turn_dir / "result.json").write_text(
@@ -1018,7 +1018,7 @@ def test_smoke_real_post_verify_rejects_wrong_business_marker(tmp_path: Path) ->
     session_json = Path(config.sessions_dir) / config.runtime_session_id / "session.json"
     session_json.parent.mkdir(parents=True, exist_ok=True)
     session_json.write_text(
-        json.dumps({"state": "closed", "acpx_version": "0.10.0", "adapter_agent": "codex", "role_id": "sachima.session_worker.persistent"}),
+        json.dumps({"state": "closed", "acpx_version": "0.12.0", "adapter_agent": "codex", "role_id": "sachima.session_worker.persistent"}),
         encoding="utf-8",
     )
     (turn_dir / "result.json").write_text(

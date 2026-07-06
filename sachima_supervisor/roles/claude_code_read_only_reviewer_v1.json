@@ -5,7 +5,7 @@
   "description": "Read-only Claude Code reviewer role for the Sachima controlled local one-shot exec line (WP1a). acpx_binary stays null until an operator pins a verified local acpx executable on this host; the controlled exec provenance gate fails closed on a null binary, so this committed config is not runnable by construction and no network fetch path can satisfy it.",
   "runner": {
     "type": "acpx",
-    "acpx_version": "0.10.0",
+    "acpx_version": "0.12.0",
     "acpx_binary": null,
     "adapter_agent": "claude",
     "model": null

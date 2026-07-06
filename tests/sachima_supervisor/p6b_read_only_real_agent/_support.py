@@ -73,7 +73,7 @@ PREFLIGHT_ACTIVITY_ID = "activity_preflight_for_p6b_001"
 
 # A pinned placeholder runner path: absolute, non-launcher basename. It is never
 # executed — the fake supervisor is injected — so no local binary need exist.
-PINNED_PLACEHOLDER_BINARY = "/opt/sachima/runners/acpx-0.10.0/acpx"
+PINNED_PLACEHOLDER_BINARY = "/opt/sachima/runners/acpx-0.12.0/acpx"
 
 
 def p6b_workflow_mapping() -> dict[str, Any]:
@@ -210,7 +210,7 @@ def role_mapping(**overrides: Any) -> dict[str, Any]:
         "description": "Read-only one-shot reviewer pinned for the P6-B fake-runner test.",
         "runner": {
             "type": "acpx",
-            "acpx_version": "0.10.0",
+            "acpx_version": "0.12.0",
             "acpx_binary": PINNED_PLACEHOLDER_BINARY,
             "adapter_agent": "claude",
             "model": None,

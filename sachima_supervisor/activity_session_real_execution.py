@@ -114,7 +114,7 @@ _STATUS_CANCELLED = "session_cancelled"
 
 #: Runner identity required by this first slice.
 _REQUIRED_RUNNER_TYPE = "acpx"
-_REQUIRED_ACPX_VERSION = "0.10.0"
+_REQUIRED_ACPX_VERSION = "0.12.0"
 _REQUIRED_ADAPTER = "codex"
 
 #: Launcher basenames that must never be treated as a runnable acpx binary. A
@@ -360,7 +360,7 @@ def _check_runner_and_binary(
     if runner.get("type") != _REQUIRED_RUNNER_TYPE:
         raise RealSessionExecutionError(_ERROR_PROVENANCE, "runner type must be 'acpx'")
     if runner.get("acpx_version") != _REQUIRED_ACPX_VERSION:
-        raise RealSessionExecutionError(_ERROR_PROVENANCE, "runner acpx_version must be 0.10.0")
+        raise RealSessionExecutionError(_ERROR_PROVENANCE, "runner acpx_version must be 0.12.0")
     if runner.get("adapter_agent") != _REQUIRED_ADAPTER:
         raise RealSessionExecutionError(_ERROR_PROVENANCE, "runner adapter_agent must be 'codex'")
 

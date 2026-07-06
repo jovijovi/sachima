@@ -54,7 +54,7 @@ from sachima_supervisor.local_offline import (
 
 CLAUDE_ROLE_KEY = "sachima.claude.read_only_reviewer"
 CLAUDE_ROLE_FILE_REF = "roles/claude_code_read_only_reviewer_v1.json"
-PINNED_PLACEHOLDER_BINARY = "/opt/sachima/runners/acpx-0.10.0/acpx"
+PINNED_PLACEHOLDER_BINARY = "/opt/sachima/runners/acpx-0.12.0/acpx"
 
 REPO_ROOT = Path(activity_controlled_exec.__file__).resolve().parent
 COMMITTED_CLAUDE_ROLE = REPO_ROOT / CLAUDE_ROLE_FILE_REF
@@ -92,7 +92,7 @@ def _claude_role_mapping(**overrides: Any) -> dict[str, Any]:
         "description": "Read-only Claude Code reviewer for controlled local one-shot exec.",
         "runner": {
             "type": "acpx",
-            "acpx_version": "0.10.0",
+            "acpx_version": "0.12.0",
             "acpx_binary": PINNED_PLACEHOLDER_BINARY,
             "adapter_agent": "claude",
             "model": None,
@@ -254,7 +254,7 @@ def test_committed_claude_role_is_null_binary_claude_read_only_exec() -> None:
     assert mapping["schema_version"] == 1
     assert mapping["role_id"] == CLAUDE_ROLE_KEY
     assert mapping["runner"]["type"] == "acpx"
-    assert mapping["runner"]["acpx_version"] == "0.10.0"
+    assert mapping["runner"]["acpx_version"] == "0.12.0"
     # Non-runnable by construction: no operator has pinned a local acpx here.
     assert mapping["runner"]["acpx_binary"] is None
     assert mapping["runner"]["adapter_agent"] == "claude"

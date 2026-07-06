@@ -62,7 +62,7 @@ CLAUDE_ROLE_KEY = "sachima.claude.read_only_reviewer"
 CLAUDE_ROLE_FILE_REF = CONTROLLED_EXEC_ROLE_ALLOWLIST[CLAUDE_ROLE_KEY]
 #: Placeholder absolute local path only. The provenance gate validates the
 #: *shape* of the pinned binary path; this script never executes it.
-PINNED_PLACEHOLDER_BINARY = "/opt/sachima/runners/acpx-0.10.0/acpx"
+PINNED_PLACEHOLDER_BINARY = "/opt/sachima/runners/acpx-0.12.0/acpx"
 
 _PREFLIGHT_ACTIVITY_ID = "activity_preflight_for_claude_self_test"
 _TRANSACTION_REF = "claim_txn_claude_self_test"
@@ -86,7 +86,7 @@ def _claude_role_mapping() -> dict[str, Any]:
         "description": "Read-only Claude Code reviewer for controlled local one-shot exec self-test.",
         "runner": {
             "type": "acpx",
-            "acpx_version": "0.10.0",
+            "acpx_version": "0.12.0",
             "acpx_binary": PINNED_PLACEHOLDER_BINARY,
             "adapter_agent": "claude",
             "model": None,
