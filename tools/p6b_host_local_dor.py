@@ -24,7 +24,7 @@ Usage (pin + probe an operator-supplied local executable)::
         --role-key sachima.claude.read_only_reviewer \
         --role-overlay-path /out/of/repo/role_overlay.json \
         --role-overlay-digest sha256:... \
-        --acpx-binary /opt/.../acpx --acpx-version 0.10.0 \
+        --acpx-binary /opt/.../acpx --acpx-version 0.12.0 \
         --acpx-binary-sha256 sha256:... \
         --evidence-root /out/of/repo/evidence \
         --artifact-sink-root /out/of/repo/sink \
@@ -88,7 +88,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--role-overlay-path", default=None, help="Out-of-repo role overlay JSON path.")
     parser.add_argument("--role-overlay-digest", default=None, help="Expected sha256 of the role overlay.")
     parser.add_argument("--acpx-binary", default=None, help="Operator-pinned absolute local acpx path.")
-    parser.add_argument("--acpx-version", default=None, help="Pinned acpx version (must be 0.10.0).")
+    parser.add_argument("--acpx-version", default=None, help="Pinned acpx version (must be 0.12.0).")
     parser.add_argument("--acpx-binary-sha256", default=None, help="Expected sha256 of the acpx binary.")
     parser.add_argument("--evidence-root", default=None, help="Out-of-repo evidence root to write JSON into.")
     parser.add_argument("--artifact-sink-root", default=None, help="Out-of-repo artifact sink root.")

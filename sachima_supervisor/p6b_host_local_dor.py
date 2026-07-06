@@ -7,7 +7,7 @@ and nothing else:
   1. **Pin / validate** a host-local runner + role overlay + artifact sink +
      evidence-root *shape* WITHOUT launching a real agent. It validates an
      out-of-repo role overlay (exact read-only role key, adapter pin, pinned
-     ``acpx@0.10.0`` provenance, all write-class permissions denied, one-shot
+     ``acpx@0.12.0`` provenance, all write-class permissions denied, one-shot
      ``exec`` session) and, when an argv-list/no-shell version probe is injected
      against a temp fake executable, pins the binary version + sha. It returns a
      controlled ``blocked`` report — never an error and never a launch — when the
@@ -76,7 +76,7 @@ P6B_HOST_LOCAL_DOR_APPROVAL_TOKEN = (
 
 #: The pinned acpx version this DoR will admit. Matches the committed read-only
 #: role files and the controlled-exec provenance wall.
-REQUIRED_ACPX_VERSION = "0.10.0"
+REQUIRED_ACPX_VERSION = "0.12.0"
 
 #: The bridge's recover marker. A recover must reattach by resident claim id and
 #: never relaunch; after store loss there is nothing to reattach to, so the marker

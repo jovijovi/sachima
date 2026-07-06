@@ -17,7 +17,7 @@ The committed Sachima role remains non-runnable by construction:
 - `sachima_supervisor/roles/claude_code_read_only_reviewer_v1.json`
 - `runner.acpx_binary: null`
 - `runner.type: acpx`
-- `runner.acpx_version: 0.10.0`
+- `runner.acpx_version: 0.12.0`
 - `runner.adapter_agent: claude`
 - `session.strategy: exec`
 
@@ -29,7 +29,7 @@ path must not be committed into the portable role file.
 
 | Component | Kind | Required for WP1b | Current pin / contract | Notes |
 |---|---|---:|---|---|
-| `acpx` | Node CLI package | Yes | `0.10.0` exactly | Must be a local executable path in `runner.acpx_binary`; no `npx`/network fetch fallback. |
+| `acpx` | Node CLI package | Yes | `0.12.0` exactly | Must be a local executable path in `runner.acpx_binary`; no `npx`/network fetch fallback. |
 | Node.js | Runtime for `acpx` | Yes | `agent-run-supervisor doctor` reports `>=22.12`; Sachima root package requires `>=20.0.0` | Current smoke host probe observed `v24.14.0`. |
 | `agent-run-supervisor` | Python source/library | Yes | distribution version `0.0.0` | Sachima does not add it to `pyproject.toml`; it is operator-provisioned and imported lazily. |
 | Python | Runtime for Sachima + supervisor | Yes | Sachima `>=3.11,<3.14`; supervisor `>=3.11` | Current smoke host probe observed Python `3.11.15`. |
@@ -37,22 +37,18 @@ path must not be committed into the portable role file.
 
 ## `acpx` provisioning contract
 
-### Current verified local runner
+### Current admitted local runner contract
 
-The current host has a previously provisioned pinned local `acpx` binary from
-Phase D host-local DoR provisioning:
+After the acpx 0.12.0 contract refresh, Sachima admits only host-local overlays
+that pin a verified absolute `acpx` 0.12.0 executable. Historical 0.10.0 smoke
+paths and digests remain historical evidence only; they are not valid current
+operator inputs for this gate.
 
-```text
-binary_path: /home/ecs-user/workspace/hermes/worktrees/sachima/phase-d-smoke-host-provisioning-dor/sachima_supervisor/roles/local/npm-acpx-0.10.0/node_modules/.bin/acpx
-realpath: /data/agents/workspace/hermes/worktrees/sachima/phase-d-smoke-host-provisioning-dor/sachima_supervisor/roles/local/npm-acpx-0.10.0/node_modules/acpx/dist/cli.js
-version_probe: 0.10.0
-sha256: sha256:54d586ec3916fb55c7ea724df4b868d3a958492081e2cd21bdfb1ae8d67d46a6
-```
-
-This satisfies WP1b's `pinned local runner only` constraint because the role
-overlay can reference the absolute `binary_path` directly. The fact that `acpx`
-is not on `PATH` is not a blocker; the controlled-exec provenance gate requires
-an absolute `runner.acpx_binary` anyway.
+No committed path or sha256 is authoritative here. A smoke host must provision a
+fresh local executable outside the repo, record `acpx --version`, `realpath`, and
+sha256 evidence, then set the out-of-tree role overlay's `runner.acpx_binary` to
+that absolute path. The fact that `acpx` is not on `PATH` is not a blocker; the
+controlled-exec provenance gate requires an absolute `runner.acpx_binary` anyway.
 
 ### Fresh-host installation shape
 
@@ -62,10 +58,10 @@ record version + digest evidence:
 
 ```bash
 npm install \
-  --prefix sachima_supervisor/roles/local/npm-acpx-0.10.0 \
-  --save-exact --no-audit --no-fund acpx@0.10.0
+  --prefix sachima_supervisor/roles/local/npm-acpx-0.12.0 \
+  --save-exact --no-audit --no-fund acpx@0.12.0
 
-ACPX="$PWD/sachima_supervisor/roles/local/npm-acpx-0.10.0/node_modules/.bin/acpx"
+ACPX="$PWD/sachima_supervisor/roles/local/npm-acpx-0.12.0/node_modules/.bin/acpx"
 "$ACPX" --version
 realpath "$ACPX"
 sha256sum "$(realpath "$ACPX")"
@@ -73,7 +69,7 @@ sha256sum "$(realpath "$ACPX")"
 
 The smoke itself must then use that local absolute path. It must not run:
 
-- `npx -y acpx@0.10.0 ...`
+- `npx -y acpx@0.12.0 ...`
 - `npm exec acpx ...`
 - `pnpm dlx acpx ...`
 - `yarn dlx acpx ...`
@@ -205,12 +201,12 @@ The dependency setup above does not approve any of the following:
 Before a WP1b smoke, verify and record sanitized evidence:
 
 ```bash
-ACPX=/home/ecs-user/workspace/hermes/worktrees/sachima/phase-d-smoke-host-provisioning-dor/sachima_supervisor/roles/local/npm-acpx-0.10.0/node_modules/.bin/acpx
+ACPX=/home/ecs-user/workspace/hermes/worktrees/sachima/phase-d-smoke-host-provisioning-dor/sachima_supervisor/roles/local/npm-acpx-0.12.0/node_modules/.bin/acpx
 
 test -x "$ACPX"
-"$ACPX" --version              # must be 0.10.0
+"$ACPX" --version              # must be 0.12.0
 realpath "$ACPX"
-sha256sum "$(realpath "$ACPX")" # must match the pinned digest above
+sha256sum "$(realpath "$ACPX")" # record in the operator evidence packet
 
 node --version
 python3 --version

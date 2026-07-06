@@ -172,7 +172,7 @@ _FAILURE_COLLAPSE_CODES = frozenset(
 )
 
 _REQUIRED_RUNNER_TYPE = "acpx"
-_REQUIRED_ACPX_VERSION = "0.10.0"
+_REQUIRED_ACPX_VERSION = "0.12.0"
 _REQUIRED_ROLE_SCHEMA_VERSION = 1
 #: Package-runner basename that implies a network fetch; never a pinned local
 #: binary.
@@ -204,8 +204,8 @@ FORBIDDEN_RUNNER_BASENAMES: frozenset[str] = frozenset(
 _ACPX_PROBE_TEXT_MAX_CHARS = 256
 _SAFE_PROBE_TEXT_RE = re.compile(r"^[A-Za-z0-9 ._+:/()-]{1,256}$")
 #: Characters that would extend a version token if adjacent to it. The pinned
-#: version must stand alone in the probe text: ``0.10.0`` inside ``10.10.0``,
-#: ``0.10.0-dev``, ``0.10.0rc1``, or ``0.10.0+build.5`` is a different version
+#: version must stand alone in the probe text: ``0.12.0`` inside ``10.12.0``,
+#: ``0.12.0-dev``, ``0.12.0rc1``, or ``0.12.0+build.5`` is a different version
 #: and never satisfies the pin.
 _VERSION_TOKEN_BOUNDARY_CLASS = r"[A-Za-z0-9._+-]"
 
@@ -1181,9 +1181,9 @@ def verify_pinned_local_acpx_binary(
     candidate path must be absolute, whitespace-free, and not a fetch-shaped
     package runner or shell basename; the file must exist and be executable;
     and the **injected** ``version_probe`` must return sanitized single-line
-    text carrying the pinned version (``0.10.0``) as an exact standalone
-    token — a substring hit inside ``10.10.0`` or a pre-release/build variant
-    like ``0.10.0-dev`` never satisfies the pin. This module never
+    text carrying the pinned version (``0.12.0``) as an exact standalone
+    token — a substring hit inside ``10.12.0`` or a pre-release/build variant
+    like ``0.12.0-dev`` never satisfies the pin. This module never
     executes the binary — how the probe text is produced is the caller's
     responsibility, out of band. Every miss fails closed with the stable
     ``activity_runner_provenance_unverified`` code and no raw detail.

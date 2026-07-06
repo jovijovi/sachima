@@ -37,7 +37,7 @@ def test_temp_fake_probe_and_sha_pin_pass(tmp_path):
     assert report.checks["binary_sha_pin"] == "pass"
     # Sanitized provenance: digests only, never the raw host path.
     prov = report.runner_provenance
-    assert prov["acpx_version"] == "0.10.0"
+    assert prov["acpx_version"] == "0.12.0"
     assert prov["acpx_binary_sha256"].startswith("sha256:")
     assert prov["acpx_binary_path_digest"].startswith("sha256:")
     assert report.crash_proof_status == "pass"

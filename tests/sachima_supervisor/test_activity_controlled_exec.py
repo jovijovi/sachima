@@ -94,7 +94,7 @@ FORBIDDEN_RENDER_TOKENS = (
 
 ROLE_FILE_REF = CONTROLLED_EXEC_ROLE_ALLOWLIST["sachima.codex.primary_reviewer"]
 
-PINNED_PLACEHOLDER_BINARY = "/opt/sachima/runners/acpx-0.10.0/acpx"
+PINNED_PLACEHOLDER_BINARY = "/opt/sachima/runners/acpx-0.12.0/acpx"
 
 
 def _evidence_digest() -> str:
@@ -111,7 +111,7 @@ def _role_mapping(**overrides: Any) -> dict[str, Any]:
         "description": "Read-only Codex primary reviewer for controlled local one-shot exec.",
         "runner": {
             "type": "acpx",
-            "acpx_version": "0.10.0",
+            "acpx_version": "0.12.0",
             "acpx_binary": PINNED_PLACEHOLDER_BINARY,
             "adapter_agent": "codex",
             "model": None,
@@ -677,7 +677,7 @@ def test_committed_role_config_is_null_binary_read_only_and_fails_closed_on_prov
     assert mapping["runner"]["acpx_binary"] is None
     assert mapping["runner"]["adapter_agent"] == "codex"
     assert mapping["runner"]["type"] == "acpx"
-    assert mapping["runner"]["acpx_version"] == "0.10.0"
+    assert mapping["runner"]["acpx_version"] == "0.12.0"
     assert mapping["session"] == {"strategy": "exec"}
     assert mapping["permissions"]["read"] is True
     assert mapping["permissions"]["search"] is True
@@ -1638,7 +1638,7 @@ def _fake_pinned_binary(
 
 
 def _counting_probe(
-    calls: list[str], text: Any = "acpx 0.10.0 (pinned local build)"
+    calls: list[str], text: Any = "acpx 0.12.0 (pinned local build)"
 ) -> Callable[[str], Any]:
     def _probe(binary_path: str) -> Any:
         calls.append(binary_path)
@@ -1664,8 +1664,8 @@ def test_verify_pinned_local_acpx_binary_happy_path_with_injected_probe(
     assert provenance.binary_sha256 == (
         "sha256:" + hashlib.sha256(binary.read_bytes()).hexdigest()
     )
-    assert provenance.acpx_version == "0.10.0"
-    assert provenance.probe_text == "acpx 0.10.0 (pinned local build)"
+    assert provenance.acpx_version == "0.12.0"
+    assert provenance.probe_text == "acpx 0.12.0 (pinned local build)"
     assert calls == [str(binary)]
 
 
@@ -1771,9 +1771,9 @@ def test_acpx_provenance_probe_exception_is_collapsed_without_raw_leak(
         7,
         "",
         "acpx 0.9.9",
-        "acpx 0.10.0\nsecond line",
-        "acpx 0.10.0 unsafe to" + "ken text",
-        "acpx 0.10.0 " + "x" * 300,
+        "acpx 0.12.0\nsecond line",
+        "acpx 0.12.0 unsafe to" + "ken text",
+        "acpx 0.12.0 " + "x" * 300,
     ],
 )
 def test_acpx_provenance_unsafe_or_mismatched_probe_text_fails_closed(
@@ -1792,14 +1792,14 @@ def test_acpx_provenance_unsafe_or_mismatched_probe_text_fails_closed(
 @pytest.mark.parametrize(
     "probe_text",
     [
-        "acpx 10.10.0",
-        "acpx 00.10.0",
-        "acpx 0.10.01",
-        "acpx 0.10.0.1",
-        "acpx 0.10.0-dev",
-        "acpx 0.10.0-rc.1",
-        "acpx 0.10.0rc1",
-        "acpx 0.10.0+build.5",
+        "acpx 10.12.0",
+        "acpx 00.12.0",
+        "acpx 0.12.01",
+        "acpx 0.12.0.1",
+        "acpx 0.12.0-dev",
+        "acpx 0.12.0-rc.1",
+        "acpx 0.12.0rc1",
+        "acpx 0.12.0+build.5",
     ],
 )
 def test_acpx_provenance_version_substring_or_prerelease_lookalikes_fail_closed(
@@ -1807,8 +1807,8 @@ def test_acpx_provenance_version_substring_or_prerelease_lookalikes_fail_closed(
 ) -> None:
     """The pinned version must match as an exact token, never as a substring.
 
-    ``0.10.0`` is a substring of ``10.10.0`` and a prefix of pre-release /
-    build-metadata variants like ``0.10.0-dev``; none of these are the pinned
+    ``0.12.0`` is a substring of ``10.12.0`` and a prefix of pre-release /
+    build-metadata variants like ``0.12.0-dev``; none of these are the pinned
     release and all must fail closed.
     """
 
@@ -1825,10 +1825,10 @@ def test_acpx_provenance_version_substring_or_prerelease_lookalikes_fail_closed(
 @pytest.mark.parametrize(
     "probe_text",
     [
-        "acpx 0.10.0",
-        "acpx 0.10.0 (pinned local build)",
-        "acpx/0.10.0",
-        "0.10.0",
+        "acpx 0.12.0",
+        "acpx 0.12.0 (pinned local build)",
+        "acpx/0.12.0",
+        "0.12.0",
     ],
 )
 def test_acpx_provenance_exact_version_token_probe_text_is_accepted(
@@ -1841,7 +1841,7 @@ def test_acpx_provenance_exact_version_token_probe_text_is_accepted(
     )
 
     assert provenance.probe_text == probe_text
-    assert provenance.acpx_version == "0.10.0"
+    assert provenance.acpx_version == "0.12.0"
 
 
 @pytest.mark.parametrize("expected_version", ["0.9.0", "", None, "0.10.1"])
@@ -1868,10 +1868,10 @@ def test_acpx_provenance_explicit_required_version_is_accepted(tmp_path: Path) -
     provenance = verify_pinned_local_acpx_binary(
         str(binary),
         version_probe=_counting_probe([]),
-        expected_version="0.10.0",
+        expected_version="0.12.0",
     )
 
-    assert provenance.acpx_version == "0.10.0"
+    assert provenance.acpx_version == "0.12.0"
 
 
 # --------------------------------------------------------------------------- #
