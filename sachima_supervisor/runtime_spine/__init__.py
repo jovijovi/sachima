@@ -198,6 +198,19 @@ from .live_progress_sources import (
     serialize_live_progress_source,
     validate_live_progress_source,
 )
+from .agent_run_supervisor_live_progress_smoke import (
+    LIVE_PROGRESS_SMOKE_REPORT_TYPE,
+    LIVE_PROGRESS_SMOKE_STABLE_CODES,
+    RUNTIME_INVALID_LIVE_PROGRESS_SMOKE,
+    SMOKE_OUTCOMES,
+    LiveProgressSmokeReport,
+    build_live_progress_smoke_report,
+    serialize_live_progress_smoke_report,
+    smoke_live_progress_projection,
+    smoke_live_progress_report,
+    smoke_live_workbench_view,
+    validate_live_progress_smoke_report,
+)
 from .agent_run_supervisor_production_e2e import (
     E2E_BACKEND_FAILURE,
     E2E_INVALID_FIXTURE,
@@ -380,6 +393,18 @@ __all__ = [
     "build_agent_run_supervisor_live_workbench_from_source",
     "validate_live_progress_source",
     "serialize_live_progress_source",
+    # PR-LS3 agent-run-supervisor caller-API compatibility smoke
+    "RUNTIME_INVALID_LIVE_PROGRESS_SMOKE",
+    "LIVE_PROGRESS_SMOKE_STABLE_CODES",
+    "LIVE_PROGRESS_SMOKE_REPORT_TYPE",
+    "SMOKE_OUTCOMES",
+    "LiveProgressSmokeReport",
+    "smoke_live_progress_projection",
+    "smoke_live_workbench_view",
+    "smoke_live_progress_report",
+    "build_live_progress_smoke_report",
+    "validate_live_progress_smoke_report",
+    "serialize_live_progress_smoke_report",
     # PR5 single-user production-shaped E2E
     "E2E_INVALID_FIXTURE",
     "E2E_INVALID_REPORT",
