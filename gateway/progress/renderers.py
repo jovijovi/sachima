@@ -17,6 +17,7 @@ from gateway.progress.events import (
     TransactionSnapshot,
 )
 from gateway.progress.redaction import sanitize_for_progress
+from gateway.progress.todo_executor import normalize_todo_executor
 
 _STATUS_LABELS = {
     "running": "Running",
@@ -486,6 +487,17 @@ def _feishu_todo_text(item: Any) -> str:
     return text
 
 
+def _todo_executor_label(item: Any) -> str | None:
+    # Re-validate at the display boundary: items are Iterable[Any], so the
+    # renderer never trusts upstream sanitization (fail-closed house style).
+    return normalize_todo_executor(getattr(item, "executor", None))
+
+
+def _feishu_todo_suffix(item: Any) -> str:
+    executor = _todo_executor_label(item)
+    return f" · {_feishu_escape_markdown_text(executor)}" if executor else ""
+
+
 def _feishu_todo_element(items: Iterable[Any], *, language: str) -> dict | None:
     materialized = tuple(item for item in (items or ()) if item is not None)
     if not materialized:
@@ -494,13 +506,13 @@ def _feishu_todo_element(items: Iterable[Any], *, language: str) -> dict | None:
     title = _feishu_todo_title(materialized, language=lang)
 
     def fmt_flat(item: Any) -> str:
-        return f"{_todo_status_glyph(item)} {_feishu_todo_text(item)}"
+        return f"{_todo_status_glyph(item)} {_feishu_todo_text(item)}{_feishu_todo_suffix(item)}"
 
     def fmt_group(item: Any, done: int, total: int) -> str:
-        return f"▸ {_feishu_escape_markdown_text(getattr(item, 'content', ''))} {done}/{total}"
+        return f"▸ {_feishu_escape_markdown_text(getattr(item, 'content', ''))} {done}/{total}{_feishu_todo_suffix(item)}"
 
     def fmt_child(item: Any) -> str:
-        return f"  {_todo_status_glyph(item)} {_feishu_todo_text(item)}"
+        return f"  {_todo_status_glyph(item)} {_feishu_todo_text(item)}{_feishu_todo_suffix(item)}"
 
     lines, hidden = _render_todo_lines(
         materialized,
@@ -541,14 +553,18 @@ def _todo_text_lines(items: Iterable[Any]) -> list[str]:
     if not materialized:
         return []
 
+    def _suffix(item: Any) -> str:
+        executor = _todo_executor_label(item)
+        return f" · {executor}" if executor else ""
+
     def fmt_flat(item: Any) -> str:
-        return f"- {_todo_status_glyph(item)} {_todo_text_content(item)}"
+        return f"- {_todo_status_glyph(item)} {_todo_text_content(item)}{_suffix(item)}"
 
     def fmt_group(item: Any, done: int, total: int) -> str:
-        return f"- ▸ {_todo_plain_content(item)} {done}/{total}"
+        return f"- ▸ {_todo_plain_content(item)} {done}/{total}{_suffix(item)}"
 
     def fmt_child(item: Any) -> str:
-        return f"    - {_todo_status_glyph(item)} {_todo_text_content(item)}"
+        return f"    - {_todo_status_glyph(item)} {_todo_text_content(item)}{_suffix(item)}"
 
     lines, hidden = _render_todo_lines(
         materialized,

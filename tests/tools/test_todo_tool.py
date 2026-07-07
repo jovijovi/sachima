@@ -296,6 +296,95 @@ class TestParentId:
         assert "parent_id" not in store.read()[1]
 
 
+class TestExecutor:
+    """Optional executor label: explicit, validated, display-only metadata."""
+
+    def test_executor_round_trips_through_write_read_and_tool_reply(self):
+        store = TodoStore()
+        store.write([
+            {"id": "1", "content": "Run tests", "status": "pending", "executor": "codex"},
+        ])
+        assert store.read()[0]["executor"] == "codex"
+        reply = json.loads(todo_tool(store=store))
+        assert reply["todos"][0]["executor"] == "codex"
+
+    def test_items_without_executor_keep_legacy_shape(self):
+        store = TodoStore()
+        result = store.write([{"id": "1", "content": "Task", "status": "pending"}])
+        assert result == [{"id": "1", "content": "Task", "status": "pending"}]
+
+    def test_executor_is_case_normalized(self):
+        store = TodoStore()
+        store.write([{"id": "1", "content": "Task", "status": "pending", "executor": "Claude"}])
+        assert store.read()[0]["executor"] == "claude"
+
+    def test_invalid_executor_drops_field_but_keeps_item(self):
+        invalid_values = [
+            "two words",
+            "x" * 200,
+            "https://evil.example/agent",
+            "sk-" + "a" * 24,
+            "Bearer abc123",
+            123,
+            "",
+        ]
+        for value in invalid_values:
+            store = TodoStore()
+            store.write([{"id": "1", "content": "Task", "status": "pending", "executor": value}])
+            item = store.read()[0]
+            assert item["content"] == "Task"
+            assert "executor" not in item
+
+    def test_merge_can_set_executor_on_existing_item(self):
+        store = TodoStore()
+        store.write([{"id": "1", "content": "Task", "status": "pending"}])
+        store.write([{"id": "1", "executor": "codex"}], merge=True)
+        item = store.read()[0]
+        assert item["executor"] == "codex"
+        # Other fields are untouched by the executor-only merge.
+        assert item["content"] == "Task"
+        assert item["status"] == "pending"
+
+    def test_merge_can_clear_executor_with_empty_or_invalid_value(self):
+        for clearing_value in ("", "not a valid label!"):
+            store = TodoStore()
+            store.write([
+                {"id": "1", "content": "Task", "status": "pending", "executor": "codex"},
+            ])
+            store.write([{"id": "1", "executor": clearing_value}], merge=True)
+            assert "executor" not in store.read()[0]
+
+    def test_merge_without_executor_key_leaves_label_unchanged(self):
+        store = TodoStore()
+        store.write([
+            {"id": "1", "content": "Task", "status": "pending", "executor": "codex"},
+        ])
+        store.write([{"id": "1", "status": "completed"}], merge=True)
+        item = store.read()[0]
+        assert item["executor"] == "codex"
+        assert item["status"] == "completed"
+
+    def test_dedupe_keeps_last_occurrence_executor(self):
+        store = TodoStore()
+        store.write([
+            {"id": "1", "content": "First", "status": "pending", "executor": "claude"},
+            {"id": "1", "content": "Latest", "status": "pending", "executor": "codex"},
+        ])
+        items = store.read()
+        assert len(items) == 1
+        assert items[0]["executor"] == "codex"
+
+    def test_format_for_injection_includes_executor(self):
+        store = TodoStore()
+        store.write([
+            {"id": "1", "content": "Delegated work", "status": "in_progress", "executor": "codex"},
+            {"id": "2", "content": "Own work", "status": "pending"},
+        ])
+        text = store.format_for_injection()
+        assert "- [>] 1. Delegated work (in_progress, executor: codex)" in text
+        assert "- [ ] 2. Own work (pending)" in text
+
+
 class TestTodoStoreBounds:
     """Bounds on persisted todo state (GHSA-5g4g-6jrg-mw3g hardening).
 

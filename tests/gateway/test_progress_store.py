@@ -240,6 +240,57 @@ def test_progress_records_normalize_todo_parent_links_to_top_level(tmp_path):
     assert by_id["c"]["depth"] == 0
 
 
+def test_progress_records_round_trip_executor_only_when_present(tmp_path):
+    store_path = tmp_path / "events.jsonl"
+    store = JsonlProgressEventStore(store_path)
+    tracker = ProgressTracker("tx-todo-executor", "Persist executor todo")
+    tracker.update_todo_items([
+        {"id": "1", "content": "Delegated", "status": "in_progress", "executor": "codex"},
+        {"id": "2", "content": "Unlabeled", "status": "pending"},
+    ])
+
+    store.append_snapshot(tracker.snapshot())
+
+    todo_items = _read_jsonl(store_path)[0]["transaction"]["todo_items"]
+    assert todo_items == [
+        {
+            "id": "1",
+            "content": "Delegated",
+            "status": "in_progress",
+            "depth": 0,
+            "source": "todo_tool",
+            "executor": "codex",
+        },
+        {"id": "2", "content": "Unlabeled", "status": "pending", "depth": 0, "source": "todo_tool"},
+    ]
+
+
+def test_progress_records_drop_unsafe_executor_but_keep_item(tmp_path):
+    store_path = tmp_path / "events.jsonl"
+    store = JsonlProgressEventStore(store_path)
+    bare_key = "sk-" + "test-" + ("e" * 32)
+    snapshot = TransactionSnapshot(
+        transaction_id="tx-todo-executor-unsafe",
+        title="Persist unsafe executor todo",
+        status="running",
+        started_at=1.0,
+        updated_at=2.0,
+        todo_items=(
+            TodoItemSnapshot(id="1", content="Task", status="pending", executor=bare_key),
+            TodoItemSnapshot(id="2", content="Task 2", status="pending", executor="two words"),
+        ),
+    )
+
+    store.append_snapshot(snapshot)
+
+    rendered = store_path.read_text(encoding="utf-8")
+    assert bare_key not in rendered
+    assert "two words" not in rendered
+    todo_items = _read_jsonl(store_path)[0]["transaction"]["todo_items"]
+    assert all("executor" not in item for item in todo_items)
+    assert [item["id"] for item in todo_items] == ["1", "2"]
+
+
 def test_progress_records_include_empty_todo_items_to_clear_stale_state(tmp_path):
     store_path = tmp_path / "events.jsonl"
     store = JsonlProgressEventStore(store_path)

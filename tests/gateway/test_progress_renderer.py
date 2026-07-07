@@ -257,6 +257,45 @@ def test_text_renderer_renders_two_level_todo_grouping_without_infinite_tree():
     assert "        -" not in text
 
 
+def test_text_renderer_renders_executor_suffix_and_leaves_unlabeled_items_unchanged():
+    from gateway.progress.renderers import render_text_panel
+
+    tracker = ProgressTracker(transaction_id="tx-todo-executor", title="Executor todos")
+    tracker.update_todo_items([
+        {"id": "pr", "content": "PR verification", "status": "in_progress", "executor": "claude"},
+        {"id": "local", "content": "Local tests", "status": "completed", "parent_id": "pr", "executor": "codex"},
+        {"id": "ci", "content": "CI wait", "status": "pending", "parent_id": "pr"},
+        {"id": "run", "content": "Run tests", "status": "in_progress", "executor": "codex"},
+        {"id": "ship", "content": "Ship", "status": "pending"},
+    ])
+
+    text = render_text_panel(tracker.snapshot(), tool_progress_mode="off")
+
+    assert "- ➡️ Run tests · codex" in text
+    assert "▸ PR verification 1/2 · claude" in text
+    assert "    - ✅ ~~Local tests~~ · codex" in text
+    # Unlabeled items render exactly as before, with no separator.
+    assert "- ○ Ship" in text
+    assert "Ship ·" not in text
+    assert "CI wait ·" not in text
+
+
+def test_text_renderer_never_renders_secret_shaped_executor():
+    from gateway.progress.renderers import render_text_panel
+
+    tracker = ProgressTracker(transaction_id="tx-todo-executor-secret", title="Secret executor")
+    bare_key = "sk-" + "test-" + ("h" * 32)
+    tracker.update_todo_items([
+        {"id": "1", "content": "Run tests", "status": "in_progress", "executor": bare_key},
+    ])
+
+    text = render_text_panel(tracker.snapshot(), tool_progress_mode="off")
+
+    assert bare_key not in text
+    assert "- ➡️ Run tests" in text
+    assert "Run tests ·" not in text
+
+
 def test_feishu_renders_suspended_hint_separately_from_main_todos():
     from gateway.progress.renderers import render_text_panel
     from gateway.progress.todo_lifecycle import make_owner_scope_ref

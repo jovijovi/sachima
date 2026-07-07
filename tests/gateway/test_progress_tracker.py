@@ -423,6 +423,55 @@ def test_update_todo_items_empty_resets_to_tuple():
     assert tracker.snapshot().todo_items == ()
 
 
+def test_update_todo_items_carries_valid_executor_and_drops_invalid():
+    tracker = ProgressTracker("tx-todo-executor", "Executor todos")
+
+    tracker.update_todo_items([
+        {"id": "1", "content": "Delegated", "status": "in_progress", "executor": "codex"},
+        {"id": "2", "content": "Case folded", "status": "pending", "executor": "Claude"},
+        {"id": "3", "content": "No label", "status": "pending"},
+        {"id": "4", "content": "Bad label", "status": "pending", "executor": "two words"},
+    ])
+
+    by_id = {it.id: it for it in tracker.snapshot().todo_items}
+    assert by_id["1"].executor == "codex"
+    assert by_id["2"].executor == "claude"
+    assert by_id["3"].executor is None
+    assert by_id["4"].executor is None
+    # Executor is independent of source provenance.
+    assert all(it.source == "todo_tool" for it in by_id.values())
+
+
+def test_update_todo_items_carries_executor_from_object_shaped_entries():
+    class TodoObj:
+        id = "obj"
+        content = "Object entry"
+        status = "pending"
+        executor = "hermes-agent"
+
+    tracker = ProgressTracker("tx-todo-executor-obj", "Object executor")
+    tracker.update_todo_items([TodoObj()])
+
+    items = tracker.snapshot().todo_items
+    assert items[0].executor == "hermes-agent"
+
+
+def test_update_todo_items_never_carries_secret_shaped_executor():
+    tracker = ProgressTracker("tx-todo-executor-secret", "Secret executor")
+    bare_key = "sk-" + "test-" + ("b" * 32)
+
+    tracker.update_todo_items([
+        {"id": "1", "content": "Task", "status": "pending", "executor": bare_key},
+        {"id": "2", "content": "Task 2", "status": "pending", "executor": "ghp_" + "c" * 24},
+    ])
+
+    snapshot = tracker.snapshot()
+    rendered = repr(snapshot)
+    assert bare_key not in rendered
+    assert "ghp_" not in rendered
+    assert all(it.executor is None for it in snapshot.todo_items)
+
+
 def test_mark_completed_derives_terminal_todo_lifecycle_from_remaining_items():
     tracker = ProgressTracker("tx-terminal-pending", "Pending leftovers")
     tracker.update_todo_items([

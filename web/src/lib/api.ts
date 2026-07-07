@@ -1630,6 +1630,9 @@ export interface ProgressTodoItem {
   parent_id?: string | null;
   depth: number;
   source: string;
+  /** Optional validated executing-agent label (e.g. "codex") for delegated
+   *  items; present only when set. Display-only — surfaces may ignore it. */
+  executor?: string | null;
 }
 
 export interface ProgressOwnerScopeRef {

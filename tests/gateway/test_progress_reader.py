@@ -244,6 +244,33 @@ def test_progress_reader_normalizes_deep_and_unsafe_todo_items(tmp_path):
     assert "/home/ecs-user/private.txt" in rendered
 
 
+def test_progress_reader_surfaces_valid_executor_and_drops_tampered_values(tmp_path):
+    path = tmp_path / "events.jsonl"
+    snapshot = _snapshot("tx-todo-executor", written_at=5.0, status="completed")
+    bare_key = "sk-" + "test-" + ("f" * 32)
+    snapshot["transaction"]["todo_items"] = [
+        {"id": "a", "content": "Delegated", "status": "pending", "depth": 0, "source": "todo_tool", "executor": "codex"},
+        {"id": "b", "content": "Tampered spaces", "status": "pending", "depth": 0, "source": "todo_tool", "executor": "two words"},
+        {"id": "c", "content": "Tampered URL", "status": "pending", "depth": 0, "source": "todo_tool", "executor": "https://evil.example"},
+        {"id": "d", "content": "Tampered secret", "status": "pending", "depth": 0, "source": "todo_tool", "executor": bare_key},
+        {"id": "e", "content": "Legacy item", "status": "pending", "depth": 0, "source": "todo_tool"},
+    ]
+    _write_jsonl(path, [snapshot])
+
+    result = list_progress_transactions(path)
+    todo_items = result["transactions"][0]["todo_items"]
+
+    by_id = {it["id"]: it for it in todo_items}
+    assert by_id["a"]["executor"] == "codex"
+    # Tampered/unsafe executors drop the field, never the item.
+    assert [it["id"] for it in todo_items] == ["a", "b", "c", "d", "e"]
+    for item_id in ("b", "c", "d", "e"):
+        assert "executor" not in by_id[item_id]
+    rendered = json.dumps(todo_items, ensure_ascii=False)
+    assert bare_key not in rendered
+    assert "evil.example" not in rendered
+
+
 def test_progress_reader_latest_empty_todo_snapshot_clears_stale_items(tmp_path):
     path = tmp_path / "events.jsonl"
     with_todos = _snapshot("tx-todo-clear", written_at=3.0, status="running")

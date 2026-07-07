@@ -81,6 +81,100 @@ def test_feishu_progress_card_renders_two_level_todo_groups():
     assert "  ➡️ Codex 复审" in rendered
 
 
+def test_feishu_progress_card_renders_executor_suffix_on_flat_items():
+    from gateway.progress.renderers import render_feishu_progress_card
+
+    tracker = ProgressTracker(transaction_id="tx-todo-executor", title="带执行者的任务")
+    tracker.update_todo_items([
+        {"id": "1", "content": "准备实现方案", "status": "completed", "executor": "claude"},
+        {"id": "2", "content": "跑测试", "status": "in_progress", "executor": "codex"},
+        {"id": "3", "content": "提交 PR", "status": "pending"},
+    ])
+
+    card = render_feishu_progress_card(tracker.snapshot(), tool_progress_mode="off")
+    rendered = _rendered(card)
+
+    assert "➡️ 跑测试 · codex" in rendered
+    # Suffix sits outside the strikethrough so the label stays legible.
+    assert "✅ ~~准备实现方案~~ · claude" in rendered
+    # Unlabeled items render exactly as before, with no separator.
+    assert "○ 提交 PR" in rendered
+    assert "提交 PR ·" not in rendered
+
+
+def test_feishu_progress_card_escapes_executor_label_markdown():
+    from gateway.progress.renderers import render_feishu_progress_card
+
+    tracker = ProgressTracker(transaction_id="tx-todo-executor-escape", title="转义执行者")
+    tracker.update_todo_items([
+        {"id": "1", "content": "跑测试", "status": "in_progress", "executor": "hermes-agent"},
+    ])
+
+    card = render_feishu_progress_card(tracker.snapshot(), tool_progress_mode="off")
+    rendered = _rendered(card)
+
+    # The hyphen is markdown-escaped inside the card content (JSON doubles the backslash).
+    assert "跑测试 · hermes\\\\-agent" in rendered
+
+
+def test_feishu_progress_card_renders_executor_suffix_on_groups_and_children():
+    from gateway.progress.renderers import render_feishu_progress_card
+
+    tracker = ProgressTracker(transaction_id="tx-todo-executor-2level", title="分组执行者")
+    tracker.update_todo_items([
+        {"id": "pr", "content": "PR 验证", "status": "in_progress", "executor": "claude"},
+        {"id": "local", "content": "本地测试", "status": "completed", "parent_id": "pr", "executor": "codex"},
+        {"id": "ci", "content": "CI 等待", "status": "pending", "parent_id": "pr"},
+    ])
+
+    card = render_feishu_progress_card(tracker.snapshot(), tool_progress_mode="off")
+    rendered = _rendered(card)
+
+    # Group header keeps its done/total counter, then the suffix.
+    assert "▸ PR 验证 1/2 · claude" in rendered
+    assert "  ✅ ~~本地测试~~ · codex" in rendered
+    assert "  ○ CI 等待" in rendered
+    assert "CI 等待 ·" not in rendered
+
+
+def test_feishu_progress_card_never_renders_secret_shaped_executor():
+    from gateway.progress.renderers import render_feishu_progress_card
+
+    tracker = ProgressTracker(transaction_id="tx-todo-executor-secret", title="敏感执行者")
+    bare_key = "sk-" + "test-" + ("g" * 32)
+    tracker.update_todo_items([
+        {"id": "1", "content": "跑测试", "status": "in_progress", "executor": bare_key},
+        {"id": "2", "content": "提交 PR", "status": "pending", "executor": "Bearer abc123"},
+    ])
+
+    card = render_feishu_progress_card(tracker.snapshot(), tool_progress_mode="off")
+    rendered = _rendered(card)
+
+    assert bare_key not in rendered
+    assert "abc123" not in rendered
+    # Lines render without any suffix when the label is dropped.
+    assert "➡️ 跑测试" in rendered
+    assert "跑测试 ·" not in rendered
+    assert "○ 提交 PR" in rendered
+    assert "提交 PR ·" not in rendered
+
+
+def test_feishu_progress_card_labeled_overflow_keeps_hidden_count():
+    from gateway.progress.renderers import render_feishu_progress_card
+
+    tracker = ProgressTracker(transaction_id="tx-todo-executor-overflow", title="超量执行者任务")
+    tracker.update_todo_items([
+        {"id": str(i), "content": f"任务 {i}", "status": "pending", "executor": "codex"}
+        for i in range(15)
+    ])
+
+    card = render_feishu_progress_card(tracker.snapshot(), tool_progress_mode="off")
+    rendered = _rendered(card)
+
+    assert "待办 - 0 / 15（0%）" in rendered
+    assert "还有 7 项" in rendered  # 15 items, 8 visible lines → 7 hidden
+
+
 def test_feishu_progress_card_omits_todo_block_when_empty():
     from gateway.progress.renderers import render_feishu_progress_card
 

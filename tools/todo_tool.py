@@ -17,6 +17,7 @@ Design:
 import json
 from typing import Dict, Any, List, Optional
 
+from gateway.progress.todo_executor import normalize_todo_executor
 from gateway.progress.todo_lifecycle import (
     normalize_owner_scope_ref,
     normalize_todo_lifecycle,
@@ -49,6 +50,9 @@ class TodoStore:
       - parent_id (optional): id of a sibling item this one groups under.
         Supports a single level of grouping for the task workbench display
         (parent + direct children); deeper nesting is not modelled here.
+      - executor (optional): validated lowercase label of the agent the item
+        is delegated to (e.g. "claude", "codex"). Display-only metadata; it
+        never comes from content text and never affects lifecycle or resume.
     """
 
     def __init__(self):
@@ -99,6 +103,14 @@ class TodoStore:
                             existing[item_id]["parent_id"] = parent_id
                         else:
                             existing[item_id].pop("parent_id", None)
+                    # An explicit executor key always re-evaluates; an empty or
+                    # invalid value detaches the label (parent_id semantics).
+                    if "executor" in t:
+                        executor = normalize_todo_executor(t.get("executor"))
+                        if executor is not None:
+                            existing[item_id]["executor"] = executor
+                        else:
+                            existing[item_id].pop("executor", None)
                 else:
                     # New item -- validate fully and append to end
                     validated = self._validate(t)
@@ -127,7 +139,8 @@ class TodoStore:
         """Return a copy of the current list.
 
         Each item carries ``id``/``content``/``status``; ``parent_id`` is
-        included only when the item is grouped under another item.
+        included only when the item is grouped under another item, and
+        ``executor`` only when a valid delegation label was supplied.
         """
         return [item.copy() for item in self._items]
 
@@ -256,7 +269,9 @@ class TodoStore:
         lines = ["[Your active task list was preserved across context compression]"]
         for item in active_items:
             marker = markers.get(item["status"], "[?]")
-            lines.append(f"- {marker} {item['id']}. {item['content']} ({item['status']})")
+            # Keep delegation assignments visible across compression.
+            suffix = f", executor: {item['executor']}" if item.get("executor") else ""
+            lines.append(f"- {marker} {item['id']}. {item['content']} ({item['status']}{suffix})")
 
         return "\n".join(lines)
 
@@ -320,7 +335,7 @@ class TodoStore:
 
         Ensures required fields exist and status is valid. Returns a clean dict
         with {id, content, status}, plus {parent_id} only when a usable parent
-        link was supplied.
+        link was supplied and {executor} only when a valid label was supplied.
         """
         item_id = str(item.get("id", "")).strip()
         if not item_id:
@@ -340,6 +355,9 @@ class TodoStore:
         parent_id = TodoStore._sanitize_parent_id(item.get("parent_id"), own_id=item_id)
         if parent_id is not None:
             validated["parent_id"] = parent_id
+        executor = normalize_todo_executor(item.get("executor"))
+        if executor is not None:
+            validated["executor"] = executor
         return validated
 
     @staticmethod
@@ -448,6 +466,14 @@ TODO_SCHEMA = {
                             "description": (
                                 "Optional id of another item to group this one "
                                 "under (single level of grouping only)."
+                            )
+                        },
+                        "executor": {
+                            "type": "string",
+                            "description": (
+                                "Optional executing agent label when the item is "
+                                "delegated (lowercase token, e.g. 'claude', "
+                                "'codex', 'hermes-agent', 'other')."
                             )
                         }
                     },
