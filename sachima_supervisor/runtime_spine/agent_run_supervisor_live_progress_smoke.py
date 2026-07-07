@@ -15,9 +15,11 @@ writes an artifact, appends a ``TaskEventLog`` event, launches a real AGENT /
 runner / OS process, opens a network listener, starts a runtime / Temporal
 service, or calls a Gateway / Feishu / IM / delivery surface. The producer library
 is reached **only** lazily inside the existing :class:`DefaultLiveProgressReader`
-(no top-level ``agent_run_supervisor`` import here), so on a host where the library
-is absent every helper fails closed to a clean ``live_progress_unavailable``
-report / projection without leaking the raw import-error text.
+(no top-level ``agent_run_supervisor`` import here) and resolves only from the
+installed exact-pinned ``agent-run-supervisor`` distribution, so on an
+environment without the extra every helper fails closed to a clean
+``live_progress_unavailable`` report / projection without leaking the raw
+import-error text.
 
 Every public surface reuses the existing builders/validators and carries only the
 already-sanitized safe signal: refs / safe handles / bounded counts / coarse

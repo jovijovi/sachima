@@ -1,18 +1,21 @@
 """agent_run_supervisor availability / exact-pin checker (smoke prerequisite).
 
-The Phase D readiness gate (PR #117) recorded that the ``agent_run_supervisor``
-Python library is absent on this host — the third independent execution
-blocker for a real local smoke. This module prepares the *checker* for that
-provisioning prerequisite: a later, separately approved smoke may proceed only
-when the library is importable **and** its installed distribution version
-equals the expected exact pin (the agent-run-supervisor repo currently ships
-pyproject version ``0.0.0``).
+The ``agent-run-supervisor`` library is published to PyPI and declared as the
+exact-pinned optional extra ``agent-run-supervisor`` in this repo's
+``pyproject.toml`` (mirrored into ``dev`` for CI). This module is the checker
+for that provisioning contract: a smoke may proceed only when the library is
+importable **and** its installed distribution version equals the reviewed
+exact pin. Environments provisioned any other way — including an isolated
+wheel/editable install of an unreleased version used for ARS co-development —
+are reported honestly (``version_mismatch`` / ``version_unknown``), never
+special-cased.
 
 Boundaries:
 
-  * Deliberately NOT a runtime dependency: ``agent-run-supervisor`` is not
-    added to this repo's ``pyproject.toml``. Installing/pinning it stays an
-    operator provisioning step under the repo exact-pin dependency policy.
+  * Never a core dependency, never a source-path import: the library reaches
+    Sachima only as the installed distribution declared by the extra, and only
+    through lazy imports behind default-off gates. There is no sys.path /
+    checkout fallback anywhere (tests/test_packaging_metadata.py guards this).
   * The checker never raises on a missing/odd installation; it returns a
     sanitized status with a stable error code. Raw import/metadata exception
     text and unsanitary version strings never enter the status.
@@ -30,10 +33,10 @@ from typing import Any, Callable
 
 AGENT_RUN_SUPERVISOR_IMPORT_NAME = "agent_run_supervisor"
 AGENT_RUN_SUPERVISOR_DISTRIBUTION = "agent-run-supervisor"
-#: Exact expected pin. Matches the current agent-run-supervisor repo
-#: ``pyproject.toml`` version; bump only through an explicitly reviewed
-#: provisioning update.
-EXPECTED_AGENT_RUN_SUPERVISOR_VERSION = "0.0.0"
+#: Exact expected pin. Mirrors the ``agent-run-supervisor`` extra in this
+#: repo's ``pyproject.toml`` (the single source of truth); bump both together
+#: and regenerate uv.lock — tests/test_packaging_metadata.py fails on drift.
+EXPECTED_AGENT_RUN_SUPERVISOR_VERSION = "0.1.3"
 
 #: Sanitized version shape (PEP 440-ish, single line, bounded). Anything else
 #: is treated as unknown and never echoed back.

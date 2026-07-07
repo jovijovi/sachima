@@ -31,7 +31,7 @@ path must not be committed into the portable role file.
 |---|---|---:|---|---|
 | `acpx` | Node CLI package | Yes | `0.12.0` exactly | Must be a local executable path in `runner.acpx_binary`; no `npx`/network fetch fallback. |
 | Node.js | Runtime for `acpx` | Yes | `agent-run-supervisor doctor` reports `>=22.12`; Sachima root package requires `>=20.0.0` | Current smoke host probe observed `v24.14.0`. |
-| `agent-run-supervisor` | Python source/library | Yes | distribution version `0.0.0` | Sachima does not add it to `pyproject.toml`; it is operator-provisioned and imported lazily. |
+| `agent-run-supervisor` | Python package (PyPI) | Yes | exact pin `0.1.3` | Declared as the exact-pinned `agent-run-supervisor` optional extra in Sachima's `pyproject.toml` (mirrored into `dev`); provision via `uv sync --extra agent-run-supervisor` (or `--extra dev`) and imported lazily behind default-off gates. No source-checkout / `PYTHONPATH` path is valid. |
 | Python | Runtime for Sachima + supervisor | Yes | Sachima `>=3.11,<3.14`; supervisor `>=3.11` | Current smoke host probe observed Python `3.11.15`. |
 | Claude Code CLI | Adapter target via `acpx claude` | Yes | local CLI availability required | Current smoke host probe observed `claude` version `2.1.177`. |
 
@@ -82,59 +82,77 @@ bound before launch.
 
 ## `agent-run-supervisor` provisioning contract
 
-`agent-run-supervisor` is an independent local-first Python project, not a
-runtime dependency in Sachima's `pyproject.toml`.
-
-Current source checkout:
+`agent-run-supervisor` is an independent external Python project published to
+PyPI (canonical repo: `https://github.com/jovijovi/agent-run-supervisor`). It
+is declared in Sachima's `pyproject.toml` as the exact-pinned optional extra
+`agent-run-supervisor` (and mirrored into `dev` so CI installs it):
 
 ```text
-repo: /home/ecs-user/workspace/hermes/repo/agent-run-supervisor
 package: agent-run-supervisor
 import_name: agent_run_supervisor
-pyproject version: 0.0.0
-requires-python: >=3.11
-runtime dependencies: []
-optional dev dependency: pytest>=8,<10
-optional release dependencies: build>=1,<2, twine>=5,<7
-console script: agent-run-supervisor = agent_run_supervisor.cli:main
+exact pin: 0.1.3
+provisioning: uv sync --extra agent-run-supervisor   (or --extra dev)
+resolution: uv.lock (registry source + sdist/wheel hashes)
 ```
+
+Sachima consumes it ONLY as this installed distribution: there is no
+source-checkout, `PYTHONPATH`, or `sys.path` channel anywhere in the repo
+(`tests/test_packaging_metadata.py::test_no_agent_run_supervisor_source_path_references`
+guards this), so a checkout can never shadow the reviewed pin.
 
 Sachima's pin checker is:
 
 - `sachima_supervisor/supervisor_library.py`
 - expected import: `agent_run_supervisor`
 - expected distribution: `agent-run-supervisor`
-- expected exact version: `0.0.0`
+- expected exact version: `0.1.3` (mirrors the pyproject extra; drift fails
+  `tests/test_packaging_metadata.py`)
 
 This checker is deliberately not a hard import at module load time. Sachima's
 local/offline seam imports the supervisor lazily only when an approved invocation
 path needs it, so normal Sachima imports and tests do not require the supervisor
-package to be installed.
+package to be installed; without it, consumers fail closed with stable codes
+(`supervisor_library_unavailable` / `live_progress_unavailable`).
 
-### Source checkout invocation
+### Installed distribution invocation
 
-For local development or a smoke host, the minimal source-checkout path is:
+With the extra installed, invoke the supervisor CLI through the project
+environment — no `PYTHONPATH`:
 
 ```bash
-export ARS_REPO=/home/ecs-user/workspace/hermes/repo/agent-run-supervisor
-PYTHONPATH="$ARS_REPO/src" python3 -m agent_run_supervisor doctor
-PYTHONPATH="$ARS_REPO/src" python3 -m agent_run_supervisor validate-role <role-file>.json
-PYTHONPATH="$ARS_REPO/src" python3 -m agent_run_supervisor run \
+uv sync --extra agent-run-supervisor   # or: uv sync --extra dev
+uv run python -m agent_run_supervisor doctor
+uv run python -m agent_run_supervisor validate-role <role-file>.json
+uv run python -m agent_run_supervisor run \
   --role <role-file>.json \
   --prompt-file <prompt>.txt \
   --runs-dir <runs-dir>
 ```
 
-A local editable install is acceptable only as a separate provisioning step,
-never as part of a no-fetch smoke:
+### Validating unreleased agent-run-supervisor changes
+
+The only sanctioned way to test an unreleased ARS change against Sachima is to
+build and **install** it as a package into an isolated, throwaway environment —
+never to reference its source tree:
 
 ```bash
-cd /home/ecs-user/workspace/hermes/repo/agent-run-supervisor
-uv venv .venv
-. .venv/bin/activate
-uv pip install -e .
-agent-run-supervisor doctor
+# In the agent-run-supervisor repo: build a wheel.
+uv build
+
+# In a disposable environment (NEVER the Sachima project env — uv.lock and
+# --frozen semantics stay authoritative there):
+uv venv /tmp/ars-preview
+VIRTUAL_ENV=/tmp/ars-preview uv pip install <path-to-built-wheel>
+# (an editable install of the ARS repo into that same disposable env is
+# equally acceptable — both go through packaging metadata)
 ```
+
+`check_supervisor_library_pin` reports such environments honestly
+(`supervisor_library_version_mismatch` / `..._version_unknown`); gates that
+require `ready` are expected to fail there — that is by design, never
+special-cased. Forbidden in every environment: `PYTHONPATH` pointing at an ARS
+source tree, `sys.path` insertion, or installing an unpinned version into the
+Sachima project environment.
 
 ## Sachima call path
 
@@ -212,11 +230,10 @@ node --version
 python3 --version
 claude --version
 
-ARS_REPO=/home/ecs-user/workspace/hermes/repo/agent-run-supervisor
-PYTHONPATH="$ARS_REPO/src" python3 -m agent_run_supervisor doctor
-PYTHONPATH="$ARS_REPO/src" python3 - <<'PY'
+uv run python -m agent_run_supervisor doctor
+uv run --frozen python - <<'PY'
 import importlib.metadata as md
-print(md.version('agent-run-supervisor'))
+print(md.version('agent-run-supervisor'))  # must print 0.1.3
 PY
 ```
 

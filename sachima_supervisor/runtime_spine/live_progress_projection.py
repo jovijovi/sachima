@@ -17,11 +17,14 @@ Sachima's ``TaskEventLog`` remains the sole per-``task_id`` seq + verdict
 authority, and this projection never appends to it — the ARS ``seq`` / cursor is
 a foreign read-model cursor only.
 
-The producer library (``agent_run_supervisor``) is not importable on this host,
-so the reader is **injected**: the default :class:`DefaultLiveProgressReader`
-lazily imports the ARS caller events module inside each call and fails closed to
-a ``live_progress_unavailable`` projection when it is absent — there is no
-top-level ``agent_run_supervisor`` import anywhere in this module. Building and
+The producer library (``agent_run_supervisor``) resolves only from the
+installed exact-pinned ``agent-run-supervisor`` distribution (the
+``agent-run-supervisor`` / ``dev`` extra in ``pyproject.toml``) and the reader
+is **injected**: the default :class:`DefaultLiveProgressReader` lazily imports
+the ARS caller events module inside each call and fails closed to a
+``live_progress_unavailable`` projection when the extra is not installed —
+there is no top-level ``agent_run_supervisor`` import anywhere in this module
+and no source-path / ``sys.path`` fallback anywhere in the repo. Building and
 serializing are pure and side-effect-free: no process, socket, Gateway / IM /
 delivery, durable Worker/service, or agent launch. Forbidden terms below appear
 only as no-leak denylist boundary prose, never as behavior.
@@ -475,8 +478,9 @@ class _ReaderUnavailable(Exception):
 def _import_caller_events() -> Any:
     """Lazily import the ARS caller events module — NEVER at module top level.
 
-    Any import failure (the default host reality — the library is absent) is
-    collapsed to :class:`_ReaderUnavailable` with no chained raw exception text.
+    Any import failure (an environment without the ``agent-run-supervisor``
+    extra installed) is collapsed to :class:`_ReaderUnavailable` with no
+    chained raw exception text.
     """
 
     try:
@@ -499,8 +503,9 @@ class LiveProgressReader(Protocol):
 class DefaultLiveProgressReader:
     """Default reader that lazily imports the ARS caller events module per call.
 
-    On this host the library is absent, so both methods fail closed via
-    :class:`_ReaderUnavailable`, which the builder turns into a clean
+    The module resolves from the installed ``agent-run-supervisor``
+    distribution; on an environment without the extra both methods fail closed
+    via :class:`_ReaderUnavailable`, which the builder turns into a clean
     ``live_progress_unavailable`` projection. There is no top-level
     ``agent_run_supervisor`` import — a top-level import would break package import
     everywhere the library is missing.
