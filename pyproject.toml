@@ -154,7 +154,20 @@ edge-tts = ["edge-tts==7.2.7"]
 modal = ["modal==1.3.4"]
 daytona = ["daytona==0.155.0"]
 hindsight = ["hindsight-client==0.6.1"]
-dev = ["debugpy==1.8.20", "pytest==9.0.2", "pytest-asyncio==1.3.0", "mcp==1.26.0", "starlette==1.0.1", "ty==0.0.21", "ruff==0.15.10", "setuptools==81.0.0"]  # starlette: CVE-2026-48710; setuptools: latest <82 (torch >=2.11 caps setuptools<82)
+# Sachima supervisor spine — client library for the external
+# agent-run-supervisor AGENT execution/event-stream subsystem. Consumed only
+# via lazy imports behind default-off gates (sachima_supervisor/*, the gateway
+# live-progress binding); never a core dep, never reached via source-path /
+# sys.path injection (tests/test_packaging_metadata.py guards both). Exact pin
+# per the no-ranges policy above; bump together with
+# EXPECTED_AGENT_RUN_SUPERVISOR_VERSION in
+# sachima_supervisor/supervisor_library.py and regenerate uv.lock.
+agent-run-supervisor = ["agent-run-supervisor==0.1.3"]
+# dev carries agent-run-supervisor so CI's `--extra dev` sync installs the
+# distribution and the real caller-API compat tests run for real instead of
+# skipping (the source-path fallback is retired; the package is the only way
+# those tests get the real API).
+dev = ["debugpy==1.8.20", "pytest==9.0.2", "pytest-asyncio==1.3.0", "mcp==1.26.0", "starlette==1.0.1", "ty==0.0.21", "ruff==0.15.10", "setuptools==81.0.0", "agent-run-supervisor==0.1.3"]  # starlette: CVE-2026-48710; setuptools: latest <82 (torch >=2.11 caps setuptools<82)
 messaging = ["python-telegram-bot[webhooks]==22.6", "discord.py[voice]==2.7.1", "aiohttp==3.13.4", "brotlicffi==1.2.0.1", "slack-bolt==1.27.0", "slack-sdk==3.40.1", "qrcode==7.4.2"]  # aiohttp: CVE-2026-34513/34518/34519/34520/34525
 cron = []  # croniter is now a core dependency; this extra kept for back-compat
 slack = ["slack-bolt==1.27.0", "slack-sdk==3.40.1", "aiohttp==3.13.4"]
@@ -401,4 +414,6 @@ select = ["PLW1514"]
 
 [tool.uv]
 exclude-newer = "7 days"
-exclude-newer-package = { temporalio = "2026-05-01T00:00:00Z" }
+# agent-run-supervisor 0.1.3 was released inside the global 7-day window;
+# keep the global safety window and override only this reviewed package.
+exclude-newer-package = { temporalio = "2026-05-01T00:00:00Z", agent-run-supervisor = "2026-07-07T09:00:00Z" }

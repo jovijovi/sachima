@@ -16,11 +16,13 @@ Proves the LS4 Gateway/Feishu host binding seam stays default-off and fail-close
   registry + port + real lazy reader + LS4-A ``hermes_internal`` gate + display
   service), binds it into the tool, and returns a refs-only summary (task /
   session / artifact_ref — never the private ``artifact_dir``);
-* real caller API — with the sibling agent-run-supervisor ``src`` importable,
-  a synthetic ``progress.json`` + ``normalized-events.jsonl`` artifact dir is
-  read end-to-end through the REAL ``agent_run_supervisor.hermes_caller.events``
-  reader (never an in-test fake) and the tool returns an available
-  ``live_progress_display.v1`` envelope for the real ``task_id/session_id``.
+* real caller API — with the exact-pinned ``agent-run-supervisor`` distribution
+  installed (``uv sync --extra dev`` / ``--extra agent-run-supervisor``; there
+  is no source-path fallback), a synthetic ``progress.json`` +
+  ``normalized-events.jsonl`` artifact dir is read end-to-end through the REAL
+  ``agent_run_supervisor.hermes_caller.events`` reader (never an in-test fake)
+  and the tool returns an available ``live_progress_display.v1`` envelope for
+  the real ``task_id/session_id``.
 
 Everything runs pure local/offline: no Gateway process, Feishu / IM / delivery
 surface, listener, or Temporal Worker is started — the "gateway" here is only
@@ -33,9 +35,7 @@ from __future__ import annotations
 import importlib
 import json
 import logging
-import os
 import re
-import sys
 from pathlib import Path
 
 import pytest
@@ -47,8 +47,6 @@ from sachima_supervisor.runtime_spine import scan_for_leak
 
 _SURFACE_ENV = tool_mod.SACHIMA_LIVE_PROGRESS_SURFACE_ENV
 _FILE_ENV = binding_mod.SACHIMA_LIVE_PROGRESS_BINDINGS_FILE_ENV
-_SRC_ENV = binding_mod.SACHIMA_LIVE_PROGRESS_ARS_SRC_PATH_ENV
-_SRC_ENV_FALLBACK = binding_mod.AGENT_RUN_SUPERVISOR_SRC_PATH_ENV
 _TOOL = tool_mod.TOOL_NAME
 
 _DISABLED = binding_mod.SACHIMA_LIVE_PROGRESS_HOST_BINDING_DISABLED
@@ -56,20 +54,13 @@ _ABSENT = binding_mod.SACHIMA_LIVE_PROGRESS_HOST_BINDING_ABSENT
 _INVALID = binding_mod.SACHIMA_LIVE_PROGRESS_HOST_BINDING_INVALID
 _BOUND = binding_mod.SACHIMA_LIVE_PROGRESS_HOST_BINDING_BOUND
 
-_SIBLING_SRC = "/home/ecs-user/workspace/hermes/repo/agent-run-supervisor/src"
-
 
 # --------------------------------------------------------------------------- #
-# Real caller-API discovery — installed module OR sibling source path, else skip
-# (mirrors tests/sachima_supervisor/runtime_spine/test_agent_run_supervisor_live_progress_smoke.py)
+# Real caller-API discovery — the installed distribution only, else skip
+# (mirrors tests/sachima_supervisor/runtime_spine/test_agent_run_supervisor_live_progress_smoke.py,
+# which also guards "distribution installed ⇒ API importable" as a hard failure)
 # --------------------------------------------------------------------------- #
 def _load_real_caller_api():
-    try:
-        return importlib.import_module("agent_run_supervisor.hermes_caller.events")
-    except Exception:
-        pass
-    if os.path.isdir(_SIBLING_SRC) and _SIBLING_SRC not in sys.path:
-        sys.path.insert(0, _SIBLING_SRC)
     try:
         return importlib.import_module("agent_run_supervisor.hermes_caller.events")
     except Exception:
@@ -81,8 +72,8 @@ _requires_real_api = pytest.mark.skipif(
     _REAL_CALLER_API is None,
     reason=(
         "agent_run_supervisor.hermes_caller.events not importable — install the "
-        "library or run with the sibling src checkout present; default-off and "
-        "fail-closed tests still run"
+        "pinned distribution via `uv sync --extra dev` (or --extra "
+        "agent-run-supervisor); default-off and fail-closed tests still run"
     ),
 )
 
@@ -92,7 +83,7 @@ _requires_real_api = pytest.mark.skipif(
 # --------------------------------------------------------------------------- #
 @pytest.fixture(autouse=True)
 def _default_off(monkeypatch):
-    for env in (_SURFACE_ENV, _FILE_ENV, _SRC_ENV, _SRC_ENV_FALLBACK):
+    for env in (_SURFACE_ENV, _FILE_ENV):
         monkeypatch.delenv(env, raising=False)
     tool_mod.unbind_live_progress_display_service()
     invalidate_check_fn_cache()
@@ -383,50 +374,17 @@ def test_rebind_is_idempotent_and_replaces_service(monkeypatch, tmp_path):
 
 
 # --------------------------------------------------------------------------- #
-# D. ARS src path env handling
-# --------------------------------------------------------------------------- #
-def test_src_path_env_prepends_existing_dir_once(monkeypatch, tmp_path):
-    src = tmp_path / "ars_src"
-    src.mkdir()
-    monkeypatch.setenv(_SRC_ENV, str(src))
-    try:
-        binding_mod._prepend_agent_run_supervisor_src_path()
-        assert sys.path[0] == str(src)
-        binding_mod._prepend_agent_run_supervisor_src_path()
-        assert sys.path.count(str(src)) == 1
-    finally:
-        while str(src) in sys.path:
-            sys.path.remove(str(src))
-
-
-def test_src_path_env_ignores_missing_dir(monkeypatch, tmp_path):
-    missing = str(tmp_path / "nope")
-    monkeypatch.setenv(_SRC_ENV, missing)
-    before = list(sys.path)
-    binding_mod._prepend_agent_run_supervisor_src_path()
-    assert sys.path == before
-
-
-def test_src_path_fallback_env_is_honored(monkeypatch, tmp_path):
-    src = tmp_path / "ars_src_fallback"
-    src.mkdir()
-    monkeypatch.setenv(_SRC_ENV_FALLBACK, str(src))
-    try:
-        binding_mod._prepend_agent_run_supervisor_src_path()
-        assert sys.path[0] == str(src)
-    finally:
-        while str(src) in sys.path:
-            sys.path.remove(str(src))
-
-
-# --------------------------------------------------------------------------- #
-# E. Static boundaries — wired into the runner, no forbidden imports
+# D. Static boundaries — wired into the runner, no forbidden imports, no shim
 # --------------------------------------------------------------------------- #
 def test_binding_module_source_boundaries():
     src = Path(binding_mod.__file__).read_text(encoding="utf-8")
     # No top-level (or any) direct import of the ARS producer library — it is
     # reached only lazily inside DefaultLiveProgressReader.
     assert re.search(r"(?m)^\s*(import|from)\s+agent_run_supervisor", src) is None
+    # The source-path shim is retired: the producer resolves only from the
+    # installed exact-pinned distribution, never a sys.path-injected checkout.
+    assert "sys.path" not in src
+    assert "SRC_PATH" not in src
     lowered = src.lower()
     for token in ("subprocess", "os.system", ".popen(", "socket.socket", "create_subprocess"):
         assert token not in lowered, token
@@ -442,7 +400,7 @@ def test_gateway_runner_wires_binding_behind_guard():
 
 
 # --------------------------------------------------------------------------- #
-# F. Real caller-API end-to-end smoke (skipped when the library is absent)
+# E. Real caller-API end-to-end smoke (skipped when the distribution is absent)
 # --------------------------------------------------------------------------- #
 @_requires_real_api
 def test_real_api_end_to_end_display_available(monkeypatch, tmp_path):
@@ -460,7 +418,6 @@ def test_real_api_end_to_end_display_available(monkeypatch, tmp_path):
         ],
     )
     monkeypatch.setenv(_SURFACE_ENV, "hermes_internal")
-    monkeypatch.setenv(_SRC_ENV, _SIBLING_SRC)
     monkeypatch.setenv(
         _FILE_ENV, _write_bindings_file(tmp_path, {"bindings": [_entry(str(artifact_dir))]})
     )
@@ -507,7 +464,6 @@ def test_real_api_after_seq_override_pages_forward(monkeypatch, tmp_path):
     _write_progress(artifact_dir, last_seq=5, event_count=5)
     _write_events(artifact_dir, [_event(i, "tool", text_length=i) for i in range(1, 6)])
     monkeypatch.setenv(_SURFACE_ENV, "hermes_internal")
-    monkeypatch.setenv(_SRC_ENV, _SIBLING_SRC)
     monkeypatch.setenv(
         _FILE_ENV, _write_bindings_file(tmp_path, {"bindings": [_entry(str(artifact_dir))]})
     )

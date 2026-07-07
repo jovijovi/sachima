@@ -240,6 +240,126 @@ def test_locked_starlette_is_not_vulnerable_to_cve_2026_48710():
         )
 
 
+def test_agent_run_supervisor_pin_consistent_across_pyproject_and_checker():
+    """The agent-run-supervisor pin has exactly one source of truth.
+
+    The external agent-run-supervisor AGENT execution/event-stream subsystem is
+    consumed only as an exact-pinned PyPI distribution: declared in the
+    dedicated ``agent-run-supervisor`` extra (opt-in provisioning) and mirrored
+    into ``dev`` (so CI's ``--extra dev`` sync runs the real caller-API compat
+    tests instead of skipping them). The runtime checker constant
+    ``EXPECTED_AGENT_RUN_SUPERVISOR_VERSION`` must equal that pin, and the
+    package must stay out of core dependencies, ``[all]``, and
+    ``flowweaver-temporal`` (it is not a Temporal component). A bump that
+    misses any of these places fails here instead of drifting.
+    """
+    from sachima_supervisor.supervisor_library import (
+        EXPECTED_AGENT_RUN_SUPERVISOR_VERSION,
+    )
+
+    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    extras = data["project"]["optional-dependencies"]
+    pin = f"agent-run-supervisor=={EXPECTED_AGENT_RUN_SUPERVISOR_VERSION}"
+
+    assert extras.get("agent-run-supervisor") == [pin], (
+        "pyproject must declare the dedicated extra "
+        f"agent-run-supervisor = [{pin!r}] (exact pin, no ranges)"
+    )
+    assert pin in extras.get("dev", []), (
+        f"dev extra must mirror {pin!r} so CI installs the distribution and "
+        "the real caller-API compat tests run for real"
+    )
+
+    core_names = {_distribution_name(dep) for dep in data["project"]["dependencies"]}
+    assert "agent-run-supervisor" not in core_names, (
+        "agent-run-supervisor is opt-in (default-off supervisor spine) and "
+        "must never be a core dependency"
+    )
+    for fenced_extra in ("all", "flowweaver-temporal"):
+        assert not any(
+            "agent-run-supervisor" in spec for spec in extras.get(fenced_extra, [])
+        ), f"agent-run-supervisor must stay out of the [{fenced_extra}] extra"
+
+
+def test_locked_agent_run_supervisor_matches_expected_pin():
+    """The committed uv.lock must resolve agent-run-supervisor to the exact pin.
+
+    pyproject declares the pin, but hash-verified installs (``uv sync
+    --locked`` / ``--frozen``) pull what the lockfile resolved. A pin bump (or
+    the initial extra introduction) without ``uv lock`` regeneration fails here
+    instead of shipping a stale or missing resolution.
+    """
+    from sachima_supervisor.supervisor_library import (
+        EXPECTED_AGENT_RUN_SUPERVISOR_VERSION,
+    )
+
+    lock = (REPO_ROOT / "uv.lock").read_text(encoding="utf-8")
+    versions = []
+    in_target = False
+    for line in lock.splitlines():
+        if line.startswith("[[package]]"):
+            in_target = False
+        elif line.strip() == 'name = "agent-run-supervisor"':
+            in_target = True
+        elif in_target and line.startswith("version = "):
+            versions.append(line.split("=", 1)[1].strip().strip('"'))
+            in_target = False
+
+    assert versions == [EXPECTED_AGENT_RUN_SUPERVISOR_VERSION], (
+        f"uv.lock must resolve agent-run-supervisor to exactly "
+        f"{EXPECTED_AGENT_RUN_SUPERVISOR_VERSION} (found {versions or 'nothing'}) — "
+        "run `uv lock` after editing the pyproject pin"
+    )
+
+
+#: The only sanctioned way to reach agent-run-supervisor is the installed
+#: exact-pinned distribution. These tokens flag every historical source-path
+#: channel: the retired gateway sys.path shim envs, the retired test sibling
+#: checkout constant, and any path into an agent-run-supervisor source tree.
+#: A bare machine username is deliberately NOT a token: unrelated no-leak
+#: canary fixtures (e.g. tests/sachima_supervisor/p5_temporal/unit/
+#: test_contracts.py) use ``/home/<user>/...`` hostile inputs that have
+#: nothing to do with ARS; the machine-path signal for ARS checkouts is
+#: covered by ``repo/agent-run-supervisor`` and ``agent-run-supervisor/src``.
+_ARS_SOURCE_PATH_TOKENS = (
+    "AGENT_RUN_SUPERVISOR_SRC_PATH",  # also matches the SACHIMA_-prefixed env
+    "_SIBLING_SRC",
+    "agent-run-supervisor/src",
+    "repo/agent-run-supervisor",
+)
+_ARS_GUARD_SCAN_DIRS = ("gateway", "sachima_supervisor", "tools", "scripts", "tests")
+
+
+def test_no_agent_run_supervisor_source_path_references():
+    """Repo-wide guard: zero ARS source-path references in code directories.
+
+    agent-run-supervisor is an external subsystem consumed ONLY through the
+    installed ``agent-run-supervisor==X.Y.Z`` distribution (lazy imports behind
+    default-off gates). Source-path channels — sys.path shims, sibling checkout
+    constants, PYTHONPATH-style env hooks — would silently shadow the reviewed
+    exact pin, so they are banned from every code directory. Unreleased ARS
+    changes are validated by installing a locally built wheel / editable
+    package into an isolated environment, never by referencing a source tree.
+    Historical docs/plans and dev_logs are immutable records and out of scope.
+    """
+    guard_file = Path(__file__).resolve()
+    offenders = []
+    for dirname in _ARS_GUARD_SCAN_DIRS:
+        for path in sorted((REPO_ROOT / dirname).rglob("*.py")):
+            if path.resolve() == guard_file:
+                continue
+            text = path.read_text(encoding="utf-8", errors="replace")
+            for token in _ARS_SOURCE_PATH_TOKENS:
+                if token in text:
+                    offenders.append(f"{path.relative_to(REPO_ROOT)}: {token!r}")
+
+    assert not offenders, (
+        "ARS source-path references are banned — consume the installed "
+        "agent-run-supervisor distribution instead (see the agent-run-"
+        "supervisor extra). Offenders:\n" + "\n".join(offenders)
+    )
+
+
 def test_locale_catalogs_ship_in_both_wheel_and_sdist():
     """Regression test for #27632 / #35374 / #23943.
 

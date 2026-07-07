@@ -27,13 +27,15 @@ refs (``task_id`` / ``session_id`` / ``artifact_ref``) and counts; the
 configured ``artifact_dir`` is handed to the spine's binding store only and is
 never returned, logged, or serialized.
 
-Optionally, ``SACHIMA_LIVE_PROGRESS_AGENT_RUN_SUPERVISOR_SRC_PATH`` (or the
-plain ``AGENT_RUN_SUPERVISOR_SRC_PATH``) names a source checkout to prepend to
-``sys.path`` so the reader's lazy ``agent_run_supervisor.hermes_caller.events``
-import can resolve on hosts where the library is not installed. There is no
-top-level (or any direct) ``agent_run_supervisor`` import here — the producer is
-reached only through the injected lazy reader, which fails closed to a clean
-``live_progress_unavailable`` display when the import is impossible.
+The producer library resolves ONLY from the installed exact-pinned
+``agent-run-supervisor`` distribution (the ``agent-run-supervisor`` /
+``dev`` extra in ``pyproject.toml``); this module mutates no import path and
+reads no source-checkout env — the historical source-path shim is retired so
+a checkout can never shadow the reviewed pin. There is no top-level (or any
+direct) ``agent_run_supervisor`` import here — the producer is reached only
+through the injected lazy reader, which fails closed to a clean
+``live_progress_unavailable`` display when the import is impossible (e.g. the
+extra is not installed on this host).
 
 Failure policy (never crash gateway startup): a malformed / unreadable bindings
 file, an unsafe ``task_id`` / ``artifact_ref``, an empty ``artifact_dir``, or
@@ -50,7 +52,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import sys
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -59,10 +60,6 @@ logger = logging.getLogger(__name__)
 # Env knobs (explicit internal config only; nothing activates by default)
 # --------------------------------------------------------------------------- #
 SACHIMA_LIVE_PROGRESS_BINDINGS_FILE_ENV = "SACHIMA_LIVE_PROGRESS_BINDINGS_FILE"
-SACHIMA_LIVE_PROGRESS_ARS_SRC_PATH_ENV = (
-    "SACHIMA_LIVE_PROGRESS_AGENT_RUN_SUPERVISOR_SRC_PATH"
-)
-AGENT_RUN_SUPERVISOR_SRC_PATH_ENV = "AGENT_RUN_SUPERVISOR_SRC_PATH"
 
 #: The only surface value that activates the HOST binding. Mirrors the spine's
 #: HERMES_INTERNAL_QUERY_SURFACE without importing the spine on the default path.
@@ -75,7 +72,6 @@ SACHIMA_LIVE_PROGRESS_HOST_BINDING_DISABLED = "sachima_live_progress_host_bindin
 SACHIMA_LIVE_PROGRESS_HOST_BINDING_ABSENT = "sachima_live_progress_host_binding_absent"
 SACHIMA_LIVE_PROGRESS_HOST_BINDING_INVALID = "sachima_live_progress_host_binding_invalid"
 SACHIMA_LIVE_PROGRESS_HOST_BINDING_BOUND = "sachima_live_progress_host_binding_bound"
-SACHIMA_LIVE_PROGRESS_ARS_SRC_PATH_IGNORED = "sachima_live_progress_ars_src_path_ignored"
 
 SACHIMA_LIVE_PROGRESS_HOST_BINDING_STABLE_CODES = frozenset(
     {
@@ -83,7 +79,6 @@ SACHIMA_LIVE_PROGRESS_HOST_BINDING_STABLE_CODES = frozenset(
         SACHIMA_LIVE_PROGRESS_HOST_BINDING_ABSENT,
         SACHIMA_LIVE_PROGRESS_HOST_BINDING_INVALID,
         SACHIMA_LIVE_PROGRESS_HOST_BINDING_BOUND,
-        SACHIMA_LIVE_PROGRESS_ARS_SRC_PATH_IGNORED,
     }
 )
 
@@ -97,29 +92,6 @@ def _summary(code: str, bindings: tuple[dict[str, str], ...] = ()) -> dict[str, 
     """A refs-only, JSON-friendly binding summary — never the private dir."""
 
     return {"code": code, "binding_count": len(bindings), "bindings": list(bindings)}
-
-
-def _prepend_agent_run_supervisor_src_path() -> None:
-    """Prepend the configured ARS source checkout to ``sys.path``, if valid.
-
-    Reads the sachima-prefixed env first, then the plain fallback. A missing /
-    blank value is the default no-op; a configured value that is not an existing
-    directory logs the stable ignored code (never the path) and changes nothing.
-    """
-
-    raw = os.environ.get(SACHIMA_LIVE_PROGRESS_ARS_SRC_PATH_ENV) or os.environ.get(
-        AGENT_RUN_SUPERVISOR_SRC_PATH_ENV
-    )
-    if type(raw) is not str:
-        return
-    path = raw.strip()
-    if not path:
-        return
-    if not os.path.isdir(path):
-        logger.warning(SACHIMA_LIVE_PROGRESS_ARS_SRC_PATH_IGNORED)
-        return
-    if path not in sys.path:
-        sys.path.insert(0, path)
 
 
 def _load_binding_entries(bindings_file: str) -> list[dict[str, Any]]:
@@ -230,8 +202,6 @@ def bind_live_progress_display_from_env() -> dict[str, Any]:
         tool_mod.unbind_live_progress_display_service()
         return _summary(SACHIMA_LIVE_PROGRESS_HOST_BINDING_ABSENT)
 
-    _prepend_agent_run_supervisor_src_path()
-
     try:
         entries = _load_binding_entries(raw_file.strip())
         service, bound = _build_display_service(entries)
@@ -248,13 +218,10 @@ def bind_live_progress_display_from_env() -> dict[str, Any]:
 
 __all__ = [
     "SACHIMA_LIVE_PROGRESS_BINDINGS_FILE_ENV",
-    "SACHIMA_LIVE_PROGRESS_ARS_SRC_PATH_ENV",
-    "AGENT_RUN_SUPERVISOR_SRC_PATH_ENV",
     "SACHIMA_LIVE_PROGRESS_HOST_BINDING_DISABLED",
     "SACHIMA_LIVE_PROGRESS_HOST_BINDING_ABSENT",
     "SACHIMA_LIVE_PROGRESS_HOST_BINDING_INVALID",
     "SACHIMA_LIVE_PROGRESS_HOST_BINDING_BOUND",
-    "SACHIMA_LIVE_PROGRESS_ARS_SRC_PATH_IGNORED",
     "SACHIMA_LIVE_PROGRESS_HOST_BINDING_STABLE_CODES",
     "bind_live_progress_display_from_env",
 ]

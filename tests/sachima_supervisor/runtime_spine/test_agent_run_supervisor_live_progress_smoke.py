@@ -17,16 +17,20 @@ Two families of test:
   a stable ``live_progress_unavailable`` / ``live_progress_corrupt`` report /
   projection with no raw import-error text, path, or ``summary`` free text in any
   serialized surface, and that forged report objects fail closed.
-* **Real caller-API compatibility tests (skipped when the library is absent)** —
-  they write synthetic ``progress.json`` + ``normalized-events.jsonl`` to a temp
-  dir and read them through the real caller API to lock Sachima's reader contract
-  (available projection + combined view, ``has_more`` / ``next_cursor`` /
+* **Real caller-API compatibility tests (skipped when the distribution is
+  absent)** — they write synthetic ``progress.json`` + ``normalized-events.jsonl``
+  to a temp dir and read them through the real caller API to lock Sachima's reader
+  contract (available projection + combined view, ``has_more`` / ``next_cursor`` /
   ``after_seq`` cursor alignment, nullable ``kind`` / ``status`` / ``text_length``
   normalization, legacy no-``seq`` 1-based line-cursor fallback, and corrupt
-  fail-closed) against the current agent-run-supervisor API. They import the real
-  API from an installed module OR from the sibling source path, and skip with a
-  clear reason when neither is importable (e.g. in CI). Hermes runs them locally
-  with ``PYTHONPATH`` pointed at the sibling ``src``.
+  fail-closed) against the current agent-run-supervisor API. The real API comes
+  ONLY from the installed exact-pinned ``agent-run-supervisor`` distribution
+  (``uv sync --extra dev`` / ``--extra agent-run-supervisor``) — there is no
+  source-path fallback; unreleased ARS changes are validated by installing a
+  locally built wheel / editable package into an isolated environment. On a lean
+  environment without the extra these tests skip with a clear reason, and a
+  guard test turns "distribution installed but API not importable" into a hard
+  failure instead of a silent skip.
 
 Synthetic-artifact schema note (the single format assumption): the real caller
 API is outside this worktree's read sandbox, so the on-disk shapes below are built
@@ -45,10 +49,9 @@ forbidden-surface canaries only, never behavior.
 from __future__ import annotations
 
 import importlib
+import importlib.metadata
 import json
-import os
 import re
-import sys
 from pathlib import Path
 
 import pytest
@@ -72,7 +75,7 @@ from sachima_supervisor.runtime_spine.agent_run_supervisor_port import (
 _SMOKE = "sachima_supervisor.runtime_spine.agent_run_supervisor_live_progress_smoke"
 _PROJECTION = "sachima_supervisor.runtime_spine.live_progress_projection"
 
-_SIBLING_SRC = "/home/ecs-user/workspace/hermes/repo/agent-run-supervisor/src"
+_ARS_DISTRIBUTION = "agent-run-supervisor"
 
 
 def _mod():
@@ -80,19 +83,21 @@ def _mod():
 
 
 # --------------------------------------------------------------------------- #
-# Real caller-API discovery — installed module OR sibling source path, else skip.
+# Real caller-API discovery — the installed distribution only, else skip.
 # --------------------------------------------------------------------------- #
 def _load_real_caller_api():
     try:
         return importlib.import_module("agent_run_supervisor.hermes_caller.events")
     except Exception:
-        pass
-    if os.path.isdir(_SIBLING_SRC) and _SIBLING_SRC not in sys.path:
-        sys.path.insert(0, _SIBLING_SRC)
-    try:
-        return importlib.import_module("agent_run_supervisor.hermes_caller.events")
-    except Exception:
         return None
+
+
+def _ars_distribution_installed() -> bool:
+    try:
+        importlib.metadata.version(_ARS_DISTRIBUTION)
+    except importlib.metadata.PackageNotFoundError:
+        return False
+    return True
 
 
 _REAL_CALLER_API = _load_real_caller_api()
@@ -100,10 +105,31 @@ _requires_real_api = pytest.mark.skipif(
     _REAL_CALLER_API is None,
     reason=(
         "agent_run_supervisor.hermes_caller.events not importable — install the "
-        "library or run with PYTHONPATH pointed at the sibling src; import-absent "
-        "and safety tests still run"
+        "pinned distribution via `uv sync --extra dev` (or --extra "
+        "agent-run-supervisor); import-absent and safety tests still run"
     ),
 )
+
+
+def test_real_caller_api_importable_when_distribution_installed():
+    """Distribution present ⇒ the caller API must import — never a silent skip.
+
+    With the ``agent-run-supervisor`` distribution installed (the CI dev
+    posture), a failure to import ``agent_run_supervisor.hermes_caller.events``
+    means the packaged module layout drifted; that must fail loudly here
+    instead of silently degrading the whole real-API family into skips.
+    """
+
+    if not _ars_distribution_installed():
+        pytest.skip(
+            "agent-run-supervisor distribution not installed — provision via "
+            "the dev / agent-run-supervisor extra"
+        )
+    assert _REAL_CALLER_API is not None, (
+        "agent-run-supervisor is installed but "
+        "agent_run_supervisor.hermes_caller.events failed to import — the "
+        "packaged caller API moved; fix the pin or the reader's lazy target"
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -312,7 +338,9 @@ def test_smoke_module_default_reader_is_the_real_caller_seam():
     # With no injected reader the smoke must use the real lazy caller reader — never
     # a fake — so a real-API run actually exercises agent_run_supervisor.
     proj = m.smoke_live_progress_projection("/tmp/does/not/matter", "artifact_local_0")
-    # On this host the library is absent by default → clean unavailable, no raise.
+    # Without the extra installed the lazy import fails closed; with the
+    # distribution installed the nonexistent dir carries no progress. Either
+    # way: a clean unavailable/corrupt projection, never a raise.
     assert proj.available is False
     assert proj.error_code in (LIVE_PROGRESS_UNAVAILABLE, LIVE_PROGRESS_CORRUPT)
 
