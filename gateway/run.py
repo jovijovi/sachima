@@ -2693,6 +2693,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Track background tasks to prevent garbage collection mid-execution
         self._background_tasks: set = set()
 
+        # Sachima LS4 live-progress display host binding (default-off).
+        # Activates only on the explicit SACHIMA_LIVE_PROGRESS_DISPLAY_SURFACE
+        # =hermes_internal gate plus a SACHIMA_LIVE_PROGRESS_BINDINGS_FILE; with
+        # neither present this is a no-op and the tool stays unbound/fail-closed.
+        # The binding itself never raises (malformed config logs one stable code
+        # and stays unbound); this guard keeps even an import failure from
+        # touching gateway startup.
+        try:
+            from gateway.sachima_live_progress_binding import (
+                bind_live_progress_display_from_env,
+            )
+            bind_live_progress_display_from_env()
+        except Exception:
+            logger.debug("sachima live-progress host binding skipped", exc_info=True)
+
 
     def _wire_teams_pipeline_runtime(self) -> None:
         """Bind the Teams meeting pipeline runtime to Graph webhook ingress.
