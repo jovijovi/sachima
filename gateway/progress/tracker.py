@@ -17,6 +17,7 @@ from gateway.progress.events import (
     TransactionSnapshot,
 )
 from gateway.progress.redaction import sanitize_for_progress, sanitize_value_for_progress
+from gateway.progress.todo_executor import normalize_todo_executor
 from gateway.progress.todo_lifecycle import (
     SuspendedTodoHint,
     TodoLifecycleSnapshot,
@@ -514,6 +515,7 @@ def _sanitize_todo_items(items: Any, *, source: str) -> tuple[TodoItemSnapshot, 
                 "parent_raw": _sanitize_todo_field(data.get("parent_id"), key="todo_parent_id", max_len=MAX_TODO_ID_CHARS),
                 "source": _sanitize_todo_field(data.get("source"), key="todo_source", max_len=MAX_TODO_SOURCE_CHARS)
                 or default_source,
+                "executor": normalize_todo_executor(data.get("executor")),
             }
         )
         known_ids.add(item_id)
@@ -541,6 +543,7 @@ def _sanitize_todo_items(items: Any, *, source: str) -> tuple[TodoItemSnapshot, 
                 parent_id=effective_parent_id,
                 depth=MAX_TODO_DEPTH if effective_parent_id else 0,
                 source=item["source"],
+                executor=item["executor"],
             )
         )
     return tuple(results)
@@ -558,7 +561,7 @@ def _coerce_todo_mapping(entry: Any) -> Mapping[str, Any] | dict[str, Any] | Non
         return None
     # Generic object: pull only the known todo attributes, never its whole repr.
     data: dict[str, Any] = {}
-    for field_name in ("id", "content", "status", "parent_id", "source"):
+    for field_name in ("id", "content", "status", "parent_id", "source", "executor"):
         if hasattr(entry, field_name):
             data[field_name] = getattr(entry, field_name)
     return data or None

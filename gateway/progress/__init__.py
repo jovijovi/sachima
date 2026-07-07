@@ -16,10 +16,12 @@ from gateway.progress.store import (
     progress_operation_to_record,
     progress_snapshot_to_record,
 )
+from gateway.progress.todo_executor import MAX_TODO_EXECUTOR_CHARS, normalize_todo_executor
 from gateway.progress.tracker import ProgressTracker
 
 __all__ = [
     "JsonlProgressEventStore",
+    "MAX_TODO_EXECUTOR_CHARS",
     "ProgressEventStore",
     "ProgressOperation",
     "ProgressTracker",
@@ -28,6 +30,7 @@ __all__ = [
     "default_progress_events_path",
     "get_progress_transaction_events",
     "list_progress_transactions",
+    "normalize_todo_executor",
     "progress_operation_to_record",
     "progress_snapshot_to_record",
     "render_text_panel",

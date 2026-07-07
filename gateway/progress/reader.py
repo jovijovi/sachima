@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from gateway.progress.redaction import sanitize_value_for_progress
+from gateway.progress.todo_executor import normalize_todo_executor
 from gateway.progress.todo_lifecycle import (
     lifecycle_to_dict,
     normalize_suspended_todo_hint,
@@ -277,7 +278,7 @@ def _safe_todo_items(raw: Any) -> list[dict[str, Any]]:
     Old records without the field yield ``[]``. Each surviving item is
     re-sanitized and re-bounded: text is redacted/capped, status defaults to
     ``pending`` when unknown, depth is clamped to the two-level range, and
-    ``parent_id`` is kept only when present and non-empty.
+    ``parent_id``/``executor`` are kept only when present and valid.
     """
 
     if not isinstance(raw, list):
@@ -303,6 +304,9 @@ def _safe_todo_items(raw: Any) -> list[dict[str, Any]]:
         parent_id = _safe_optional_text(entry.get("parent_id"), key="todo_parent_id", max_len=MAX_TODO_ID_CHARS)
         if parent_id:
             item["parent_id"] = parent_id
+        executor = normalize_todo_executor(entry.get("executor"))
+        if executor:
+            item["executor"] = executor
         items.append(item)
     return _normalize_todo_parent_links(items)
 

@@ -16,6 +16,7 @@ from gateway.progress.events import (
     TransactionSnapshot,
 )
 from gateway.progress.redaction import sanitize_value_for_progress
+from gateway.progress.todo_executor import normalize_todo_executor
 from gateway.progress.todo_lifecycle import (
     lifecycle_to_dict,
     normalize_suspended_todo_hint,
@@ -267,8 +268,8 @@ def _safe_todo_items(items: Any) -> list[dict[str, Any]]:
 
     Only the first ``MAX_TODO_ITEMS`` survive; each item's text is redacted and
     bounded again, depth is clamped to the two-level display range, and
-    ``parent_id`` is emitted only when present so legacy readers see the same
-    shape they always have.
+    ``parent_id``/``executor`` are emitted only when present so legacy readers
+    see the same shape they always have.
     """
 
     if not items:
@@ -286,6 +287,9 @@ def _safe_todo_items(items: Any) -> list[dict[str, Any]]:
         parent_id = _safe_optional_text(getattr(item, "parent_id", None), key="todo_parent_id", max_len=MAX_TODO_ID_CHARS)
         if parent_id:
             record["parent_id"] = parent_id
+        executor = normalize_todo_executor(getattr(item, "executor", None))
+        if executor:
+            record["executor"] = executor
         safe.append(record)
     return _normalize_todo_parent_links(safe)
 

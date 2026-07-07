@@ -47,6 +47,12 @@ class TodoItemSnapshot:
     its direct children (``depth == 1``); deeper nesting is clamped by the
     tracker. ``parent_id`` is present only for children and always points at a
     sibling top-level item.
+
+    ``executor`` is an optional validated lowercase agent label (e.g.
+    ``codex``); it comes only from the structured field, never from content
+    text. It is display-only metadata — it must never feed lifecycle
+    derivation, resume eligibility, or ``owner_scope_ref`` matching. It is
+    distinct from ``source``, which records which tool produced the item.
     """
 
     id: str
@@ -55,6 +61,7 @@ class TodoItemSnapshot:
     parent_id: str | None = None
     depth: int = 0
     source: str = "todo_tool"
+    executor: str | None = None
 
 
 @dataclass
