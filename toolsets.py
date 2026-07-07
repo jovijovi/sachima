@@ -331,6 +331,19 @@ TOOLSETS = {
         "includes": [],
     },
 
+    "sachima_live_progress": {
+        "description": (
+            "Sachima ARS live-progress display (default-off, internal). "
+            "Renders a refs/counts/status-only view of one supervised "
+            "session; hidden unless SACHIMA_LIVE_PROGRESS_DISPLAY_SURFACE "
+            "is set to an approved local/offline surface and the host has "
+            "bound a display service. Not part of any platform default "
+            "toolset — enable explicitly via config."
+        ),
+        "tools": ["sachima_live_progress_display"],
+        "includes": [],
+    },
+
     "discord": {
         "description": "Discord read and participate tools (fetch messages, search members, create threads)",
         "tools": ["discord"],
