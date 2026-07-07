@@ -227,6 +227,17 @@ from .live_progress_query import (
     query_task_live_progress,
     validate_live_progress_query_activation_gate,
 )
+from .live_progress_display import (
+    LIVE_PROGRESS_DISPLAY_STABLE_CODES,
+    LIVE_PROGRESS_DISPLAY_TYPE,
+    RUNTIME_INVALID_LIVE_PROGRESS_DISPLAY,
+    LiveProgressDisplay,
+    LiveProgressDisplayService,
+    display_task_live_progress,
+    render_live_progress_display,
+    serialize_live_progress_display,
+    validate_live_progress_display,
+)
 from .agent_run_supervisor_production_e2e import (
     E2E_BACKEND_FAILURE,
     E2E_INVALID_FIXTURE,
@@ -436,6 +447,16 @@ __all__ = [
     "local_offline_query_gate",
     "hermes_internal_query_gate",
     "validate_live_progress_query_activation_gate",
+    # PR-LS4-B default-off live-progress display renderer
+    "RUNTIME_INVALID_LIVE_PROGRESS_DISPLAY",
+    "LIVE_PROGRESS_DISPLAY_STABLE_CODES",
+    "LIVE_PROGRESS_DISPLAY_TYPE",
+    "LiveProgressDisplay",
+    "LiveProgressDisplayService",
+    "render_live_progress_display",
+    "display_task_live_progress",
+    "validate_live_progress_display",
+    "serialize_live_progress_display",
     # PR5 single-user production-shaped E2E
     "E2E_INVALID_FIXTURE",
     "E2E_INVALID_REPORT",
