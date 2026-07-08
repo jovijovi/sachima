@@ -104,6 +104,14 @@ _ERROR_PRECONDITION = "activity_precondition_unmet"
 _ERROR_UNSAFE = "activity_unsafe_material"
 _ERROR_SUPERVISOR_FAILED = "activity_supervisor_failed"
 _ERROR_CANCEL_AMBIGUOUS = "activity_cancel_ambiguous"
+# ARS S2 no-op consumption: a turn that exited 0 without producing anything
+# (upstream status "no_op", or "completed" with observed_effect=False) fails
+# closed with its own stable code so operators see *why* the turn was refused.
+_ERROR_TURN_NO_OP = "activity_turn_no_op"
+_ERROR_GOAL_UNSUPPORTED = "activity_goal_unsupported"
+_ERROR_GOAL_REJECTED = "activity_goal_rejected"
+
+_NO_OP_STATUS_LABEL = "no_op"
 
 # Stable supervisor-status labels surfaced into the sanitized outcome. These are
 # Sachima-owned codes, never raw runtime/model text.
@@ -237,6 +245,11 @@ class _RuntimeTurnResult:
     status_label: str
     turn_id: str | None
     artifact_count: int
+    #: Mirrors the additive agent-run-supervisor `observed_effect` result key:
+    #: True/False when the (> 0.1.3) library reports whether the turn produced
+    #: agent output or tool activity; None when the pinned release (0.1.3)
+    #: does not emit the key yet.
+    observed_effect: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -469,11 +482,16 @@ class _AgentRunSupervisorBackend:
             artifact_count = sum(1 for p in Path(outcome.turn_dir).iterdir() if p.is_file())
         except OSError:
             artifact_count = 0
+        raw_effect = None
+        result_payload = getattr(outcome, "result", None)
+        if isinstance(result_payload, dict):
+            raw_effect = result_payload.get("observed_effect")
         return _RuntimeTurnResult(
             completed=completed,
             status_label=str(status_value),
             turn_id=outcome.turn_id,
             artifact_count=artifact_count,
+            observed_effect=raw_effect if isinstance(raw_effect, bool) else None,
         )
 
     def close(self, resolved: ResolvedRealSessionConfig) -> _RuntimeCloseResult:
@@ -540,10 +558,33 @@ def _safe_count(value: Any) -> int:
     return value if isinstance(value, int) and value >= 0 else 0
 
 
-def _failed_outcome() -> SessionWorkOutcome:
-    return SessionWorkOutcome(
-        ok=False, supervisor_status=None, error_code=_ERROR_SUPERVISOR_FAILED
-    )
+def _failed_outcome(error_code: str = _ERROR_SUPERVISOR_FAILED) -> SessionWorkOutcome:
+    return SessionWorkOutcome(ok=False, supervisor_status=None, error_code=error_code)
+
+
+def compose_goal_turn_prompt(goal_text: str) -> str:
+    """Compose a validated ``/goal <text>`` turn prompt for a persistent session.
+
+    Delegates to ``agent_run_supervisor.goal.compose_goal_prompt`` (shipped in
+    agent-run-supervisor releases after 0.1.3), which fails closed on empty
+    text, nested slash commands, and control characters. When the pinned
+    library predates goal-turn composition, this fails closed with
+    ``activity_goal_unsupported`` rather than sending unvalidated text; a
+    rejected goal maps to ``activity_goal_rejected``. The (lazy) import keeps
+    module import free of any agent_run_supervisor dependency.
+    """
+
+    try:
+        from agent_run_supervisor.goal import GoalPromptError, compose_goal_prompt
+    except ImportError:
+        raise RealSessionExecutionError(
+            _ERROR_GOAL_UNSUPPORTED,
+            "goal-turn composition requires agent-run-supervisor > 0.1.3",
+        ) from None
+    try:
+        return compose_goal_prompt(goal_text)
+    except GoalPromptError as exc:
+        raise RealSessionExecutionError(_ERROR_GOAL_REJECTED, str(exc)) from None
 
 
 # --------------------------------------------------------------------------- #
@@ -609,7 +650,14 @@ def run_real_persistent_session_turn(
         return _failed_outcome()
 
     if not getattr(result, "completed", False):
+        if str(getattr(result, "status_label", "") or "") == _NO_OP_STATUS_LABEL:
+            # Upstream classified the turn as a silent exit-0 no-op.
+            return _failed_outcome(_ERROR_TURN_NO_OP)
         return _failed_outcome()
+    if getattr(result, "observed_effect", None) is False:
+        # "completed" while the supervisor evidence says nothing was produced:
+        # treat as no-op; None (0.1.3 payloads without the key) stays allowed.
+        return _failed_outcome(_ERROR_TURN_NO_OP)
     artifact_count = _safe_count(getattr(result, "artifact_count", 0))
     return SessionWorkOutcome(
         ok=True,
