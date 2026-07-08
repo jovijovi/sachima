@@ -20,6 +20,7 @@ import json
 import subprocess
 import sys
 import threading
+import types
 from dataclasses import dataclass, field
 from inspect import signature
 from pathlib import Path
@@ -62,6 +63,7 @@ from sachima_supervisor.activity_session_real_execution import (
     bind_run_turn,
     best_effort_close_real_session,
     close_real_persistent_session,
+    compose_goal_turn_prompt,
     execute_real_cancellation,
     open_real_persistent_session,
     run_real_persistent_session_turn,
@@ -103,6 +105,12 @@ class FakeBackend:
 
     acpx_session_id: str = "fakesess0001"
     turn_completed: bool = True
+    #: Explicit supervisor status label override (e.g. "no_op"); None derives
+    #: the label from ``turn_completed`` like the pre-S2 fake did.
+    turn_status_label: str | None = None
+    #: Mirrors the additive agent-run-supervisor `observed_effect` result key:
+    #: True/False when the (>0.1.3) library reports it, None for 0.1.3 payloads.
+    turn_observed_effect: bool | None = None
     artifact_count: int = 3
     create_calls: int = 0
     send_calls: int = 0
@@ -131,9 +139,11 @@ class FakeBackend:
             raise RuntimeError("fake send boom")
         return _RuntimeTurnResult(
             completed=self.turn_completed,
-            status_label="completed" if self.turn_completed else "runner_error",
+            status_label=self.turn_status_label
+            or ("completed" if self.turn_completed else "runner_error"),
             turn_id="faketurn0001",
             artifact_count=self.artifact_count,
+            observed_effect=self.turn_observed_effect,
         )
 
     def close(self, resolved: ResolvedRealSessionConfig) -> Any:
@@ -872,6 +882,121 @@ def test_failed_turn_maps_to_failed_outcome(tmp_path: Path) -> None:
     )
     assert send_res.ok is False
     assert send_res.status in {"failed_retryable", "failed_terminal"}
+
+
+# --------------------------------------------------------------------------- #
+# ARS S2 no-op fail-closed consumption (upstream `no_op` + empty completed)
+# --------------------------------------------------------------------------- #
+def test_no_op_turn_status_fails_closed_with_distinct_error(tmp_path: Path) -> None:
+    # agent-run-supervisor (> 0.1.3) classifies silent exit-0 turns as
+    # "no_op"; the Sachima boundary must surface that as its own stable
+    # failure code — never as a completed turn.
+    config = _config(tmp_path)
+    backend = FakeBackend(turn_completed=False, turn_status_label="no_op")
+
+    outcome = run_real_persistent_session_turn(
+        _send_request("sbind_x"), config, "goal turn", backend=backend
+    )
+
+    assert outcome.ok is False
+    assert outcome.error_code == "activity_turn_no_op"
+
+
+def test_completed_turn_without_observed_effect_fails_closed_as_no_op(
+    tmp_path: Path,
+) -> None:
+    # Defense in depth: a backend claiming "completed" while the supervisor
+    # evidence says nothing was produced (observed_effect=False) is a no-op
+    # and must fail closed at the Sachima boundary too.
+    config = _config(tmp_path)
+    backend = FakeBackend(turn_completed=True, turn_observed_effect=False)
+
+    outcome = run_real_persistent_session_turn(
+        _send_request("sbind_x"), config, "goal turn", backend=backend
+    )
+
+    assert outcome.ok is False
+    assert outcome.error_code == "activity_turn_no_op"
+
+
+def test_completed_turn_with_observed_effect_succeeds(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    backend = FakeBackend(turn_completed=True, turn_observed_effect=True)
+
+    outcome = run_real_persistent_session_turn(
+        _send_request("sbind_x"), config, "read-only turn", backend=backend
+    )
+
+    assert outcome.ok is True
+    assert outcome.supervisor_status == "turn_completed"
+
+
+def test_completed_turn_with_unknown_observed_effect_stays_compatible(
+    tmp_path: Path,
+) -> None:
+    # agent-run-supervisor==0.1.3 result payloads carry no observed_effect
+    # key (None = unknown); the boundary must not fail-closed on the pinned
+    # release — real no-op protection arrives with the pin bump.
+    config = _config(tmp_path)
+    backend = FakeBackend(turn_completed=True, turn_observed_effect=None)
+
+    outcome = run_real_persistent_session_turn(
+        _send_request("sbind_x"), config, "read-only turn", backend=backend
+    )
+
+    assert outcome.ok is True
+
+
+# --------------------------------------------------------------------------- #
+# Goal-turn composition (delegates to agent_run_supervisor.goal when shipped)
+# --------------------------------------------------------------------------- #
+def test_compose_goal_turn_prompt_fails_closed_without_goal_module(monkeypatch) -> None:
+    # Deterministically simulate the pinned 0.1.3 library (no goal module):
+    # composing a goal turn must fail closed with a stable code, never send
+    # unvalidated text.
+    monkeypatch.setitem(sys.modules, "agent_run_supervisor.goal", None)
+
+    with pytest.raises(RealSessionExecutionError) as excinfo:
+        compose_goal_turn_prompt("ship the report")
+
+    assert excinfo.value.error_code == "activity_goal_unsupported"
+
+
+def test_compose_goal_turn_prompt_delegates_to_goal_module(monkeypatch) -> None:
+    stub = types.ModuleType("agent_run_supervisor.goal")
+
+    class _StubGoalError(ValueError):
+        pass
+
+    def _compose(text: str) -> str:
+        if text.startswith("/"):
+            raise _StubGoalError("nested slash command")
+        return "/goal " + text.strip()
+
+    stub.GoalPromptError = _StubGoalError
+    stub.compose_goal_prompt = _compose
+    monkeypatch.setitem(sys.modules, "agent_run_supervisor.goal", stub)
+
+    assert compose_goal_turn_prompt("ship the report") == "/goal ship the report"
+
+
+def test_compose_goal_turn_prompt_maps_rejection_to_stable_code(monkeypatch) -> None:
+    stub = types.ModuleType("agent_run_supervisor.goal")
+
+    class _StubGoalError(ValueError):
+        pass
+
+    def _compose(text: str) -> str:
+        raise _StubGoalError("rejected")
+
+    stub.GoalPromptError = _StubGoalError
+    stub.compose_goal_prompt = _compose
+    monkeypatch.setitem(sys.modules, "agent_run_supervisor.goal", stub)
+
+    with pytest.raises(RealSessionExecutionError) as excinfo:
+        compose_goal_turn_prompt("/clear")
+
+    assert excinfo.value.error_code == "activity_goal_rejected"
 
 
 def test_replay_does_not_create_extra_runtime_calls(tmp_path: Path) -> None:
