@@ -31,7 +31,7 @@ path must not be committed into the portable role file.
 |---|---|---:|---|---|
 | `acpx` | Node CLI package | Yes | `0.12.0` exactly | Must be a local executable path in `runner.acpx_binary`; no `npx`/network fetch fallback. |
 | Node.js | Runtime for `acpx` | Yes | `agent-run-supervisor doctor` reports `>=22.12`; Sachima root package requires `>=20.0.0` | Current smoke host probe observed `v24.14.0`. |
-| `agent-run-supervisor` | Python package (PyPI) | Yes | exact pin `0.1.3` | Declared as the exact-pinned `agent-run-supervisor` optional extra in Sachima's `pyproject.toml` (mirrored into `dev`); provision via `uv sync --extra agent-run-supervisor` (or `--extra dev`) and imported lazily behind default-off gates. No source-checkout / `PYTHONPATH` path is valid. |
+| `agent-run-supervisor` | Python package (PyPI) | Yes | exact pin `0.1.4` | Declared as the exact-pinned `agent-run-supervisor` optional extra in Sachima's `pyproject.toml` (mirrored into `dev`); provision via `uv sync --extra agent-run-supervisor` (or `--extra dev`) and imported lazily behind default-off gates. No source-checkout / `PYTHONPATH` path is valid. |
 | Python | Runtime for Sachima + supervisor | Yes | Sachima `>=3.11,<3.14`; supervisor `>=3.11` | Current smoke host probe observed Python `3.11.15`. |
 | Claude Code CLI | Adapter target via `acpx claude` | Yes | local CLI availability required | Current smoke host probe observed `claude` version `2.1.177`. |
 
@@ -90,7 +90,7 @@ is declared in Sachima's `pyproject.toml` as the exact-pinned optional extra
 ```text
 package: agent-run-supervisor
 import_name: agent_run_supervisor
-exact pin: 0.1.3
+exact pin: 0.1.4
 provisioning: uv sync --extra agent-run-supervisor   (or --extra dev)
 resolution: uv.lock (registry source + sdist/wheel hashes)
 ```
@@ -105,7 +105,7 @@ Sachima's pin checker is:
 - `sachima_supervisor/supervisor_library.py`
 - expected import: `agent_run_supervisor`
 - expected distribution: `agent-run-supervisor`
-- expected exact version: `0.1.3` (mirrors the pyproject extra; drift fails
+- expected exact version: `0.1.4` (mirrors the pyproject extra; drift fails
   `tests/test_packaging_metadata.py`)
 
 This checker is deliberately not a hard import at module load time. Sachima's
@@ -233,7 +233,7 @@ claude --version
 uv run python -m agent_run_supervisor doctor
 uv run --frozen python - <<'PY'
 import importlib.metadata as md
-print(md.version('agent-run-supervisor'))  # must print 0.1.3
+print(md.version('agent-run-supervisor'))  # must print 0.1.4
 PY
 ```
 

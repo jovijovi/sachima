@@ -109,7 +109,8 @@ class FakeBackend:
     #: the label from ``turn_completed`` like the pre-S2 fake did.
     turn_status_label: str | None = None
     #: Mirrors the additive agent-run-supervisor `observed_effect` result key:
-    #: True/False when the (>0.1.3) library reports it, None for 0.1.3 payloads.
+    #: True/False when the library (>= 0.1.4) reports it, None for pre-0.1.4
+    #: payloads.
     turn_observed_effect: bool | None = None
     artifact_count: int = 3
     create_calls: int = 0
@@ -888,7 +889,7 @@ def test_failed_turn_maps_to_failed_outcome(tmp_path: Path) -> None:
 # ARS S2 no-op fail-closed consumption (upstream `no_op` + empty completed)
 # --------------------------------------------------------------------------- #
 def test_no_op_turn_status_fails_closed_with_distinct_error(tmp_path: Path) -> None:
-    # agent-run-supervisor (> 0.1.3) classifies silent exit-0 turns as
+    # agent-run-supervisor (>= 0.1.4) classifies silent exit-0 turns as
     # "no_op"; the Sachima boundary must surface that as its own stable
     # failure code — never as a completed turn.
     config = _config(tmp_path)
@@ -934,9 +935,9 @@ def test_completed_turn_with_observed_effect_succeeds(tmp_path: Path) -> None:
 def test_completed_turn_with_unknown_observed_effect_stays_compatible(
     tmp_path: Path,
 ) -> None:
-    # agent-run-supervisor==0.1.3 result payloads carry no observed_effect
-    # key (None = unknown); the boundary must not fail-closed on the pinned
-    # release — real no-op protection arrives with the pin bump.
+    # Pre-0.1.4 agent-run-supervisor result payloads carry no observed_effect
+    # key (None = unknown); the boundary stays compatible with such payloads
+    # instead of failing closed on a missing key.
     config = _config(tmp_path)
     backend = FakeBackend(turn_completed=True, turn_observed_effect=None)
 
@@ -951,7 +952,7 @@ def test_completed_turn_with_unknown_observed_effect_stays_compatible(
 # Goal-turn composition (delegates to agent_run_supervisor.goal when shipped)
 # --------------------------------------------------------------------------- #
 def test_compose_goal_turn_prompt_fails_closed_without_goal_module(monkeypatch) -> None:
-    # Deterministically simulate the pinned 0.1.3 library (no goal module):
+    # Deterministically simulate a pre-0.1.4 library (no goal module):
     # composing a goal turn must fail closed with a stable code, never send
     # unvalidated text.
     monkeypatch.setitem(sys.modules, "agent_run_supervisor.goal", None)

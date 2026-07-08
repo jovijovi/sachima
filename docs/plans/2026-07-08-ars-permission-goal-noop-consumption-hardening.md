@@ -57,6 +57,17 @@ uv lock
 uv run pytest tests/sachima_supervisor/test_activity_session_real_execution.py -q
 ```
 
+**Executed 2026-07-08** (branch `feat/ars-0-1-4-package-upgrade-20260708`): upstream
+released `agent-run-supervisor==0.1.4` (S2 capabilities; PyPI upload
+2026-07-08T07:13:38Z). Both pyproject extras and
+`EXPECTED_AGENT_RUN_SUPERVISOR_VERSION` now pin `0.1.4`, the
+`[tool.uv].exclude-newer-package` override for `agent-run-supervisor` moved to
+`2026-07-08T07:20:00Z` (global `exclude-newer` window untouched), and `uv.lock`
+was regenerated via `uv lock --upgrade-package agent-run-supervisor`. The
+`observed_effect` empty-completed guard is live against real payloads from this
+pin onward; the `activity_goal_unsupported` / missing-goal-module path remains
+as fail-closed protection for mis-provisioned environments.
+
 ## Verification commands (blocked in the implementing session; run before merge)
 
 ```bash

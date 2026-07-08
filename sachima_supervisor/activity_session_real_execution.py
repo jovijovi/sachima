@@ -246,9 +246,9 @@ class _RuntimeTurnResult:
     turn_id: str | None
     artifact_count: int
     #: Mirrors the additive agent-run-supervisor `observed_effect` result key:
-    #: True/False when the (> 0.1.3) library reports whether the turn produced
-    #: agent output or tool activity; None when the pinned release (0.1.3)
-    #: does not emit the key yet.
+    #: True/False when the library (>= 0.1.4, the reviewed pin) reports whether
+    #: the turn produced agent output or tool activity; None only for payloads
+    #: from releases predating the key (<= 0.1.3).
     observed_effect: bool | None = None
 
 
@@ -565,11 +565,12 @@ def _failed_outcome(error_code: str = _ERROR_SUPERVISOR_FAILED) -> SessionWorkOu
 def compose_goal_turn_prompt(goal_text: str) -> str:
     """Compose a validated ``/goal <text>`` turn prompt for a persistent session.
 
-    Delegates to ``agent_run_supervisor.goal.compose_goal_prompt`` (shipped in
-    agent-run-supervisor releases after 0.1.3), which fails closed on empty
-    text, nested slash commands, and control characters. When the pinned
-    library predates goal-turn composition, this fails closed with
-    ``activity_goal_unsupported`` rather than sending unvalidated text; a
+    Delegates to ``agent_run_supervisor.goal.compose_goal_prompt`` (shipped
+    since agent-run-supervisor 0.1.4, the reviewed pin), which fails closed on
+    empty text, nested slash commands, and control characters. When the
+    installed library predates goal-turn composition (<= 0.1.3), this fails
+    closed with ``activity_goal_unsupported`` rather than sending unvalidated
+    text; a
     rejected goal maps to ``activity_goal_rejected``. The (lazy) import keeps
     module import free of any agent_run_supervisor dependency.
     """
@@ -579,7 +580,7 @@ def compose_goal_turn_prompt(goal_text: str) -> str:
     except ImportError:
         raise RealSessionExecutionError(
             _ERROR_GOAL_UNSUPPORTED,
-            "goal-turn composition requires agent-run-supervisor > 0.1.3",
+            "goal-turn composition requires agent-run-supervisor >= 0.1.4",
         ) from None
     try:
         return compose_goal_prompt(goal_text)
@@ -656,7 +657,7 @@ def run_real_persistent_session_turn(
         return _failed_outcome()
     if getattr(result, "observed_effect", None) is False:
         # "completed" while the supervisor evidence says nothing was produced:
-        # treat as no-op; None (0.1.3 payloads without the key) stays allowed.
+        # treat as no-op; None (pre-0.1.4 payloads without the key) stays allowed.
         return _failed_outcome(_ERROR_TURN_NO_OP)
     artifact_count = _safe_count(getattr(result, "artifact_count", 0))
     return SessionWorkOutcome(
