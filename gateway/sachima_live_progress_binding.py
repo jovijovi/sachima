@@ -61,6 +61,28 @@ logger = logging.getLogger(__name__)
 # --------------------------------------------------------------------------- #
 SACHIMA_LIVE_PROGRESS_BINDINGS_FILE_ENV = "SACHIMA_LIVE_PROGRESS_BINDINGS_FILE"
 
+#: Backend selection for the host binding. Unset / blank / ``fake`` keeps
+#: today's static-bindings-file composition over the deterministic fake
+#: backend (the default, unchanged). ``library`` — combined with the surface
+#: gate AND an explicit :data:`SACHIMA_ARS_LIBRARY_CONFIG_FILE_ENV` — composes
+#: the formal ARS-INT execution bundle (real library backend + turn dispatcher
+#: + dispatcher-fed source bindings) instead of a hand-written bindings file.
+#: Any other value fails closed. Nothing here launches an AGENT/acpx and no
+#: child process is spawned; the library is reached lazily inside the spine
+#: facade only when turns are dispatched through the (separately gated)
+#: dispatcher.
+SACHIMA_LIVE_PROGRESS_BACKEND_ENV = "SACHIMA_LIVE_PROGRESS_BACKEND"
+
+#: Private JSON file carrying the ``AgentRunSupervisorLibraryConfig`` fields
+#: for ``library`` mode. Absent/blank → the binding reports ``..._absent`` and
+#: stays fail-closed; a malformed/disabled/forged config collapses to the one
+#: stable ``..._invalid`` code without echoing the file path or content.
+SACHIMA_ARS_LIBRARY_CONFIG_FILE_ENV = "SACHIMA_ARS_LIBRARY_CONFIG_FILE"
+
+_BACKEND_FAKE = "fake"
+_BACKEND_LIBRARY = "library"
+_VALID_BACKENDS = (_BACKEND_FAKE, _BACKEND_LIBRARY)
+
 #: The only surface value that activates the HOST binding. Mirrors the spine's
 #: HERMES_INTERNAL_QUERY_SURFACE without importing the spine on the default path.
 _HERMES_INTERNAL_SURFACE = "hermes_internal"
@@ -88,10 +110,77 @@ _HOST_BINDING_ROLES = ("read_only",)
 _HOST_BINDING_REFS = ("ws_live_progress_host", "policy_read_only")
 
 
-def _summary(code: str, bindings: tuple[dict[str, str], ...] = ()) -> dict[str, Any]:
+def _summary(
+    code: str,
+    bindings: tuple[dict[str, str], ...] = (),
+    *,
+    backend: str = _BACKEND_FAKE,
+) -> dict[str, Any]:
     """A refs-only, JSON-friendly binding summary — never the private dir."""
 
-    return {"code": code, "binding_count": len(bindings), "bindings": list(bindings)}
+    return {
+        "code": code,
+        "backend": backend,
+        "binding_count": len(bindings),
+        "bindings": list(bindings),
+    }
+
+
+# --------------------------------------------------------------------------- #
+# Library-mode execution bundle (host-held; cleared on every unbind path)
+# --------------------------------------------------------------------------- #
+_execution_binding: Any | None = None
+
+
+def bound_execution_binding() -> Any | None:
+    """The currently bound ARS-INT execution bundle, or ``None`` (fake mode)."""
+
+    return _execution_binding
+
+
+def _set_execution_binding(bundle: Any | None) -> None:
+    global _execution_binding
+    _execution_binding = bundle
+
+
+def _build_library_execution_binding(config_file: str) -> Any:
+    """Compose the formal execution bundle from the private library config file.
+
+    Raises on any deviation (unreadable/malformed file, unknown keys, a
+    forged/disabled config); the caller collapses every raise to the single
+    stable ``..._invalid`` code — the file path/content is never echoed. The
+    LS4-A gate is the approved ``hermes_internal`` internal surface; nothing
+    live/default-on and no payload resolver is wired here, so the bundle's
+    dispatcher stays fail-closed until an internal caller injects one.
+    """
+
+    from sachima_supervisor.runtime_spine import hermes_internal_query_gate
+    from sachima_supervisor.runtime_spine.agent_run_supervisor_execution_binding import (
+        bind_agent_run_supervisor_execution,
+    )
+    from sachima_supervisor.runtime_spine.agent_run_supervisor_library_backend import (
+        AgentRunSupervisorLibraryConfig,
+    )
+
+    with open(config_file, encoding="utf-8") as fh:
+        payload = json.load(fh)
+    if type(payload) is not dict:
+        raise ValueError(SACHIMA_LIVE_PROGRESS_HOST_BINDING_INVALID)
+    allowed_keys = {
+        "type",
+        "enabled",
+        "approval_ref",
+        "sessions_dir",
+        "workspace_by_ref",
+        "role_by_ref",
+        "session_prefix",
+        "acpx_binary",
+        "stale_after_seconds",
+    }
+    if not set(payload).issubset(allowed_keys):
+        raise ValueError(SACHIMA_LIVE_PROGRESS_HOST_BINDING_INVALID)
+    config = AgentRunSupervisorLibraryConfig(**payload)
+    return bind_agent_run_supervisor_execution(config, gate=hermes_internal_query_gate())
 
 
 def _load_binding_entries(bindings_file: str) -> list[dict[str, Any]]:
@@ -185,17 +274,40 @@ def _build_display_service(entries: list[dict[str, Any]]) -> tuple[Any, tuple[di
 def bind_live_progress_display_from_env() -> dict[str, Any]:
     """Build and bind the host ``LiveProgressDisplayService`` from explicit env.
 
-    Fail-closed order: surface gate → bindings file present → parse / compose /
-    bind. Every failure path returns a stable-code summary and leaves (or puts)
-    the tool in its unbound fail-closed posture; nothing here ever raises, so
-    the gateway startup path cannot be broken by this optional internal feature.
+    Fail-closed order: surface gate → backend selection (``fake`` default /
+    explicit ``library``) → mode-specific config present → parse / compose /
+    bind. Every failure path returns a stable-code summary, leaves (or puts)
+    the tool in its unbound fail-closed posture, and clears any previously
+    bound library execution bundle; nothing here ever raises, so the gateway
+    startup path cannot be broken by this optional internal feature.
     """
 
     import tools.sachima_live_progress_tool as tool_mod
 
     if tool_mod.enabled_display_surface() != _HERMES_INTERNAL_SURFACE:
+        _set_execution_binding(None)
         tool_mod.unbind_live_progress_display_service()
         return _summary(SACHIMA_LIVE_PROGRESS_HOST_BINDING_DISABLED)
+
+    raw_backend = os.environ.get(SACHIMA_LIVE_PROGRESS_BACKEND_ENV, "")
+    backend = raw_backend.strip() if type(raw_backend) is str else ""
+    backend = backend or _BACKEND_FAKE
+    if backend not in _VALID_BACKENDS:
+        # One stable code only — the denied backend value is never echoed.
+        _set_execution_binding(None)
+        tool_mod.unbind_live_progress_display_service()
+        logger.warning(SACHIMA_LIVE_PROGRESS_HOST_BINDING_INVALID)
+        return _summary(SACHIMA_LIVE_PROGRESS_HOST_BINDING_INVALID, backend="unknown")
+
+    if backend == _BACKEND_LIBRARY:
+        return _bind_library_backend(tool_mod)
+    return _bind_fake_backend(tool_mod)
+
+
+def _bind_fake_backend(tool_mod: Any) -> dict[str, Any]:
+    """The default composition: static bindings file over the fake backend."""
+
+    _set_execution_binding(None)  # fake mode never carries a library bundle
 
     raw_file = os.environ.get(SACHIMA_LIVE_PROGRESS_BINDINGS_FILE_ENV)
     if type(raw_file) is not str or not raw_file.strip():
@@ -216,12 +328,43 @@ def bind_live_progress_display_from_env() -> dict[str, Any]:
     return _summary(SACHIMA_LIVE_PROGRESS_HOST_BINDING_BOUND, bound)
 
 
+def _bind_library_backend(tool_mod: Any) -> dict[str, Any]:
+    """The explicit ARS-INT library composition (double default-off)."""
+
+    raw_config = os.environ.get(SACHIMA_ARS_LIBRARY_CONFIG_FILE_ENV)
+    if type(raw_config) is not str or not raw_config.strip():
+        _set_execution_binding(None)
+        tool_mod.unbind_live_progress_display_service()
+        return _summary(
+            SACHIMA_LIVE_PROGRESS_HOST_BINDING_ABSENT, backend=_BACKEND_LIBRARY
+        )
+
+    try:
+        bundle = _build_library_execution_binding(raw_config.strip())
+        tool_mod.bind_live_progress_display_service(bundle.display_service)
+    except Exception:
+        # One stable code only — never the file path, content, or exception text.
+        _set_execution_binding(None)
+        tool_mod.unbind_live_progress_display_service()
+        logger.warning(SACHIMA_LIVE_PROGRESS_HOST_BINDING_INVALID)
+        return _summary(
+            SACHIMA_LIVE_PROGRESS_HOST_BINDING_INVALID, backend=_BACKEND_LIBRARY
+        )
+
+    _set_execution_binding(bundle)
+    logger.info("%s backend=%s", SACHIMA_LIVE_PROGRESS_HOST_BINDING_BOUND, _BACKEND_LIBRARY)
+    return _summary(SACHIMA_LIVE_PROGRESS_HOST_BINDING_BOUND, backend=_BACKEND_LIBRARY)
+
+
 __all__ = [
     "SACHIMA_LIVE_PROGRESS_BINDINGS_FILE_ENV",
+    "SACHIMA_LIVE_PROGRESS_BACKEND_ENV",
+    "SACHIMA_ARS_LIBRARY_CONFIG_FILE_ENV",
     "SACHIMA_LIVE_PROGRESS_HOST_BINDING_DISABLED",
     "SACHIMA_LIVE_PROGRESS_HOST_BINDING_ABSENT",
     "SACHIMA_LIVE_PROGRESS_HOST_BINDING_INVALID",
     "SACHIMA_LIVE_PROGRESS_HOST_BINDING_BOUND",
     "SACHIMA_LIVE_PROGRESS_HOST_BINDING_STABLE_CODES",
     "bind_live_progress_display_from_env",
+    "bound_execution_binding",
 ]
