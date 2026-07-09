@@ -46,7 +46,7 @@ def _counting_version(calls: list[str], value: Any, *, raises: Exception | None 
 
 
 def test_expected_pin_matches_packaged_distribution_pin() -> None:
-    assert EXPECTED_AGENT_RUN_SUPERVISOR_VERSION == "0.1.4"
+    assert EXPECTED_AGENT_RUN_SUPERVISOR_VERSION == "0.1.5"
     assert AGENT_RUN_SUPERVISOR_IMPORT_NAME == "agent_run_supervisor"
     assert AGENT_RUN_SUPERVISOR_DISTRIBUTION == "agent-run-supervisor"
 
@@ -57,7 +57,7 @@ def test_importable_and_exact_pin_reports_ready() -> None:
 
     status = check_supervisor_library_pin(
         import_probe=_counting_import(import_calls),
-        version_probe=_counting_version(version_calls, "0.1.4"),
+        version_probe=_counting_version(version_calls, "0.1.5"),
     )
 
     assert isinstance(status, SupervisorLibraryPinStatus)
@@ -65,8 +65,8 @@ def test_importable_and_exact_pin_reports_ready() -> None:
     assert status.version_pinned is True
     assert status.ready is True
     assert status.error_code is None
-    assert status.expected_version == "0.1.4"
-    assert status.observed_version == "0.1.4"
+    assert status.expected_version == "0.1.5"
+    assert status.observed_version == "0.1.5"
     assert import_calls == ["agent_run_supervisor"]
     assert version_calls == ["agent-run-supervisor"]
 
@@ -77,7 +77,7 @@ def test_missing_library_fails_closed_without_version_probe() -> None:
 
     status = check_supervisor_library_pin(
         import_probe=_counting_import(import_calls, raises=ImportError("missing")),
-        version_probe=_counting_version(version_calls, "0.1.4"),
+        version_probe=_counting_version(version_calls, "0.1.5"),
     )
 
     assert status.importable is False
@@ -119,7 +119,7 @@ def test_wrong_version_fails_closed_as_mismatch() -> None:
 
 @pytest.mark.parametrize(
     "observed",
-    [None, 7, "", "0.1.4 with secret tok" + "en detail", "0.1.4\nextra-line"],
+    [None, 7, "", "0.1.5 with secret tok" + "en detail", "0.1.5\nextra-line"],
 )
 def test_unsanitary_observed_version_is_dropped_not_leaked(observed: Any) -> None:
     status = check_supervisor_library_pin(
@@ -134,7 +134,7 @@ def test_unsanitary_observed_version_is_dropped_not_leaked(observed: Any) -> Non
     assert "secret" not in repr(status)
 
 
-@pytest.mark.parametrize("expected", ["", "not a version!!", "0.1.4\n", None, 7])
+@pytest.mark.parametrize("expected", ["", "not a version!!", "0.1.5\n", None, 7])
 def test_invalid_expected_pin_fails_closed_before_any_probe(expected: Any) -> None:
     import_calls: list[str] = []
     version_calls: list[str] = []
@@ -142,7 +142,7 @@ def test_invalid_expected_pin_fails_closed_before_any_probe(expected: Any) -> No
     status = check_supervisor_library_pin(
         expected_version=expected,
         import_probe=_counting_import(import_calls),
-        version_probe=_counting_version(version_calls, "0.1.4"),
+        version_probe=_counting_version(version_calls, "0.1.5"),
     )
 
     assert status.importable is False
