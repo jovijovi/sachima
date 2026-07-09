@@ -257,7 +257,7 @@ def test_text_renderer_renders_two_level_todo_grouping_without_infinite_tree():
     assert "        -" not in text
 
 
-def test_text_renderer_renders_executor_suffix_and_leaves_unlabeled_items_unchanged():
+def test_text_renderer_renders_executor_badge_before_content():
     from gateway.progress.renderers import render_text_panel
 
     tracker = ProgressTracker(transaction_id="tx-todo-executor", title="Executor todos")
@@ -271,13 +271,69 @@ def test_text_renderer_renders_executor_suffix_and_leaves_unlabeled_items_unchan
 
     text = render_text_panel(tracker.snapshot(), tool_progress_mode="off")
 
-    assert "- ➡️ Run tests · codex" in text
-    assert "▸ PR verification 1/2 · claude" in text
-    assert "    - ✅ ~~Local tests~~ · codex" in text
-    # Unlabeled items render exactly as before, with no separator.
-    assert "- ○ Ship" in text
-    assert "Ship ·" not in text
-    assert "CI wait ·" not in text
+    # Badge sits between the status icon and the content; the badge stays
+    # outside the strikethrough on completed items.
+    assert "- ▶️ [codex] Run tests" in text
+    assert "▸ [claude] PR verification 1/2" in text
+    assert "    - ✅ [codex] ~~Local tests~~" in text
+    # Unlabeled items render with no badge.
+    assert "- ⏳ Ship" in text
+    assert "    - ⏳ CI wait" in text
+    # The legacy trailing ` · executor` suffix shape is gone.
+    assert "· codex" not in text
+    assert "· claude" not in text
+
+
+def test_text_renderer_displays_hermes_agent_executor_as_hermes():
+    from gateway.progress.renderers import render_text_panel
+
+    tracker = ProgressTracker(transaction_id="tx-todo-executor-alias", title="Alias executor")
+    tracker.update_todo_items([
+        {"id": "1", "content": "Check workbench display", "status": "in_progress", "executor": "hermes-agent"},
+    ])
+
+    text = render_text_panel(tracker.snapshot(), tool_progress_mode="off")
+
+    assert "- ▶️ [hermes] Check workbench display" in text
+    assert "hermes-agent" not in text
+
+
+def test_text_renderer_cancelled_todo_uses_forbidden_icon_without_strikethrough():
+    from gateway.progress.renderers import render_text_panel
+
+    tracker = ProgressTracker(transaction_id="tx-todo-cancelled", title="Cancelled todos")
+    tracker.update_todo_items([
+        {"id": "1", "content": "Legacy suffix plan", "status": "cancelled", "executor": "other"},
+        {"id": "2", "content": "Badge plan", "status": "in_progress"},
+    ])
+
+    text = render_text_panel(tracker.snapshot(), tool_progress_mode="off")
+
+    assert "- 🚫 [other] Legacy suffix plan" in text
+    assert "~~Legacy suffix plan~~" not in text
+
+
+def test_text_renderer_renders_failed_todo_icon_defensively():
+    # Persistent todo statuses cannot produce ``failed`` today; the renderer
+    # still maps it in case an upstream workbench source supplies one.
+    from gateway.progress.events import TodoItemSnapshot, TransactionSnapshot
+    from gateway.progress.renderers import render_text_panel
+
+    snapshot = TransactionSnapshot(
+        transaction_id="tx-todo-failed",
+        title="Failed todo defence",
+        status="running",
+        started_at=1.0,
+        updated_at=2.0,
+        todo_items=(
+            TodoItemSnapshot(id="1", content="Fix failed: chain unverified", status="failed", executor="claude"),
+        ),
+    )
+
+    text = render_text_panel(snapshot, tool_progress_mode="off")
+
+    assert "- ❌ [claude] Fix failed: chain unverified" in text
+    assert "~~Fix failed: chain unverified~~" not in text
 
 
 def test_text_renderer_never_renders_secret_shaped_executor():
@@ -292,8 +348,8 @@ def test_text_renderer_never_renders_secret_shaped_executor():
     text = render_text_panel(tracker.snapshot(), tool_progress_mode="off")
 
     assert bare_key not in text
-    assert "- ➡️ Run tests" in text
-    assert "Run tests ·" not in text
+    assert "- ▶️ Run tests" in text
+    assert "] Run tests" not in text
 
 
 def test_feishu_renders_suspended_hint_separately_from_main_todos():

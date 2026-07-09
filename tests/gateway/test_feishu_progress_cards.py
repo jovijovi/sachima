@@ -32,8 +32,8 @@ def test_feishu_progress_card_renders_flat_todo_block_before_operations():
 
     assert "待办 - 2 / 5（40%）" in rendered
     assert "✅ ~~准备实现方案~~" in rendered  # completed → strikethrough
-    assert "➡️ 跑测试" in rendered  # in_progress → arrow
-    assert "○ 提交 PR" in rendered  # pending → hollow circle
+    assert "▶️ 跑测试" in rendered  # in_progress → play arrow
+    assert "⏳ 提交 PR" in rendered  # pending → hourglass
     # The todo block precedes the recent-operations block.
     assert rendered.index("待办") < rendered.index("最近操作")
 
@@ -52,7 +52,7 @@ def test_feishu_progress_card_renders_todo_block_english_labels():
 
     assert "TODO - 1 / 2 (50%)" in rendered
     assert "✅ ~~Prepare plan~~" in rendered
-    assert "➡️ Run tests" in rendered
+    assert "▶️ Run tests" in rendered
     assert "待办" not in rendered
 
 
@@ -78,10 +78,10 @@ def test_feishu_progress_card_renders_two_level_todo_groups():
     assert "▸ 发布 0/1" in rendered
     # Children render indented under their parent group.
     assert "  ✅ ~~本地测试~~" in rendered
-    assert "  ➡️ Codex 复审" in rendered
+    assert "  ▶️ Codex 复审" in rendered
 
 
-def test_feishu_progress_card_renders_executor_suffix_on_flat_items():
+def test_feishu_progress_card_renders_executor_badge_before_content_on_flat_items():
     from gateway.progress.renderers import render_feishu_progress_card
 
     tracker = ProgressTracker(transaction_id="tx-todo-executor", title="带执行者的任务")
@@ -94,12 +94,16 @@ def test_feishu_progress_card_renders_executor_suffix_on_flat_items():
     card = render_feishu_progress_card(tracker.snapshot(), tool_progress_mode="off")
     rendered = _rendered(card)
 
-    assert "➡️ 跑测试 · codex" in rendered
-    # Suffix sits outside the strikethrough so the label stays legible.
-    assert "✅ ~~准备实现方案~~ · claude" in rendered
-    # Unlabeled items render exactly as before, with no separator.
-    assert "○ 提交 PR" in rendered
-    assert "提交 PR ·" not in rendered
+    # Badge sits between the status icon and the content (brackets are
+    # markdown-escaped inside the card; JSON doubles the backslashes).
+    assert "▶️ \\\\[codex\\\\] 跑测试" in rendered
+    # Badge stays outside the strikethrough so the label stays legible.
+    assert "✅ \\\\[claude\\\\] ~~准备实现方案~~" in rendered
+    # Unlabeled items render with no badge.
+    assert "⏳ 提交 PR" in rendered
+    # The legacy trailing-suffix shape is gone.
+    assert "· codex" not in rendered
+    assert "· claude" not in rendered
 
 
 def test_feishu_progress_card_escapes_executor_label_markdown():
@@ -107,17 +111,33 @@ def test_feishu_progress_card_escapes_executor_label_markdown():
 
     tracker = ProgressTracker(transaction_id="tx-todo-executor-escape", title="转义执行者")
     tracker.update_todo_items([
-        {"id": "1", "content": "跑测试", "status": "in_progress", "executor": "hermes-agent"},
+        {"id": "1", "content": "跑测试", "status": "in_progress", "executor": "gemini-cli"},
     ])
 
     card = render_feishu_progress_card(tracker.snapshot(), tool_progress_mode="off")
     rendered = _rendered(card)
 
-    # The hyphen is markdown-escaped inside the card content (JSON doubles the backslash).
-    assert "跑测试 · hermes\\\\-agent" in rendered
+    # The hyphen is markdown-escaped inside the badge (JSON doubles the backslashes).
+    assert "▶️ \\\\[gemini\\\\-cli\\\\] 跑测试" in rendered
 
 
-def test_feishu_progress_card_renders_executor_suffix_on_groups_and_children():
+def test_feishu_progress_card_displays_hermes_agent_executor_as_hermes():
+    from gateway.progress.renderers import render_feishu_progress_card
+
+    tracker = ProgressTracker(transaction_id="tx-todo-executor-alias", title="别名执行者")
+    tracker.update_todo_items([
+        {"id": "1", "content": "检查任务工作台展示", "status": "in_progress", "executor": "hermes-agent"},
+    ])
+
+    card = render_feishu_progress_card(tracker.snapshot(), tool_progress_mode="off")
+    rendered = _rendered(card)
+
+    assert "▶️ \\\\[hermes\\\\] 检查任务工作台展示" in rendered
+    assert "hermes-agent" not in rendered
+    assert "hermes\\\\-agent" not in rendered
+
+
+def test_feishu_progress_card_renders_executor_badges_on_groups_and_children():
     from gateway.progress.renderers import render_feishu_progress_card
 
     tracker = ProgressTracker(transaction_id="tx-todo-executor-2level", title="分组执行者")
@@ -130,11 +150,12 @@ def test_feishu_progress_card_renders_executor_suffix_on_groups_and_children():
     card = render_feishu_progress_card(tracker.snapshot(), tool_progress_mode="off")
     rendered = _rendered(card)
 
-    # Group header keeps its done/total counter, then the suffix.
-    assert "▸ PR 验证 1/2 · claude" in rendered
-    assert "  ✅ ~~本地测试~~ · codex" in rendered
-    assert "  ○ CI 等待" in rendered
-    assert "CI 等待 ·" not in rendered
+    # Group header renders badge before content, keeping its done/total counter.
+    assert "▸ \\\\[claude\\\\] PR 验证 1/2" in rendered
+    assert "  ✅ \\\\[codex\\\\] ~~本地测试~~" in rendered
+    assert "  ⏳ CI 等待" in rendered
+    assert "· claude" not in rendered
+    assert "· codex" not in rendered
 
 
 def test_feishu_progress_card_never_renders_secret_shaped_executor():
@@ -152,11 +173,10 @@ def test_feishu_progress_card_never_renders_secret_shaped_executor():
 
     assert bare_key not in rendered
     assert "abc123" not in rendered
-    # Lines render without any suffix when the label is dropped.
-    assert "➡️ 跑测试" in rendered
-    assert "跑测试 ·" not in rendered
-    assert "○ 提交 PR" in rendered
-    assert "提交 PR ·" not in rendered
+    # Lines render without any badge when the label is dropped.
+    assert "▶️ 跑测试" in rendered
+    assert "⏳ 提交 PR" in rendered
+    assert "\\\\[" not in rendered
 
 
 def test_feishu_progress_card_labeled_overflow_keeps_hidden_count():
@@ -173,6 +193,48 @@ def test_feishu_progress_card_labeled_overflow_keeps_hidden_count():
 
     assert "待办 - 0 / 15（0%）" in rendered
     assert "还有 7 项" in rendered  # 15 items, 8 visible lines → 7 hidden
+
+
+def test_feishu_progress_card_cancelled_todo_uses_forbidden_icon_without_strikethrough():
+    from gateway.progress.renderers import render_feishu_progress_card
+
+    tracker = ProgressTracker(transaction_id="tx-todo-cancelled", title="取消项展示")
+    tracker.update_todo_items([
+        {"id": "1", "content": "旧版尾缀展示方案", "status": "cancelled", "executor": "other"},
+        {"id": "2", "content": "新版徽标展示方案", "status": "in_progress"},
+    ])
+
+    card = render_feishu_progress_card(tracker.snapshot(), tool_progress_mode="off")
+    rendered = _rendered(card)
+
+    # Cancelled signals through the 🚫 icon only; content stays legible.
+    assert "🚫 \\\\[other\\\\] 旧版尾缀展示方案" in rendered
+    assert "~~旧版尾缀展示方案~~" not in rendered
+
+
+def test_feishu_progress_card_renders_failed_todo_icon_defensively():
+    # Persistent todo statuses cannot produce ``failed`` today, but the
+    # renderer accepts untyped snapshots and must map it if an upstream
+    # workbench/progress source ever supplies one.
+    from gateway.progress.events import TodoItemSnapshot
+    from gateway.progress.renderers import render_feishu_progress_card
+
+    snapshot = TransactionSnapshot(
+        transaction_id="tx-todo-failed",
+        title="失败状态防御",
+        status="running",
+        started_at=1.0,
+        updated_at=2.0,
+        todo_items=(
+            TodoItemSnapshot(id="1", content="修复失败：验证链未通过", status="failed", executor="claude"),
+        ),
+    )
+
+    card = render_feishu_progress_card(snapshot, tool_progress_mode="off")
+    rendered = _rendered(card)
+
+    assert "❌ \\\\[claude\\\\] 修复失败：验证链未通过" in rendered
+    assert "~~修复失败：验证链未通过~~" not in rendered
 
 
 def test_feishu_progress_card_omits_todo_block_when_empty():

@@ -2,7 +2,7 @@ import { Box, Text } from '@hermes/ink'
 import { memo, useState } from 'react'
 
 import { countPendingTodos } from '../lib/liveProgress.js'
-import { todoGlyph, todoTone } from '../lib/todo.js'
+import { displayTodoExecutor, todoGlyph, todoTone } from '../lib/todo.js'
 import type { Theme } from '../theme.js'
 import type { TodoItem } from '../types.js'
 
@@ -78,11 +78,13 @@ export const TodoPanel = memo(function TodoPanel({
           {todos.map(todo => {
             const tone = todoTone(todo.status)
             const color = rowColor(t, todo.status)
+            const executor = displayTodoExecutor(todo.executor)
 
             return (
               <Text color={color} dim={tone === 'dim'} key={todo.id}>
                 <Text color={color}>{todoGlyph(todo.status)} </Text>
-                {todo.content}
+                {executor && <Text color={color}>[{executor}] </Text>}
+                <Text strikethrough={todo.status === 'completed'}>{todo.content}</Text>
               </Text>
             )
           })}
