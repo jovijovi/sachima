@@ -246,9 +246,9 @@ class _RuntimeTurnResult:
     turn_id: str | None
     artifact_count: int
     #: Mirrors the additive agent-run-supervisor `observed_effect` result key:
-    #: True/False when the library (>= 0.1.4, the reviewed pin) reports whether
-    #: the turn produced agent output or tool activity; None only for payloads
-    #: from releases predating the key (<= 0.1.3).
+    #: True/False when the library (>= 0.1.4) reports whether the turn
+    #: produced agent output or tool activity; None only for payloads from
+    #: releases predating the key (<= 0.1.3).
     observed_effect: bool | None = None
 
 
@@ -566,13 +566,18 @@ def compose_goal_turn_prompt(goal_text: str) -> str:
     """Compose a validated ``/goal <text>`` turn prompt for a persistent session.
 
     Delegates to ``agent_run_supervisor.goal.compose_goal_prompt`` (shipped
-    since agent-run-supervisor 0.1.4, the reviewed pin), which fails closed on
-    empty text, nested slash commands, and control characters. When the
-    installed library predates goal-turn composition (<= 0.1.3), this fails
-    closed with ``activity_goal_unsupported`` rather than sending unvalidated
-    text; a
-    rejected goal maps to ``activity_goal_rejected``. The (lazy) import keeps
-    module import free of any agent_run_supervisor dependency.
+    since agent-run-supervisor 0.1.4), which fails closed on empty text,
+    nested slash commands, and control characters. Literal ``/goal`` text is
+    only meaningful to adapters with native ``/goal`` support: since 0.1.5 the
+    upstream ``session send --goal-file`` path instead compiles adapter-correct
+    ``goal-contract/v1`` text via ``goal.compile_goal_prompt(role, GoalSpec)``,
+    which non-native adapters (e.g. Codex behind acpx) require — wiring goal
+    turns for such adapters must use that role-aware compiler, not this
+    passthrough. When the installed library predates goal-turn composition
+    (<= 0.1.3), this fails closed with ``activity_goal_unsupported`` rather
+    than sending unvalidated text; a rejected goal maps to
+    ``activity_goal_rejected``. The (lazy) import keeps module import free of
+    any agent_run_supervisor dependency.
     """
 
     try:
