@@ -17,6 +17,7 @@ import {
   sameToolTrailGroup,
   toolTrailLabel
 } from '../lib/text.js'
+import { displayTodoExecutor } from '../lib/todo.js'
 import type { ActiveTool, ActivityItem, Msg, SubagentProgress, TodoItem } from '../types.js'
 
 import type { Notice } from './interfaces.js'
@@ -66,10 +67,13 @@ const parseTodos = (value: unknown): null | TodoItem[] => {
         return null
       }
 
+      const executor = displayTodoExecutor(row.executor)
+
       return {
         content: String(row.content ?? '').trim(),
         id: String(row.id ?? '').trim(),
-        status
+        status,
+        ...(executor ? { executor } : {})
       }
     })
     .filter((item): item is TodoItem => Boolean(item?.id && item.content))

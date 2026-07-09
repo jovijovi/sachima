@@ -447,13 +447,13 @@ def test_update_todo_items_carries_executor_from_object_shaped_entries():
         id = "obj"
         content = "Object entry"
         status = "pending"
-        executor = "hermes-agent"
+        executor = "gemini-cli"
 
     tracker = ProgressTracker("tx-todo-executor-obj", "Object executor")
     tracker.update_todo_items([TodoObj()])
 
     items = tracker.snapshot().todo_items
-    assert items[0].executor == "hermes-agent"
+    assert items[0].executor == "gemini-cli"
 
 
 def test_update_todo_items_never_carries_secret_shaped_executor():

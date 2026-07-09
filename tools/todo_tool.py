@@ -269,9 +269,10 @@ class TodoStore:
         lines = ["[Your active task list was preserved across context compression]"]
         for item in active_items:
             marker = markers.get(item["status"], "[?]")
-            # Keep delegation assignments visible across compression.
-            suffix = f", executor: {item['executor']}" if item.get("executor") else ""
-            lines.append(f"- {marker} {item['id']}. {item['content']} ({item['status']}{suffix})")
+            # Keep delegation assignments visible across compression, as a
+            # badge before the content (same order as workbench display).
+            badge = f"[{item['executor']}] " if item.get("executor") else ""
+            lines.append(f"- {marker} {item['id']}. {badge}{item['content']} ({item['status']})")
 
         return "\n".join(lines)
 
@@ -473,7 +474,7 @@ TODO_SCHEMA = {
                             "description": (
                                 "Optional executing agent label when the item is "
                                 "delegated (lowercase token, e.g. 'claude', "
-                                "'codex', 'hermes-agent', 'other')."
+                                "'codex', 'hermes', 'other')."
                             )
                         }
                     },

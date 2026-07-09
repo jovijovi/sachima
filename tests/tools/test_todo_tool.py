@@ -374,15 +374,24 @@ class TestExecutor:
         assert len(items) == 1
         assert items[0]["executor"] == "codex"
 
-    def test_format_for_injection_includes_executor(self):
+    def test_hermes_agent_executor_normalizes_to_hermes(self):
+        # Legacy long label writes/replays store and display as ``hermes``.
+        store = TodoStore()
+        store.write([
+            {"id": "1", "content": "Task", "status": "pending", "executor": "hermes-agent"},
+        ])
+        assert store.read()[0]["executor"] == "hermes"
+
+    def test_format_for_injection_renders_executor_badge_before_content(self):
         store = TodoStore()
         store.write([
             {"id": "1", "content": "Delegated work", "status": "in_progress", "executor": "codex"},
             {"id": "2", "content": "Own work", "status": "pending"},
         ])
         text = store.format_for_injection()
-        assert "- [>] 1. Delegated work (in_progress, executor: codex)" in text
+        assert "- [>] 1. [codex] Delegated work (in_progress)" in text
         assert "- [ ] 2. Own work (pending)" in text
+        assert "executor:" not in text
 
 
 class TestTodoStoreBounds:

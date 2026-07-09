@@ -30,6 +30,11 @@ _TOKEN_LIKE_EXECUTOR_PREFIXES = (
     "sk-", "sk_", "ghp_", "gho_", "github_pat_", "xox", "hf_", "hf-", "pat_",
 )
 
+# Canonical short forms for known long labels. Applied only after full
+# validation, so an alias can never bypass the charset/credential defenses,
+# and legacy stored values (``hermes-agent``) display in the short form.
+_TODO_EXECUTOR_ALIASES = {"hermes-agent": "hermes"}
+
 
 def normalize_todo_executor(value: Any) -> str | None:
     """Return a safe lowercase executor token, or ``None`` (drop the field).
@@ -50,4 +55,4 @@ def normalize_todo_executor(value: Any) -> str | None:
         return None
     if not _SAFE_TODO_EXECUTOR_RE.match(text):
         return None
-    return text
+    return _TODO_EXECUTOR_ALIASES.get(text, text)

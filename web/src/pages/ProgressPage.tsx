@@ -25,6 +25,7 @@ import {
   formatSuspendedTodoHint,
   shouldRenderProgressMainTodos,
 } from "@/lib/progress-todo-lifecycle";
+import { displayTodoExecutor } from "@/lib/todo-executor";
 import { cn, timeAgo } from "@/lib/utils";
 import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Button } from "@nous-research/ui/ui/components/button";
@@ -74,21 +75,25 @@ function roundsLabel(usage?: ProgressIterationUsage | null): string | null {
 }
 
 // ── Structured todo preview (two-level, capped) ──────────────────────────
+// ``failed`` is defensive: persistent todo statuses cannot produce it today,
+// but an upstream workbench/progress source may.
 const TODO_GLYPH: Record<string, string> = {
   completed: "✅",
-  in_progress: "➡️",
-  pending: "○",
-  cancelled: "⚪",
+  in_progress: "▶️",
+  pending: "⏳",
+  cancelled: "🚫",
+  failed: "❌",
 };
 const TODO_MAX_VISIBLE = 12;
 
 function todoGlyph(status?: string | null): string {
-  return TODO_GLYPH[(status || "").toLowerCase()] ?? "○";
+  return TODO_GLYPH[(status || "").toLowerCase()] ?? TODO_GLYPH.pending;
 }
 
+// Only completed content is struck through; cancelled/failed items keep
+// their icon as the signal and legible content.
 function todoStruck(status?: string | null): boolean {
-  const normalized = (status || "").toLowerCase();
-  return normalized === "completed" || normalized === "cancelled";
+  return (status || "").toLowerCase() === "completed";
 }
 
 function todoDepth(item: ProgressTodoItem): number {
@@ -122,11 +127,15 @@ function buildTodoBlocks(
 }
 
 function TodoItemRow({ item, indent }: { item: ProgressTodoItem; indent?: boolean }) {
+  const executor = displayTodoExecutor(item.executor);
   return (
     <div className={cn("flex items-start gap-1.5 text-xs normal-case", indent && "pl-4")}>
       <span aria-hidden className="shrink-0 leading-5">
         {todoGlyph(item.status)}
       </span>
+      {executor && (
+        <span className="shrink-0 leading-5 font-medium text-muted-foreground">[{executor}]</span>
+      )}
       <span
         className={cn(
           "min-w-0 break-words leading-5",
@@ -150,12 +159,14 @@ function TodoBlock({ items }: { items: ProgressTodoItem[] }) {
       const done = block.children.filter(
         (child) => (child.status || "").toLowerCase() === "completed",
       ).length;
+      const groupExecutor = displayTodoExecutor(block.top.executor);
       rows.push(
         <div
           key={`group-${block.top.id}`}
           className="flex items-center gap-1.5 text-xs font-medium text-foreground normal-case"
         >
           <span aria-hidden>▸</span>
+          {groupExecutor && <span className="shrink-0 text-muted-foreground">[{groupExecutor}]</span>}
           <span className="min-w-0 break-words">{block.top.content}</span>
           <span className="text-muted-foreground">
             {done}/{block.children.length}

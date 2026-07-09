@@ -18,7 +18,7 @@ from gateway.progress.todo_executor import (
     [
         ("claude", "claude"),
         ("codex", "codex"),
-        ("hermes-agent", "hermes-agent"),
+        ("hermes", "hermes"),
         ("other", "other"),
         ("gemini-cli", "gemini-cli"),
         ("qwen_coder.v2", "qwen_coder.v2"),
@@ -36,12 +36,22 @@ def test_normalize_todo_executor_accepts_compact_tokens(value, expected):
     [
         ("Claude", "claude"),
         ("CODEX", "codex"),
-        ("  hermes-agent  ", "hermes-agent"),
+        ("  gemini-cli  ", "gemini-cli"),
         ("\tClaude\n", "claude"),
     ],
 )
 def test_normalize_todo_executor_trims_and_lowercases(value, expected):
     assert normalize_todo_executor(value) == expected
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["hermes-agent", "Hermes-Agent", "  hermes-agent  ", "hermes"],
+)
+def test_normalize_todo_executor_aliases_hermes_agent_to_hermes(value):
+    # Legacy stored labels display in the short form; the alias applies after
+    # validation, so it can never launder an otherwise-invalid value.
+    assert normalize_todo_executor(value) == "hermes"
 
 
 @pytest.mark.parametrize(

@@ -46,15 +46,19 @@ _EVENT_LABELS = {
 }
 
 # Cursor-style todo glyphs, constrained to what Feishu cards / plain panels can
-# show. ``cancelled`` (like ``completed``) is struck through; ``unknown`` status
-# falls back to ``pending`` via the ``.get`` default.
+# show. ``failed`` is defensive: persistent todo statuses cannot produce it
+# today, but renderer inputs are untyped snapshots and upstream workbench
+# sources may. Unknown status falls back to ``pending`` via the ``.get`` default.
 _TODO_STATUS_GLYPHS = {
     "completed": "✅",
-    "in_progress": "➡️",
-    "pending": "○",
-    "cancelled": "⚪",
+    "in_progress": "▶️",
+    "pending": "⏳",
+    "cancelled": "🚫",
+    "failed": "❌",
 }
-_TODO_STRIKETHROUGH_STATUSES = {"completed", "cancelled"}
+# Only completed content is struck through; cancelled/failed items keep their
+# icon as the signal and legible content.
+_TODO_STRIKETHROUGH_STATUSES = {"completed"}
 # Keep the todo preview compact: at most this many item/group lines render before
 # an overflow note. Real active plans are a handful of items; this only bites on
 # pathological lists.
@@ -407,7 +411,7 @@ def _todo_status_key(item: Any) -> str:
 
 
 def _todo_status_glyph(item: Any) -> str:
-    return _TODO_STATUS_GLYPHS.get(_todo_status_key(item), "○")
+    return _TODO_STATUS_GLYPHS.get(_todo_status_key(item), _TODO_STATUS_GLYPHS["pending"])
 
 
 def _todo_is_struck(item: Any) -> bool:
@@ -493,9 +497,11 @@ def _todo_executor_label(item: Any) -> str | None:
     return normalize_todo_executor(getattr(item, "executor", None))
 
 
-def _feishu_todo_suffix(item: Any) -> str:
+def _feishu_todo_badge(item: Any) -> str:
+    # Executor renders as a structured badge before the content, never as a
+    # trailing suffix: ``▶️ [codex] task text``.
     executor = _todo_executor_label(item)
-    return f" · {_feishu_escape_markdown_text(executor)}" if executor else ""
+    return f"\\[{_feishu_escape_markdown_text(executor)}\\] " if executor else ""
 
 
 def _feishu_todo_element(items: Iterable[Any], *, language: str) -> dict | None:
@@ -506,13 +512,13 @@ def _feishu_todo_element(items: Iterable[Any], *, language: str) -> dict | None:
     title = _feishu_todo_title(materialized, language=lang)
 
     def fmt_flat(item: Any) -> str:
-        return f"{_todo_status_glyph(item)} {_feishu_todo_text(item)}{_feishu_todo_suffix(item)}"
+        return f"{_todo_status_glyph(item)} {_feishu_todo_badge(item)}{_feishu_todo_text(item)}"
 
     def fmt_group(item: Any, done: int, total: int) -> str:
-        return f"▸ {_feishu_escape_markdown_text(getattr(item, 'content', ''))} {done}/{total}{_feishu_todo_suffix(item)}"
+        return f"▸ {_feishu_todo_badge(item)}{_feishu_escape_markdown_text(getattr(item, 'content', ''))} {done}/{total}"
 
     def fmt_child(item: Any) -> str:
-        return f"  {_todo_status_glyph(item)} {_feishu_todo_text(item)}{_feishu_todo_suffix(item)}"
+        return f"  {_todo_status_glyph(item)} {_feishu_todo_badge(item)}{_feishu_todo_text(item)}"
 
     lines, hidden = _render_todo_lines(
         materialized,
@@ -553,18 +559,18 @@ def _todo_text_lines(items: Iterable[Any]) -> list[str]:
     if not materialized:
         return []
 
-    def _suffix(item: Any) -> str:
+    def _badge(item: Any) -> str:
         executor = _todo_executor_label(item)
-        return f" · {executor}" if executor else ""
+        return f"[{executor}] " if executor else ""
 
     def fmt_flat(item: Any) -> str:
-        return f"- {_todo_status_glyph(item)} {_todo_text_content(item)}{_suffix(item)}"
+        return f"- {_todo_status_glyph(item)} {_badge(item)}{_todo_text_content(item)}"
 
     def fmt_group(item: Any, done: int, total: int) -> str:
-        return f"- ▸ {_todo_plain_content(item)} {done}/{total}{_suffix(item)}"
+        return f"- ▸ {_badge(item)}{_todo_plain_content(item)} {done}/{total}"
 
     def fmt_child(item: Any) -> str:
-        return f"    - {_todo_status_glyph(item)} {_todo_text_content(item)}{_suffix(item)}"
+        return f"    - {_todo_status_glyph(item)} {_badge(item)}{_todo_text_content(item)}"
 
     lines, hidden = _render_todo_lines(
         materialized,

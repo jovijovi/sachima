@@ -8,6 +8,9 @@ export interface ActiveTool {
 
 export interface TodoItem {
   content: string
+  /** Validated executing-agent label (e.g. "codex") for delegated items.
+   *  Display-only metadata rendered as a badge before the content. */
+  executor?: string
   id: string
   status: 'cancelled' | 'completed' | 'in_progress' | 'pending'
 }
