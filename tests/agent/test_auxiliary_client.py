@@ -240,11 +240,11 @@ class TestConfiguredFallbackChain:
         )
 
         def fake_resolve_provider_client(
-            *,
             provider,
             model=None,
             explicit_base_url=None,
             explicit_api_key=None,
+            api_mode=None,
         ):
             calls.append(
                 {
@@ -279,6 +279,160 @@ class TestConfiguredFallbackChain:
                 "explicit_api_key": fake_key,
             }
         ]
+
+    def _install_chain(self, monkeypatch, chain):
+        """Patch the task config to the given chain; return (sentinel, resolver call log)."""
+        import agent.auxiliary_client as aux_mod
+
+        sentinel_client = object()
+        calls = []
+
+        monkeypatch.setattr(
+            aux_mod,
+            "_get_auxiliary_task_config",
+            lambda task: {"fallback_chain": chain},
+        )
+
+        def fake_resolve_provider_client(
+            provider,
+            model=None,
+            explicit_base_url=None,
+            explicit_api_key=None,
+            api_mode=None,
+        ):
+            calls.append({"provider": provider, "model": model})
+            return sentinel_client, model
+
+        monkeypatch.setattr(
+            aux_mod, "resolve_provider_client", fake_resolve_provider_client)
+        return sentinel_client, calls
+
+    def test_same_provider_different_model_entry_is_used(self, monkeypatch):
+        """openai-codex/gpt-5.6-sol may fail over to openai-codex/gpt-5.6-terra."""
+        sentinel, calls = self._install_chain(monkeypatch, [
+            {"provider": "openai-codex", "model": "gpt-5.6-sol"},
+            {"provider": "openai-codex", "model": "gpt-5.6-terra"},
+        ])
+
+        client, model, label = _try_configured_fallback_chain(
+            "compression",
+            failed_provider="openai-codex",
+            reason="test",
+            failed_model="gpt-5.6-sol",
+        )
+
+        assert client is sentinel
+        assert model == "gpt-5.6-terra"
+        assert label == "fallback_chain[1](openai-codex)"
+        # The exact provider+model that just failed must never be retried.
+        assert calls == [{"provider": "openai-codex", "model": "gpt-5.6-terra"}]
+
+    def test_same_provider_same_model_entry_is_not_retried(self, monkeypatch):
+        """An entry naming the exact failed provider+model is dead — skip it."""
+        _sentinel, calls = self._install_chain(monkeypatch, [
+            {"provider": "openai-codex", "model": "gpt-5.6-sol"},
+        ])
+
+        client, model, label = _try_configured_fallback_chain(
+            "compression",
+            failed_provider="openai-codex",
+            reason="test",
+            failed_model="gpt-5.6-sol",
+        )
+
+        assert (client, model, label) == (None, None, "")
+        assert calls == []
+
+    def test_provider_alias_does_not_retry_failed_pair(self, monkeypatch):
+        """Provider aliases must not disguise the exact failed provider+model pair."""
+        sentinel, calls = self._install_chain(monkeypatch, [
+            {"provider": "codex", "model": "gpt-5.6-sol"},
+            {"provider": "minimax", "model": "MiniMax-M2.5"},
+        ])
+
+        client, model, label = _try_configured_fallback_chain(
+            "compression",
+            failed_provider="openai-codex",
+            reason="test",
+            failed_model="gpt-5.6-sol",
+        )
+
+        assert client is sentinel
+        assert model == "MiniMax-M2.5"
+        assert label == "fallback_chain[1](minimax)"
+        assert calls == [{"provider": "minimax", "model": "MiniMax-M2.5"}]
+
+    def test_resolver_rewrite_to_failed_model_continues_chain(self, monkeypatch):
+        """A resolver rewrite back to the failed model must not terminate fallback."""
+        import agent.auxiliary_client as aux_mod
+
+        first_client = object()
+        second_client = object()
+        calls = []
+        monkeypatch.setattr(
+            aux_mod,
+            "_get_auxiliary_task_config",
+            lambda task: {"fallback_chain": [
+                {"provider": "codex", "model": "gpt-5.6-terra"},
+                {"provider": "minimax", "model": "MiniMax-M2.5"},
+            ]},
+        )
+
+        def fake_resolve_provider_client(provider, model=None, **_kwargs):
+            calls.append({"provider": provider, "model": model})
+            if provider == "codex":
+                return first_client, "gpt-5.6-sol"
+            return second_client, model
+
+        monkeypatch.setattr(
+            aux_mod, "resolve_provider_client", fake_resolve_provider_client)
+
+        client, model, label = _try_configured_fallback_chain(
+            "compression",
+            failed_provider="openai-codex",
+            reason="test",
+            failed_model="gpt-5.6-sol",
+        )
+
+        assert client is second_client
+        assert model == "MiniMax-M2.5"
+        assert label == "fallback_chain[1](minimax)"
+        assert calls == [
+            {"provider": "codex", "model": "gpt-5.6-terra"},
+            {"provider": "minimax", "model": "MiniMax-M2.5"},
+        ]
+
+    def test_same_provider_entry_without_model_is_skipped(self, monkeypatch):
+        """A same-provider entry with no model could resolve back to the failed model."""
+        _sentinel, calls = self._install_chain(monkeypatch, [
+            {"provider": "openai-codex"},
+        ])
+
+        client, model, label = _try_configured_fallback_chain(
+            "compression",
+            failed_provider="openai-codex",
+            reason="test",
+            failed_model="gpt-5.6-sol",
+        )
+
+        assert (client, model, label) == (None, None, "")
+        assert calls == []
+
+    def test_same_provider_skipped_when_failed_model_unknown(self, monkeypatch):
+        """Without a known failed model, keep the conservative same-provider skip."""
+        _sentinel, calls = self._install_chain(monkeypatch, [
+            {"provider": "openai-codex", "model": "gpt-5.6-terra"},
+        ])
+
+        client, model, label = _try_configured_fallback_chain(
+            "compression",
+            failed_provider="openai-codex",
+            reason="test",
+            failed_model=None,
+        )
+
+        assert (client, model, label) == (None, None, "")
+        assert calls == []
 
 
 class TestReadCodexAccessToken:
@@ -1793,10 +1947,224 @@ class TestAuxiliaryFallbackLayering:
 
         assert main_chain_client.chat.completions.create.called
         mock_task_chain.assert_called_once_with(
-            "title_generation", "auto", reason="payment error")
+            "title_generation", "auto", reason="payment error",
+            failed_model="qwen/qwen3.5-122b-a10b")
         mock_main_chain.assert_called_once_with(
             "title_generation", "auto", reason="payment error")
         mock_builtin_chain.assert_not_called()
+
+    def test_auto_provider_skips_actual_failed_pair_and_uses_next_model(self, monkeypatch):
+        """Auto must compare the chain with the provider it actually attempted."""
+        import agent.auxiliary_client as aux_mod
+
+        primary_client = MagicMock()
+        primary_client._aux_provider = "openai-codex"
+        primary_client.chat.completions.create.side_effect = self._make_payment_err()
+        fallback_client = MagicMock()
+        fallback_client.chat.completions.create.return_value = MagicMock(choices=[
+            MagicMock(message=MagicMock(content="from terra"))
+        ])
+        resolver_calls = []
+        monkeypatch.setattr(aux_mod, "_get_auxiliary_task_config", lambda task: {
+            "fallback_chain": [
+                {"provider": "openai-codex", "model": "gpt-5.6-sol"},
+                {"provider": "openai-codex", "model": "gpt-5.6-terra"},
+            ],
+        })
+
+        def fake_resolve_provider_client(provider, model=None, **_kwargs):
+            resolver_calls.append((provider, model))
+            return fallback_client, model
+
+        with patch("agent.auxiliary_client._get_cached_client",
+                   return_value=(primary_client, "gpt-5.6-sol")), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                   return_value=("auto", None, None, None, None)), \
+             patch("agent.auxiliary_client.resolve_provider_client",
+                   side_effect=fake_resolve_provider_client), \
+             patch("agent.auxiliary_client._recoverable_pool_provider",
+                   return_value=None):
+            result = call_llm(
+                task="compression",
+                messages=[{"role": "user", "content": "hello"}],
+            )
+
+        assert resolver_calls == [("openai-codex", "gpt-5.6-terra")]
+        assert fallback_client.chat.completions.create.call_args.kwargs["model"] == "gpt-5.6-terra"
+        assert result.choices[0].message.content == "from terra"
+
+    @pytest.mark.asyncio
+    async def test_async_auto_provider_skips_actual_failed_pair_and_uses_next_model(self, monkeypatch):
+        """The async auto path uses the same actual-provider fallback boundary."""
+        import agent.auxiliary_client as aux_mod
+
+        primary_client = MagicMock()
+        primary_client._aux_provider = "openai-codex"
+        primary_client.chat.completions.create = AsyncMock(
+            side_effect=self._make_payment_err())
+        fallback_client = MagicMock()
+        async_fallback_client = MagicMock()
+        async_fallback_client.chat.completions.create = AsyncMock(return_value=MagicMock(
+            choices=[MagicMock(message=MagicMock(content="async terra"))]
+        ))
+        resolver_calls = []
+        monkeypatch.setattr(aux_mod, "_get_auxiliary_task_config", lambda task: {
+            "fallback_chain": [
+                {"provider": "openai-codex", "model": "gpt-5.6-sol"},
+                {"provider": "openai-codex", "model": "gpt-5.6-terra"},
+            ],
+        })
+
+        def fake_resolve_provider_client(provider, model=None, **_kwargs):
+            resolver_calls.append((provider, model))
+            return fallback_client, model
+
+        with patch("agent.auxiliary_client._get_cached_client",
+                   return_value=(primary_client, "gpt-5.6-sol")), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                   return_value=("auto", None, None, None, None)), \
+             patch("agent.auxiliary_client.resolve_provider_client",
+                   side_effect=fake_resolve_provider_client), \
+             patch("agent.auxiliary_client._recoverable_pool_provider",
+                   return_value=None), \
+             patch("agent.auxiliary_client._to_async_client",
+                   return_value=(async_fallback_client, "gpt-5.6-terra")):
+            result = await async_call_llm(
+                task="compression",
+                messages=[{"role": "user", "content": "hello"}],
+            )
+
+        assert resolver_calls == [("openai-codex", "gpt-5.6-terra")]
+        assert async_fallback_client.chat.completions.create.call_args.kwargs["model"] == "gpt-5.6-terra"
+        assert result.choices[0].message.content == "async terra"
+
+    def test_unavailable_explicit_provider_skips_auto_selected_failed_pair(self, monkeypatch):
+        """An unavailable explicit provider must use the auto client's actual identity."""
+        import agent.auxiliary_client as aux_mod
+
+        primary_client = MagicMock()
+        primary_client._aux_provider = "openai-codex"
+        primary_client.chat.completions.create.side_effect = self._make_payment_err()
+        fallback_client = MagicMock()
+        fallback_client.chat.completions.create.return_value = MagicMock(choices=[
+            MagicMock(message=MagicMock(content="from terra"))
+        ])
+        resolver_calls = []
+        monkeypatch.setattr(aux_mod, "_get_auxiliary_task_config", lambda task: {
+            "fallback_chain": [
+                {"provider": "openai-codex", "model": "gpt-5.6-sol"},
+                {"provider": "openai-codex", "model": "gpt-5.6-terra"},
+            ],
+        })
+
+        def fake_resolve_provider_client(provider, model=None, **_kwargs):
+            resolver_calls.append((provider, model))
+            return fallback_client, model
+
+        with patch("agent.auxiliary_client._get_cached_client",
+                   side_effect=[(None, None), (primary_client, "gpt-5.6-sol")]), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                   return_value=("openrouter", None, None, None, None)), \
+             patch("agent.auxiliary_client.resolve_provider_client",
+                   side_effect=fake_resolve_provider_client), \
+             patch("agent.auxiliary_client._recoverable_pool_provider",
+                   return_value=None):
+            result = call_llm(
+                task="compression",
+                messages=[{"role": "user", "content": "hello"}],
+            )
+
+        assert resolver_calls == [("openai-codex", "gpt-5.6-terra")]
+        assert fallback_client.chat.completions.create.call_args.kwargs["model"] == "gpt-5.6-terra"
+        assert result.choices[0].message.content == "from terra"
+
+    @pytest.mark.asyncio
+    async def test_async_unavailable_explicit_provider_skips_auto_selected_failed_pair(self, monkeypatch):
+        """The async explicit-to-auto path also uses the actual attempted provider."""
+        import agent.auxiliary_client as aux_mod
+
+        primary_client = MagicMock()
+        primary_client._aux_provider = "openai-codex"
+        primary_client.chat.completions.create = AsyncMock(
+            side_effect=self._make_payment_err())
+        fallback_client = MagicMock()
+        async_fallback_client = MagicMock()
+        async_fallback_client.chat.completions.create = AsyncMock(return_value=MagicMock(
+            choices=[MagicMock(message=MagicMock(content="async terra"))]
+        ))
+        resolver_calls = []
+        monkeypatch.setattr(aux_mod, "_get_auxiliary_task_config", lambda task: {
+            "fallback_chain": [
+                {"provider": "openai-codex", "model": "gpt-5.6-sol"},
+                {"provider": "openai-codex", "model": "gpt-5.6-terra"},
+            ],
+        })
+
+        def fake_resolve_provider_client(provider, model=None, **_kwargs):
+            resolver_calls.append((provider, model))
+            return fallback_client, model
+
+        with patch("agent.auxiliary_client._get_cached_client",
+                   side_effect=[(None, None), (primary_client, "gpt-5.6-sol")]), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                   return_value=("custom", None, None, None, None)), \
+             patch("agent.auxiliary_client.resolve_provider_client",
+                   side_effect=fake_resolve_provider_client), \
+             patch("agent.auxiliary_client._recoverable_pool_provider",
+                   return_value=None), \
+             patch("agent.auxiliary_client._to_async_client",
+                   return_value=(async_fallback_client, "gpt-5.6-terra")):
+            result = await async_call_llm(
+                task="compression",
+                messages=[{"role": "user", "content": "hello"}],
+            )
+
+        assert resolver_calls == [("openai-codex", "gpt-5.6-terra")]
+        assert async_fallback_client.chat.completions.create.call_args.kwargs["model"] == "gpt-5.6-terra"
+        assert result.choices[0].message.content == "async terra"
+
+    def test_auto_resolution_marks_the_actual_main_provider(self, monkeypatch):
+        """Auto clients retain the authoritative provider selected by the router."""
+        import agent.auxiliary_client as aux_mod
+
+        primary_client = MagicMock()
+        monkeypatch.setattr(aux_mod, "_read_main_provider", lambda: "openai-codex")
+        monkeypatch.setattr(aux_mod, "_read_main_model", lambda: "gpt-5.6-sol")
+        monkeypatch.setattr(
+            aux_mod,
+            "resolve_provider_client",
+            lambda provider, model, **_kwargs: (primary_client, model),
+        )
+
+        client, model = aux_mod._resolve_auto()
+
+        assert client is primary_client
+        assert model == "gpt-5.6-sol"
+        assert client._aux_provider == "openai-codex"
+
+    def test_async_auto_resolution_preserves_actual_provider_marker(self, monkeypatch):
+        """Converting an auto-selected client to async retains its provider identity."""
+        import agent.auxiliary_client as aux_mod
+
+        sync_client = MagicMock()
+        sync_client._aux_provider = "openai-codex"
+        async_client = MagicMock()
+        monkeypatch.setattr(
+            aux_mod,
+            "_resolve_auto",
+            lambda **_kwargs: (sync_client, "gpt-5.6-sol"),
+        )
+        monkeypatch.setattr(
+            aux_mod,
+            "_to_async_client",
+            lambda client, model, **_kwargs: (async_client, model),
+        )
+
+        client, model = aux_mod.resolve_provider_client("auto", async_mode=True)
+
+        assert client is async_client
+        assert model == "gpt-5.6-sol"
+        assert client._aux_provider == "openai-codex"
 
     def test_explicit_provider_uses_configured_chain_first(self, monkeypatch, caplog):
         """When a user has fallback_chain configured, it's tried BEFORE the main agent model."""
@@ -1881,6 +2249,80 @@ class TestAuxiliaryFallbackLayering:
         assert any(
             "all fallbacks exhausted" in r.message for r in caplog.records
         ), f"Expected exhaustion warning, got: {[r.message for r in caplog.records]}"
+
+    def test_explicit_same_provider_different_model_failover(self, monkeypatch):
+        """openai-codex/gpt-5.6-sol fails over to openai-codex/gpt-5.6-terra via the
+        configured chain, and the task-level extra_body reasoning effort still
+        applies to the fallback request."""
+        import agent.auxiliary_client as aux_mod
+
+        primary_client = MagicMock()
+        primary_client.base_url = "https://chatgpt.com/backend-api/codex"
+        primary_client.chat.completions.create.side_effect = self._make_payment_err()
+
+        fallback_client = MagicMock()
+        fallback_client.base_url = "https://chatgpt.com/backend-api/codex"
+        fallback_client.chat.completions.create.return_value = MagicMock(choices=[
+            MagicMock(message=MagicMock(content="from terra"))
+        ])
+
+        monkeypatch.setattr(aux_mod, "_get_auxiliary_task_config", lambda task: {
+            "extra_body": {"reasoning": {"effort": "high"}},
+            "fallback_chain": [
+                {"provider": "openai-codex", "model": "gpt-5.6-sol"},
+                {"provider": "openai-codex", "model": "gpt-5.6-terra"},
+            ],
+        })
+
+        def fake_resolve_provider_client(provider, model=None, **_kwargs):
+            assert provider == "openai-codex"
+            return fallback_client, model
+
+        with patch("agent.auxiliary_client._get_cached_client",
+                   return_value=(primary_client, "gpt-5.6-sol")), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                   return_value=("openai-codex", "gpt-5.6-sol", None, None, None)), \
+             patch("agent.auxiliary_client.resolve_provider_client",
+                   side_effect=fake_resolve_provider_client), \
+             patch("agent.auxiliary_client._recoverable_pool_provider",
+                   return_value=None):
+            result = call_llm(
+                task="compression",
+                messages=[{"role": "user", "content": "hello"}],
+            )
+
+        fb_kwargs = fallback_client.chat.completions.create.call_args.kwargs
+        assert fb_kwargs["model"] == "gpt-5.6-terra"
+        assert fb_kwargs["extra_body"]["reasoning"] == {"effort": "high"}
+        assert result.choices[0].message.content == "from terra"
+
+    @pytest.mark.asyncio
+    async def test_async_explicit_provider_passes_failed_model_to_chain(self):
+        """The async fallback path forwards the failed model to the configured chain."""
+        primary_client = MagicMock()
+        primary_client.base_url = "https://chatgpt.com/backend-api/codex"
+        primary_client.chat.completions.create = AsyncMock(
+            side_effect=self._make_payment_err())
+
+        with patch("agent.auxiliary_client._get_cached_client",
+                   return_value=(primary_client, "gpt-5.6-sol")), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                   return_value=("openai-codex", "gpt-5.6-sol", None, None, None)), \
+             patch("agent.auxiliary_client._recoverable_pool_provider",
+                   return_value=None), \
+             patch("agent.auxiliary_client._try_configured_fallback_chain",
+                   return_value=(None, None, "")) as mock_chain, \
+             patch("agent.auxiliary_client._try_main_agent_model_fallback",
+                   return_value=(None, None, "")):
+            with pytest.raises(Exception, match="Payment Required"):
+                await async_call_llm(
+                    task="compression",
+                    messages=[{"role": "user", "content": "hello"}],
+                )
+
+        mock_chain.assert_called_once_with(
+            "compression", "openai-codex", reason="payment error",
+            failed_model="gpt-5.6-sol")
 
 
 class TestTryMainAgentModelFallback:
