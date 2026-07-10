@@ -3363,7 +3363,12 @@ def _resolve_auto(
                 api_mode=runtime_api_mode or None,
             )
             if client is not None:
-                _record_aux_provider(client, resolved_provider)
+                # resolved_provider is the transport ("custom" for a named
+                # custom provider with a runtime base_url); the recorded
+                # identity must stay the logical main provider (custom:foo →
+                # foo) so the fallback chain can skip the exact provider+model
+                # pair that failed instead of treating it as cross-provider.
+                _record_aux_provider(client, main_provider)
                 logger.info("Auxiliary auto-detect: using main provider %s (%s)",
                             main_provider, resolved or main_model)
                 return client, resolved or main_model

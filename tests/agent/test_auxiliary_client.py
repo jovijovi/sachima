@@ -2325,6 +2325,273 @@ class TestAuxiliaryFallbackLayering:
             failed_model="gpt-5.6-sol")
 
 
+class TestNamedCustomFallbackIdentity:
+    """provider:auto through a named custom main (custom:foo + runtime base_url).
+
+    _resolve_auto rewrites the transport provider to "custom" so the client is
+    constructed against the runtime base_url, but the identity recorded on the
+    client must stay the logical main provider (custom:foo → foo).  Recording
+    the transport instead makes a fallback_chain entry ``custom:foo`` with the
+    same model look cross-provider, retrying the exact endpoint/provider/model
+    pair that just failed and shadowing any real later fallback.
+    """
+
+    BASE_URL = "http://localhost:9999/v1"
+    MAIN_MODEL = "main-model"
+
+    @pytest.fixture(autouse=True)
+    def _clear_unhealthy_cache(self):
+        """Earlier tests in this file call _mark_provider_unhealthy() which
+        pollutes the module-level ``_aux_unhealthy_until`` dict (10-min TTL).
+        Without this cleanup _resolve_auto skips its Step-1 main-provider
+        path ("local/custom" unhealthy) and never reaches the identity
+        recording under test.
+        """
+        from agent.auxiliary_client import _aux_unhealthy_until, _aux_unhealthy_logged_at
+        _aux_unhealthy_until.clear()
+        _aux_unhealthy_logged_at.clear()
+        yield
+        _aux_unhealthy_until.clear()
+        _aux_unhealthy_logged_at.clear()
+
+    def _make_payment_err(self):
+        exc = Exception("Payment Required: insufficient credits")
+        exc.status_code = 402
+        return exc
+
+    def _response(self, content):
+        return MagicMock(choices=[MagicMock(message=MagicMock(content=content))])
+
+    def _install_harness(self, monkeypatch, chain, clients):
+        """Route provider:auto through the real _resolve_auto with a named
+        custom main runtime, stubbing only transport construction.
+
+        ``clients`` maps a provider name passed to resolve_provider_client to
+        the sync client the fake router returns for it.  Returns the resolver
+        call log (the delegated "auto" entry point is not logged).
+        """
+        import agent.auxiliary_client as aux_mod
+
+        monkeypatch.setattr(aux_mod, "_RUNTIME_MAIN_PROVIDER", "custom:foo")
+        monkeypatch.setattr(aux_mod, "_RUNTIME_MAIN_MODEL", self.MAIN_MODEL)
+        monkeypatch.setattr(aux_mod, "_RUNTIME_MAIN_BASE_URL", self.BASE_URL)
+        monkeypatch.setattr(aux_mod, "_RUNTIME_MAIN_API_KEY", "test-key")
+        monkeypatch.setattr(aux_mod, "_RUNTIME_MAIN_API_MODE", "")
+        monkeypatch.setattr(aux_mod, "_client_cache", {})
+        monkeypatch.setattr(aux_mod, "_peek_pool_entry", lambda provider: None)
+        monkeypatch.setattr(
+            aux_mod, "_resolve_task_provider_model",
+            lambda *args: ("auto", None, None, None, None))
+        monkeypatch.setattr(
+            aux_mod, "_recoverable_pool_provider", lambda *args, **kwargs: None)
+        monkeypatch.setattr(
+            aux_mod, "_get_auxiliary_task_config",
+            lambda task: {
+                "extra_body": {"reasoning": {"effort": "high"}},
+                "fallback_chain": chain,
+            })
+
+        real_resolve = aux_mod.resolve_provider_client
+        resolver_calls = []
+
+        def fake_resolve(provider, model=None, *args, **kwargs):
+            if provider == "auto":
+                return real_resolve(provider, model, *args, **kwargs)
+            resolver_calls.append({
+                "provider": provider,
+                "model": model,
+                "explicit_base_url": kwargs.get("explicit_base_url"),
+            })
+            return clients[provider], model
+
+        monkeypatch.setattr(aux_mod, "resolve_provider_client", fake_resolve)
+        return resolver_calls
+
+    def test_auto_resolution_named_custom_records_logical_identity(self, monkeypatch):
+        """The transport rewrite to "custom" must not overwrite the client's identity."""
+        import agent.auxiliary_client as aux_mod
+
+        primary_client = MagicMock()
+        resolver_calls = []
+
+        def fake_resolve(provider, model=None, **kwargs):
+            resolver_calls.append(
+                (provider, model, kwargs.get("explicit_base_url")))
+            return primary_client, model
+
+        monkeypatch.setattr(aux_mod, "resolve_provider_client", fake_resolve)
+
+        client, model = aux_mod._resolve_auto(main_runtime={
+            "provider": "custom:foo",
+            "model": self.MAIN_MODEL,
+            "base_url": self.BASE_URL,
+            "api_key": "test-key",
+        })
+
+        assert client is primary_client
+        assert model == self.MAIN_MODEL
+        # Transport: constructed as plain custom against the runtime endpoint.
+        assert resolver_calls == [("custom", self.MAIN_MODEL, self.BASE_URL)]
+        # Identity: the authoritative marker is the logical main provider, so
+        # the fallback chain can recognize custom:foo entries as same-provider.
+        assert client._aux_provider == "foo"
+
+    def test_auto_resolution_plain_custom_still_records_custom(self, monkeypatch):
+        """A plain custom main provider keeps its existing identity marker."""
+        import agent.auxiliary_client as aux_mod
+
+        primary_client = MagicMock()
+        monkeypatch.setattr(
+            aux_mod, "resolve_provider_client",
+            lambda provider, model=None, **_kwargs: (primary_client, model))
+
+        client, _model = aux_mod._resolve_auto(main_runtime={
+            "provider": "custom",
+            "model": self.MAIN_MODEL,
+            "base_url": self.BASE_URL,
+            "api_key": "test-key",
+        })
+
+        assert client is primary_client
+        assert client._aux_provider == "custom"
+
+    def test_auto_named_custom_skips_same_model_chain_entry(self, monkeypatch):
+        """custom:foo + the failed model is the exact failed pair — use the next real fallback."""
+        primary_client = MagicMock()
+        primary_client.base_url = self.BASE_URL
+        primary_client.chat.completions.create.side_effect = self._make_payment_err()
+
+        foo_client = MagicMock()
+        foo_client.base_url = self.BASE_URL
+        foo_client.chat.completions.create.return_value = self._response("from foo again")
+
+        openrouter_client = MagicMock()
+        openrouter_client.base_url = "https://openrouter.ai/api/v1"
+        openrouter_client.chat.completions.create.return_value = self._response("from openrouter")
+
+        resolver_calls = self._install_harness(
+            monkeypatch,
+            chain=[
+                {"provider": "custom:foo", "model": self.MAIN_MODEL,
+                 "base_url": self.BASE_URL},
+                {"provider": "openrouter", "model": "or-model"},
+            ],
+            clients={"custom": primary_client, "custom:foo": foo_client,
+                     "openrouter": openrouter_client},
+        )
+
+        result = call_llm(
+            task="compression",
+            messages=[{"role": "user", "content": "hello"}],
+        )
+
+        # Transport construction still goes through provider "custom" with
+        # the runtime endpoint and the main model.
+        assert resolver_calls[0] == {
+            "provider": "custom",
+            "model": self.MAIN_MODEL,
+            "explicit_base_url": self.BASE_URL,
+        }
+        # The exact failed pair must never be re-resolved or retried.
+        assert all(c["provider"] != "custom:foo" for c in resolver_calls[1:])
+        assert not foo_client.chat.completions.create.called
+        # The next real fallback serves the request, with task extra_body intact.
+        fb_kwargs = openrouter_client.chat.completions.create.call_args.kwargs
+        assert fb_kwargs["model"] == "or-model"
+        assert fb_kwargs["extra_body"]["reasoning"] == {"effort": "high"}
+        assert result.choices[0].message.content == "from openrouter"
+
+    @pytest.mark.asyncio
+    async def test_async_auto_named_custom_skips_same_model_chain_entry(self, monkeypatch):
+        """The async auto path applies the same logical-identity boundary."""
+        import agent.auxiliary_client as aux_mod
+
+        primary_client = MagicMock()
+        primary_client.base_url = self.BASE_URL
+        async_primary = MagicMock()
+        async_primary.base_url = self.BASE_URL
+        async_primary.chat.completions.create = AsyncMock(
+            side_effect=self._make_payment_err())
+
+        foo_client = MagicMock()
+        async_foo = MagicMock()
+        async_foo.chat.completions.create = AsyncMock(
+            return_value=self._response("from foo again"))
+
+        openrouter_client = MagicMock()
+        async_openrouter = MagicMock()
+        async_openrouter.chat.completions.create = AsyncMock(
+            return_value=self._response("async from openrouter"))
+
+        resolver_calls = self._install_harness(
+            monkeypatch,
+            chain=[
+                {"provider": "custom:foo", "model": self.MAIN_MODEL,
+                 "base_url": self.BASE_URL},
+                {"provider": "openrouter", "model": "or-model"},
+            ],
+            clients={"custom": primary_client, "custom:foo": foo_client,
+                     "openrouter": openrouter_client},
+        )
+
+        async_map = {
+            id(primary_client): async_primary,
+            id(foo_client): async_foo,
+            id(openrouter_client): async_openrouter,
+        }
+        monkeypatch.setattr(
+            aux_mod, "_to_async_client",
+            lambda client, model, **_kwargs: (async_map[id(client)], model))
+
+        result = await async_call_llm(
+            task="compression",
+            messages=[{"role": "user", "content": "hello"}],
+        )
+
+        assert resolver_calls[0] == {
+            "provider": "custom",
+            "model": self.MAIN_MODEL,
+            "explicit_base_url": self.BASE_URL,
+        }
+        assert all(c["provider"] != "custom:foo" for c in resolver_calls[1:])
+        assert not async_foo.chat.completions.create.called
+        fb_kwargs = async_openrouter.chat.completions.create.call_args.kwargs
+        assert fb_kwargs["model"] == "or-model"
+        assert result.choices[0].message.content == "async from openrouter"
+
+    def test_auto_named_custom_different_model_chain_entry_is_used(self, monkeypatch):
+        """custom:foo with a different model stays a legitimate same-provider failover."""
+        primary_client = MagicMock()
+        primary_client.base_url = self.BASE_URL
+        primary_client.chat.completions.create.side_effect = self._make_payment_err()
+
+        foo_client = MagicMock()
+        foo_client.base_url = self.BASE_URL
+        foo_client.chat.completions.create.return_value = self._response("from foo other model")
+
+        resolver_calls = self._install_harness(
+            monkeypatch,
+            chain=[
+                {"provider": "custom:foo", "model": "other-model",
+                 "base_url": self.BASE_URL},
+            ],
+            clients={"custom": primary_client, "custom:foo": foo_client},
+        )
+
+        result = call_llm(
+            task="compression",
+            messages=[{"role": "user", "content": "hello"}],
+        )
+
+        assert resolver_calls[1] == {
+            "provider": "custom:foo",
+            "model": "other-model",
+            "explicit_base_url": self.BASE_URL,
+        }
+        assert foo_client.chat.completions.create.call_args.kwargs["model"] == "other-model"
+        assert result.choices[0].message.content == "from foo other model"
+
+
 class TestTryMainAgentModelFallback:
     """_try_main_agent_model_fallback resolves the user's main provider+model as a safety net."""
 
