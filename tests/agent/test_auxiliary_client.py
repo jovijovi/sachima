@@ -2362,6 +2362,17 @@ class TestNamedCustomFallbackIdentity:
     def _response(self, content):
         return MagicMock(choices=[MagicMock(message=MagicMock(content=content))])
 
+    def _fixed_client(self, base_url):
+        """Client shape that exposes transport fields but rejects new attributes."""
+        class FixedClient:
+            __slots__ = ("base_url", "chat")
+
+            def __init__(self):
+                self.base_url = base_url
+                self.chat = MagicMock()
+
+        return FixedClient()
+
     def _install_harness(self, monkeypatch, chain, clients):
         """Route provider:auto through the real _resolve_auto with a named
         custom main runtime, stubbing only transport construction.
@@ -2457,8 +2468,7 @@ class TestNamedCustomFallbackIdentity:
 
     def test_auto_named_custom_skips_same_model_chain_entry(self, monkeypatch):
         """custom:foo + the failed model is the exact failed pair — use the next real fallback."""
-        primary_client = MagicMock()
-        primary_client.base_url = self.BASE_URL
+        primary_client = self._fixed_client(self.BASE_URL)
         primary_client.chat.completions.create.side_effect = self._make_payment_err()
 
         foo_client = MagicMock()
@@ -2506,8 +2516,7 @@ class TestNamedCustomFallbackIdentity:
         """The async auto path applies the same logical-identity boundary."""
         import agent.auxiliary_client as aux_mod
 
-        primary_client = MagicMock()
-        primary_client.base_url = self.BASE_URL
+        primary_client = self._fixed_client(self.BASE_URL)
         async_primary = MagicMock()
         async_primary.base_url = self.BASE_URL
         async_primary.chat.completions.create = AsyncMock(

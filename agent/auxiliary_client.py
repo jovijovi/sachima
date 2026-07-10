@@ -45,6 +45,8 @@ import logging
 import os
 import threading
 import time
+import weakref
+from collections import OrderedDict
 from pathlib import Path  # noqa: F401 — used by test mocks
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
@@ -3047,19 +3049,97 @@ def _try_main_agent_model_fallback(
     return client, resolved_model or main_model, label
 
 
+_AUX_PROVIDER_SIDECAR_MAX = 128
+_aux_provider_sidecar: "OrderedDict[int, Tuple[Any, str]]" = OrderedDict()
+_aux_provider_sidecar_lock = threading.Lock()
+
+
+def _drop_aux_provider_sidecar(key: int, holder: Any) -> None:
+    """Remove a weak sidecar entry only when it still owns ``key``."""
+    with _aux_provider_sidecar_lock:
+        current = _aux_provider_sidecar.get(key)
+        if current is not None and current[0] is holder:
+            _aux_provider_sidecar.pop(key, None)
+
+
+def _remember_aux_provider(client: Any, provider: str) -> None:
+    """Remember identity for clients that reject dynamic attributes.
+
+    Weak references avoid extending normal client lifetimes.  Objects that are
+    neither attribute-writable nor weak-referenceable use a bounded strong
+    fallback; retaining the object alongside its id prevents id-reuse aliases.
+    """
+    key = id(client)
+    try:
+        holder = weakref.ref(
+            client,
+            lambda ref, sidecar_key=key: _drop_aux_provider_sidecar(sidecar_key, ref),
+        )
+    except TypeError:
+        holder = client
+
+    with _aux_provider_sidecar_lock:
+        _aux_provider_sidecar.pop(key, None)
+        _aux_provider_sidecar[key] = (holder, provider)
+        while len(_aux_provider_sidecar) > _AUX_PROVIDER_SIDECAR_MAX:
+            _aux_provider_sidecar.popitem(last=False)
+
+
+def _sidecar_aux_provider(client: Any) -> Optional[str]:
+    """Return a sidecar identity only when it belongs to this exact object."""
+    key = id(client)
+    with _aux_provider_sidecar_lock:
+        current = _aux_provider_sidecar.get(key)
+        if current is None:
+            return None
+        holder, provider = current
+        target = holder() if isinstance(holder, weakref.ReferenceType) else holder
+        if target is not client:
+            _aux_provider_sidecar.pop(key, None)
+            return None
+        _aux_provider_sidecar.move_to_end(key)
+        return provider
+
+
+def _forget_aux_provider_sidecar(client: Any) -> None:
+    """Release a sidecar entry when normal attribute storage becomes usable."""
+    key = id(client)
+    with _aux_provider_sidecar_lock:
+        current = _aux_provider_sidecar.get(key)
+        if current is None:
+            return
+        holder = current[0]
+        target = holder() if isinstance(holder, weakref.ReferenceType) else holder
+        if target is client:
+            _aux_provider_sidecar.pop(key, None)
+
+
 def _record_aux_provider(client: Any, provider: str) -> Any:
     """Attach the router's authoritative provider choice to an auxiliary client."""
-    if client is not None:
-        try:
-            client._aux_provider = _normalize_aux_provider(provider)
-        except Exception:
-            pass
+    if client is None:
+        return client
+
+    normalized = _normalize_aux_provider(provider)
+    try:
+        client._aux_provider = normalized
+        if getattr(client, "_aux_provider", None) == normalized:
+            _forget_aux_provider_sidecar(client)
+            return client
+    except Exception:
+        pass
+
+    _remember_aux_provider(client, normalized)
     return client
 
 
 def _actual_aux_provider(client: Any, fallback: str) -> str:
     """Return a recorded provider identity without inferring it from a URL."""
-    recorded = getattr(client, "_aux_provider", None)
+    recorded = _sidecar_aux_provider(client)
+    if recorded is None:
+        try:
+            recorded = getattr(client, "_aux_provider", None)
+        except Exception:
+            recorded = None
     if isinstance(recorded, str) and recorded.strip():
         return _normalize_aux_provider(recorded)
     return _normalize_aux_provider(fallback)
