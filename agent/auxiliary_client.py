@@ -3047,16 +3047,42 @@ def _try_main_agent_model_fallback(
     return client, resolved_model or main_model, label
 
 
+def _record_aux_provider(client: Any, provider: str) -> Any:
+    """Attach the router's authoritative provider choice to an auxiliary client."""
+    if client is not None:
+        try:
+            client._aux_provider = _normalize_aux_provider(provider)
+        except Exception:
+            pass
+    return client
+
+
+def _actual_aux_provider(client: Any, fallback: str) -> str:
+    """Return a recorded provider identity without inferring it from a URL."""
+    recorded = getattr(client, "_aux_provider", None)
+    if isinstance(recorded, str) and recorded.strip():
+        return _normalize_aux_provider(recorded)
+    return _normalize_aux_provider(fallback)
+
+
 def _try_configured_fallback_chain(
     task: str,
     failed_provider: str,
     reason: str = "error",
+    failed_model: Optional[str] = None,
 ) -> Tuple[Optional[Any], Optional[str], str]:
     """Try user-configured fallback_chain for a specific auxiliary task.
 
     Reads auxiliary.<task>.fallback_chain from config.yaml and tries each
     entry in order.  Each entry must have at least ``provider``; ``model``,
     ``base_url``, and ``api_key`` are optional.
+
+    Entries on ``failed_provider`` are skipped, except when ``failed_model``
+    is known and the entry names a different model — a same-provider,
+    different-model failover (e.g. openai-codex/gpt-5.6-sol →
+    openai-codex/gpt-5.6-terra) is a legitimate escape from a model-scoped
+    quota or rate limit.  The exact failed provider+model pair is never
+    retried.
 
     Returns:
         (client, model, provider_label) or (None, None, "") if no fallback.
@@ -3069,16 +3095,24 @@ def _try_configured_fallback_chain(
     if not chain or not isinstance(chain, list):
         return None, None, ""
 
-    skip = failed_provider.lower().strip()
+    skip = _normalize_aux_provider(failed_provider)
+    failed_model_norm = (failed_model or "").strip().lower()
     tried = []
 
     for i, entry in enumerate(chain):
         if not isinstance(entry, dict):
             continue
         fb_provider = str(entry.get("provider", "")).strip()
-        if not fb_provider or fb_provider.lower() == skip:
+        if not fb_provider:
             continue
+        fb_provider_norm = _normalize_aux_provider(fb_provider)
         fb_model = str(entry.get("model", "")).strip() or None
+        if fb_provider_norm == skip:
+            # A same-provider entry with no explicit model could resolve
+            # right back to the failed model, so only a known-different
+            # model justifies retrying the failed provider.
+            if not failed_model_norm or not fb_model or fb_model.lower() == failed_model_norm:
+                continue
 
         label = f"fallback_chain[{i}]({fb_provider})"
 
@@ -3087,12 +3121,24 @@ def _try_configured_fallback_chain(
         except Exception:
             fb_client, resolved_model = None, None
 
+        final_model = resolved_model or fb_model
+        if (
+            fb_client is not None
+            and fb_provider_norm == skip
+            and (final_model or "").strip().lower() == failed_model_norm
+        ):
+            # Provider resolution may canonicalize aliases or rewrite the
+            # requested model.  Never return the pair that actually failed.
+            tried.append(label)
+            continue
+
         if fb_client is not None:
+            _record_aux_provider(fb_client, fb_provider_norm)
             logger.info(
                 "Auxiliary %s: %s on %s — configured fallback to %s (%s)",
-                task, reason, failed_provider, label, resolved_model or fb_model or "default",
+                task, reason, failed_provider, label, final_model or "default",
             )
-            return fb_client, resolved_model or fb_model, label
+            return fb_client, final_model, label
         tried.append(label)
 
     if tried:
@@ -3184,6 +3230,7 @@ def _try_main_fallback_chain(
             logger.debug("Auxiliary %s: main fallback %s failed to resolve: %s", task or "call", label, exc)
             fb_client, resolved_model = None, None
         if fb_client is not None:
+            _record_aux_provider(fb_client, fb_norm)
             logger.info(
                 "Auxiliary %s: %s on %s — main fallback chain to %s (%s)",
                 task or "call", reason, failed_provider or "auto", label,
@@ -3316,6 +3363,7 @@ def _resolve_auto(
                 api_mode=runtime_api_mode or None,
             )
             if client is not None:
+                _record_aux_provider(client, resolved_provider)
                 logger.info("Auxiliary auto-detect: using main provider %s (%s)",
                             main_provider, resolved or main_model)
                 return client, resolved or main_model
@@ -3344,6 +3392,7 @@ def _resolve_auto(
             continue
         client, model = try_fn()
         if client is not None:
+            _record_aux_provider(client, label)
             if tried:
                 logger.info("Auxiliary auto-detect: using %s (%s) — skipped: %s",
                             label, model or "default", ", ".join(tried))
@@ -3590,8 +3639,13 @@ def resolve_provider_client(
                 "auxiliary provider (using %r instead)", model, resolved)
             model = None
         final_model = model or resolved
-        return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
-                else (client, final_model))
+        if async_mode:
+            async_client, async_model = _to_async_client(
+                client, final_model or "", is_vision=is_vision)
+            _record_aux_provider(
+                async_client, _actual_aux_provider(client, provider))
+            return async_client, async_model
+        return client, final_model
 
     # ── OpenRouter ───────────────────────────────────────────
     if provider == "openrouter":
@@ -5565,6 +5619,8 @@ def call_llm(
         # See #26803: daily token quota (429 + "too many tokens per day") must
         # fall back just like a 402 credit error.
         is_auto = resolved_provider in {"auto", "", None}
+        attempted_provider = _actual_aux_provider(
+            client, resolved_provider or "auto")
         # Capacity errors bypass the explicit-provider gate: the provider
         # literally cannot serve this request regardless of user intent.
         is_capacity_error = _is_payment_error(first_err) or _is_connection_error(first_err)
@@ -5593,7 +5649,8 @@ def call_llm(
             fb_client, fb_model, fb_label = (None, None, "")
             if is_auto:
                 fb_client, fb_model, fb_label = _try_configured_fallback_chain(
-                    task, resolved_provider or "auto", reason=reason)
+                    task, attempted_provider, reason=reason,
+                    failed_model=kwargs.get("model"))
                 if fb_client is None:
                     fb_client, fb_model, fb_label = _try_main_fallback_chain(
                         task, resolved_provider or "auto", reason=reason)
@@ -5602,7 +5659,8 @@ def call_llm(
                         resolved_provider, task, reason=reason)
             else:
                 fb_client, fb_model, fb_label = _try_configured_fallback_chain(
-                    task, resolved_provider or "auto", reason=reason)
+                    task, attempted_provider, reason=reason,
+                    failed_model=kwargs.get("model"))
                 if fb_client is None:
                     fb_client, fb_model, fb_label = _try_main_agent_model_fallback(
                         resolved_provider, task, reason=reason)
@@ -6014,6 +6072,8 @@ async def async_call_llm(
         # gate — the provider cannot serve the request regardless of user intent.
         # See #26803: daily token quota must fall back like a 402 credit error.
         is_auto = resolved_provider in {"auto", "", None}
+        attempted_provider = _actual_aux_provider(
+            client, resolved_provider or "auto")
         is_capacity_error = _is_payment_error(first_err) or _is_connection_error(first_err)
         if should_fallback and (is_auto or is_capacity_error):
             if _is_payment_error(first_err):
@@ -6036,7 +6096,8 @@ async def async_call_llm(
             fb_client, fb_model, fb_label = (None, None, "")
             if is_auto:
                 fb_client, fb_model, fb_label = _try_configured_fallback_chain(
-                    task, resolved_provider or "auto", reason=reason)
+                    task, attempted_provider, reason=reason,
+                    failed_model=kwargs.get("model"))
                 if fb_client is None:
                     fb_client, fb_model, fb_label = _try_main_fallback_chain(
                         task, resolved_provider or "auto", reason=reason)
@@ -6045,7 +6106,8 @@ async def async_call_llm(
                         resolved_provider, task, reason=reason)
             else:
                 fb_client, fb_model, fb_label = _try_configured_fallback_chain(
-                    task, resolved_provider or "auto", reason=reason)
+                    task, attempted_provider, reason=reason,
+                    failed_model=kwargs.get("model"))
                 if fb_client is None:
                     fb_client, fb_model, fb_label = _try_main_agent_model_fallback(
                         resolved_provider, task, reason=reason)
