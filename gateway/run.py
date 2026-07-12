@@ -14649,6 +14649,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             }
         _TASK_TRACKER_RENDER_SIGNAL = ("__render_task_tracker__",)
         if isinstance(progress_transaction, dict):
+            # Continuation/legacy callers may share a plain {"queue": ...} dict
+            # without a transaction_id; mint the canonical task ID once on the
+            # shared dict so every frame of the logical task (and the tracker
+            # setup below, which indexes it directly) sees the same value.
+            progress_transaction.setdefault("transaction_id", f"task-{uuid.uuid4().hex}")
             task_tracker_render_pending = progress_transaction.get("task_tracker_render_pending")
             if not isinstance(task_tracker_render_pending, list):
                 task_tracker_render_pending = [False]

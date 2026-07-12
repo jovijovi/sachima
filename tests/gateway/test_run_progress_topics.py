@@ -1089,6 +1089,7 @@ async def _run_with_agent(
     chat_type="group",
     thread_id="17585",
     adapter_cls=ProgressCaptureAdapter,
+    progress_transaction=None,
 ):
     if config_data:
         import yaml
@@ -1134,6 +1135,7 @@ async def _run_with_agent(
         source=source,
         session_id=session_id,
         session_key=session_key,
+        _progress_transaction=progress_transaction,
     )
     return adapter, result
 
@@ -2670,6 +2672,79 @@ async def test_feishu_task_tracker_assigns_distinct_task_ids_within_one_session(
     assert "shared\\-session" not in first_details
     assert "shared\\-session" not in second_details
     assert first_details.splitlines()[0] != second_details.splitlines()[0]
+
+
+@pytest.mark.asyncio
+async def test_legacy_progress_transaction_without_id_gets_single_canonical_task_id(monkeypatch, tmp_path):
+    """A pre-#239 shared transaction shape ({"queue": ...} without transaction_id)
+    must receive exactly one canonical task ID instead of silently disabling the
+    task tracker, and follow-up frames reusing the dict must see the same ID."""
+    import queue as queue_module
+    import re
+
+    legacy_transaction = {"queue": queue_module.Queue()}
+    config_data = {
+        "display": {
+            "tool_progress": "all",
+            "task_tracker": {"enabled": True, "mode": "text", "max_operations": 8},
+        },
+    }
+
+    _, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        SingleProgressFastReturnAgent,
+        session_id="sess-legacy-transaction-shape",
+        config_data=config_data,
+        progress_transaction=legacy_transaction,
+    )
+
+    assert result["final_response"] == "done"
+    minted_id = legacy_transaction.get("transaction_id")
+    assert minted_id is not None, "legacy {'queue': ...} transaction never received a transaction_id"
+    assert re.fullmatch(r"task-[0-9a-f]{32}", minted_id)
+    tracker = legacy_transaction.get("tracker")
+    assert tracker is not None, "task tracker setup was disabled for the legacy transaction shape"
+    assert tracker.transaction_id == minted_id
+
+    _, followup_result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        SingleProgressFastReturnAgent,
+        session_id="sess-legacy-transaction-shape",
+        config_data=config_data,
+        progress_transaction=legacy_transaction,
+    )
+
+    assert followup_result["final_response"] == "done"
+    assert legacy_transaction["transaction_id"] == minted_id
+    assert legacy_transaction["tracker"] is tracker
+
+
+@pytest.mark.asyncio
+async def test_progress_transaction_with_existing_id_keeps_it_unchanged(monkeypatch, tmp_path):
+    import queue as queue_module
+
+    provided_id = "task-" + "f" * 32
+    shared_transaction = {"queue": queue_module.Queue(), "transaction_id": provided_id}
+
+    _, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        SingleProgressFastReturnAgent,
+        session_id="sess-existing-transaction-id",
+        config_data={
+            "display": {
+                "tool_progress": "all",
+                "task_tracker": {"enabled": True, "mode": "text", "max_operations": 8},
+            },
+        },
+        progress_transaction=shared_transaction,
+    )
+
+    assert result["final_response"] == "done"
+    assert shared_transaction["transaction_id"] == provided_id
+    assert shared_transaction["tracker"].transaction_id == provided_id
 
 
 @pytest.mark.asyncio
