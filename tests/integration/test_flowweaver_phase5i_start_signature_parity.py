@@ -121,7 +121,6 @@ def make_shadow_agent_result(*, index: int, include_forbidden_sentinels: bool = 
         )
     snapshot = TransactionSnapshot(
         transaction_id=f"session_phase5i_signature_{index}",
-        title="Phase 5I start signature parity task",
         status="completed",
         started_at=3000.0 + index,
         updated_at=3002.0 + index,

@@ -23,7 +23,7 @@ def _read_jsonl(path: Path) -> list[dict]:
 def test_jsonl_store_appends_transaction_operation_records(tmp_path):
     store_path = tmp_path / "nested" / "events.jsonl"
     store = JsonlProgressEventStore(store_path)
-    tracker = ProgressTracker("tx-1", "Persist progress")
+    tracker = ProgressTracker("tx-1")
 
     first = tracker.record_callback_event("tool.started", tool_name="terminal", preview="pytest")
     second = tracker.record_callback_event("tool.completed", tool_name="terminal", duration=1.25)
@@ -34,7 +34,6 @@ def test_jsonl_store_appends_transaction_operation_records(tmp_path):
     records = _read_jsonl(store_path)
     assert len(records) == 2
     assert records[0]["transaction"]["id"] == "tx-1"
-    assert records[0]["transaction"]["title"] == "Persist progress"
     assert records[0]["operation"]["event_type"] == "tool.started"
     assert records[0]["operation"]["tool_name"] == "terminal"
     assert records[0]["operation"]["preview"] == "pytest"
@@ -45,7 +44,7 @@ def test_jsonl_store_appends_transaction_operation_records(tmp_path):
 def test_jsonl_store_appends_final_transaction_snapshot_record(tmp_path):
     store_path = tmp_path / "events.jsonl"
     store = JsonlProgressEventStore(store_path)
-    tracker = ProgressTracker("tx-final", "Persist final state")
+    tracker = ProgressTracker("tx-final")
     tracker.record_callback_event("tool.started", tool_name="terminal", preview="pytest")
     tracker.mark_completed(is_error=False)
 
@@ -68,7 +67,7 @@ def test_jsonl_store_appends_final_transaction_snapshot_record(tmp_path):
 def test_progress_records_include_sanitized_context_usage(tmp_path):
     store_path = tmp_path / "events.jsonl"
     store = JsonlProgressEventStore(store_path)
-    tracker = ProgressTracker("tx-context", "Persist context usage")
+    tracker = ProgressTracker("tx-context")
     tracker.update_context_usage(
         current_tokens=40_960,
         context_window=128_000,
@@ -92,7 +91,7 @@ def test_progress_records_include_sanitized_context_usage(tmp_path):
 def test_progress_records_include_sanitized_iteration_usage(tmp_path):
     store_path = tmp_path / "events.jsonl"
     store = JsonlProgressEventStore(store_path)
-    tracker = ProgressTracker("tx-rounds", "Persist iteration usage")
+    tracker = ProgressTracker("tx-rounds")
     tracker.update_iteration_usage(current_rounds=12, max_rounds=90)
 
     store.append_snapshot(tracker.snapshot())
@@ -104,7 +103,7 @@ def test_progress_records_include_sanitized_iteration_usage(tmp_path):
 def test_progress_records_include_sanitized_todo_items(tmp_path):
     store_path = tmp_path / "events.jsonl"
     store = JsonlProgressEventStore(store_path)
-    tracker = ProgressTracker("tx-todo", "Persist todo items")
+    tracker = ProgressTracker("tx-todo")
     tracker.update_todo_items([
         {"id": "pr", "content": "PR verification", "status": "in_progress"},
         {"id": "local", "content": "Local tests", "status": "completed", "parent_id": "pr"},
@@ -133,7 +132,6 @@ def test_progress_records_redact_secret_shaped_todo_items(tmp_path):
     leak = "store-todo-" + "secret"
     snapshot = TransactionSnapshot(
         transaction_id="tx-todo-secret",
-        title="Persist secret todo",
         status="running",
         started_at=1.0,
         updated_at=2.0,
@@ -162,7 +160,6 @@ def test_progress_records_redact_bare_provider_key_shapes_in_todo_items(tmp_path
     path = "/data/agents/workspace/config.yaml"
     snapshot = TransactionSnapshot(
         transaction_id="tx-todo-bare-secret",
-        title="Persist bare secret todo",
         status="running",
         started_at=1.0,
         updated_at=2.0,
@@ -190,7 +187,6 @@ def test_progress_records_preserve_local_paths_in_todo_items(tmp_path):
     store = JsonlProgressEventStore(store_path)
     snapshot = TransactionSnapshot(
         transaction_id="tx-todo-path",
-        title="Persist path todo",
         status="running",
         started_at=1.0,
         updated_at=2.0,
@@ -219,7 +215,6 @@ def test_progress_records_normalize_todo_parent_links_to_top_level(tmp_path):
     store = JsonlProgressEventStore(store_path)
     snapshot = TransactionSnapshot(
         transaction_id="tx-todo-deep",
-        title="Persist deep todo",
         status="running",
         started_at=1.0,
         updated_at=2.0,
@@ -243,7 +238,7 @@ def test_progress_records_normalize_todo_parent_links_to_top_level(tmp_path):
 def test_progress_records_round_trip_executor_only_when_present(tmp_path):
     store_path = tmp_path / "events.jsonl"
     store = JsonlProgressEventStore(store_path)
-    tracker = ProgressTracker("tx-todo-executor", "Persist executor todo")
+    tracker = ProgressTracker("tx-todo-executor")
     tracker.update_todo_items([
         {"id": "1", "content": "Delegated", "status": "in_progress", "executor": "codex"},
         {"id": "2", "content": "Unlabeled", "status": "pending"},
@@ -271,7 +266,6 @@ def test_progress_records_drop_unsafe_executor_but_keep_item(tmp_path):
     bare_key = "sk-" + "test-" + ("e" * 32)
     snapshot = TransactionSnapshot(
         transaction_id="tx-todo-executor-unsafe",
-        title="Persist unsafe executor todo",
         status="running",
         started_at=1.0,
         updated_at=2.0,
@@ -294,7 +288,7 @@ def test_progress_records_drop_unsafe_executor_but_keep_item(tmp_path):
 def test_progress_records_include_empty_todo_items_to_clear_stale_state(tmp_path):
     store_path = tmp_path / "events.jsonl"
     store = JsonlProgressEventStore(store_path)
-    tracker = ProgressTracker("tx-no-todo", "No todos")
+    tracker = ProgressTracker("tx-no-todo")
 
     store.append_snapshot(tracker.snapshot())
 
@@ -307,7 +301,7 @@ def test_progress_records_include_todo_lifecycle_and_hint(tmp_path):
 
     store_path = tmp_path / "events.jsonl"
     store = JsonlProgressEventStore(store_path)
-    tracker = ProgressTracker("tx-lifecycle", "Persist lifecycle")
+    tracker = ProgressTracker("tx-lifecycle")
     owner = make_owner_scope_ref(
         profile="default",
         platform="feishu",
@@ -368,7 +362,7 @@ def test_progress_records_include_null_lifecycle_and_hint_to_clear_stale_state(t
         conversation_id="raw-chat-id-a",
         user_id="raw-user-id-a",
     )
-    tracker = ProgressTracker("tx-lifecycle-clear", "Clear lifecycle")
+    tracker = ProgressTracker("tx-lifecycle-clear")
     tracker.update_todo_lifecycle({"state": "suspended", "owner_scope_ref": owner})
     tracker.update_suspended_todo_hint(
         {
@@ -396,7 +390,6 @@ def _rotation_snapshot() -> TransactionSnapshot:
 
     return TransactionSnapshot(
         transaction_id="tx-rotate",
-        title="Rotate progress",
         status="running",
         started_at=1.0,
         updated_at=2.0,
@@ -486,7 +479,6 @@ def test_jsonl_store_serializes_concurrent_writes(monkeypatch, tmp_path):
     store = JsonlProgressEventStore(store_path)
     snapshot = TransactionSnapshot(
         transaction_id="tx-concurrent",
-        title="Concurrent progress",
         status="running",
         started_at=1.0,
         updated_at=2.0,
@@ -543,7 +535,6 @@ def test_jsonl_store_serializes_concurrent_writes_across_instances(monkeypatch, 
     stores = [JsonlProgressEventStore(store_path) for _ in range(8)]
     snapshot = TransactionSnapshot(
         transaction_id="tx-cross-instance",
-        title="Concurrent progress",
         status="running",
         started_at=1.0,
         updated_at=2.0,
@@ -599,7 +590,6 @@ def test_progress_operation_to_record_sanitizes_again_at_serialization_boundary(
     sensitive_value = "store-" + "secret"
     snapshot = TransactionSnapshot(
         transaction_id="tx-2",
-        title="Authorization: Bearer " + sensitive_value,
         status="running",
         started_at=1.0,
         updated_at=2.0,
@@ -646,3 +636,18 @@ def test_default_progress_events_path_uses_hermes_home(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
     assert default_progress_events_path() == tmp_path / "progress" / "events.jsonl"
+
+
+def test_persisted_records_omit_task_summary_title(tmp_path):
+    store_path = tmp_path / "events.jsonl"
+    store = JsonlProgressEventStore(store_path)
+    tracker = ProgressTracker("tx-no-title")
+    operation = tracker.record_callback_event("tool.started", tool_name="terminal", preview="pytest")
+
+    store.append_operation(tracker.snapshot(), operation)
+    store.append_snapshot(tracker.snapshot())
+
+    records = _read_jsonl(store_path)
+    assert len(records) == 2
+    assert all(record["transaction"]["id"] == "tx-no-title" for record in records)
+    assert all("title" not in record["transaction"] for record in records)

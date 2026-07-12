@@ -129,7 +129,11 @@ def _copy_agent_todo_progress(progress_tracker: Any, agent_obj: Any) -> None:
     lifecycle = snapshot.get("todo_lifecycle")
     state = str((lifecycle or {}).get("state") or "").strip().lower() if isinstance(lifecycle, dict) else ""
     transaction_id = str((lifecycle or {}).get("transaction_id") or "").strip() if isinstance(lifecycle, dict) else ""
-    current_transaction_id = str(getattr(progress_tracker, "transaction_id", "") or "").strip()
+    current_transaction_id = str(
+        getattr(agent_obj, "_current_task_id", None)
+        or getattr(progress_tracker, "transaction_id", "")
+        or ""
+    ).strip()
     should_archive_prior_terminal_todos = (
         state in {"completed", "cancelled"}
         and bool(transaction_id)
@@ -14487,6 +14491,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         from run_agent import AIAgent
         import queue
+        import uuid
 
         def _run_still_current() -> bool:
             if run_generation is None or not session_key:
@@ -14638,7 +14643,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if progress_queue is None and needs_progress_queue:
             progress_queue = queue.Queue()
         if progress_transaction is None and (progress_queue is not None or flowweaver_shadow_enabled):
-            progress_transaction = {"queue": progress_queue}
+            progress_transaction = {
+                "queue": progress_queue,
+                "transaction_id": f"task-{uuid.uuid4().hex}",
+            }
         _TASK_TRACKER_RENDER_SIGNAL = ("__render_task_tracker__",)
         if isinstance(progress_transaction, dict):
             task_tracker_render_pending = progress_transaction.get("task_tracker_render_pending")
@@ -14736,16 +14744,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if progress_tracking_enabled:
             try:
                 from gateway.progress.store import build_progress_event_store
-                from gateway.progress.task_titles import summarize_task_intent
                 from gateway.progress.tracker import ProgressTracker
                 if isinstance(progress_transaction, dict) and progress_transaction.get("tracker") is not None:
                     progress_tracker = progress_transaction.get("tracker")
                     progress_event_store = progress_transaction.get("event_store")
                 else:
-                    _tracker_title = summarize_task_intent(message, context_messages=history)
                     progress_tracker = ProgressTracker(
-                        transaction_id=session_id or session_key or "gateway-task",
-                        title=_tracker_title,
+                        transaction_id=(
+                            progress_transaction["transaction_id"]
+                            if isinstance(progress_transaction, dict)
+                            else f"task-{uuid.uuid4().hex}"
+                        ),
                         max_operations=task_tracker_max_operations,
                     )
                     if progress_queue is not None and task_tracker_enabled:

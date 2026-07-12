@@ -46,12 +46,10 @@ def make_snapshot(
     *,
     transaction_id: str = "session-123",
     status: str = "running",
-    title: str = "说明当前模型与思考强度配置",
     operations: tuple[ProgressOperation, ...] = (),
 ) -> TransactionSnapshot:
     return TransactionSnapshot(
         transaction_id=transaction_id,
-        title=title,
         status=status,
         started_at=1000.0,
         updated_at=1002.0,
@@ -131,12 +129,12 @@ def test_builds_single_intent_snapshot_from_progress_tracker_state() -> None:
     assert doc["run_id"] is None
     assert doc["correlation_id"] == "turn_session_123"
     assert doc["snapshot_id"] == "snap_session_123"
-    assert doc["transaction"]["user_request_summary"] == "说明当前模型与思考强度配置"
+    assert doc["transaction"]["user_request_summary"] == "tx_session_123"
     assert doc["transaction"]["intents"] == [
         {
             "intent_id": "task",
             "order_index": 0,
-            "title": "说明当前模型与思考强度配置",
+            "title": "tx_session_123",
             "status": "running",
             "dependencies": [],
         }
@@ -260,7 +258,6 @@ def test_rich_card_delivery_state_creates_artifact_and_delivery_without_suppress
 def test_secret_shaped_values_are_redacted_in_snapshot_repr() -> None:
     doc = build_flowweaver_v0_snapshot(
         make_snapshot(
-            title="Debug Authorization: " + BEARER_PREFIX + "fake-title-token",
             operations=(make_operation(preview=OPENAI_LIKE_SECRET, args_preview="password=fake-password"),),
         ),
         source={"authorization": BEARER_PREFIX + "fake-source-token", "safe": "ok"},
@@ -272,7 +269,6 @@ def test_secret_shaped_values_are_redacted_in_snapshot_repr() -> None:
     )
 
     rendered = repr(doc)
-    assert "fake-title-token" not in rendered
     assert "fake-source-token" not in rendered
     assert "fake-reason-token" not in rendered
     assert "fake-message-token" not in rendered
@@ -284,14 +280,14 @@ def test_secret_shaped_values_are_redacted_in_snapshot_repr() -> None:
 
 
 def test_adapter_consumes_real_progress_tracker_without_platform_side_effects() -> None:
-    tracker = ProgressTracker(transaction_id="session-123", title="说明当前模型与思考强度配置")
+    tracker = ProgressTracker(transaction_id="session-123")
     tracker.record_tool_started("terminal", preview="python script.py --token fake-token")
     tracker.record_tool_completed("terminal", duration=0.42, preview="done token=fake-token")
 
     doc = build_flowweaver_v0_snapshot(tracker.snapshot())
 
     assert doc["transaction_id"] == "tx_session_123"
-    assert doc["transaction"]["intents"][0]["title"] == "说明当前模型与思考强度配置"
+    assert doc["transaction"]["intents"][0]["title"] == "tx_session_123"
     assert doc["transaction"]["operations"]
     assert "fake-token" not in repr(doc)
     assert "python script.py --token" not in repr(doc)
@@ -348,4 +344,19 @@ def test_public_ids_do_not_leak_platform_chat_or_user_identifiers() -> None:
     assert doc["correlation_id"].startswith("turn_transaction_")
     assert doc["snapshot_id"].startswith("snap_transaction_")
     assert doc["transaction"]["transaction_id"] == doc["transaction_id"]
+    assert_no_sensitive_material(doc)
+
+
+def test_contract_summary_derives_from_public_transaction_id() -> None:
+    snapshot = TransactionSnapshot(
+        transaction_id="session-123",
+        status="running",
+        started_at=1000.0,
+        updated_at=1002.0,
+    )
+
+    doc = build_flowweaver_v0_snapshot(snapshot)
+
+    assert doc["transaction"]["user_request_summary"] == "tx_session_123"
+    assert doc["transaction"]["intents"][0]["title"] == "tx_session_123"
     assert_no_sensitive_material(doc)

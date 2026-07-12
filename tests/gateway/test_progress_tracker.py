@@ -8,14 +8,13 @@ from gateway.progress.tracker import ProgressTracker
 
 
 def test_tracker_snapshot_is_transaction_dataclass_with_timestamps():
-    tracker = ProgressTracker("tx-1", "Answer the user", max_operations=5)
+    tracker = ProgressTracker("tx-1", max_operations=5)
 
     snapshot = tracker.snapshot()
 
     assert isinstance(snapshot, TransactionSnapshot)
     assert is_dataclass(snapshot)
     assert snapshot.transaction_id == "tx-1"
-    assert snapshot.title == "Answer the user"
     assert snapshot.status == "running"
     assert snapshot.started_at > 0
     assert snapshot.updated_at >= snapshot.started_at
@@ -28,7 +27,7 @@ def test_tracker_snapshot_is_transaction_dataclass_with_timestamps():
 
 
 def test_update_display_metadata_sanitizes_model_and_account_limit_lines():
-    tracker = ProgressTracker("tx-1", "Metadata display")
+    tracker = ProgressTracker("tx-1")
     unsafe_key = "api_" + "key"
     unsafe_value = "sk-" + "synthetic"
     unsafe_token_param = "to" + "ken"
@@ -64,7 +63,7 @@ def test_update_display_metadata_sanitizes_model_and_account_limit_lines():
 
 
 def test_record_tool_started_and_completed_sanitizes_operation_details():
-    tracker = ProgressTracker("tx-1", "Run tests")
+    tracker = ProgressTracker("tx-1")
 
     tracker.record_tool_started(
         "terminal",
@@ -94,7 +93,7 @@ def test_record_tool_started_and_completed_sanitizes_operation_details():
 
 
 def test_record_tool_completed_marks_most_recent_matching_running_operation():
-    tracker = ProgressTracker("tx-1", "Multiple terminals")
+    tracker = ProgressTracker("tx-1")
     tracker.record_tool_started("terminal", preview="first")
     tracker.record_tool_started("browser", preview="middle")
     tracker.record_tool_started("terminal", preview="second")
@@ -111,7 +110,7 @@ def test_record_tool_completed_marks_most_recent_matching_running_operation():
 
 
 def test_max_operations_trims_older_operations():
-    tracker = ProgressTracker("tx-1", "Trim", max_operations=3)
+    tracker = ProgressTracker("tx-1", max_operations=3)
 
     for index in range(5):
         tracker.record_tool_started(f"tool-{index}", preview=f"op-{index}")
@@ -122,7 +121,7 @@ def test_max_operations_trims_older_operations():
 
 
 def test_record_callback_event_handles_agent_and_subagent_events():
-    tracker = ProgressTracker("tx-1", "Callbacks")
+    tracker = ProgressTracker("tx-1")
 
     tracker.record_callback_event("tool.started", tool_name="terminal", preview="pytest", args={"token": "secret-token"})
     tracker.record_callback_event("tool.completed", tool_name="terminal", duration=2.0, is_error=False)
@@ -155,7 +154,7 @@ def test_record_callback_event_handles_agent_and_subagent_events():
 
 
 def test_record_callback_event_accepts_legacy_positional_name_argument():
-    tracker = ProgressTracker("tx-1", "Legacy callback")
+    tracker = ProgressTracker("tx-1")
 
     tracker.record_callback_event("tool.started", "terminal", "pwd", {"authorization": "Bearer legacy-secret"})
 
@@ -166,7 +165,7 @@ def test_record_callback_event_accepts_legacy_positional_name_argument():
 
 
 def test_tool_name_is_sanitized_before_rendering():
-    tracker = ProgressTracker("tx-1", "Tool name redaction")
+    tracker = ProgressTracker("tx-1")
 
     tracker.record_callback_event("subagent_progress", "Authorization: Basic tool-name-secret")
 
@@ -176,7 +175,7 @@ def test_tool_name_is_sanitized_before_rendering():
 
 
 def test_metadata_values_are_sanitized_with_their_keys():
-    tracker = ProgressTracker("tx-1", "Metadata redaction")
+    tracker = ProgressTracker("tx-1")
     sensitive_value = "metadata-" + "secret"
 
     tracker.record_callback_event("subagent.progress", preview="ok", api_key=sensitive_value)
@@ -187,7 +186,7 @@ def test_metadata_values_are_sanitized_with_their_keys():
 
 
 def test_tracker_snapshot_carries_context_usage_without_raw_metadata():
-    tracker = ProgressTracker("tx-context", "Context pressure")
+    tracker = ProgressTracker("tx-context")
 
     tracker.update_context_usage(
         current_tokens=40_960,
@@ -207,7 +206,7 @@ def test_tracker_snapshot_carries_context_usage_without_raw_metadata():
 
 
 def test_tracker_context_usage_peak_is_monotonic_and_values_are_bounded():
-    tracker = ProgressTracker("tx-context-bounds", "Context pressure")
+    tracker = ProgressTracker("tx-context-bounds")
 
     tracker.update_context_usage(current_tokens=50_000, context_window=128_000, compression_count=1)
     tracker.update_context_usage(current_tokens=-1, context_window="bad", peak_tokens=10, compression_count=-5)
@@ -221,13 +220,13 @@ def test_tracker_context_usage_peak_is_monotonic_and_values_are_bounded():
 
 
 def test_tracker_snapshot_defaults_iteration_usage_to_none():
-    tracker = ProgressTracker("tx-rounds-none", "No rounds yet")
+    tracker = ProgressTracker("tx-rounds-none")
 
     assert tracker.snapshot().iteration_usage is None
 
 
 def test_tracker_snapshot_carries_iteration_usage():
-    tracker = ProgressTracker("tx-rounds", "Work rounds")
+    tracker = ProgressTracker("tx-rounds")
 
     tracker.update_iteration_usage(current_rounds=12, max_rounds=90)
 
@@ -238,7 +237,7 @@ def test_tracker_snapshot_carries_iteration_usage():
 
 
 def test_tracker_iteration_usage_clamps_negative_and_bad_values():
-    tracker = ProgressTracker("tx-rounds-bad", "Work rounds")
+    tracker = ProgressTracker("tx-rounds-bad")
 
     tracker.update_iteration_usage(current_rounds=-5, max_rounds="bad")
 
@@ -249,7 +248,7 @@ def test_tracker_iteration_usage_clamps_negative_and_bad_values():
 
 
 def test_tracker_iteration_usage_partial_update_preserves_previous_values():
-    tracker = ProgressTracker("tx-rounds-partial", "Work rounds")
+    tracker = ProgressTracker("tx-rounds-partial")
 
     tracker.update_iteration_usage(current_rounds=3, max_rounds=90)
     tracker.update_iteration_usage(current_rounds=7)
@@ -261,7 +260,7 @@ def test_tracker_iteration_usage_partial_update_preserves_previous_values():
 
 
 def test_update_todo_items_carries_flat_list():
-    tracker = ProgressTracker("tx-todo-flat", "Flat todos")
+    tracker = ProgressTracker("tx-todo-flat")
 
     returned = tracker.update_todo_items([
         {"id": "1", "content": "Prepare plan", "status": "completed"},
@@ -279,7 +278,7 @@ def test_update_todo_items_carries_flat_list():
 
 
 def test_update_todo_items_carries_two_level_grouping():
-    tracker = ProgressTracker("tx-todo-2level", "Grouped todos")
+    tracker = ProgressTracker("tx-todo-2level")
 
     tracker.update_todo_items([
         {"id": "pr", "content": "PR verification", "status": "in_progress"},
@@ -296,7 +295,7 @@ def test_update_todo_items_carries_two_level_grouping():
 
 
 def test_update_todo_items_clamps_depth_to_one_for_deep_chains():
-    tracker = ProgressTracker("tx-todo-deep", "Deep chain")
+    tracker = ProgressTracker("tx-todo-deep")
 
     tracker.update_todo_items([
         {"id": "a", "content": "Root", "status": "pending"},
@@ -315,7 +314,7 @@ def test_update_todo_items_clamps_depth_to_one_for_deep_chains():
 
 
 def test_update_todo_items_sanitizes_secret_shaped_fields():
-    tracker = ProgressTracker("tx-todo-secret", "Secret todos")
+    tracker = ProgressTracker("tx-todo-secret")
     leak = "leak-" + "value"
 
     tracker.update_todo_items(
@@ -337,7 +336,7 @@ def test_update_todo_items_sanitizes_secret_shaped_fields():
 
 
 def test_update_todo_items_redacts_bare_provider_key_shapes():
-    tracker = ProgressTracker("tx-todo-bare-secret", "Bare secret todos")
+    tracker = ProgressTracker("tx-todo-bare-secret")
     bare_key = "sk-" + "test-" + ("a" * 32)
     route = "/metrics"
     path = "/home/ecs-user/.hermes/config.yaml"
@@ -361,7 +360,7 @@ def test_update_todo_items_redacts_bare_provider_key_shapes():
 
 
 def test_update_todo_items_preserves_local_paths_without_independent_secrets():
-    tracker = ProgressTracker("tx-todo-path", "Path todos")
+    tracker = ProgressTracker("tx-todo-path")
 
     tracker.update_todo_items(
         [
@@ -387,7 +386,7 @@ def test_update_todo_items_preserves_local_paths_without_independent_secrets():
 def test_update_todo_items_caps_count_and_text_length():
     from gateway.progress.tracker import MAX_TODO_CONTENT_CHARS, MAX_TODO_ITEMS
 
-    tracker = ProgressTracker("tx-todo-caps", "Capped todos")
+    tracker = ProgressTracker("tx-todo-caps")
     tracker.update_todo_items(
         [{"id": str(i), "content": "x" * 500, "status": "pending"} for i in range(MAX_TODO_ITEMS + 25)]
     )
@@ -398,7 +397,7 @@ def test_update_todo_items_caps_count_and_text_length():
 
 
 def test_update_todo_items_coerces_unknown_status_to_pending_and_survives_bad_shapes():
-    tracker = ProgressTracker("tx-todo-bad", "Bad shapes")
+    tracker = ProgressTracker("tx-todo-bad")
 
     tracker.update_todo_items([
         {"id": "1", "content": "Known", "status": "weird-status"},
@@ -416,7 +415,7 @@ def test_update_todo_items_coerces_unknown_status_to_pending_and_survives_bad_sh
 
 
 def test_update_todo_items_empty_resets_to_tuple():
-    tracker = ProgressTracker("tx-todo-empty", "Empty todos")
+    tracker = ProgressTracker("tx-todo-empty")
     tracker.update_todo_items([{"id": "1", "content": "x", "status": "pending"}])
 
     assert tracker.update_todo_items([]) == ()
@@ -424,7 +423,7 @@ def test_update_todo_items_empty_resets_to_tuple():
 
 
 def test_update_todo_items_carries_valid_executor_and_drops_invalid():
-    tracker = ProgressTracker("tx-todo-executor", "Executor todos")
+    tracker = ProgressTracker("tx-todo-executor")
 
     tracker.update_todo_items([
         {"id": "1", "content": "Delegated", "status": "in_progress", "executor": "codex"},
@@ -449,7 +448,7 @@ def test_update_todo_items_carries_executor_from_object_shaped_entries():
         status = "pending"
         executor = "gemini-cli"
 
-    tracker = ProgressTracker("tx-todo-executor-obj", "Object executor")
+    tracker = ProgressTracker("tx-todo-executor-obj")
     tracker.update_todo_items([TodoObj()])
 
     items = tracker.snapshot().todo_items
@@ -457,7 +456,7 @@ def test_update_todo_items_carries_executor_from_object_shaped_entries():
 
 
 def test_update_todo_items_never_carries_secret_shaped_executor():
-    tracker = ProgressTracker("tx-todo-executor-secret", "Secret executor")
+    tracker = ProgressTracker("tx-todo-executor-secret")
     bare_key = "sk-" + "test-" + ("b" * 32)
 
     tracker.update_todo_items([
@@ -473,7 +472,7 @@ def test_update_todo_items_never_carries_secret_shaped_executor():
 
 
 def test_mark_completed_derives_terminal_todo_lifecycle_from_remaining_items():
-    tracker = ProgressTracker("tx-terminal-pending", "Pending leftovers")
+    tracker = ProgressTracker("tx-terminal-pending")
     tracker.update_todo_items([
         {"id": "1", "content": "done", "status": "completed"},
         {"id": "2", "content": "left", "status": "pending"},
@@ -499,7 +498,7 @@ def test_mark_completed_creates_same_owner_suspended_hint_when_scope_exists():
         conversation_id="raw-chat-id",
         user_id="raw-user-id",
     )
-    tracker = ProgressTracker("tx-terminal-hint", "Pending leftovers")
+    tracker = ProgressTracker("tx-terminal-hint")
     tracker.update_todo_items([{"id": "1", "content": "left", "status": "pending"}])
     tracker.update_todo_lifecycle({"state": "active", "owner_scope_ref": owner})
 
@@ -508,7 +507,7 @@ def test_mark_completed_creates_same_owner_suspended_hint_when_scope_exists():
     hint = tracker.snapshot().suspended_todo_hint
     assert hint is not None
     assert hint.transaction_id == "tx-terminal-hint"
-    assert hint.title == "Pending leftovers"
+    assert hint.title == "tx-terminal-hint"
     assert hint.reason == "paused"
     assert hint.remaining_count == 1
     assert hint.owner_scope_ref == owner
@@ -517,7 +516,7 @@ def test_mark_completed_creates_same_owner_suspended_hint_when_scope_exists():
 def test_update_todo_lifecycle_carries_sanitized_state():
     from gateway.progress.todo_lifecycle import make_owner_scope_ref
 
-    tracker = ProgressTracker("tx-lifecycle", "Lifecycle todos")
+    tracker = ProgressTracker("tx-lifecycle")
     owner = make_owner_scope_ref(
         profile="default",
         platform="feishu",
@@ -559,3 +558,33 @@ def test_update_todo_lifecycle_carries_sanitized_state():
     assert fake_key not in rendered
     assert "raw-chat-secret-123" not in rendered
     assert "raw-user-secret-456" not in rendered
+
+
+def test_snapshot_carries_no_task_summary_title():
+    tracker = ProgressTracker("tx-no-title")
+
+    snapshot = tracker.snapshot()
+
+    assert snapshot.transaction_id == "tx-no-title"
+    assert not hasattr(snapshot, "title")
+
+
+def test_mark_completed_terminal_hint_uses_transaction_id_as_title():
+    from gateway.progress.todo_lifecycle import make_owner_scope_ref
+
+    owner = make_owner_scope_ref(
+        profile="default",
+        platform="feishu",
+        conversation_id="raw-chat-id",
+        user_id="raw-user-id",
+    )
+    tracker = ProgressTracker("tx-terminal-hint-id")
+    tracker.update_todo_items([{"id": "1", "content": "left", "status": "pending"}])
+    tracker.update_todo_lifecycle({"state": "active", "owner_scope_ref": owner})
+
+    tracker.mark_completed(is_error=False)
+
+    hint = tracker.snapshot().suspended_todo_hint
+    assert hint is not None
+    assert hint.transaction_id == "tx-terminal-hint-id"
+    assert hint.title == "tx-terminal-hint-id"

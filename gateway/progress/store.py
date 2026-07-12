@@ -227,7 +227,6 @@ def progress_operation_to_record(
 def _safe_transaction(snapshot: TransactionSnapshot) -> dict[str, Any]:
     transaction = {
         "id": _safe_text(snapshot.transaction_id, key="transaction_id", max_len=240),
-        "title": _safe_text(snapshot.title, key="title", max_len=500),
         "status": _safe_text(snapshot.status, key="status", max_len=80),
         "started_at": _safe_scalar(snapshot.started_at),
         "updated_at": _safe_scalar(snapshot.updated_at),

@@ -238,7 +238,7 @@ def test_copy_agent_todo_progress_carries_lifecycle_and_clears_archived_items():
     active_store.bind_transaction("tx-current")
     active_store.mark_lifecycle("active")
     active_agent = SimpleNamespace(_todo_store=active_store)
-    tracker = ProgressTracker("tx-current", "Current task")
+    tracker = ProgressTracker("tx-current")
 
     _copy_agent_todo_progress(tracker, active_agent)
 
@@ -267,7 +267,7 @@ def test_copy_agent_todo_progress_drops_completed_prior_transaction_items():
     old_store.bind_transaction("tx-old")
     old_store.mark_lifecycle("completed")
     old_agent = SimpleNamespace(_todo_store=old_store)
-    new_tracker = ProgressTracker("tx-new", "New unrelated task")
+    new_tracker = ProgressTracker("tx-new")
 
     _copy_agent_todo_progress(new_tracker, old_agent)
 
@@ -275,6 +275,26 @@ def test_copy_agent_todo_progress_drops_completed_prior_transaction_items():
     assert new_snapshot.todo_items == ()
     assert new_snapshot.todo_lifecycle is not None
     assert new_snapshot.todo_lifecycle.state == "archived"
+
+
+def test_copy_agent_todo_progress_keeps_completed_items_for_visible_task_id_alias():
+    from gateway.run import _copy_agent_todo_progress
+
+    store = TodoStore()
+    store.write([
+        {"id": "done", "content": "Finished current task", "status": "completed"},
+    ])
+    store.bind_transaction("persistent-session")
+    store.mark_lifecycle("completed")
+    agent = SimpleNamespace(_todo_store=store, _current_task_id="persistent-session")
+    tracker = ProgressTracker("task-unique-visible-id")
+
+    _copy_agent_todo_progress(tracker, agent)
+
+    snapshot = tracker.snapshot()
+    assert [item.content for item in snapshot.todo_items] == ["Finished current task"]
+    assert snapshot.todo_lifecycle is not None
+    assert snapshot.todo_lifecycle.state == "completed"
 
 
 def test_copy_agent_todo_progress_keeps_completed_items_for_same_transaction_final_card():
@@ -285,7 +305,7 @@ def test_copy_agent_todo_progress_keeps_completed_items_for_same_transaction_fin
     store.bind_transaction("tx-current")
     store.mark_lifecycle("completed")
     agent = SimpleNamespace(_todo_store=store)
-    tracker = ProgressTracker("tx-current", "Current task")
+    tracker = ProgressTracker("tx-current")
 
     _copy_agent_todo_progress(tracker, agent)
 
@@ -305,7 +325,7 @@ def test_copy_agent_todo_progress_keeps_unbound_completed_items_for_current_fina
         {"id": "done-2", "content": "Finished current task B", "status": "completed"},
     ])
     agent = SimpleNamespace(_todo_store=store)
-    tracker = ProgressTracker("tx-current", "Current task")
+    tracker = ProgressTracker("tx-current")
 
     _copy_agent_todo_progress(tracker, agent)
 
@@ -2554,13 +2574,13 @@ async def test_flowweaver_shadow_tap_preserves_legacy_tool_progress_when_progres
 
 
 @pytest.mark.asyncio
-async def test_task_tracker_uses_intent_summary_instead_of_raw_user_text(monkeypatch, tmp_path):
+async def test_task_tracker_panel_shows_transaction_id_not_raw_user_text(monkeypatch, tmp_path):
     adapter, result = await _run_with_agent(
         monkeypatch,
         tmp_path,
         TransactionPanelAgent,
         message="再试一次。今晚下雨吗？",
-        session_id="sess-task-tracker-intent-title",
+        session_id="sess-task-tracker-task-id",
         config_data={
             "display": {
                 "tool_progress": "all",
@@ -2572,18 +2592,19 @@ async def test_task_tracker_uses_intent_summary_instead_of_raw_user_text(monkeyp
     assert result["final_response"] == "done"
     all_panels = "\n".join([call["content"] for call in adapter.sent] + [call["content"] for call in adapter.edits])
     assert "再试一次。今晚下雨吗？" not in all_panels
-    assert "今晚" in all_panels
-    assert "降雨" in all_panels or "下雨" in all_panels
+    assert "今晚" not in all_panels
+    assert "task-" in all_panels
+    assert "sess-task-tracker-task-id" not in all_panels
 
 
 @pytest.mark.asyncio
-async def test_feishu_task_tracker_card_uses_semantic_intent_title(monkeypatch, tmp_path):
+async def test_feishu_task_tracker_card_shows_canonical_task_id(monkeypatch, tmp_path):
     adapter, result = await _run_with_agent(
         monkeypatch,
         tmp_path,
         TransactionPanelAgent,
         message="事务摘要的文字长度不要限制过短，尤其是多语言场景中。核心目标是把事情说清楚，语义密度尽可能大，信息损失小，信息熵增小。",
-        session_id="sess-feishu-intent-title",
+        session_id="sess-feishu-task-id",
         platform=Platform.FEISHU,
         chat_id="oc_1",
         chat_type="dm",
@@ -2599,13 +2620,56 @@ async def test_feishu_task_tracker_card_uses_semantic_intent_title(monkeypatch, 
 
     assert result["final_response"] == "done"
     final_card = adapter.cards_patched[-1]["card"]
+    details = final_card["elements"][0]["content"]
     rendered = json.dumps(final_card, ensure_ascii=False)
-    assert "调整事务摘要策略" in rendered
+    assert "**🆔 任务 ID：**" in details
+    assert "task\\-" in details
+    assert "sess\\-feishu\\-task\\-id" not in details
+    assert "📌" not in rendered
     assert "核心目标是把事情说清楚" not in rendered
-    assert "多语言" in rendered
-    assert "语义密度" in rendered
-    assert "信息损失" in rendered
-    assert "熵增" in rendered
+    assert "语义密度" not in rendered
+
+
+@pytest.mark.asyncio
+async def test_feishu_task_tracker_assigns_distinct_task_ids_within_one_session(monkeypatch, tmp_path):
+    config_data = {
+        "display": {
+            "tool_progress": "all",
+            "task_tracker": {"enabled": True, "mode": "feishu_card", "language": "zh"},
+        }
+    }
+    first_adapter, _ = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        TransactionPanelAgent,
+        message="第一个任务",
+        session_id="shared-session",
+        platform=Platform.FEISHU,
+        chat_id="oc_1",
+        chat_type="dm",
+        thread_id=None,
+        adapter_cls=FeishuProgressCardCaptureAdapter,
+        config_data=config_data,
+    )
+    first_details = first_adapter.cards_patched[-1]["card"]["elements"][0]["content"]
+    second_adapter, _ = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        TransactionPanelAgent,
+        message="第二个任务",
+        session_id="shared-session",
+        platform=Platform.FEISHU,
+        chat_id="oc_1",
+        chat_type="dm",
+        thread_id=None,
+        adapter_cls=FeishuProgressCardCaptureAdapter,
+        config_data=config_data,
+    )
+
+    second_details = second_adapter.cards_patched[-1]["card"]["elements"][0]["content"]
+    assert "shared\\-session" not in first_details
+    assert "shared\\-session" not in second_details
+    assert first_details.splitlines()[0] != second_details.splitlines()[0]
 
 
 @pytest.mark.asyncio
@@ -2629,7 +2693,8 @@ async def test_task_tracker_panel_replaces_raw_tool_progress_when_enabled(monkey
     all_panels = "\n".join([call["content"] for call in adapter.sent] + [call["content"] for call in adapter.edits])
     assert "📌" in first_panel
     assert "Transaction" in first_panel
-    assert "Handle user request" in first_panel
+    assert "task-" in first_panel
+    assert "sess-task-tracker-panel" not in first_panel
     assert "hello" not in first_panel
     assert "read_file" in all_panels
     assert "search_files" in all_panels
@@ -2858,7 +2923,8 @@ async def test_task_tracker_persists_progress_events_when_enabled(monkeypatch, t
     assert len(records) >= 2
     assert records[-1]["record_type"] == "progress.snapshot"
     assert records[-1]["transaction"]["status"] == "completed"
-    assert records[0]["transaction"]["id"] == "sess-task-tracker-persist"
+    assert records[0]["transaction"]["id"].startswith("task-")
+    assert records[0]["transaction"]["id"] != "sess-task-tracker-persist"
     assert records[0]["operation"]["event_type"] == "tool.started"
     assert any(record.get("operation", {}).get("event_type") == "tool.completed" for record in records)
     assert "terminal" in rendered

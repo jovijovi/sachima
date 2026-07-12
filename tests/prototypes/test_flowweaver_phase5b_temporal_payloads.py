@@ -82,7 +82,6 @@ def load_root_pyproject() -> dict[str, object]:
 def make_snapshot(*, index: int = 0) -> TransactionSnapshot:
     return TransactionSnapshot(
         transaction_id=f"session_phase5b_runtime_{index}",
-        title="Phase 5B runtime contract task",
         status="completed",
         started_at=1000.0 + index,
         updated_at=1002.0 + index,

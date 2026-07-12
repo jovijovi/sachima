@@ -51,7 +51,6 @@ def make_shadow_agent_result(*, index: int = 0, rich_cards_sent: list[dict[str, 
     }
     snapshot = TransactionSnapshot(
         transaction_id=f"session_phase5f_reconcile_{index}",
-        title="Phase 5F local runtime reconciliation task",
         status="completed",
         started_at=1000.0 + index,
         updated_at=1002.0 + index,

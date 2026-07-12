@@ -74,7 +74,6 @@ CLAIM_CHECK_POLICY = {
 def make_snapshot(*, index: int = 0) -> TransactionSnapshot:
     return TransactionSnapshot(
         transaction_id=f"session_phase5e_variable_{index}",
-        title="Phase 5E variable runtime identity task",
         status="completed",
         started_at=1000.0 + index,
         updated_at=1002.0 + index,

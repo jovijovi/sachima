@@ -95,7 +95,6 @@ class FlickeringMapping(Mapping[str, Any]):
 def make_snapshot(*, index: int = 0) -> TransactionSnapshot:
     return TransactionSnapshot(
         transaction_id=f"session_runtime_contract_{index}",
-        title="Runtime ingress contract task",
         status="completed",
         started_at=1000.0 + index,
         updated_at=1002.0 + index,

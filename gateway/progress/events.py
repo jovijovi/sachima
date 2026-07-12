@@ -83,7 +83,6 @@ class TransactionSnapshot:
     """A sanitized, display-ready snapshot of one running transaction."""
 
     transaction_id: str
-    title: str
     status: str
     started_at: float
     updated_at: float

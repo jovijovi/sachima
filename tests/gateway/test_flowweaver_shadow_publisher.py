@@ -71,7 +71,6 @@ def make_snapshot(*, index: int = 0, transaction_id: str | None = None, updated_
     snapshot_updated_at = updated_at if updated_at is not None else 1002.0 + index
     return TransactionSnapshot(
         transaction_id=transaction_id or f"session_shadow_publisher_{index}",
-        title="Gateway shadow publisher task",
         status="completed",
         started_at=1000.0 + index,
         updated_at=snapshot_updated_at,
