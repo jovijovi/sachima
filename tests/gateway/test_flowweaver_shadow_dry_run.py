@@ -20,7 +20,6 @@ from gateway.progress.events import TransactionSnapshot
 def make_snapshot(*, index: int = 0) -> TransactionSnapshot:
     return TransactionSnapshot(
         transaction_id=f"session_shadow_dry_run_{index}",
-        title="Gateway shadow dry-run task",
         status="completed",
         started_at=1000.0 + index,
         updated_at=1002.0 + index,

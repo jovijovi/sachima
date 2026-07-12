@@ -8,13 +8,13 @@ from gateway.progress.tracker import ProgressTracker
 def test_text_renderer_includes_transaction_status_and_tools():
     from gateway.progress.renderers import render_text_panel
 
-    tracker = ProgressTracker(transaction_id="tx-1", title="Fix bug")
+    tracker = ProgressTracker(transaction_id="tx-1")
     tracker.record_tool_started("read_file", "gateway/run.py", {"path": "gateway/run.py"})
 
     text = render_text_panel(tracker.snapshot(), tool_progress_mode="all")
 
     assert "📌" in text
-    assert "Fix bug" in text
+    assert "tx-1" in text
     assert "Running" in text
     assert "Recent operations" in text
     assert "read_file" in text
@@ -24,12 +24,12 @@ def test_text_renderer_includes_transaction_status_and_tools():
 def test_text_renderer_hides_tools_when_progress_off():
     from gateway.progress.renderers import render_text_panel
 
-    tracker = ProgressTracker(transaction_id="tx-1", title="Quiet task")
+    tracker = ProgressTracker(transaction_id="tx-1")
     tracker.record_tool_started("terminal", "pytest", {"command": "pytest"})
 
     text = render_text_panel(tracker.snapshot(), tool_progress_mode="off")
 
-    assert "Quiet task" in text
+    assert "tx-1" in text
     assert "terminal" not in text
     assert "pytest" not in text
 
@@ -37,7 +37,7 @@ def test_text_renderer_hides_tools_when_progress_off():
 def test_text_renderer_marks_failed_and_completed_operations():
     from gateway.progress.renderers import render_text_panel
 
-    tracker = ProgressTracker(transaction_id="tx-1", title="Run checks")
+    tracker = ProgressTracker(transaction_id="tx-1")
     tracker.record_tool_started("terminal", "pytest")
     tracker.record_tool_completed("terminal", duration=1.2, is_error=True)
 
@@ -51,7 +51,7 @@ def test_text_renderer_marks_failed_and_completed_operations():
 def test_text_renderer_respects_new_mode_by_collapsing_repeated_tools():
     from gateway.progress.renderers import render_text_panel
 
-    tracker = ProgressTracker(transaction_id="tx-1", title="Repeated reads")
+    tracker = ProgressTracker(transaction_id="tx-1")
     tracker.record_tool_started("read_file", "a.py")
     tracker.record_tool_started("read_file", "b.py")
     tracker.record_tool_started("search_files", "pattern")
@@ -65,7 +65,7 @@ def test_text_renderer_respects_new_mode_by_collapsing_repeated_tools():
 def test_text_renderer_sanitizes_and_caps_output():
     from gateway.progress.renderers import render_text_panel
 
-    tracker = ProgressTracker(transaction_id="tx-1", title="Secret task")
+    tracker = ProgressTracker(transaction_id="tx-1")
     tracker.record_tool_started(
         "terminal",
         "curl https://example.invalid/?token=abc123&debug=true",
@@ -83,18 +83,17 @@ def test_text_renderer_sanitizes_and_caps_output():
 def test_text_renderer_handles_empty_operations():
     from gateway.progress.renderers import render_text_panel
 
-    tracker = ProgressTracker(transaction_id="tx-1", title="No tools yet")
+    tracker = ProgressTracker(transaction_id="tx-1")
 
     text = render_text_panel(tracker.snapshot(), tool_progress_mode="all")
 
-    assert "No tools yet" in text
     assert "No operations yet" in text
 
 
 def test_text_renderer_includes_safe_dashboard_progress_link_when_configured():
     from gateway.progress.renderers import render_text_panel
 
-    tracker = ProgressTracker(transaction_id="tx-1", title="Dashboard task")
+    tracker = ProgressTracker(transaction_id="tx-1")
 
     text = render_text_panel(
         tracker.snapshot(),
@@ -110,7 +109,7 @@ def test_text_renderer_includes_safe_dashboard_progress_link_when_configured():
 def test_text_renderer_includes_context_usage_summary():
     from gateway.progress.renderers import render_text_panel
 
-    tracker = ProgressTracker(transaction_id="tx-context", title="Context task")
+    tracker = ProgressTracker(transaction_id="tx-context")
     tracker.update_context_usage(
         current_tokens=40_960,
         context_window=128_000,
@@ -130,9 +129,9 @@ def test_text_renderer_includes_context_usage_summary():
 def test_text_renderer_does_not_show_zero_ratio_for_partial_context_usage():
     from gateway.progress.renderers import render_text_panel
 
-    peak_tracker = ProgressTracker(transaction_id="tx-peak-only", title="Peak only")
+    peak_tracker = ProgressTracker(transaction_id="tx-peak-only")
     peak_tracker.update_context_usage(current_tokens=0, context_window=128_000, peak_tokens=65_536)
-    compression_tracker = ProgressTracker(transaction_id="tx-compress-only", title="Compression only")
+    compression_tracker = ProgressTracker(transaction_id="tx-compress-only")
     compression_tracker.update_context_usage(current_tokens=0, context_window=128_000, compression_count=2)
 
     peak_text = render_text_panel(peak_tracker.snapshot(), tool_progress_mode="off")
@@ -147,7 +146,7 @@ def test_text_renderer_does_not_show_zero_ratio_for_partial_context_usage():
 def test_text_renderer_includes_work_rounds_when_present():
     from gateway.progress.renderers import render_text_panel
 
-    tracker = ProgressTracker(transaction_id="tx-rounds", title="Rounds task")
+    tracker = ProgressTracker(transaction_id="tx-rounds")
     tracker.update_iteration_usage(current_rounds=12, max_rounds=90)
 
     text = render_text_panel(tracker.snapshot(), tool_progress_mode="off")
@@ -159,7 +158,7 @@ def test_text_renderer_includes_work_rounds_when_present():
 def test_text_renderer_omits_work_rounds_without_meaningful_max():
     from gateway.progress.renderers import render_text_panel
 
-    tracker = ProgressTracker(transaction_id="tx-rounds-empty", title="No max rounds")
+    tracker = ProgressTracker(transaction_id="tx-rounds-empty")
     tracker.update_iteration_usage(current_rounds=0, max_rounds=0)
 
     text = render_text_panel(tracker.snapshot(), tool_progress_mode="off")
@@ -171,7 +170,7 @@ def test_text_renderer_omits_work_rounds_without_meaningful_max():
 def test_text_renderer_omits_unsafe_dashboard_link():
     from gateway.progress.renderers import render_text_panel
 
-    tracker = ProgressTracker(transaction_id="tx-1", title="No unsafe link")
+    tracker = ProgressTracker(transaction_id="tx-1")
 
     text = render_text_panel(tracker.snapshot(), dashboard_url="javascript:alert('x')")
 
@@ -182,7 +181,7 @@ def test_text_renderer_omits_unsafe_dashboard_link():
 def test_text_renderer_omits_dashboard_link_when_port_is_invalid():
     from gateway.progress.renderers import render_text_panel
 
-    tracker = ProgressTracker(transaction_id="tx-1", title="Bad port")
+    tracker = ProgressTracker(transaction_id="tx-1")
 
     for dashboard_url in ("http://example.local:bad", "http://example.local:99999"):
         text = render_text_panel(tracker.snapshot(), dashboard_url=dashboard_url)
@@ -194,7 +193,7 @@ def test_text_renderer_omits_dashboard_link_when_port_is_invalid():
 def test_text_renderer_preserves_ipv6_dashboard_host_brackets():
     from gateway.progress.renderers import render_text_panel
 
-    tracker = ProgressTracker(transaction_id="tx-1", title="IPv6 link")
+    tracker = ProgressTracker(transaction_id="tx-1")
 
     text = render_text_panel(tracker.snapshot(), dashboard_url="http://[::1]:9119/base")
 
@@ -205,7 +204,7 @@ def test_text_renderer_preserves_ipv6_dashboard_host_brackets():
 def test_text_renderer_renders_flat_todo_section_before_recent_operations():
     from gateway.progress.renderers import render_text_panel
 
-    tracker = ProgressTracker(transaction_id="tx-todo", title="Flat todos")
+    tracker = ProgressTracker(transaction_id="tx-todo")
     tracker.record_tool_started("read_file", "a.py")
     tracker.update_todo_items([
         {"id": "1", "content": "Prepare plan", "status": "completed"},
@@ -228,7 +227,7 @@ def test_text_renderer_renders_flat_todo_section_before_recent_operations():
 def test_text_renderer_omits_todo_section_when_empty():
     from gateway.progress.renderers import render_text_panel
 
-    tracker = ProgressTracker(transaction_id="tx-no-todo", title="No todos")
+    tracker = ProgressTracker(transaction_id="tx-no-todo")
 
     text = render_text_panel(tracker.snapshot(), tool_progress_mode="off")
 
@@ -238,7 +237,7 @@ def test_text_renderer_omits_todo_section_when_empty():
 def test_text_renderer_renders_two_level_todo_grouping_without_infinite_tree():
     from gateway.progress.renderers import render_text_panel
 
-    tracker = ProgressTracker(transaction_id="tx-todo-2", title="Grouped todos")
+    tracker = ProgressTracker(transaction_id="tx-todo-2")
     tracker.update_todo_items([
         {"id": "pr", "content": "PR verification", "status": "in_progress"},
         {"id": "local", "content": "Local tests", "status": "completed", "parent_id": "pr"},
@@ -260,7 +259,7 @@ def test_text_renderer_renders_two_level_todo_grouping_without_infinite_tree():
 def test_text_renderer_renders_executor_badge_before_content():
     from gateway.progress.renderers import render_text_panel
 
-    tracker = ProgressTracker(transaction_id="tx-todo-executor", title="Executor todos")
+    tracker = ProgressTracker(transaction_id="tx-todo-executor")
     tracker.update_todo_items([
         {"id": "pr", "content": "PR verification", "status": "in_progress", "executor": "claude"},
         {"id": "local", "content": "Local tests", "status": "completed", "parent_id": "pr", "executor": "codex"},
@@ -287,7 +286,7 @@ def test_text_renderer_renders_executor_badge_before_content():
 def test_text_renderer_displays_hermes_agent_executor_as_hermes():
     from gateway.progress.renderers import render_text_panel
 
-    tracker = ProgressTracker(transaction_id="tx-todo-executor-alias", title="Alias executor")
+    tracker = ProgressTracker(transaction_id="tx-todo-executor-alias")
     tracker.update_todo_items([
         {"id": "1", "content": "Check workbench display", "status": "in_progress", "executor": "hermes-agent"},
     ])
@@ -301,7 +300,7 @@ def test_text_renderer_displays_hermes_agent_executor_as_hermes():
 def test_text_renderer_cancelled_todo_uses_forbidden_icon_without_strikethrough():
     from gateway.progress.renderers import render_text_panel
 
-    tracker = ProgressTracker(transaction_id="tx-todo-cancelled", title="Cancelled todos")
+    tracker = ProgressTracker(transaction_id="tx-todo-cancelled")
     tracker.update_todo_items([
         {"id": "1", "content": "Legacy suffix plan", "status": "cancelled", "executor": "other"},
         {"id": "2", "content": "Badge plan", "status": "in_progress"},
@@ -321,7 +320,6 @@ def test_text_renderer_renders_failed_todo_icon_defensively():
 
     snapshot = TransactionSnapshot(
         transaction_id="tx-todo-failed",
-        title="Failed todo defence",
         status="running",
         started_at=1.0,
         updated_at=2.0,
@@ -339,7 +337,7 @@ def test_text_renderer_renders_failed_todo_icon_defensively():
 def test_text_renderer_never_renders_secret_shaped_executor():
     from gateway.progress.renderers import render_text_panel
 
-    tracker = ProgressTracker(transaction_id="tx-todo-executor-secret", title="Secret executor")
+    tracker = ProgressTracker(transaction_id="tx-todo-executor-secret")
     bare_key = "sk-" + "test-" + ("h" * 32)
     tracker.update_todo_items([
         {"id": "1", "content": "Run tests", "status": "in_progress", "executor": bare_key},
@@ -363,7 +361,7 @@ def test_feishu_renders_suspended_hint_separately_from_main_todos():
         user_id="raw-user-id-a",
     )
     fake_key = "sk-" + "test-" + ("c" * 32)
-    tracker = ProgressTracker(transaction_id="tx-suspended", title="New unrelated task")
+    tracker = ProgressTracker(transaction_id="tx-suspended")
     tracker.update_todo_items([
         {"id": "old", "content": f"Old task using {fake_key}", "status": "pending"},
     ])
@@ -397,20 +395,11 @@ def test_feishu_renders_suspended_hint_separately_from_main_todos():
     assert fake_key not in text
 
 
-def test_feishu_progress_card_preserves_dense_multilingual_task_title():
-    from gateway.progress.renderers import render_feishu_progress_card
+def test_text_renderer_shows_canonical_transaction_id():
+    from gateway.progress.renderers import render_text_panel
 
-    title = (
-        "调整事务摘要策略：避免过短限制，在多语言场景中优先保证清晰表达；保留用户提出的动作、对象、范围、"
-        "关键约束和预期产物；支持中文、English、日本語、한국어 等混合输入；在不引入额外推断的前提下提高语义密度，"
-        "并明确控制信息损失与信息熵增"
-    )
-    tracker = ProgressTracker(transaction_id="tx-1", title=title)
+    tracker = ProgressTracker(transaction_id="sess-text-task-id")
 
-    card = render_feishu_progress_card(tracker.snapshot())
-    rendered = json.dumps(card, ensure_ascii=False)
+    text = render_text_panel(tracker.snapshot(), tool_progress_mode="off")
 
-    assert "多语言" in rendered
-    assert "语义密度" in rendered
-    assert "信息损失" in rendered
-    assert "信息熵增" in rendered
+    assert "**Transaction:** sess-text-task-id" in text

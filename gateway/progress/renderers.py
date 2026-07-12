@@ -146,9 +146,6 @@ _PATH_LIKE_SKILL_PREFIXES = {
 _TOKEN_LIKE_SKILL_PREFIXES = ("sk-", "sk_", "ghp_", "gho_", "github_pat_", "xox", "hf_", "hf-", "pat_")
 _ENV_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 _CJK_RE = re.compile(r"[\u4e00-\u9fff]")
-_UNSAFE_FEISHU_TASK_TITLE_RE = re.compile(
-    r"(?i)(\bcurl\s+|(?:^|\s)(?:-H|--header)\s+|(?:authorization|x-api-key|api-key|cookie|set-cookie)\s*:|bearer\s+\S+)"
-)
 _FEISHU_UNSAFE_METADATA_LINE_RE = re.compile(
     r"(?i)(https?://|\b(?:api[-_]?key|token|secret|password|authorization|bearer|base[_-]?url)\b)"
 )
@@ -168,13 +165,13 @@ def render_text_panel(
     if mode not in {"off", "new", "all", "verbose"}:
         mode = "all"
 
-    title = sanitize_for_progress(snapshot.title or "Task", max_len=320)
+    transaction_ref = sanitize_for_progress(snapshot.transaction_id, max_len=320)
     status = snapshot.status or "running"
     status_icon = _STATUS_ICONS.get(status, "🔄")
     status_label = _STATUS_LABELS.get(status, status.title())
 
     lines = [
-        f"📌 **Transaction:** {title}",
+        f"📌 **Transaction:** {transaction_ref}",
         f"{status_icon} **Status:** {status_label}",
     ]
     context_line = _context_usage_text_line(snapshot.context_usage)
@@ -233,13 +230,12 @@ def render_feishu_progress_card(
     mode = _normalize_progress_mode(tool_progress_mode)
     lang = _normalize_feishu_language(language)
     status = snapshot.status or "running"
-    title = _feishu_safe_task_title(snapshot.title, language=lang)
     status_label = sanitize_for_progress(_feishu_status_label(status, language=lang), max_len=80)
     labels = _feishu_labels(lang)
     status_icon = _feishu_status_icon(status, language=lang)
 
     details = [
-        f"{_feishu_metric_label('📌', labels['task'], lang)} {_feishu_escape_markdown_text(title)}",
+        f"{_feishu_metric_label('🆔', labels['task_id'], lang)} {_feishu_escape_markdown_text(snapshot.transaction_id)}",
         f"{_feishu_metric_label(status_icon, labels['status'], lang)} {_feishu_escape_markdown_text(status_label)}",
     ]
     total_duration = _snapshot_elapsed_duration(snapshot, feishu=True)
@@ -654,19 +650,6 @@ def _normalize_feishu_language(language: object | None) -> str:
     return "zh"
 
 
-def _feishu_safe_task_title(title: object, *, language: str) -> str:
-    lang = _normalize_feishu_language(language)
-    fallback = "Handle user request safely" if lang == "en" else "安全处理用户请求"
-    default = "Task" if lang == "en" else "任务"
-    raw = str(title or "")
-    if _UNSAFE_FEISHU_TASK_TITLE_RE.search(raw):
-        return fallback
-    safe = sanitize_for_progress(raw or default, max_len=120)
-    if _UNSAFE_FEISHU_TASK_TITLE_RE.search(safe):
-        return fallback
-    return safe or default
-
-
 def detect_feishu_progress_card_language(
     message: object,
     configured: object | None = "auto",
@@ -770,7 +753,7 @@ def _detect_contextual_feishu_language(context_messages: Iterable[object] | None
 def _feishu_labels(language: str) -> dict[str, str]:
     if _normalize_feishu_language(language) == "en":
         return {
-            "task": "Task",
+            "task_id": "Task ID",
             "status": "Status",
             "duration": "Duration",
             "model": "Model",
@@ -785,7 +768,7 @@ def _feishu_labels(language: str) -> dict[str, str]:
             "skill": "Skill",
         }
     return {
-        "task": "任务",
+        "task_id": "任务 ID",
         "status": "状态",
         "duration": "耗时",
         "model": "模型",

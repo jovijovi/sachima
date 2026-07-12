@@ -162,7 +162,6 @@ def make_shadow_agent_result(
     }
     snapshot = TransactionSnapshot(
         transaction_id=f"session_phase5h_reconcile_{index}",
-        title="Phase 5H real Temporal worker reconciliation task",
         status="completed",
         started_at=2000.0 + index,
         updated_at=2002.0 + index,

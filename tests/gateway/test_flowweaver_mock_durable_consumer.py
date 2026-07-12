@@ -33,11 +33,9 @@ def make_snapshot(
     index: int = 0,
     transaction_id: str | None = None,
     status: str = "completed",
-    title: str = "Mock durable consumer task",
 ) -> TransactionSnapshot:
     return TransactionSnapshot(
         transaction_id=transaction_id or f"session_corpus_mock_{index}",
-        title=title,
         status=status,
         started_at=1000.0 + index,
         updated_at=1002.0 + index,
@@ -83,7 +81,6 @@ def shadow_result_from_fixture_case(case: dict[str, Any], *, index: int) -> dict
             index=index,
             transaction_id=str(case["transaction_id"]),
             status=str(case["status"]),
-            title=str(case["title"]),
         ),
         enabled=True,
         final_text="done" if case["final_text_sent"] else None,

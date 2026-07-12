@@ -52,12 +52,10 @@ def make_snapshot(
     *,
     transaction_id: str = "session-123",
     status: str = "completed",
-    title: str = "验证 FlowWeaver 影子快照",
     operations: tuple[ProgressOperation, ...] = (),
 ) -> TransactionSnapshot:
     return TransactionSnapshot(
         transaction_id=transaction_id,
-        title=title,
         status=status,
         started_at=1000.0,
         updated_at=1002.0,
@@ -190,7 +188,6 @@ def test_shadow_tap_never_raises_or_leaks_sensitive_source_fields() -> None:
         agent_result,
         make_snapshot(
             transaction_id="feishu:oc_private_chat:ou_private_user",
-            title="Debug " + bearer,
             operations=(
                 make_operation(
                     preview="python script.py --api-key " + openai_like,
@@ -218,7 +215,7 @@ def test_shadow_tap_attaches_lifecycle_capture_for_consumers() -> None:
 
     attached = attach_flowweaver_shadow_snapshot(
         agent_result,
-        make_snapshot(transaction_id="session-4c", title="审计 FlowWeaver 影子快照"),
+        make_snapshot(transaction_id="session-4c"),
         enabled=True,
         final_text="done",
     )
@@ -341,7 +338,6 @@ def test_shadow_capture_omits_source_delivery_payloads_and_secret_shapes() -> No
         agent_result,
         make_snapshot(
             transaction_id="feishu:oc_private_chat:ou_private_user",
-            title="Lifecycle " + bearer,
         ),
         enabled=True,
         source=source,
@@ -883,7 +879,6 @@ def shadow_result_from_corpus_case(case: Mapping[str, Any]) -> dict[str, Any]:
         make_snapshot(
             transaction_id=str(case["transaction_id"]),
             status=str(case["status"]),
-            title=str(case["title"]),
         ),
         enabled=True,
         final_text="done" if case["final_text_sent"] else None,
@@ -901,7 +896,6 @@ def test_shadow_replay_corpus_fixture_is_synthetic_and_platform_neutral() -> Non
             "case_id",
             "transaction_id",
             "status",
-            "title",
             "final_text_sent",
             "rich_card_types",
             "expected_replay_verdict",

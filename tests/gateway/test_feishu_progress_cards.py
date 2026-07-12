@@ -17,7 +17,7 @@ def _rendered(card: dict) -> str:
 def test_feishu_progress_card_renders_flat_todo_block_before_operations():
     from gateway.progress.renderers import render_feishu_progress_card
 
-    tracker = ProgressTracker(transaction_id="tx-todo", title="查看任务清单")
+    tracker = ProgressTracker(transaction_id="tx-todo")
     tracker.record_tool_started("read_file", "a.py")
     tracker.update_todo_items([
         {"id": "1", "content": "准备实现方案", "status": "completed"},
@@ -41,7 +41,7 @@ def test_feishu_progress_card_renders_flat_todo_block_before_operations():
 def test_feishu_progress_card_renders_todo_block_english_labels():
     from gateway.progress.renderers import render_feishu_progress_card
 
-    tracker = ProgressTracker(transaction_id="tx-todo-en", title="Show todos")
+    tracker = ProgressTracker(transaction_id="tx-todo-en")
     tracker.update_todo_items([
         {"id": "1", "content": "Prepare plan", "status": "completed"},
         {"id": "2", "content": "Run tests", "status": "in_progress"},
@@ -59,7 +59,7 @@ def test_feishu_progress_card_renders_todo_block_english_labels():
 def test_feishu_progress_card_renders_two_level_todo_groups():
     from gateway.progress.renderers import render_feishu_progress_card
 
-    tracker = ProgressTracker(transaction_id="tx-todo-2level", title="分组任务")
+    tracker = ProgressTracker(transaction_id="tx-todo-2level")
     tracker.update_todo_items([
         {"id": "pr", "content": "PR 验证", "status": "in_progress"},
         {"id": "local", "content": "本地测试", "status": "completed", "parent_id": "pr"},
@@ -84,7 +84,7 @@ def test_feishu_progress_card_renders_two_level_todo_groups():
 def test_feishu_progress_card_renders_executor_badge_before_content_on_flat_items():
     from gateway.progress.renderers import render_feishu_progress_card
 
-    tracker = ProgressTracker(transaction_id="tx-todo-executor", title="带执行者的任务")
+    tracker = ProgressTracker(transaction_id="tx-todo-executor")
     tracker.update_todo_items([
         {"id": "1", "content": "准备实现方案", "status": "completed", "executor": "claude"},
         {"id": "2", "content": "跑测试", "status": "in_progress", "executor": "codex"},
@@ -109,7 +109,7 @@ def test_feishu_progress_card_renders_executor_badge_before_content_on_flat_item
 def test_feishu_progress_card_escapes_executor_label_markdown():
     from gateway.progress.renderers import render_feishu_progress_card
 
-    tracker = ProgressTracker(transaction_id="tx-todo-executor-escape", title="转义执行者")
+    tracker = ProgressTracker(transaction_id="tx-todo-executor-escape")
     tracker.update_todo_items([
         {"id": "1", "content": "跑测试", "status": "in_progress", "executor": "gemini-cli"},
     ])
@@ -124,7 +124,7 @@ def test_feishu_progress_card_escapes_executor_label_markdown():
 def test_feishu_progress_card_displays_hermes_agent_executor_as_hermes():
     from gateway.progress.renderers import render_feishu_progress_card
 
-    tracker = ProgressTracker(transaction_id="tx-todo-executor-alias", title="别名执行者")
+    tracker = ProgressTracker(transaction_id="tx-todo-executor-alias")
     tracker.update_todo_items([
         {"id": "1", "content": "检查任务工作台展示", "status": "in_progress", "executor": "hermes-agent"},
     ])
@@ -140,7 +140,7 @@ def test_feishu_progress_card_displays_hermes_agent_executor_as_hermes():
 def test_feishu_progress_card_renders_executor_badges_on_groups_and_children():
     from gateway.progress.renderers import render_feishu_progress_card
 
-    tracker = ProgressTracker(transaction_id="tx-todo-executor-2level", title="分组执行者")
+    tracker = ProgressTracker(transaction_id="tx-todo-executor-2level")
     tracker.update_todo_items([
         {"id": "pr", "content": "PR 验证", "status": "in_progress", "executor": "claude"},
         {"id": "local", "content": "本地测试", "status": "completed", "parent_id": "pr", "executor": "codex"},
@@ -161,7 +161,7 @@ def test_feishu_progress_card_renders_executor_badges_on_groups_and_children():
 def test_feishu_progress_card_never_renders_secret_shaped_executor():
     from gateway.progress.renderers import render_feishu_progress_card
 
-    tracker = ProgressTracker(transaction_id="tx-todo-executor-secret", title="敏感执行者")
+    tracker = ProgressTracker(transaction_id="tx-todo-executor-secret")
     bare_key = "sk-" + "test-" + ("g" * 32)
     tracker.update_todo_items([
         {"id": "1", "content": "跑测试", "status": "in_progress", "executor": bare_key},
@@ -182,7 +182,7 @@ def test_feishu_progress_card_never_renders_secret_shaped_executor():
 def test_feishu_progress_card_labeled_overflow_keeps_hidden_count():
     from gateway.progress.renderers import render_feishu_progress_card
 
-    tracker = ProgressTracker(transaction_id="tx-todo-executor-overflow", title="超量执行者任务")
+    tracker = ProgressTracker(transaction_id="tx-todo-executor-overflow")
     tracker.update_todo_items([
         {"id": str(i), "content": f"任务 {i}", "status": "pending", "executor": "codex"}
         for i in range(15)
@@ -198,7 +198,7 @@ def test_feishu_progress_card_labeled_overflow_keeps_hidden_count():
 def test_feishu_progress_card_cancelled_todo_uses_forbidden_icon_without_strikethrough():
     from gateway.progress.renderers import render_feishu_progress_card
 
-    tracker = ProgressTracker(transaction_id="tx-todo-cancelled", title="取消项展示")
+    tracker = ProgressTracker(transaction_id="tx-todo-cancelled")
     tracker.update_todo_items([
         {"id": "1", "content": "旧版尾缀展示方案", "status": "cancelled", "executor": "other"},
         {"id": "2", "content": "新版徽标展示方案", "status": "in_progress"},
@@ -221,7 +221,6 @@ def test_feishu_progress_card_renders_failed_todo_icon_defensively():
 
     snapshot = TransactionSnapshot(
         transaction_id="tx-todo-failed",
-        title="失败状态防御",
         status="running",
         started_at=1.0,
         updated_at=2.0,
@@ -240,7 +239,7 @@ def test_feishu_progress_card_renders_failed_todo_icon_defensively():
 def test_feishu_progress_card_omits_todo_block_when_empty():
     from gateway.progress.renderers import render_feishu_progress_card
 
-    tracker = ProgressTracker(transaction_id="tx-todo-empty", title="空任务")
+    tracker = ProgressTracker(transaction_id="tx-todo-empty")
 
     card = render_feishu_progress_card(tracker.snapshot(), tool_progress_mode="off")
     rendered = _rendered(card)
@@ -252,7 +251,7 @@ def test_feishu_progress_card_omits_todo_block_when_empty():
 def test_feishu_progress_card_todo_block_does_not_leak_secrets():
     from gateway.progress.renderers import render_feishu_progress_card
 
-    tracker = ProgressTracker(transaction_id="tx-todo-secret", title="敏感任务")
+    tracker = ProgressTracker(transaction_id="tx-todo-secret")
     leak = "card-todo-" + "secret"
     tracker.update_todo_items([
         {"id": "1", "content": "Authorization: Bearer " + leak, "status": "pending"},
@@ -268,7 +267,7 @@ def test_feishu_progress_card_todo_block_does_not_leak_secrets():
 def test_feishu_progress_card_todo_block_caps_lines_with_overflow_note():
     from gateway.progress.renderers import render_feishu_progress_card
 
-    tracker = ProgressTracker(transaction_id="tx-todo-overflow", title="超量任务")
+    tracker = ProgressTracker(transaction_id="tx-todo-overflow")
     tracker.update_todo_items([
         {"id": str(i), "content": f"任务 {i}", "status": "pending"} for i in range(15)
     ])
@@ -291,7 +290,7 @@ def test_task_card_hides_archived_todos_and_shows_suspended_hint():
         user_id="raw-user-id-a",
     )
     fake_key = "sk-" + "test-" + ("d" * 32)
-    tracker = ProgressTracker(transaction_id="tx-archived", title="新任务")
+    tracker = ProgressTracker(transaction_id="tx-archived")
     tracker.update_todo_items([
         {"id": "old", "content": f"旧待办 {fake_key}", "status": "pending"},
     ])
@@ -329,7 +328,7 @@ def test_task_card_hides_archived_todos_and_shows_suspended_hint():
 def test_feishu_progress_card_running_shape_uses_safe_operation_labels():
     from gateway.progress.renderers import render_feishu_progress_card
 
-    tracker = ProgressTracker(transaction_id="tx-1", title="查一下三亚天气")
+    tracker = ProgressTracker(transaction_id="tx-1")
     tracker.record_tool_started(
         "terminal",
         "API_TOKEN=super-secret python3 /tmp/weather_query.py --location Sanya",
@@ -344,7 +343,7 @@ def test_feishu_progress_card_running_shape_uses_safe_operation_labels():
     assert card["header"]["template"] == "blue"
     assert "任务工作台" in card["header"]["title"]["content"]
     assert "小沙" not in rendered
-    assert "查一下三亚天气" in rendered
+    assert "任务 ID" in rendered
     assert "terminal" in rendered
     assert "weather_query.py" in rendered
     assert "--location" not in rendered
@@ -362,7 +361,6 @@ def test_feishu_progress_card_uses_task_workbench_copy_and_operation_timing():
 
     snapshot = TransactionSnapshot(
         transaction_id="tx-workbench",
-        title="评估飞书任务工作台卡片实现方案",
         status="running",
         started_at=10.0,
         updated_at=30.0,
@@ -398,7 +396,7 @@ def test_feishu_progress_card_uses_task_workbench_copy_and_operation_timing():
     rendered = _rendered(card)
 
     assert "任务工作台" in card["header"]["title"]["content"]
-    assert "任务：" in rendered
+    assert "任务 ID：" in rendered
     assert "状态：" in rendered
     assert "耗时：" in rendered
     assert "上下文：" in rendered
@@ -422,7 +420,7 @@ def test_feishu_progress_card_uses_task_workbench_copy_and_operation_timing():
 def test_feishu_progress_card_supports_english_labels():
     from gateway.progress.renderers import detect_feishu_progress_card_language, render_feishu_progress_card
 
-    tracker = ProgressTracker(transaction_id="tx-en", title="Review Feishu card layout")
+    tracker = ProgressTracker(transaction_id="tx-en")
     tracker.record_tool_started("read_file", "gateway/progress/renderers.py")
 
     assert detect_feishu_progress_card_language("Review Feishu card layout", configured="auto") == "en"
@@ -457,41 +455,11 @@ def test_feishu_progress_card_supports_english_labels():
     rendered = _rendered(card)
 
     assert "Task Workbench" in card["header"]["title"]["content"]
-    assert "Task:" in rendered
+    assert "Task ID:" in rendered
     assert "Status:" in rendered
     assert "Recent operations:" in rendered
     assert "任务工作台" not in rendered
     assert "最近操作" not in rendered
-
-
-def test_feishu_progress_card_replaces_unsafe_command_shaped_task_title():
-    from gateway.progress.renderers import render_feishu_progress_card
-
-    unsafe_titles = [
-        'please review curl -H "Authorization: Bearer abc123" https://example.test/path?token=x',
-        '-H "X-Api-Key: x" https://example.test/path?token=x',
-        '--header "Cookie: session=abc123" https://example.test/path?token=x',
-    ]
-    for title in unsafe_titles:
-        snapshot = TransactionSnapshot(
-            transaction_id="tx-unsafe-title",
-            title=title,
-            status="running",
-            started_at=1.0,
-            updated_at=2.0,
-        )
-
-        card = render_feishu_progress_card(snapshot, language="en", tool_progress_mode="off")
-        rendered = _rendered(card)
-
-        assert "Handle user request safely" in rendered
-        assert "curl" not in rendered
-        assert "Authorization" not in rendered
-        assert "X-Api-Key" not in rendered
-        assert "Cookie" not in rendered
-        assert "Bearer" not in rendered
-        assert "example.test" not in rendered
-        assert "token" not in rendered
 
 
 @pytest.mark.parametrize(
@@ -509,7 +477,6 @@ def test_feishu_progress_card_header_template_by_status(status, expected_templat
 
     snapshot = TransactionSnapshot(
         transaction_id="tx-status",
-        title="Status task",
         status=status,
         started_at=10.0,
         updated_at=11.0,
@@ -525,7 +492,7 @@ def test_feishu_progress_card_header_template_by_status(status, expected_templat
 def test_feishu_progress_card_completed_uses_lively_copy_and_duration():
     from gateway.progress.renderers import render_feishu_progress_card
 
-    tracker = ProgressTracker(transaction_id="tx-1", title="Run checks")
+    tracker = ProgressTracker(transaction_id="tx-1")
     tracker.record_tool_started("terminal", "python /tmp/checks.py")
     tracker.record_tool_completed("terminal", duration=1.234, is_error=False)
     tracker.mark_completed(is_error=False)
@@ -544,7 +511,7 @@ def test_feishu_progress_card_completed_uses_lively_copy_and_duration():
 def test_feishu_progress_card_failed_uses_warning_copy_without_raw_output():
     from gateway.progress.renderers import render_feishu_progress_card
 
-    tracker = ProgressTracker(transaction_id="tx-1", title="Run failing command")
+    tracker = ProgressTracker(transaction_id="tx-1")
     tracker.record_tool_started("terminal", "python /tmp/weather_query.py --location Sanya")
     tracker.record_tool_completed(
         "terminal",
@@ -571,7 +538,7 @@ def test_feishu_progress_card_failed_uses_warning_copy_without_raw_output():
 def test_feishu_progress_card_includes_compact_context_usage_summary():
     from gateway.progress.renderers import render_feishu_progress_card
 
-    tracker = ProgressTracker(transaction_id="tx-context", title="上下文压力观察")
+    tracker = ProgressTracker(transaction_id="tx-context")
     tracker.update_context_usage(
         current_tokens=40_960,
         context_window=128_000,
@@ -592,7 +559,7 @@ def test_feishu_progress_card_includes_compact_context_usage_summary():
 def test_feishu_progress_card_includes_execution_rounds_in_zh_and_en():
     from gateway.progress.renderers import render_feishu_progress_card
 
-    tracker = ProgressTracker(transaction_id="tx-rounds", title="执行轮次展示")
+    tracker = ProgressTracker(transaction_id="tx-rounds")
     tracker.update_iteration_usage(current_rounds=12, max_rounds=90)
 
     zh = _rendered(render_feishu_progress_card(tracker.snapshot(), tool_progress_mode="off"))
@@ -608,7 +575,7 @@ def test_feishu_progress_card_includes_execution_rounds_in_zh_and_en():
 def test_feishu_progress_card_omits_work_rounds_without_meaningful_max():
     from gateway.progress.renderers import render_feishu_progress_card
 
-    tracker = ProgressTracker(transaction_id="tx-rounds-empty", title="无有效轮数")
+    tracker = ProgressTracker(transaction_id="tx-rounds-empty")
     tracker.update_iteration_usage(current_rounds=0, max_rounds=0)
 
     rendered = _rendered(render_feishu_progress_card(tracker.snapshot(), tool_progress_mode="off"))
@@ -624,7 +591,6 @@ def test_feishu_progress_card_includes_sanitized_model_and_account_limits_in_ord
 
     snapshot = TransactionSnapshot(
         transaction_id="tx-metadata",
-        title="展示任务元数据",
         status="running",
         started_at=10.0,
         updated_at=75.0,
@@ -663,7 +629,7 @@ def test_feishu_progress_card_includes_sanitized_model_and_account_limits_in_ord
 def test_feishu_progress_card_omits_absent_model_and_account_limits():
     from gateway.progress.renderers import render_feishu_progress_card
 
-    tracker = ProgressTracker(transaction_id="tx-no-metadata", title="无可用元数据")
+    tracker = ProgressTracker(transaction_id="tx-no-metadata")
 
     card = render_feishu_progress_card(tracker.snapshot(), tool_progress_mode="off")
     rendered = _rendered(card)
@@ -687,7 +653,6 @@ def test_feishu_progress_card_detail_duration_uses_chinese_units(elapsed, expect
 
     snapshot = TransactionSnapshot(
         transaction_id="tx-duration",
-        title="展示中文耗时",
         status="running",
         started_at=10.0,
         updated_at=10.0 + elapsed,
@@ -703,7 +668,7 @@ def test_feishu_progress_card_detail_duration_uses_chinese_units(elapsed, expect
 def test_feishu_progress_card_hides_context_usage_until_tokens_are_known():
     from gateway.progress.renderers import render_feishu_progress_card
 
-    tracker = ProgressTracker(transaction_id="tx-context-empty", title="等待首次用量")
+    tracker = ProgressTracker(transaction_id="tx-context-empty")
     tracker.update_context_usage(
         current_tokens=0,
         context_window=128_000,
@@ -722,9 +687,9 @@ def test_feishu_progress_card_hides_context_usage_until_tokens_are_known():
 def test_feishu_progress_card_does_not_show_zero_ratio_for_partial_context_usage():
     from gateway.progress.renderers import render_feishu_progress_card
 
-    peak_tracker = ProgressTracker(transaction_id="tx-peak-only", title="只有峰值")
+    peak_tracker = ProgressTracker(transaction_id="tx-peak-only")
     peak_tracker.update_context_usage(current_tokens=0, context_window=128_000, peak_tokens=65_536)
-    compression_tracker = ProgressTracker(transaction_id="tx-compress-only", title="只有压缩次数")
+    compression_tracker = ProgressTracker(transaction_id="tx-compress-only")
     compression_tracker.update_context_usage(current_tokens=0, context_window=128_000, compression_count=2)
 
     peak_rendered = _rendered(render_feishu_progress_card(peak_tracker.snapshot(), tool_progress_mode="off"))
@@ -739,7 +704,7 @@ def test_feishu_progress_card_does_not_show_zero_ratio_for_partial_context_usage
 def test_feishu_progress_card_sanitizes_dashboard_link():
     from gateway.progress.renderers import render_feishu_progress_card
 
-    tracker = ProgressTracker(transaction_id="tx-1", title="Dashboard task")
+    tracker = ProgressTracker(transaction_id="tx-1")
 
     card = render_feishu_progress_card(
         tracker.snapshot(),
@@ -756,13 +721,13 @@ def test_feishu_progress_card_sanitizes_dashboard_link():
 def test_feishu_progress_card_tool_progress_off_hides_operations():
     from gateway.progress.renderers import render_feishu_progress_card
 
-    tracker = ProgressTracker(transaction_id="tx-1", title="Quiet task")
+    tracker = ProgressTracker(transaction_id="tx-1")
     tracker.record_tool_started("terminal", "python /tmp/hidden.py --secret value")
 
     card = render_feishu_progress_card(tracker.snapshot(), tool_progress_mode="off")
     rendered = _rendered(card)
 
-    assert "Quiet task" in rendered
+    assert "任务 ID" in rendered
     assert "terminal" not in rendered
     assert "hidden.py" not in rendered
     assert "--secret" not in rendered
@@ -771,7 +736,7 @@ def test_feishu_progress_card_tool_progress_off_hides_operations():
 def test_feishu_progress_card_displays_skill_view_skill_name_not_tool_name():
     from gateway.progress.renderers import render_feishu_progress_card
 
-    tracker = ProgressTracker(transaction_id="tx-skill", title="Use weather skill")
+    tracker = ProgressTracker(transaction_id="tx-skill")
     tracker.record_tool_started("skill_view", "weather-query", {"name": "weather-query"})
 
     card = render_feishu_progress_card(tracker.snapshot())
@@ -784,7 +749,7 @@ def test_feishu_progress_card_displays_skill_view_skill_name_not_tool_name():
 def test_feishu_progress_card_allows_categorized_skill_name_without_raw_args():
     from gateway.progress.renderers import render_feishu_progress_card
 
-    tracker = ProgressTracker(transaction_id="tx-skill-category", title="Load planning skill")
+    tracker = ProgressTracker(transaction_id="tx-skill-category")
     tracker.record_tool_started(
         "skill_view",
         "software-development/plan",
@@ -805,7 +770,7 @@ def test_feishu_progress_card_allows_categorized_skill_name_without_raw_args():
 def test_feishu_progress_card_rejects_unsafe_skill_view_preview():
     from gateway.progress.renderers import render_feishu_progress_card
 
-    tracker = ProgressTracker(transaction_id="tx-skill-unsafe", title="Unsafe skill preview")
+    tracker = ProgressTracker(transaction_id="tx-skill-unsafe")
     tracker.record_tool_started(
         "skill_view",
         "[weather](https://evil.example/path?token=super-secret)",
@@ -825,7 +790,7 @@ def test_feishu_progress_card_rejects_path_shaped_skill_names():
     from gateway.progress.renderers import render_feishu_progress_card
 
     for unsafe_name in ("etc/passwd", "references/private", "C:/Users/Alice", "scripts/deploy"):
-        tracker = ProgressTracker(transaction_id=f"tx-{unsafe_name}", title="Unsafe skill path")
+        tracker = ProgressTracker(transaction_id=f"tx-{unsafe_name}")
         tracker.record_tool_started("skill_view", unsafe_name, {"name": unsafe_name})
 
         card = render_feishu_progress_card(tracker.snapshot())
@@ -838,7 +803,7 @@ def test_feishu_progress_card_rejects_token_shaped_skill_names():
     from gateway.progress.renderers import render_feishu_progress_card
 
     for unsafe_name in ("sk-live-supersecret", "ghp_supersecrettoken", "xoxb-supersecrettoken"):
-        tracker = ProgressTracker(transaction_id=f"tx-{unsafe_name}", title="Unsafe token skill")
+        tracker = ProgressTracker(transaction_id=f"tx-{unsafe_name}")
         tracker.record_tool_started("skill_view", unsafe_name, {"name": unsafe_name})
 
         card = render_feishu_progress_card(tracker.snapshot())
@@ -850,7 +815,7 @@ def test_feishu_progress_card_rejects_token_shaped_skill_names():
 def test_feishu_progress_card_prefers_skill_args_over_preview():
     from gateway.progress.renderers import render_feishu_progress_card
 
-    tracker = ProgressTracker(transaction_id="tx-skill-args", title="Prefer args skill")
+    tracker = ProgressTracker(transaction_id="tx-skill-args")
     tracker.record_tool_started("skill_view", "unsafe-preview", {"name": "weather-query"})
 
     card = render_feishu_progress_card(tracker.snapshot())
@@ -863,7 +828,7 @@ def test_feishu_progress_card_prefers_skill_args_over_preview():
 def test_feishu_progress_card_does_not_use_completed_skill_output_as_name():
     from gateway.progress.renderers import render_feishu_progress_card
 
-    tracker = ProgressTracker(transaction_id="tx-skill-completed", title="Completed skill")
+    tracker = ProgressTracker(transaction_id="tx-skill-completed")
     tracker.record_tool_started("skill_view", "weather-query", {"name": "weather-query"})
     tracker.record_tool_completed("skill_view", duration=0.25, preview="software-development/plan")
 
@@ -877,7 +842,7 @@ def test_feishu_progress_card_does_not_use_completed_skill_output_as_name():
 def test_feishu_progress_card_extracts_completed_skill_name_from_json_args_preview_with_null():
     from gateway.progress.renderers import render_feishu_progress_card
 
-    tracker = ProgressTracker(transaction_id="tx-skill-json-null", title="Completed skill with optional file")
+    tracker = ProgressTracker(transaction_id="tx-skill-json-null")
     tracker.record_tool_started("skill_view", "weather-query", {"name": "weather-query", "file_path": None})
     tracker.record_tool_completed("skill_view", duration=0.1)
 
@@ -892,7 +857,7 @@ def test_feishu_progress_card_extracts_completed_skill_name_from_json_args_previ
 def test_feishu_progress_card_does_not_derive_command_name_from_raw_output_preview():
     from gateway.progress.renderers import render_feishu_progress_card
 
-    tracker = ProgressTracker(transaction_id="tx-raw-output", title="Failing command")
+    tracker = ProgressTracker(transaction_id="tx-raw-output")
     tracker.record_tool_started("terminal", "python /tmp/safe_runner.py")
     tracker.record_tool_completed(
         "terminal",
@@ -914,7 +879,6 @@ def test_feishu_progress_card_ignores_untrusted_command_name_metadata():
 
     snapshot = TransactionSnapshot(
         transaction_id="tx-metadata",
-        title="Metadata command task",
         status="running",
         started_at=1.0,
         updated_at=2.0,
@@ -936,13 +900,10 @@ def test_feishu_progress_card_ignores_untrusted_command_name_metadata():
     assert "terminal" in rendered
 
 
-def test_feishu_progress_card_sanitizes_markdown_title_and_non_string_options():
+def test_feishu_progress_card_sanitizes_non_string_options():
     from gateway.progress.renderers import render_feishu_progress_card
 
-    tracker = ProgressTracker(
-        transaction_id="tx-title",
-        title="[click me](https://evil.example/path?token=super-secret) <at id=ou_bad>Dog</at>",
-    )
+    tracker = ProgressTracker(transaction_id="tx-options")
 
     card = render_feishu_progress_card(
         tracker.snapshot(),
@@ -952,17 +913,14 @@ def test_feishu_progress_card_sanitizes_markdown_title_and_non_string_options():
     )
     rendered = _rendered(card)
 
-    assert "https://evil.example" not in rendered
-    assert "super-secret" not in rendered
-    assert "<at" not in rendered
     assert "javascript:" not in rendered
-    assert "click me" in rendered
+    assert "任务 ID" in rendered
 
 
 def test_feishu_progress_card_does_not_scan_non_terminal_previews_for_scripts():
     from gateway.progress.renderers import render_feishu_progress_card
 
-    tracker = ProgressTracker(transaction_id="tx-subagent", title="Subagent task")
+    tracker = ProgressTracker(transaction_id="tx-subagent")
     tracker.record_callback_event(
         "subagent.progress",
         tool_name="subagent",
@@ -979,7 +937,7 @@ def test_feishu_progress_card_does_not_scan_non_terminal_previews_for_scripts():
 def test_feishu_progress_card_does_not_scan_command_arguments_for_script_names():
     from gateway.progress.renderers import render_feishu_progress_card
 
-    tracker = ProgressTracker(transaction_id="tx-argument", title="Argument task")
+    tracker = ProgressTracker(transaction_id="tx-argument")
     tracker.record_tool_started(
         "terminal",
         "grep needle /tmp/private_dump.py",
@@ -997,7 +955,7 @@ def test_feishu_progress_card_does_not_scan_command_arguments_for_script_names()
 def test_feishu_progress_card_does_not_parse_nested_command_fields_inside_arguments():
     from gateway.progress.renderers import render_feishu_progress_card
 
-    tracker = ProgressTracker(transaction_id="tx-nested-command", title="Nested command task")
+    tracker = ProgressTracker(transaction_id="tx-nested-command")
     tracker.record_tool_started(
         "terminal",
         'echo {"command": "/tmp/private_dump.py"}',
@@ -1014,7 +972,7 @@ def test_feishu_progress_card_does_not_parse_nested_command_fields_inside_argume
 def test_feishu_progress_card_does_not_treat_interpreter_option_values_as_scripts():
     from gateway.progress.renderers import render_feishu_progress_card
 
-    tracker = ProgressTracker(transaction_id="tx-interpreter-option", title="Interpreter option task")
+    tracker = ProgressTracker(transaction_id="tx-interpreter-option")
     tracker.record_tool_started(
         "terminal",
         "node --require /tmp/customer_secret_hook.js /tmp/app.js",
@@ -1036,7 +994,6 @@ def test_feishu_progress_card_omits_footer_safety_copy():
         for status in ("running", "completed", "failed"):
             snapshot = TransactionSnapshot(
                 transaction_id=f"tx-footer-{language}-{status}",
-                title="检查事务卡底部安全文案",
                 status=status,
                 started_at=10.0,
                 updated_at=12.0,
@@ -1057,7 +1014,6 @@ def test_feishu_progress_card_uses_emoji_prefixed_metric_labels():
 
     snapshot = TransactionSnapshot(
         transaction_id="tx-emoji-labels",
-        title="评估事务卡指标标签",
         status="running",
         started_at=10.0,
         updated_at=30.0,
@@ -1072,7 +1028,7 @@ def test_feishu_progress_card_uses_emoji_prefixed_metric_labels():
     card = render_feishu_progress_card(snapshot, tool_progress_mode="off")
     rendered = _rendered(card)
 
-    assert "📌 任务" in rendered
+    assert "🆔 任务 ID" in rendered
     assert "🔄 状态" in rendered
     assert "⏱️ 耗时" in rendered
     assert "🧠 上下文" in rendered
@@ -1091,7 +1047,6 @@ def test_feishu_progress_card_status_label_uses_state_icon(status, expected_stat
 
     snapshot = TransactionSnapshot(
         transaction_id=f"tx-status-icon-{status}",
-        title="状态图标标签",
         status=status,
         started_at=10.0,
         updated_at=12.0,
@@ -1110,7 +1065,6 @@ def test_feishu_progress_card_supports_english_emoji_metric_labels():
 
     snapshot = TransactionSnapshot(
         transaction_id="tx-emoji-labels-en",
-        title="Review task workbench metric labels",
         status="running",
         started_at=10.0,
         updated_at=30.0,
@@ -1125,7 +1079,7 @@ def test_feishu_progress_card_supports_english_emoji_metric_labels():
     card = render_feishu_progress_card(snapshot, language="en", tool_progress_mode="off")
     rendered = _rendered(card)
 
-    assert "📌 Task" in rendered
+    assert "🆔 Task ID" in rendered
     assert "🔄 Status" in rendered
     assert "⏱️ Duration" in rendered
     assert "🧠 Context" in rendered
@@ -1139,7 +1093,6 @@ def test_feishu_recent_operation_timing_uses_interval_for_completed_operation():
     completed_at = 1_700_000_793.06
     snapshot = TransactionSnapshot(
         transaction_id="tx-op-interval",
-        title="排查会话检索耗时",
         status="running",
         started_at=started_at,
         updated_at=completed_at,
@@ -1178,7 +1131,6 @@ def test_feishu_recent_operation_timing_uses_interval_for_running_operation():
     started_at = 1_700_000_791.0
     snapshot = TransactionSnapshot(
         transaction_id="tx-op-running-interval",
-        title="排查会话检索进度",
         status="running",
         started_at=started_at,
         updated_at=started_at,
@@ -1202,3 +1154,33 @@ def test_feishu_recent_operation_timing_uses_interval_for_running_operation():
     assert f"{start_str} - 进行中" in rendered
     assert "开始" not in rendered
     assert "结束" not in rendered
+
+
+def test_feishu_progress_card_shows_canonical_task_id_without_task_summary():
+    from gateway.progress.renderers import render_feishu_progress_card
+
+    tracker = ProgressTracker(transaction_id="sess-feishu-task-id-1")
+
+    card = render_feishu_progress_card(tracker.snapshot(), tool_progress_mode="off")
+    details = card["elements"][0]["content"]
+    rendered = _rendered(card)
+
+    assert "**🆔 任务 ID：**" in details
+    # Full canonical transaction id, feishu-markdown-escaped.
+    assert "sess\\-feishu\\-task\\-id\\-1" in details
+    assert "📌" not in rendered
+
+
+def test_feishu_progress_card_shows_canonical_task_id_with_english_label():
+    from gateway.progress.renderers import render_feishu_progress_card
+
+    tracker = ProgressTracker(transaction_id="sess-feishu-task-id-en")
+
+    card = render_feishu_progress_card(tracker.snapshot(), language="en", tool_progress_mode="off")
+    details = card["elements"][0]["content"]
+    rendered = _rendered(card)
+
+    assert "**🆔 Task ID:**" in details
+    assert "sess\\-feishu\\-task\\-id\\-en" in details
+    assert "📌" not in rendered
+    assert "任务 ID" not in rendered

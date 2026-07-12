@@ -80,9 +80,8 @@ class ProgressTracker:
     threads while the gateway reads snapshots from the event loop thread.
     """
 
-    def __init__(self, transaction_id: str, title: str, max_operations: int = 20):
+    def __init__(self, transaction_id: str, max_operations: int = 20):
         self.transaction_id = transaction_id
-        self.title = title
         self.max_operations = max(0, int(max_operations))
         now = time.time()
         self._started_at = now
@@ -225,7 +224,6 @@ class ProgressTracker:
             )
             return TransactionSnapshot(
                 transaction_id=self.transaction_id,
-                title=self.title,
                 status=self._status,
                 started_at=self._started_at,
                 updated_at=self._updated_at,
@@ -385,7 +383,6 @@ class ProgressTracker:
             self._suspended_todo_hint = normalize_suspended_todo_hint(
                 {
                     "transaction_id": self.transaction_id,
-                    "title": self.title,
                     "reason": reason,
                     "remaining_count": remaining,
                     "next_action": next_action,

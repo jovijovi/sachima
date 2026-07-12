@@ -81,7 +81,6 @@ def make_shadow_agent_result(*, index: int = 0, rich_card_count: int = 0) -> dic
     }
     snapshot = TransactionSnapshot(
         transaction_id=f"session_phase5g_delivery_{index}",
-        title="Phase 5G delivery cardinality task",
         status="completed",
         started_at=1000.0 + index,
         updated_at=1002.0 + index,

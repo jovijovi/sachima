@@ -96,8 +96,10 @@ def build_flowweaver_v0_snapshot(
     final_text_id = _prefixed_id("final_text", base_id, fallback="transaction")
 
     status = _status_to_flowweaver(progress_snapshot.status)
-    title = _safe_text(progress_snapshot.title, max_len=120) or "Task"
-    user_request_summary = _safe_text(progress_snapshot.title, max_len=240) or title
+    # The contract never exports the raw transaction id (it may embed private
+    # chat identifiers); reuse the public prefixed id as the display reference.
+    title = _safe_text(transaction_id, max_len=120) or "Task"
+    user_request_summary = _safe_text(transaction_id, max_len=240) or title
 
     final_text_record, final_text_delivery = _final_text_record_and_delivery(
         final_text_id=final_text_id,

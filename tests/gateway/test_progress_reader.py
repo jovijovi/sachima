@@ -541,3 +541,15 @@ def test_progress_reader_bounds_lines_and_handles_weird_scalars(tmp_path):
     assert tx["id"] == "123"
     assert "reader-secret" not in json.dumps(tx, ensure_ascii=False)
     assert tx["started_at"] is None
+
+
+def test_transactions_without_title_fall_back_to_transaction_id(tmp_path):
+    path = tmp_path / "events.jsonl"
+    record = _snapshot("tx-untitled", written_at=2.0)
+    del record["transaction"]["title"]
+    _write_jsonl(path, [record])
+
+    payload = list_progress_transactions(path)
+
+    assert len(payload["transactions"]) == 1
+    assert payload["transactions"][0]["title"] == "tx-untitled"
