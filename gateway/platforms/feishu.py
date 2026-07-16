@@ -3330,6 +3330,14 @@ class FeishuAdapter(BasePlatformAdapter):
                 state.get("pr_number", ""),
                 user_name,
             )
+            # Reject/ignore are terminal gate outcomes: replay them to the
+            # origin session so it doesn't wait forever on a dead card.
+            await self._record_github_pr_gate_outcome(
+                state,
+                result="reject" if action == "reject" else "ignore",
+                actor=user_name,
+                detail_code="card_rejected" if action == "reject" else "card_dismissed",
+            )
             return
 
         route_chat_id = expected_chat_id or chat_id
@@ -3381,6 +3389,101 @@ class FeishuAdapter(BasePlatformAdapter):
             open_id,
         )
         await self._handle_message_with_guards(synthetic_event)
+
+    @staticmethod
+    def _github_pr_gate_correlation(state: Dict[str, Any]) -> str:
+        """Stable correlation id for a card's terminal outcome record."""
+        message_id = str(state.get("message_id") or "").strip()
+        if message_id:
+            return message_id
+        return (
+            f"{state.get('repo', '')}#{state.get('pr_number', '')}"
+            f"@{str(state.get('head_sha', ''))[:12]}"
+        )
+
+    async def _record_github_pr_gate_outcome(
+        self,
+        state: Dict[str, Any],
+        *,
+        result: str,
+        actor: str = "",
+        detail_code: str = "",
+    ) -> None:
+        """Replay a terminal PR-gate outcome to the card's origin session."""
+        session_key = str(state.get("session_key") or "").strip()
+        if not session_key:
+            return
+        try:
+            from gateway.pr_gate_outcome import record_pr_gate_outcome
+
+            await asyncio.to_thread(
+                record_pr_gate_outcome,
+                origin_session_key=session_key,
+                result=result,
+                repo=str(state.get("repo") or ""),
+                pr_number=str(state.get("pr_number") or ""),
+                head_sha=str(state.get("head_sha") or ""),
+                correlation_id=self._github_pr_gate_correlation(state),
+                actor=actor,
+                detail_code=detail_code,
+            )
+        except Exception:
+            logger.warning("[Feishu] Failed to record GitHub PR gate outcome", exc_info=True)
+
+    def _github_pr_gate_session_key(self, event: MessageEvent) -> str:
+        """Session key of the controlled gate conversation for a synthetic event."""
+        from gateway.session import build_session_key
+
+        try:
+            return build_session_key(
+                event.source,
+                group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
+                thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
+            )
+        except Exception:
+            return ""
+
+    async def _maybe_record_github_pr_gate_outcome(
+        self, event: MessageEvent, outcome: "ProcessingOutcome"
+    ) -> None:
+        """On terminal completion of a synthetic PR-gate turn, replay its outcome.
+
+        The synthetic merge-request event carries the origin-session
+        correlation in ``raw_message['github_pr_approval']``; the processing
+        outcome classifies only whether the controlled gate RUN reached a
+        terminal delivery state.  No gate-conversation text is ever imported
+        into the origin record — only a fixed source-controlled detail code.
+        The origin session must re-verify actual PR/merge state on GitHub.
+        """
+        raw = getattr(event, "raw_message", None)
+        state = raw.get("github_pr_approval") if isinstance(raw, dict) else None
+        if not isinstance(state, dict):
+            return
+        session_key = str(state.get("session_key") or "").strip()
+        if not session_key:
+            return
+        try:
+            gate_session_key = self._github_pr_gate_session_key(event)
+            if gate_session_key and gate_session_key == session_key:
+                # The gate ran inside the origin session itself; its result is
+                # already part of that transcript.
+                return
+            if outcome is ProcessingOutcome.SUCCESS:
+                result, detail_code = "pass", "gate_run_completed"
+            elif outcome is ProcessingOutcome.CANCELLED:
+                result, detail_code = "fail", "gate_run_cancelled"
+            else:
+                result, detail_code = "fail", "gate_run_failed"
+            await self._record_github_pr_gate_outcome(
+                state,
+                result=result,
+                actor=str(getattr(event.source, "user_name", "") or ""),
+                detail_code=detail_code,
+            )
+        except Exception:
+            logger.warning(
+                "[Feishu] GitHub PR gate outcome recording failed", exc_info=True
+            )
 
     async def _resolve_update_prompt(
         self,
@@ -3686,6 +3789,9 @@ class FeishuAdapter(BasePlatformAdapter):
     async def on_processing_complete(
         self, event: MessageEvent, outcome: ProcessingOutcome
     ) -> None:
+        # Terminal boundary of the controlled PR approval-gate turn: replay
+        # its outcome to the origin session before any reaction cosmetics.
+        await self._maybe_record_github_pr_gate_outcome(event, outcome)
         if not self._reactions_enabled():
             return
         message_id = event.message_id
