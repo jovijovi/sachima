@@ -23,7 +23,7 @@ and then:
   session lease is the second, library-level guard), with the stable
   ``runtime_turn_dispatch_busy`` code for concurrent attempts.
 
-Goal turns preserve the supervisor's 0.1.6 goal-contract semantics: the payload is compiled
+Goal turns preserve the supervisor's 0.1.7 goal-contract semantics: the payload is compiled
 through the role-aware ARS ``GoalSpec``/``compile_goal_prompt`` (via the
 backend facade) — never a literal ``/goal`` slash prompt that a non-native
 adapter would silently no-op.
