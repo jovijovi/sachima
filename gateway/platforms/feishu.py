@@ -260,6 +260,143 @@ _APPROVAL_LABEL_MAP: Dict[str, str] = {
     "deny": "Denied",
 }
 _GITHUB_PR_APPROVAL_ACTIONS = frozenset({"approve", "reject", "ignore"})
+# Provider identity of GitHub PR approval cards in the generic (provider-
+# neutral) control-transaction protocol.  Only these validated fields (and
+# the provider observation below) carry the GitHub specificity — the receipt
+# protocol itself stays generic.
+_GITHUB_PR_CONTROL_PROVIDER = "github"
+_GITHUB_PR_CONTROL_RESOURCE_KIND = "pull_request"
+_GITHUB_REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+
+
+def _observe_github_pr_state(repo: str, pr_number: Any) -> Dict[str, Any]:
+    """Freshly observe the PR's provider-side state (read-only).
+
+    The execution receipt's ``result`` header must be provider-established,
+    never model-asserted: ``merged``/``blocked`` come only from this read,
+    and when it cannot be established the receipt says ``unknown``.  Tries
+    the GitHub REST API with GITHUB_TOKEN/GH_TOKEN, then the authenticated
+    ``gh`` CLI the trusted repo-operator workflow already relies on.  Never
+    raises and never mutates anything.
+    """
+    repo = str(repo or "").strip()
+    number = str(pr_number or "").strip().lstrip("#")
+    if not _GITHUB_REPO_RE.match(repo) or not number.isdigit():
+        return {"observed": False, "reason": "invalid repository or change id"}
+    payload = None
+    reason = "no GitHub credential or gh CLI available"
+    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+    if token:
+        try:
+            request = Request(
+                f"https://api.github.com/repos/{repo}/pulls/{number}",
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Accept": "application/vnd.github+json",
+                    "User-Agent": "hermes-gateway",
+                },
+            )
+            with urlopen(request, timeout=10) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except Exception as exc:
+            reason = f"GitHub API read failed: {type(exc).__name__}"
+    if payload is None:
+        try:
+            import subprocess
+
+            proc = subprocess.run(
+                ["gh", "api", f"repos/{repo}/pulls/{number}"],
+                capture_output=True, text=True, timeout=20,
+            )
+            if proc.returncode == 0 and proc.stdout.strip():
+                payload = json.loads(proc.stdout)
+            else:
+                reason = f"gh api read failed (exit {proc.returncode})"
+        except Exception as exc:
+            reason = f"gh api read failed: {type(exc).__name__}"
+    if not isinstance(payload, dict):
+        return {"observed": False, "reason": reason}
+    merged = bool(payload.get("merged"))
+    return {
+        "observed": True,
+        "merged": merged,
+        "state": str(payload.get("state") or ""),
+        "merge_commit": str(payload.get("merge_commit_sha") or "") if merged else "",
+        "head_sha": str((payload.get("head") or {}).get("sha") or ""),
+        "mergeable_state": str(payload.get("mergeable_state") or ""),
+    }
+
+
+def _classify_github_pr_execution(
+    delivery: str, observation: Optional[Dict[str, Any]]
+) -> tuple:
+    """Map (run delivery, provider observation) to enumerated receipt codes.
+
+    Returns ``(result, operation, next_action)``.  The provider observation
+    is the truth source for the remote mutation; the delivery outcome only
+    disambiguates blocked (run finished, chose not to merge) from failed
+    (run died with no mutation).  No observation ⇒ unknown, fail closed.
+    """
+    observation = observation if isinstance(observation, dict) else {}
+    if observation.get("observed"):
+        if observation.get("merged"):
+            return "merged", "completed", "none"
+        if delivery == "completed":
+            return (
+                "blocked",
+                "not_attempted",
+                "resolve_blocker_then_issue_new_approval_card",
+            )
+        return "failed", "failed", "issue_new_approval_card"
+    return "unknown", "unknown", "verify_provider_state_before_retry"
+
+
+def _compose_github_pr_execution_details(
+    *,
+    state: Dict[str, Any],
+    actor: str,
+    delivery: str,
+    observation: Optional[Dict[str, Any]],
+    report: str,
+) -> str:
+    """Compose the complete detail body for a gate-run execution receipt."""
+    label = f"{state.get('repo', '')}#{state.get('pr_number', '')}"
+    revision = str(state.get("head_sha") or "") or "unknown"
+    observation = observation if isinstance(observation, dict) else {}
+    lines = [
+        f"Approval: card for {label} approved by {actor or 'the operator'} via "
+        f"Feishu at approved head revision {revision}.",
+        f"Control run delivery: {delivery}.",
+    ]
+    if observation.get("observed"):
+        observed = (
+            f"Provider observation (fresh read of {label}): "
+            f"state={observation.get('state') or 'unknown'} "
+            f"merged={'true' if observation.get('merged') else 'false'}"
+        )
+        if observation.get("merge_commit"):
+            observed += f" merge_commit={observation.get('merge_commit')}"
+        if observation.get("head_sha"):
+            observed += f" head={observation.get('head_sha')}"
+        if observation.get("mergeable_state"):
+            observed += f" mergeable_state={observation.get('mergeable_state')}"
+        lines.append(observed)
+    else:
+        why = str(observation.get("reason") or "").strip()
+        lines.append(
+            "Provider observation unavailable"
+            + (f" ({why})" if why else "")
+            + ": the remote mutation could not be established. A fresh provider "
+            "read (PR state, head SHA, checks) is required before acting on or "
+            "retrying this operation."
+        )
+    lines.append("")
+    lines.append("Execution report from the controlled gate run:")
+    lines.append(
+        report.strip() if report and report.strip()
+        else "(the gate run delivered no execution report)"
+    )
+    return "\n".join(lines)
 _GITHUB_PR_APPROVAL_LOCALE_ALIASES: Dict[str, str] = {
     "": "zh-CN",
     "auto": "zh-CN",
@@ -2320,7 +2457,13 @@ class FeishuAdapter(BasePlatformAdapter):
                 if not superseded:
                     for stored_approval_id in stale_approval_ids:
                         self._github_pr_approval_state.pop(stored_approval_id, None)
+                    # The card is only chat UI: the durable control transaction
+                    # is the canonical state source for this approval action.
+                    state["control_transaction_id"] = self._github_pr_gate_correlation(state)
                     self._github_pr_approval_state[approval_id] = state
+                    await asyncio.to_thread(
+                        self._begin_github_pr_control_transaction, state
+                    )
             return result
         except Exception as exc:
             logger.warning("[Feishu] send_github_pr_approval_card failed: %s", exc)
@@ -3330,13 +3473,14 @@ class FeishuAdapter(BasePlatformAdapter):
                 state.get("pr_number", ""),
                 user_name,
             )
-            # Reject/ignore are terminal gate outcomes: replay them to the
-            # origin session so it doesn't wait forever on a dead card.
-            await self._record_github_pr_gate_outcome(
+            # Reject/dismiss are material terminal results: write the complete
+            # not-attempted execution receipt to the origin session so it
+            # doesn't wait forever on a dead card.
+            await asyncio.to_thread(
+                self._record_github_pr_card_decision,
                 state,
-                result="reject" if action == "reject" else "ignore",
-                actor=user_name,
-                detail_code="card_rejected" if action == "reject" else "card_dismissed",
+                "rejected" if action == "reject" else "dismissed",
+                user_name,
             )
             return
 
@@ -3361,6 +3505,16 @@ class FeishuAdapter(BasePlatformAdapter):
         pr_number = state.get("pr_number", "")
         head_sha = state.get("head_sha", "")
         pr_url = state.get("pr_url", "")
+        # Record the human's approved card action on the durable control
+        # transaction, and thread the transaction id through the synthetic
+        # gate event state so the completion boundary can correlate the
+        # execution receipt.  The gate turn itself is the existing trusted
+        # repo-operator workflow — it gets NO self-report tool; the receipt's
+        # result classification comes from a fresh provider observation.
+        state["control_transaction_id"] = self._github_pr_transaction_id(state)
+        await asyncio.to_thread(
+            self._record_github_pr_card_action, state, "approved", user_name
+        )
         synthetic_text = (
             f"批准合并 PR #{pr_number}（Feishu 按钮审批）\n"
             f"repo: {repo}\n"
@@ -3401,34 +3555,108 @@ class FeishuAdapter(BasePlatformAdapter):
             f"@{str(state.get('head_sha', ''))[:12]}"
         )
 
-    async def _record_github_pr_gate_outcome(
-        self,
-        state: Dict[str, Any],
-        *,
-        result: str,
-        actor: str = "",
-        detail_code: str = "",
-    ) -> None:
-        """Replay a terminal PR-gate outcome to the card's origin session."""
-        session_key = str(state.get("session_key") or "").strip()
-        if not session_key:
-            return
-        try:
-            from gateway.pr_gate_outcome import record_pr_gate_outcome
+    def _github_pr_transaction_id(self, state: Dict[str, Any]) -> str:
+        """Control-transaction id for a card, falling back to the legacy correlation."""
+        return (
+            str(state.get("control_transaction_id") or "").strip()
+            or self._github_pr_gate_correlation(state)
+        )
 
-            await asyncio.to_thread(
-                record_pr_gate_outcome,
-                origin_session_key=session_key,
-                result=result,
-                repo=str(state.get("repo") or ""),
-                pr_number=str(state.get("pr_number") or ""),
-                head_sha=str(state.get("head_sha") or ""),
-                correlation_id=self._github_pr_gate_correlation(state),
-                actor=actor,
-                detail_code=detail_code,
+    def _github_pr_control_fields(self, state: Dict[str, Any]) -> Dict[str, str]:
+        """Provider-adapter identity fields for the generic control transaction."""
+        return {
+            "provider": _GITHUB_PR_CONTROL_PROVIDER,
+            "resource_kind": _GITHUB_PR_CONTROL_RESOURCE_KIND,
+            "origin_session_key": str(state.get("session_key") or ""),
+            "repo": str(state.get("repo") or ""),
+            "change_id": str(state.get("pr_number") or ""),
+            "bound_revision": str(state.get("head_sha") or ""),
+        }
+
+    def _begin_github_pr_control_transaction(self, state: Dict[str, Any]) -> None:
+        """Open the durable control transaction for a freshly sent card."""
+        try:
+            from gateway.control_transaction import begin_control_transaction
+
+            begin_control_transaction(
+                transaction_id=self._github_pr_transaction_id(state),
+                actor=str(state.get("author") or ""),
+                **self._github_pr_control_fields(state),
             )
         except Exception:
-            logger.warning("[Feishu] Failed to record GitHub PR gate outcome", exc_info=True)
+            logger.warning(
+                "[Feishu] Failed to begin GitHub PR control transaction", exc_info=True
+            )
+
+    def _record_github_pr_card_action(
+        self, state: Dict[str, Any], action: str, actor: str
+    ) -> None:
+        """Record the human's card action on the control transaction (lazy-creating)."""
+        try:
+            from gateway.control_transaction import record_card_action
+
+            record_card_action(
+                self._github_pr_transaction_id(state),
+                action,
+                actor=actor,
+                **self._github_pr_control_fields(state),
+            )
+        except Exception:
+            logger.warning(
+                "[Feishu] Failed to record GitHub PR card action", exc_info=True
+            )
+
+    def _record_github_pr_card_decision(
+        self, state: Dict[str, Any], action: str, actor: str
+    ) -> None:
+        """Write the complete not-attempted receipt for a rejected/dismissed card."""
+        try:
+            from gateway.control_transaction import (
+                record_card_action,
+                record_execution_result,
+            )
+
+            transaction_id = self._github_pr_transaction_id(state)
+            fields = self._github_pr_control_fields(state)
+            record_card_action(transaction_id, action, actor=actor, **fields)
+            label = f"{state.get('repo', '')}#{state.get('pr_number', '')}"
+            revision = str(state.get("head_sha") or "") or "unknown"
+            who = actor or "the operator"
+            if action == "rejected":
+                details = (
+                    f"The Feishu approval card for {label} (approved head revision "
+                    f"{revision}) was rejected by {who}.\n"
+                    "The merge operation was not attempted; no remote change was made.\n"
+                    "If this change should still land, address the operator's concerns "
+                    "and issue a new approval card bound to the current head revision."
+                )
+            else:
+                details = (
+                    f"The Feishu approval card for {label} (approved head revision "
+                    f"{revision}) was dismissed by {who} without approval.\n"
+                    "The merge operation was not attempted; no remote change was made.\n"
+                    "This card is no longer actionable — any future merge action "
+                    "requires a new approval card bound to the current head revision."
+                )
+            recorded = record_execution_result(
+                transaction_id,
+                result=action,
+                operation="not_attempted",
+                next_action="issue_new_approval_card",
+                details=details,
+                card_action=action,
+                actor=actor,
+                **fields,
+            )
+            if not recorded:
+                logger.warning(
+                    "[Feishu] GitHub PR %s receipt was NOT recorded for %s "
+                    "(origin session missing or write failed)", action, label,
+                )
+        except Exception:
+            logger.warning(
+                "[Feishu] Failed to record GitHub PR card decision", exc_info=True
+            )
 
     def _github_pr_gate_session_key(self, event: MessageEvent) -> str:
         """Session key of the controlled gate conversation for a synthetic event."""
@@ -3443,20 +3671,73 @@ class FeishuAdapter(BasePlatformAdapter):
         except Exception:
             return ""
 
-    async def _maybe_record_github_pr_gate_outcome(
+    def _read_github_pr_gate_report(self, gate_session_key: str) -> str:
+        """The gate run's final execution report from its persisted transcript.
+
+        The message handler persists the gate turn before delivery, so at the
+        completion boundary the last assistant message of the gate session IS
+        the run's execution report (final response only — never raw model
+        reasoning or tool logs).  Returns '' when no report exists.
+        """
+        if not gate_session_key:
+            return ""
+        try:
+            from hermes_constants import get_hermes_home
+            from hermes_state import SessionDB
+            from gateway.control_transaction import (
+                EXECUTION_RESULT_PREFIX,
+                resolve_session_id,
+            )
+
+            session_id = resolve_session_id(gate_session_key)
+            if not session_id:
+                return ""
+            db = SessionDB(db_path=get_hermes_home() / "state.db")
+            try:
+                target_id = db.get_compression_tip(session_id) or session_id
+                messages = db.get_messages_as_conversation(
+                    target_id, include_ancestors=True
+                )
+            finally:
+                db.close()
+            for msg in reversed(messages):
+                if msg.get("role") != "assistant":
+                    continue
+                content = msg.get("content")
+                if not isinstance(content, str) or not content.strip():
+                    continue
+                if content.startswith(EXECUTION_RESULT_PREFIX):
+                    continue
+                return content
+        except Exception:
+            logger.warning(
+                "[Feishu] Failed to read GitHub PR gate execution report",
+                exc_info=True,
+            )
+        return ""
+
+    async def _maybe_record_github_pr_execution_receipt(
         self, event: MessageEvent, outcome: "ProcessingOutcome"
     ) -> None:
-        """On terminal completion of a synthetic PR-gate turn, replay its outcome.
+        """On terminal completion of the controlled gate turn, write the receipt.
 
         The synthetic merge-request event carries the origin-session
-        correlation in ``raw_message['github_pr_approval']``; the processing
-        outcome classifies only whether the controlled gate RUN reached a
-        terminal delivery state.  No gate-conversation text is ever imported
-        into the origin record — only a fixed source-controlled detail code.
-        The origin session must re-verify actual PR/merge state on GitHub.
+        correlation in ``raw_message['github_pr_approval']``.  The receipt's
+        detail body carries the COMPLETE (sanitized, bounded) execution report
+        from the gate run; its ``result`` header is provider-established via a
+        fresh GitHub read — a merge is ``merged`` only when the provider says
+        so, and ``unknown`` when the remote mutation cannot be established.
+
+        Every material terminal completion writes the receipt — including
+        when the gate turn ran inside the origin session itself: the freeform
+        gate response already in that transcript never substitutes for the
+        structured provider-observed record.  Replays stay idempotent via
+        ``record_execution_result``'s transcript scan.
         """
         raw = getattr(event, "raw_message", None)
-        state = raw.get("github_pr_approval") if isinstance(raw, dict) else None
+        if not isinstance(raw, dict):
+            return
+        state = raw.get("github_pr_approval")
         if not isinstance(state, dict):
             return
         session_key = str(state.get("session_key") or "").strip()
@@ -3464,25 +3745,61 @@ class FeishuAdapter(BasePlatformAdapter):
             return
         try:
             gate_session_key = self._github_pr_gate_session_key(event)
-            if gate_session_key and gate_session_key == session_key:
-                # The gate ran inside the origin session itself; its result is
-                # already part of that transcript.
-                return
             if outcome is ProcessingOutcome.SUCCESS:
-                result, detail_code = "pass", "gate_run_completed"
+                delivery = "completed"
             elif outcome is ProcessingOutcome.CANCELLED:
-                result, detail_code = "fail", "gate_run_cancelled"
+                delivery = "cancelled"
             else:
-                result, detail_code = "fail", "gate_run_failed"
-            await self._record_github_pr_gate_outcome(
-                state,
-                result=result,
-                actor=str(getattr(event.source, "user_name", "") or ""),
-                detail_code=detail_code,
+                delivery = "failed"
+
+            report = await asyncio.to_thread(
+                self._read_github_pr_gate_report, gate_session_key
             )
+            observation = await asyncio.to_thread(
+                _observe_github_pr_state,
+                str(state.get("repo") or ""),
+                str(state.get("pr_number") or ""),
+            )
+            result, operation, next_action = _classify_github_pr_execution(
+                delivery, observation
+            )
+            raw_action = str(raw.get("action") or "approve").strip().lower()
+            card_action = {
+                "approve": "approved", "reject": "rejected", "ignore": "dismissed",
+            }.get(raw_action, "approved")
+            actor = str(getattr(event.source, "user_name", "") or "")
+            details = _compose_github_pr_execution_details(
+                state=state,
+                actor=actor,
+                delivery=delivery,
+                observation=observation,
+                report=report,
+            )
+
+            from gateway.control_transaction import record_execution_result
+
+            recorded = await asyncio.to_thread(
+                record_execution_result,
+                self._github_pr_transaction_id(state),
+                result=result,
+                operation=operation,
+                next_action=next_action,
+                details=details,
+                integration_commit=str((observation or {}).get("merge_commit") or ""),
+                card_action=card_action,
+                actor=actor,
+                **self._github_pr_control_fields(state),
+            )
+            if not recorded:
+                logger.warning(
+                    "[Feishu] GitHub PR execution receipt was NOT recorded for "
+                    "%s#%s (origin session missing or write failed); a replayed "
+                    "completion may retry",
+                    state.get("repo", ""), state.get("pr_number", ""),
+                )
         except Exception:
             logger.warning(
-                "[Feishu] GitHub PR gate outcome recording failed", exc_info=True
+                "[Feishu] GitHub PR execution receipt recording failed", exc_info=True
             )
 
     async def _resolve_update_prompt(
@@ -3789,9 +4106,10 @@ class FeishuAdapter(BasePlatformAdapter):
     async def on_processing_complete(
         self, event: MessageEvent, outcome: ProcessingOutcome
     ) -> None:
-        # Terminal boundary of the controlled PR approval-gate turn: replay
-        # its outcome to the origin session before any reaction cosmetics.
-        await self._maybe_record_github_pr_gate_outcome(event, outcome)
+        # Terminal boundary of the controlled PR approval-gate turn: write the
+        # complete execution receipt to the origin session before any
+        # reaction cosmetics.
+        await self._maybe_record_github_pr_execution_receipt(event, outcome)
         if not self._reactions_enabled():
             return
         message_id = event.message_id
