@@ -158,6 +158,138 @@ def test_feishu_progress_card_renders_executor_badges_on_groups_and_children():
     assert "· codex" not in rendered
 
 
+def test_feishu_progress_card_parent_row_summarizes_child_executors():
+    from gateway.progress.renderers import render_feishu_progress_card
+
+    tracker = ProgressTracker(transaction_id="tx-todo-parallel-participants")
+    tracker.update_todo_items([
+        {"id": "goal", "content": "并行验证", "status": "in_progress"},
+        {"id": "fix", "content": "实现修复", "status": "completed", "parent_id": "goal", "executor": "claude"},
+        {"id": "review", "content": "独立复审", "status": "in_progress", "parent_id": "goal", "executor": "codex"},
+        {"id": "report", "content": "整理报告", "status": "in_progress", "parent_id": "goal"},
+    ])
+
+    card = render_feishu_progress_card(tracker.snapshot(), tool_progress_mode="off")
+    rendered = _rendered(card)
+
+    # Parent row: aggregate goal content, completed/total over direct
+    # children, then the deduplicated child participants in first-seen
+    # order (zh full-width parens, matching the title style).
+    assert "▸ 并行验证 1/3（claude, codex）" in rendered
+    # Sibling leaves keep their own single-executor badge and status; two
+    # siblings render as in_progress concurrently.
+    assert "  ✅ \\\\[claude\\\\] ~~实现修复~~" in rendered
+    assert "  ▶️ \\\\[codex\\\\] 独立复审" in rendered
+    assert "  ▶️ 整理报告" in rendered
+
+
+def test_feishu_progress_card_parent_participants_use_english_punctuation():
+    from gateway.progress.renderers import render_feishu_progress_card
+
+    tracker = ProgressTracker(transaction_id="tx-todo-parallel-participants-en")
+    tracker.update_todo_items([
+        {"id": "goal", "content": "Parallel verification", "status": "in_progress"},
+        {"id": "fix", "content": "Author fix", "status": "completed", "parent_id": "goal", "executor": "claude"},
+        {"id": "review", "content": "Independent review", "status": "in_progress", "parent_id": "goal", "executor": "codex"},
+    ])
+
+    card = render_feishu_progress_card(tracker.snapshot(), language="en", tool_progress_mode="off")
+    rendered = _rendered(card)
+
+    assert "▸ Parallel verification 1/2 (claude, codex)" in rendered
+    assert "（claude" not in rendered
+
+
+def test_feishu_progress_card_parent_participants_dedupe_and_stay_bounded():
+    from gateway.progress.renderers import render_feishu_progress_card
+
+    tracker = ProgressTracker(transaction_id="tx-todo-parallel-bound")
+    tracker.update_todo_items([
+        {"id": "goal", "content": "多执行者并行", "status": "in_progress"},
+        {"id": "1", "content": "任务一", "status": "in_progress", "parent_id": "goal", "executor": "codex"},
+        {"id": "2", "content": "任务二", "status": "in_progress", "parent_id": "goal", "executor": "claude"},
+        {"id": "3", "content": "任务三", "status": "pending", "parent_id": "goal", "executor": "codex"},
+        {"id": "4", "content": "任务四", "status": "pending", "parent_id": "goal", "executor": "gemini-cli"},
+        {"id": "5", "content": "任务五", "status": "pending", "parent_id": "goal", "executor": "opencode"},
+        {"id": "6", "content": "任务六", "status": "pending", "parent_id": "goal", "executor": "kimi"},
+    ])
+
+    card = render_feishu_progress_card(tracker.snapshot(), tool_progress_mode="off")
+    rendered = _rendered(card)
+
+    # Five distinct labels collapse to the first three seen plus an overflow
+    # count; the duplicate never repeats; labels stay markdown-escaped.
+    assert "▸ 多执行者并行 0/6（codex, claude, gemini\\\\-cli +2）" in rendered
+
+
+def test_feishu_progress_card_parent_participants_revalidate_at_display_boundary():
+    from gateway.progress.events import TodoItemSnapshot
+    from gateway.progress.renderers import render_feishu_progress_card
+
+    snapshot = TransactionSnapshot(
+        transaction_id="tx-todo-parallel-boundary",
+        status="running",
+        started_at=1.0,
+        updated_at=2.0,
+        todo_items=(
+            TodoItemSnapshot(id="goal", content="边界复核", status="in_progress"),
+            TodoItemSnapshot(
+                id="a", content="任务A", status="in_progress",
+                parent_id="goal", depth=1, executor="Bearer abc123",
+            ),
+            TodoItemSnapshot(
+                id="b", content="任务B", status="in_progress",
+                parent_id="goal", depth=1, executor="codex",
+            ),
+        ),
+    )
+
+    card = render_feishu_progress_card(snapshot, tool_progress_mode="off")
+    rendered = _rendered(card)
+
+    # The unsafe label is re-dropped at the renderer boundary; only validated
+    # labels join the participant summary, and the item itself still renders.
+    assert "▸ 边界复核 0/2（codex）" in rendered
+    assert "任务A" in rendered
+    assert "abc123" not in rendered
+
+
+def test_feishu_progress_card_parent_row_without_labeled_children_is_unchanged():
+    from gateway.progress.renderers import render_feishu_progress_card
+
+    tracker = ProgressTracker(transaction_id="tx-todo-parallel-unlabeled")
+    tracker.update_todo_items([
+        {"id": "goal", "content": "常规分组", "status": "in_progress"},
+        {"id": "a", "content": "子项一", "status": "completed", "parent_id": "goal"},
+        {"id": "b", "content": "子项二", "status": "pending", "parent_id": "goal"},
+    ])
+
+    card = render_feishu_progress_card(tracker.snapshot(), tool_progress_mode="off")
+    rendered = _rendered(card)
+
+    # Legacy shape preserved: counter only, no participant parens.
+    assert "▸ 常规分组 1/2\\n" in rendered
+    assert "▸ 常规分组 1/2（" not in rendered
+
+
+def test_feishu_progress_card_parent_badge_coexists_with_child_participants():
+    from gateway.progress.renderers import render_feishu_progress_card
+
+    tracker = ProgressTracker(transaction_id="tx-todo-parallel-parent-badge")
+    tracker.update_todo_items([
+        {"id": "pr", "content": "PR 验证", "status": "in_progress", "executor": "claude"},
+        {"id": "local", "content": "本地测试", "status": "completed", "parent_id": "pr", "executor": "codex"},
+        {"id": "ci", "content": "CI 等待", "status": "pending", "parent_id": "pr"},
+    ])
+
+    card = render_feishu_progress_card(tracker.snapshot(), tool_progress_mode="off")
+    rendered = _rendered(card)
+
+    # The parent's own explicit executor badge is preserved; the child
+    # participant summary appends after the counter without touching it.
+    assert "▸ \\\\[claude\\\\] PR 验证 1/2（codex）" in rendered
+
+
 def test_feishu_progress_card_never_renders_secret_shaped_executor():
     from gateway.progress.renderers import render_feishu_progress_card
 
