@@ -63,6 +63,11 @@ _TODO_STRIKETHROUGH_STATUSES = {"completed"}
 # an overflow note. Real active plans are a handful of items; this only bites on
 # pathological lists.
 _TODO_MAX_VISIBLE_LINES = 8
+# A parent group row summarizes which child executors participate. Cap the
+# labels shown (first-seen child order, deduplicated) so a wide fan-out cannot
+# grow the row without bound; each label is itself length-capped by
+# ``normalize_todo_executor``.
+_TODO_GROUP_PARTICIPANTS_MAX = 3
 
 _DEFAULT_MAX_LENGTH = 3500
 
@@ -453,7 +458,11 @@ def _render_todo_lines(
     fmt_child,
     max_lines: int,
 ) -> tuple[list[str], int]:
-    """Render todo blocks to capped lines and report how many items were hidden."""
+    """Render todo blocks to capped lines and report how many items were hidden.
+
+    ``fmt_group`` receives ``(top, done, total, children)`` so a group row can
+    summarize its children (e.g. participating executors) without re-grouping.
+    """
 
     blocks = _todo_blocks(items)
     total = sum(1 + len(kids) for _, kids in blocks)
@@ -465,7 +474,7 @@ def _render_todo_lines(
             truncated = True
             break
         if kids:
-            lines.append(fmt_group(top, _todo_done_count(kids), len(kids)))
+            lines.append(fmt_group(top, _todo_done_count(kids), len(kids), kids))
             shown += 1
             for kid in kids:
                 if len(lines) >= max_lines:
@@ -493,6 +502,22 @@ def _todo_executor_label(item: Any) -> str | None:
     return normalize_todo_executor(getattr(item, "executor", None))
 
 
+def _todo_group_participants(children: Iterable[Any]) -> tuple[list[str], int]:
+    """Deduplicated first-seen-order executor labels of a group's children.
+
+    Returns ``(shown, hidden)``: at most ``_TODO_GROUP_PARTICIPANTS_MAX``
+    labels plus the count of distinct labels beyond the cap. Children whose
+    executor fails re-validation contribute nothing.
+    """
+    labels: list[str] = []
+    for child in children or ():
+        label = _todo_executor_label(child)
+        if label is not None and label not in labels:
+            labels.append(label)
+    shown = labels[:_TODO_GROUP_PARTICIPANTS_MAX]
+    return shown, len(labels) - len(shown)
+
+
 def _feishu_todo_badge(item: Any) -> str:
     # Executor renders as a structured badge before the content, never as a
     # trailing suffix: ``▶️ [codex] task text``.
@@ -510,8 +535,16 @@ def _feishu_todo_element(items: Iterable[Any], *, language: str) -> dict | None:
     def fmt_flat(item: Any) -> str:
         return f"{_todo_status_glyph(item)} {_feishu_todo_badge(item)}{_feishu_todo_text(item)}"
 
-    def fmt_group(item: Any, done: int, total: int) -> str:
-        return f"▸ {_feishu_todo_badge(item)}{_feishu_escape_markdown_text(getattr(item, 'content', ''))} {done}/{total}"
+    def fmt_group(item: Any, done: int, total: int, kids: list) -> str:
+        line = f"▸ {_feishu_todo_badge(item)}{_feishu_escape_markdown_text(getattr(item, 'content', ''))} {done}/{total}"
+        shown, hidden = _todo_group_participants(kids)
+        if shown:
+            labels = ", ".join(_feishu_escape_markdown_text(label) for label in shown)
+            if hidden > 0:
+                labels += f" +{hidden}"
+            # Parens follow the todo title's per-language style.
+            line += f"（{labels}）" if lang == "zh" else f" ({labels})"
+        return line
 
     def fmt_child(item: Any) -> str:
         return f"  {_todo_status_glyph(item)} {_feishu_todo_badge(item)}{_feishu_todo_text(item)}"
@@ -562,8 +595,15 @@ def _todo_text_lines(items: Iterable[Any]) -> list[str]:
     def fmt_flat(item: Any) -> str:
         return f"- {_todo_status_glyph(item)} {_badge(item)}{_todo_text_content(item)}"
 
-    def fmt_group(item: Any, done: int, total: int) -> str:
-        return f"- ▸ {_badge(item)}{_todo_plain_content(item)} {done}/{total}"
+    def fmt_group(item: Any, done: int, total: int, kids: list) -> str:
+        line = f"- ▸ {_badge(item)}{_todo_plain_content(item)} {done}/{total}"
+        shown, hidden = _todo_group_participants(kids)
+        if shown:
+            labels = ", ".join(shown)
+            if hidden > 0:
+                labels += f" +{hidden}"
+            line += f" ({labels})"
+        return line
 
     def fmt_child(item: Any) -> str:
         return f"    - {_todo_status_glyph(item)} {_badge(item)}{_todo_text_content(item)}"

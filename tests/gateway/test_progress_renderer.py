@@ -283,6 +283,61 @@ def test_text_renderer_renders_executor_badge_before_content():
     assert "· claude" not in text
 
 
+def test_text_renderer_parent_row_summarizes_child_executors():
+    from gateway.progress.renderers import render_text_panel
+
+    tracker = ProgressTracker(transaction_id="tx-todo-parallel-text")
+    tracker.update_todo_items([
+        {"id": "goal", "content": "Parallel verification", "status": "in_progress"},
+        {"id": "fix", "content": "Author fix", "status": "completed", "parent_id": "goal", "executor": "claude"},
+        {"id": "review", "content": "Independent review", "status": "in_progress", "parent_id": "goal", "executor": "codex"},
+        {"id": "extra", "content": "Extra review", "status": "in_progress", "parent_id": "goal", "executor": "codex"},
+        {"id": "report", "content": "Write report", "status": "pending", "parent_id": "goal"},
+    ])
+
+    text = render_text_panel(tracker.snapshot(), tool_progress_mode="off")
+
+    # Parent row summarizes completion plus deduped participants in
+    # first-seen order; sibling leaves keep their own badge and status.
+    assert "- ▸ Parallel verification 1/4 (claude, codex)" in text
+    assert "    - ▶️ [codex] Independent review" in text
+    assert "    - ▶️ [codex] Extra review" in text
+
+
+def test_text_renderer_parent_participants_bounded_with_overflow_count():
+    from gateway.progress.renderers import render_text_panel
+
+    tracker = ProgressTracker(transaction_id="tx-todo-parallel-text-bound")
+    tracker.update_todo_items([
+        {"id": "goal", "content": "Fan-out", "status": "in_progress"},
+        {"id": "1", "content": "T1", "status": "in_progress", "parent_id": "goal", "executor": "codex"},
+        {"id": "2", "content": "T2", "status": "in_progress", "parent_id": "goal", "executor": "claude"},
+        {"id": "3", "content": "T3", "status": "pending", "parent_id": "goal", "executor": "gemini-cli"},
+        {"id": "4", "content": "T4", "status": "pending", "parent_id": "goal", "executor": "opencode"},
+        {"id": "5", "content": "T5", "status": "pending", "parent_id": "goal", "executor": "kimi"},
+    ])
+
+    text = render_text_panel(tracker.snapshot(), tool_progress_mode="off")
+
+    assert "- ▸ Fan-out 0/5 (codex, claude, gemini-cli +2)" in text
+
+
+def test_text_renderer_group_without_labeled_children_keeps_legacy_row():
+    from gateway.progress.renderers import render_text_panel
+
+    tracker = ProgressTracker(transaction_id="tx-todo-parallel-text-legacy")
+    tracker.update_todo_items([
+        {"id": "pr", "content": "PR verification", "status": "in_progress"},
+        {"id": "local", "content": "Local tests", "status": "completed", "parent_id": "pr"},
+        {"id": "ci", "content": "CI wait", "status": "pending", "parent_id": "pr"},
+    ])
+
+    text = render_text_panel(tracker.snapshot(), tool_progress_mode="off")
+
+    # Legacy shape preserved: counter only, no participant suffix.
+    assert any(line == "- ▸ PR verification 1/2" for line in text.splitlines())
+
+
 def test_text_renderer_displays_hermes_agent_executor_as_hermes():
     from gateway.progress.renderers import render_text_panel
 

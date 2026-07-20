@@ -2,7 +2,7 @@
 
 import json
 
-from tools.todo_tool import TodoStore, todo_tool
+from tools.todo_tool import TODO_SCHEMA, TodoStore, todo_tool
 
 
 class TestWriteAndRead:
@@ -450,3 +450,41 @@ class TestTodoStoreBounds:
         items = store.read()
         assert [i["content"] for i in items] == ["write the report", "review PR"]
         assert "[truncated]" not in items[0]["content"]
+
+
+class TestSiblingParallelContract:
+    """Tool-contract text for the sibling-parallel TODO model.
+
+    The schema must describe parallel work as multiple sibling leaf items
+    in_progress under one shared parent (the aggregate goal), each leaf
+    carrying at most one executor — and must not claim a global single
+    in_progress limit nor promise any agent scheduling.
+    """
+
+    def test_schema_drops_global_single_in_progress_claim(self):
+        assert "Only ONE item in_progress" not in TODO_SCHEMA["description"]
+
+    def test_schema_states_sibling_parallel_pattern(self):
+        description = TODO_SCHEMA["description"]
+        assert "multiple sibling leaf items" in description
+        assert "aggregate goal" in description
+        assert "at most one executor" in description
+        # State/display only — writing todos never schedules real agents.
+        assert "does not launch or schedule" in description
+
+    def test_schema_keeps_single_executor_field_without_executors_list(self):
+        item_properties = TODO_SCHEMA["parameters"]["properties"]["todos"]["items"]["properties"]
+        assert item_properties["executor"]["type"] == "string"
+        assert "executors" not in item_properties
+
+    def test_store_keeps_sibling_leaves_in_progress_concurrently(self):
+        store = TodoStore()
+        store.write([
+            {"id": "goal", "content": "Ship parallel review", "status": "in_progress"},
+            {"id": "fix", "content": "Author fix", "status": "in_progress", "parent_id": "goal", "executor": "claude"},
+            {"id": "review", "content": "Independent review", "status": "in_progress", "parent_id": "goal", "executor": "codex"},
+        ])
+        items = store.read()
+        assert [item["status"] for item in items] == ["in_progress"] * 3
+        assert [item.get("parent_id") for item in items] == [None, "goal", "goal"]
+        assert [item.get("executor") for item in items] == [None, "claude", "codex"]
