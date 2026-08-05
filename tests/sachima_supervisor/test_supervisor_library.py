@@ -46,7 +46,7 @@ def _counting_version(calls: list[str], value: Any, *, raises: Exception | None 
 
 
 def test_expected_pin_matches_packaged_distribution_pin() -> None:
-    assert EXPECTED_AGENT_RUN_SUPERVISOR_VERSION == "0.1.7"
+    assert EXPECTED_AGENT_RUN_SUPERVISOR_VERSION == "0.6.3"
     assert AGENT_RUN_SUPERVISOR_IMPORT_NAME == "agent_run_supervisor"
     assert AGENT_RUN_SUPERVISOR_DISTRIBUTION == "agent-run-supervisor"
 
@@ -57,7 +57,9 @@ def test_importable_and_exact_pin_reports_ready() -> None:
 
     status = check_supervisor_library_pin(
         import_probe=_counting_import(import_calls),
-        version_probe=_counting_version(version_calls, "0.1.7"),
+        version_probe=_counting_version(
+            version_calls, EXPECTED_AGENT_RUN_SUPERVISOR_VERSION
+        ),
     )
 
     assert isinstance(status, SupervisorLibraryPinStatus)
@@ -65,8 +67,8 @@ def test_importable_and_exact_pin_reports_ready() -> None:
     assert status.version_pinned is True
     assert status.ready is True
     assert status.error_code is None
-    assert status.expected_version == "0.1.7"
-    assert status.observed_version == "0.1.7"
+    assert status.expected_version == EXPECTED_AGENT_RUN_SUPERVISOR_VERSION
+    assert status.observed_version == EXPECTED_AGENT_RUN_SUPERVISOR_VERSION
     assert import_calls == ["agent_run_supervisor"]
     assert version_calls == ["agent-run-supervisor"]
 

@@ -12,7 +12,7 @@ exclude-newer-span = "P7D"
 
 [options.exclude-newer-package]
 temporalio = "2026-05-01T00:00:00Z"
-agent-run-supervisor = "2026-07-16T18:30:00Z"
+agent-run-supervisor = "2026-08-04T12:10:00Z"
 
 [[package]]
 name = "agent-client-protocol"
@@ -28,11 +28,11 @@ wheels = [
 
 [[package]]
 name = "agent-run-supervisor"
-version = "0.1.7"
+version = "0.6.3"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/2b/48/374e63779f8a7101eddec08e4df39db19edb447be84fb3d399be70911aab/agent_run_supervisor-0.1.7.tar.gz", hash = "sha256:5f394ab9f5e6f5c70535da562227dabe26b4301291d5c11c7ba3272a01d5948b", size = 175696, upload-time = "2026-07-16T18:26:16.634Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/19/7c/7fec45b7eb927424e2ed327afe3021e57ebe97b992e6f33892e514316637/agent_run_supervisor-0.6.3.tar.gz", hash = "sha256:0e89ab060c1874975dba09c18836d9721c5e2d297d75e2449401350aa342f9ba", size = 361793, upload-time = "2026-08-04T12:06:04.8Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/83/20/5fe3999ec21506a8e610b8c6fc88e3674cc1986517876a44f101d0d2db12/agent_run_supervisor-0.1.7-py3-none-any.whl", hash = "sha256:d93c4686b85508103f5a9987ac7a6eb51fc6f9c72d9d4974f7e2c74caa4ebce9", size = 110563, upload-time = "2026-07-16T18:26:15.056Z" },
+    { url = "https://files.pythonhosted.org/packages/7c/59/8e7f77271b33aaf4fe7a68ec544fe3f69c165f8ae73b1531d4ace9a33c6e/agent_run_supervisor-0.6.3-py3-none-any.whl", hash = "sha256:10ecff435d9c98fe0b3579e813c1e12a9584a1af597bd8e1c63d7ce99d462c9a", size = 288697, upload-time = "2026-08-04T12:06:03.498Z" },
 ]
 
 [[package]]
@@ -1655,8 +1655,8 @@ youtube = [
 [package.metadata]
 requires-dist = [
     { name = "agent-client-protocol", marker = "extra == 'acp'", specifier = "==0.9.0" },
-    { name = "agent-run-supervisor", marker = "extra == 'agent-run-supervisor'", specifier = "==0.1.7" },
-    { name = "agent-run-supervisor", marker = "extra == 'dev'", specifier = "==0.1.7" },
+    { name = "agent-run-supervisor", marker = "extra == 'agent-run-supervisor'", specifier = "==0.6.3" },
+    { name = "agent-run-supervisor", marker = "extra == 'dev'", specifier = "==0.6.3" },
     { name = "aiohttp", marker = "extra == 'homeassistant'", specifier = "==3.13.4" },
     { name = "aiohttp", marker = "extra == 'messaging'", specifier = "==3.13.4" },
     { name = "aiohttp", marker = "extra == 'slack'", specifier = "==3.13.4" },
