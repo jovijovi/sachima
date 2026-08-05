@@ -16,6 +16,7 @@ from gateway.progress.events import (
     TransactionSnapshot,
 )
 from gateway.progress.redaction import sanitize_value_for_progress
+from gateway.progress.todo_display import MAX_SNAPSHOT_TODO_ITEMS
 from gateway.progress.todo_executor import normalize_todo_executor
 from gateway.progress.todo_lifecycle import (
     lifecycle_to_dict,
@@ -27,8 +28,9 @@ from hermes_constants import get_hermes_home
 
 # Persistence bounds for the structured todo snapshot. These mirror the tracker
 # caps; disk is a second exfiltration surface, so the values are re-sanitized and
-# re-bounded here rather than trusted from the in-memory snapshot.
-MAX_TODO_ITEMS = 20
+# re-bounded here rather than trusted from the in-memory snapshot. The item count
+# retains the whole plan so a replayed card still reports accurate leaf totals.
+MAX_TODO_ITEMS = MAX_SNAPSHOT_TODO_ITEMS
 MAX_TODO_CONTENT_CHARS = 240
 MAX_TODO_ID_CHARS = 120
 MAX_TODO_SOURCE_CHARS = 60
@@ -265,7 +267,7 @@ def _safe_suspended_todo_hint(raw: Any) -> dict[str, Any] | None:
 def _safe_todo_items(items: Any) -> list[dict[str, Any]]:
     """Re-sanitize the structured todo snapshot for persistence.
 
-    Only the first ``MAX_TODO_ITEMS`` survive; each item's text is redacted and
+    Only the first ``MAX_TODO_ITEMS`` of the plan survive; each item's text is redacted and
     bounded again, depth is clamped to the two-level display range, and
     ``parent_id``/``executor`` are emitted only when present so legacy readers
     see the same shape they always have.

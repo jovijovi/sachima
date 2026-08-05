@@ -17,6 +17,14 @@ from gateway.progress.events import (
     TransactionSnapshot,
 )
 from gateway.progress.redaction import sanitize_for_progress
+from gateway.progress.todo_display import (
+    MAX_VISIBLE_TODO_LEAVES,
+    TodoDisplayPlan,
+    build_todo_display_plan,
+    group_todo_blocks,
+    todo_done_count,
+    todo_status_key,
+)
 from gateway.progress.todo_executor import normalize_todo_executor
 
 _STATUS_LABELS = {
@@ -59,14 +67,14 @@ _TODO_STATUS_GLYPHS = {
 # Only completed content is struck through; cancelled/failed items keep their
 # icon as the signal and legible content.
 _TODO_STRIKETHROUGH_STATUSES = {"completed"}
-# Keep the todo preview compact: at most this many item/group lines render before
-# an overflow note. Real active plans are a handful of items; this only bites on
-# pathological lists.
+# Plain-text panel only: keep its preview compact by capping rendered lines
+# (group rows included) before an overflow note. Feishu cards budget leaf tasks
+# instead — see ``gateway.progress.todo_display.MAX_VISIBLE_TODO_LEAVES``.
 _TODO_MAX_VISIBLE_LINES = 8
-# A parent group row summarizes which child executors participate. Cap the
-# labels shown (first-seen child order, deduplicated) so a wide fan-out cannot
-# grow the row without bound; each label is itself length-capped by
-# ``normalize_todo_executor``.
+# Plain-text panel only: a parent group row summarizes which child executors
+# participate. Cap the labels shown (first-seen child order, deduplicated) so a
+# wide fan-out cannot grow the row without bound; each label is itself
+# length-capped by ``normalize_todo_executor``.
 _TODO_GROUP_PARTICIPANTS_MAX = 3
 
 _DEFAULT_MAX_LENGTH = 3500
@@ -400,54 +408,12 @@ def _safe_hint_count(value: Any) -> int:
         return 0
 
 
-def _todo_depth(item: Any) -> int:
-    try:
-        return 1 if int(getattr(item, "depth", 0)) >= 1 else 0
-    except Exception:
-        return 0
-
-
-def _todo_status_key(item: Any) -> str:
-    return str(getattr(item, "status", "") or "").strip().lower()
-
-
 def _todo_status_glyph(item: Any) -> str:
-    return _TODO_STATUS_GLYPHS.get(_todo_status_key(item), _TODO_STATUS_GLYPHS["pending"])
+    return _TODO_STATUS_GLYPHS.get(todo_status_key(item), _TODO_STATUS_GLYPHS["pending"])
 
 
 def _todo_is_struck(item: Any) -> bool:
-    return _todo_status_key(item) in _TODO_STRIKETHROUGH_STATUSES
-
-
-def _todo_done_count(children: list) -> int:
-    return sum(1 for child in children if _todo_status_key(child) == "completed")
-
-
-def _todo_blocks(items: Iterable[Any]) -> list[tuple[Any, list]]:
-    """Group a flat todo snapshot into ordered two-level blocks.
-
-    Returns ``(top_item, child_items)`` tuples preserving the input order. A
-    depth-1 item whose ``parent_id`` resolves to a known top-level id is nested
-    under that parent; roots and any orphaned/over-nested children each become
-    their own block, so display never exceeds two levels.
-    """
-
-    materialized = [item for item in (items or ()) if item is not None]
-    root_ids = {getattr(it, "id", "") for it in materialized if _todo_depth(it) == 0 and getattr(it, "id", "")}
-    children_by_parent: dict[str, list] = {}
-    for it in materialized:
-        if _todo_depth(it) == 1:
-            parent_id = getattr(it, "parent_id", None)
-            if parent_id in root_ids:
-                children_by_parent.setdefault(parent_id, []).append(it)
-
-    blocks: list[tuple[Any, list]] = []
-    for it in materialized:
-        if _todo_depth(it) == 1 and getattr(it, "parent_id", None) in root_ids:
-            continue  # rendered under its parent block
-        kids = children_by_parent.get(getattr(it, "id", ""), []) if _todo_depth(it) == 0 else []
-        blocks.append((it, kids))
-    return blocks
+    return todo_status_key(item) in _TODO_STRIKETHROUGH_STATUSES
 
 
 def _render_todo_lines(
@@ -460,11 +426,12 @@ def _render_todo_lines(
 ) -> tuple[list[str], int]:
     """Render todo blocks to capped lines and report how many items were hidden.
 
-    ``fmt_group`` receives ``(top, done, total, children)`` so a group row can
-    summarize its children (e.g. participating executors) without re-grouping.
+    Used by the plain-text panel, which budgets rendered *lines*. ``fmt_group``
+    receives ``(top, done, total, children)`` so a group row can summarize its
+    children (e.g. participating executors) without re-grouping.
     """
 
-    blocks = _todo_blocks(items)
+    blocks = group_todo_blocks(items)
     total = sum(1 + len(kids) for _, kids in blocks)
     lines: list[str] = []
     shown = 0
@@ -474,7 +441,7 @@ def _render_todo_lines(
             truncated = True
             break
         if kids:
-            lines.append(fmt_group(top, _todo_done_count(kids), len(kids), kids))
+            lines.append(fmt_group(top, todo_done_count(kids), len(kids), kids))
             shown += 1
             for kid in kids:
                 if len(lines) >= max_lines:
@@ -530,46 +497,62 @@ def _feishu_todo_element(items: Iterable[Any], *, language: str) -> dict | None:
     if not materialized:
         return None
     lang = _normalize_feishu_language(language)
-    title = _feishu_todo_title(materialized, language=lang)
+    plan = build_todo_display_plan(materialized, max_leaves=MAX_VISIBLE_TODO_LEAVES)
 
-    def fmt_flat(item: Any) -> str:
-        return f"{_todo_status_glyph(item)} {_feishu_todo_badge(item)}{_feishu_todo_text(item)}"
+    lines: list[str] = []
+    for block in plan.blocks:
+        if not block.is_group:
+            lines.append(_feishu_todo_leaf_line(block.item))
+            continue
+        lines.append(_feishu_todo_group_line(block))
+        lines.extend(f"  {_feishu_todo_leaf_line(child)}" for child in block.children)
+        if block.hidden_children > 0:
+            lines.append(f"  {_feishu_group_overflow_note(block.hidden_children, language=lang)}")
+    if plan.hidden_leaves > 0:
+        lines.append(_feishu_leaf_overflow_note(plan.hidden_leaves, language=lang))
 
-    def fmt_group(item: Any, done: int, total: int, kids: list) -> str:
-        line = f"▸ {_feishu_todo_badge(item)}{_feishu_escape_markdown_text(getattr(item, 'content', ''))} {done}/{total}"
-        shown, hidden = _todo_group_participants(kids)
-        if shown:
-            labels = ", ".join(_feishu_escape_markdown_text(label) for label in shown)
-            if hidden > 0:
-                labels += f" +{hidden}"
-            # Parens follow the todo title's per-language style.
-            line += f"（{labels}）" if lang == "zh" else f" ({labels})"
-        return line
-
-    def fmt_child(item: Any) -> str:
-        return f"  {_todo_status_glyph(item)} {_feishu_todo_badge(item)}{_feishu_todo_text(item)}"
-
-    lines, hidden = _render_todo_lines(
-        materialized,
-        fmt_flat=fmt_flat,
-        fmt_group=fmt_group,
-        fmt_child=fmt_child,
-        max_lines=_TODO_MAX_VISIBLE_LINES,
-    )
-    if hidden > 0:
-        lines.append(f"… 还有 {hidden} 项" if lang == "zh" else f"… {hidden} more")
+    title = _feishu_todo_title(plan, language=lang)
     return {"tag": "markdown", "content": f"**{title}**\n" + "\n".join(lines)}
 
 
-def _feishu_todo_title(items: Iterable[Any], *, language: str) -> str:
-    materialized = tuple(item for item in (items or ()) if item is not None)
-    total = len(materialized)
-    completed = sum(1 for item in materialized if _todo_status_key(item) == "completed")
-    percent = (completed * 100 // total) if total else 0
-    label = _feishu_labels(language)["todos"]
+def _feishu_todo_leaf_line(item: Any) -> str:
+    return f"{_todo_status_glyph(item)} {_feishu_todo_badge(item)}{_feishu_todo_text(item)}"
+
+
+def _feishu_todo_group_line(block: Any) -> str:
+    """Render a group header: folder marker, group name, child aggregate.
+
+    A group is a container, so the row carries no status glyph of its own (the
+    aggregate is the truth about its children) and no executor label — neither
+    the parent's own nor a summary of its children's. Work is assigned to leaves.
+    ``▸`` is avoided on purpose: it reads as a clickable collapse control, and
+    Feishu card markdown has no such affordance.
+    """
+
+    name = _feishu_escape_markdown_text(getattr(block.item, "content", ""))
+    return f"📂 {name} {block.child_completed}/{block.child_total}"
+
+
+def _feishu_leaf_overflow_note(hidden: int, *, language: str) -> str:
     if _normalize_feishu_language(language) == "zh":
-        return f"🧾 {label} - {completed} / {total}（{percent}%）"
-    return f"🧾 {label} - {completed} / {total} ({percent}%)"
+        return f"… 还有 {hidden} 个任务未展示"
+    return f"… {hidden} more task{'s' if hidden != 1 else ''} not shown"
+
+
+def _feishu_group_overflow_note(hidden: int, *, language: str) -> str:
+    if _normalize_feishu_language(language) == "zh":
+        return f"… 本组还有 {hidden} 个任务未展示"
+    return f"… {hidden} more in this group"
+
+
+def _feishu_todo_title(plan: TodoDisplayPlan, *, language: str) -> str:
+    """Headline the leaf work only — group rows are summaries, not tasks."""
+
+    label = _feishu_labels(language)["todos"]
+    counts = f"{plan.leaf_completed} / {plan.leaf_total}"
+    if _normalize_feishu_language(language) == "zh":
+        return f"🧾 {label} - {counts}（{plan.completed_percent}%）"
+    return f"🧾 {label} - {counts} ({plan.completed_percent}%)"
 
 
 def _todo_plain_content(item: Any) -> str:

@@ -17,6 +17,7 @@ from gateway.progress.events import (
     TransactionSnapshot,
 )
 from gateway.progress.redaction import sanitize_for_progress, sanitize_value_for_progress
+from gateway.progress.todo_display import MAX_SNAPSHOT_TODO_ITEMS
 from gateway.progress.todo_executor import normalize_todo_executor
 from gateway.progress.todo_lifecycle import (
     SuspendedTodoHint,
@@ -34,10 +35,12 @@ OPERATION_COMPLETED = "completed"
 OPERATION_FAILED = "failed"
 
 # Display-safety bounds for the structured todo snapshot carried on each
-# transaction. The workbench renders a compact, redacted preview of the model's
-# todo list, not the whole plan — these caps keep one oversized or adversarial
-# list from bloating progress snapshots, cards, or JSONL records.
-MAX_TODO_ITEMS = 20  # items kept per snapshot (head of the priority-ordered list)
+# transaction. Text is redacted and length-capped so one oversized or adversarial
+# list cannot bloat progress snapshots, cards, or JSONL records. The item count
+# is a retention bound rather than a display bound: renderers budget how many
+# leaf tasks they show, but they compute leaf totals and overflow counts from the
+# retained plan, so the snapshot must carry it whole instead of a truncated head.
+MAX_TODO_ITEMS = MAX_SNAPSHOT_TODO_ITEMS  # items kept per snapshot (priority order)
 MAX_TODO_CONTENT_CHARS = 240  # per-item description length after redaction
 MAX_TODO_ID_CHARS = 120  # per-item id / parent_id length
 MAX_TODO_SOURCE_CHARS = 60  # provenance label length
@@ -481,8 +484,9 @@ def _sanitize_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
 def _sanitize_todo_items(items: Any, *, source: str) -> tuple[TodoItemSnapshot, ...]:
     """Sanitize raw todo state into a bounded, two-level display snapshot.
 
-    Order is priority (matching ``TodoStore``); only the first ``MAX_TODO_ITEMS``
-    survive. Each item's text is redacted and length-capped, status is coerced to
+    Order is priority (matching ``TodoStore``); the plan is retained up to
+    ``MAX_TODO_ITEMS``, which covers the store's own capacity so leaf statistics
+    stay exact. Each item's text is redacted and length-capped, status is coerced to
     a known value (unknown → ``pending``), and depth is clamped so a child always
     points at a top-level sibling. Parent links to dropped/unknown ids are severed
     so the item falls back to top level.

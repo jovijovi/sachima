@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from gateway.progress.redaction import sanitize_value_for_progress
+from gateway.progress.todo_display import MAX_SNAPSHOT_TODO_ITEMS
 from gateway.progress.todo_executor import normalize_todo_executor
 from gateway.progress.todo_lifecycle import (
     lifecycle_to_dict,
@@ -22,8 +23,9 @@ DEFAULT_TRANSACTION_LIMIT = 50
 DEFAULT_EVENT_LIMIT = 200
 
 # Display bounds for the structured todo snapshot, re-applied on read because the
-# JSONL store is treated as untrusted user-facing data.
-MAX_TODO_ITEMS = 20
+# JSONL store is treated as untrusted user-facing data. The item count matches the
+# tracker/store retention bound so replayed cards keep exact leaf statistics.
+MAX_TODO_ITEMS = MAX_SNAPSHOT_TODO_ITEMS
 MAX_TODO_CONTENT_CHARS = 240
 MAX_TODO_ID_CHARS = 120
 MAX_TODO_SOURCE_CHARS = 60
