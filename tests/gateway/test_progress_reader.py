@@ -215,6 +215,25 @@ def test_progress_reader_preserves_todo_items_in_summary_and_events(tmp_path):
     assert detail["events"][-1]["transaction"]["todo_items"] == expected
 
 
+def test_progress_reader_keeps_todo_plan_beyond_card_display_budget(tmp_path):
+    from gateway.progress.todo_display import MAX_VISIBLE_TODO_LEAVES
+
+    total = MAX_VISIBLE_TODO_LEAVES + 9
+    path = tmp_path / "events.jsonl"
+    snapshot = _snapshot("tx-todo-plan", written_at=5.0, status="running")
+    snapshot["transaction"]["todo_items"] = [
+        {"id": str(i), "content": f"task {i}", "status": "pending", "depth": 0, "source": "todo_tool"}
+        for i in range(total)
+    ]
+    _write_jsonl(path, [snapshot])
+
+    result = list_progress_transactions(path)
+
+    # The read path re-bounds the plan but no longer truncates it to the card's
+    # display budget, so leaf totals stay accurate on replay.
+    assert len(result["transactions"][0]["todo_items"]) == total
+
+
 def test_progress_reader_normalizes_deep_and_unsafe_todo_items(tmp_path):
     path = tmp_path / "events.jsonl"
     snapshot = _snapshot("tx-todo-bad", written_at=5.0, status="completed")

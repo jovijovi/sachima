@@ -396,6 +396,43 @@ def test_update_todo_items_caps_count_and_text_length():
     assert all(len(it.content) <= MAX_TODO_CONTENT_CHARS for it in items)
 
 
+def test_update_todo_items_retains_full_plan_for_leaf_statistics():
+    from gateway.progress.todo_display import MAX_VISIBLE_TODO_LEAVES
+
+    # The snapshot must outlive the card's display budget: leaf totals and
+    # overflow counts are computed from the whole plan, never from a truncated
+    # head that pretends to be complete.
+    total = MAX_VISIBLE_TODO_LEAVES * 3
+    tracker = ProgressTracker("tx-todo-retention")
+    tracker.update_todo_items(
+        [{"id": "goal", "content": "goal", "status": "in_progress"}]
+        + [
+            {"id": f"c{i}", "content": f"task {i}", "status": "pending", "parent_id": "goal"}
+            for i in range(total)
+        ]
+    )
+
+    items = tracker.snapshot().todo_items
+    assert len(items) == total + 1
+    assert sum(1 for it in items if it.depth == 1) == total
+
+
+def test_snapshot_todo_retention_matches_todo_store_capacity():
+    from gateway.progress import reader as progress_reader
+    from gateway.progress import store as progress_store
+    from gateway.progress.todo_display import MAX_SNAPSHOT_TODO_ITEMS, MAX_VISIBLE_TODO_LEAVES
+    from gateway.progress.tracker import MAX_TODO_ITEMS
+    from tools.todo_tool import MAX_TODO_ITEMS as TODO_STORE_CAPACITY
+
+    # Tracker, persistence, and read paths all retain the same bounded plan, and
+    # that bound covers the source store so nothing is silently dropped.
+    assert MAX_TODO_ITEMS == MAX_SNAPSHOT_TODO_ITEMS
+    assert progress_store.MAX_TODO_ITEMS == MAX_SNAPSHOT_TODO_ITEMS
+    assert progress_reader.MAX_TODO_ITEMS == MAX_SNAPSHOT_TODO_ITEMS
+    assert MAX_SNAPSHOT_TODO_ITEMS >= TODO_STORE_CAPACITY
+    assert MAX_SNAPSHOT_TODO_ITEMS > MAX_VISIBLE_TODO_LEAVES
+
+
 def test_update_todo_items_coerces_unknown_status_to_pending_and_survives_bad_shapes():
     tracker = ProgressTracker("tx-todo-bad")
 

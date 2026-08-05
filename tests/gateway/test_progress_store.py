@@ -126,6 +126,25 @@ def test_progress_records_include_sanitized_todo_items(tmp_path):
     ]
 
 
+def test_progress_records_keep_todo_plan_beyond_card_display_budget(tmp_path):
+    from gateway.progress.todo_display import MAX_VISIBLE_TODO_LEAVES
+
+    total = MAX_VISIBLE_TODO_LEAVES + 12
+    store_path = tmp_path / "events.jsonl"
+    store = JsonlProgressEventStore(store_path)
+    tracker = ProgressTracker("tx-todo-plan")
+    tracker.update_todo_items(
+        [{"id": str(i), "content": f"task {i}", "status": "pending"} for i in range(total)]
+    )
+
+    store.append_snapshot(tracker.snapshot())
+
+    record = _read_jsonl(store_path)[0]
+    # Persistence keeps the whole plan so a replayed card can still report an
+    # accurate leaf total and overflow count.
+    assert len(record["transaction"]["todo_items"]) == total
+
+
 def test_progress_records_redact_secret_shaped_todo_items(tmp_path):
     store_path = tmp_path / "events.jsonl"
     store = JsonlProgressEventStore(store_path)

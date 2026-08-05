@@ -14,6 +14,34 @@ def _rendered(card: dict) -> str:
     return json.dumps(card, ensure_ascii=False, sort_keys=True)
 
 
+def _todo_lines(card: dict) -> list[str]:
+    """Return the todo block's rendered lines, title line excluded."""
+
+    for element in card.get("elements", []):
+        content = str(element.get("content", ""))
+        if content.startswith("**🧾"):
+            return content.splitlines()[1:]
+    return []
+
+
+def _todo_title(card: dict) -> str:
+    for element in card.get("elements", []):
+        content = str(element.get("content", ""))
+        if content.startswith("**🧾"):
+            return content.splitlines()[0]
+    return ""
+
+
+def _group_line(card: dict, name: str) -> str:
+    matches = [line for line in _todo_lines(card) if line.startswith("📂") and name in line]
+    assert len(matches) == 1, f"expected one group line for {name!r}, got {matches}"
+    return matches[0]
+
+
+def _leaf_lines(card: dict) -> list[str]:
+    return [line for line in _todo_lines(card) if not line.lstrip().startswith(("📂", "…"))]
+
+
 def test_feishu_progress_card_renders_flat_todo_block_before_operations():
     from gateway.progress.renderers import render_feishu_progress_card
 
@@ -73,9 +101,10 @@ def test_feishu_progress_card_renders_two_level_todo_groups():
     card = render_feishu_progress_card(tracker.snapshot(), tool_progress_mode="off")
     rendered = _rendered(card)
 
-    assert "待办 - 1 / 7（14%）" in rendered
-    assert "▸ PR 验证 1/4" in rendered  # one of four children completed
-    assert "▸ 发布 0/1" in rendered
+    # Group rows are summary nodes: only the five leaf tasks are counted.
+    assert "待办 - 1 / 5（20%）" in rendered
+    assert "📂 PR 验证 1/4" in rendered  # one of four children completed
+    assert "📂 发布 0/1" in rendered
     # Children render indented under their parent group.
     assert "  ✅ ~~本地测试~~" in rendered
     assert "  ▶️ Codex 复审" in rendered
@@ -137,7 +166,7 @@ def test_feishu_progress_card_displays_hermes_agent_executor_as_hermes():
     assert "hermes\\\\-agent" not in rendered
 
 
-def test_feishu_progress_card_renders_executor_badges_on_groups_and_children():
+def test_feishu_progress_card_renders_executor_badges_on_leaves_only():
     from gateway.progress.renderers import render_feishu_progress_card
 
     tracker = ProgressTracker(transaction_id="tx-todo-executor-2level")
@@ -150,15 +179,16 @@ def test_feishu_progress_card_renders_executor_badges_on_groups_and_children():
     card = render_feishu_progress_card(tracker.snapshot(), tool_progress_mode="off")
     rendered = _rendered(card)
 
-    # Group header renders badge before content, keeping its done/total counter.
-    assert "▸ \\\\[claude\\\\] PR 验证 1/2" in rendered
+    # Group header: name plus the aggregate over direct children, nothing else.
+    assert _group_line(card, "PR 验证") == "📂 PR 验证 1/2"
+    # Leaves keep their own single executor badge.
     assert "  ✅ \\\\[codex\\\\] ~~本地测试~~" in rendered
     assert "  ⏳ CI 等待" in rendered
     assert "· claude" not in rendered
     assert "· codex" not in rendered
 
 
-def test_feishu_progress_card_parent_row_summarizes_child_executors():
+def test_feishu_progress_card_group_row_omits_child_executor_summary():
     from gateway.progress.renderers import render_feishu_progress_card
 
     tracker = ProgressTracker(transaction_id="tx-todo-parallel-participants")
@@ -172,10 +202,9 @@ def test_feishu_progress_card_parent_row_summarizes_child_executors():
     card = render_feishu_progress_card(tracker.snapshot(), tool_progress_mode="off")
     rendered = _rendered(card)
 
-    # Parent row: aggregate goal content, completed/total over direct
-    # children, then the deduplicated child participants in first-seen
-    # order (zh full-width parens, matching the title style).
-    assert "▸ 并行验证 1/3（claude, codex）" in rendered
+    # The group row aggregates completion only; it never summarizes which
+    # agents participate.
+    assert _group_line(card, "并行验证") == "📂 并行验证 1/3"
     # Sibling leaves keep their own single-executor badge and status; two
     # siblings render as in_progress concurrently.
     assert "  ✅ \\\\[claude\\\\] ~~实现修复~~" in rendered
@@ -183,7 +212,7 @@ def test_feishu_progress_card_parent_row_summarizes_child_executors():
     assert "  ▶️ 整理报告" in rendered
 
 
-def test_feishu_progress_card_parent_participants_use_english_punctuation():
+def test_feishu_progress_card_group_row_english_shape_stays_agent_free():
     from gateway.progress.renderers import render_feishu_progress_card
 
     tracker = ProgressTracker(transaction_id="tx-todo-parallel-participants-en")
@@ -196,11 +225,14 @@ def test_feishu_progress_card_parent_participants_use_english_punctuation():
     card = render_feishu_progress_card(tracker.snapshot(), language="en", tool_progress_mode="off")
     rendered = _rendered(card)
 
-    assert "▸ Parallel verification 1/2 (claude, codex)" in rendered
+    assert _group_line(card, "Parallel verification") == "📂 Parallel verification 1/2"
+    assert "(claude" not in rendered
     assert "（claude" not in rendered
+    # Leaves still carry their own badge in English cards.
+    assert "  ▶️ \\\\[codex\\\\] Independent review" in rendered
 
 
-def test_feishu_progress_card_parent_participants_dedupe_and_stay_bounded():
+def test_feishu_progress_card_group_row_hides_wide_fan_out_agents():
     from gateway.progress.renderers import render_feishu_progress_card
 
     tracker = ProgressTracker(transaction_id="tx-todo-parallel-bound")
@@ -217,12 +249,14 @@ def test_feishu_progress_card_parent_participants_dedupe_and_stay_bounded():
     card = render_feishu_progress_card(tracker.snapshot(), tool_progress_mode="off")
     rendered = _rendered(card)
 
-    # Five distinct labels collapse to the first three seen plus an overflow
-    # count; the duplicate never repeats; labels stay markdown-escaped.
-    assert "▸ 多执行者并行 0/6（codex, claude, gemini\\\\-cli +2）" in rendered
+    # A wide fan-out cannot grow the group row: no labels, no overflow count.
+    assert _group_line(card, "多执行者并行") == "📂 多执行者并行 0/6"
+    # Each child still shows its own executor.
+    assert "  ▶️ \\\\[codex\\\\] 任务一" in rendered
+    assert "  ⏳ \\\\[gemini\\\\-cli\\\\] 任务四" in rendered
 
 
-def test_feishu_progress_card_parent_participants_revalidate_at_display_boundary():
+def test_feishu_progress_card_revalidates_executor_labels_at_display_boundary():
     from gateway.progress.events import TodoItemSnapshot
     from gateway.progress.renderers import render_feishu_progress_card
 
@@ -247,14 +281,15 @@ def test_feishu_progress_card_parent_participants_revalidate_at_display_boundary
     card = render_feishu_progress_card(snapshot, tool_progress_mode="off")
     rendered = _rendered(card)
 
-    # The unsafe label is re-dropped at the renderer boundary; only validated
-    # labels join the participant summary, and the item itself still renders.
-    assert "▸ 边界复核 0/2（codex）" in rendered
-    assert "任务A" in rendered
+    # The unsafe label is re-dropped at the renderer boundary; the item itself
+    # still renders, and the group row stays a plain aggregate.
+    assert _group_line(card, "边界复核") == "📂 边界复核 0/2"
+    assert "  ▶️ 任务A" in rendered
+    assert "  ▶️ \\\\[codex\\\\] 任务B" in rendered
     assert "abc123" not in rendered
 
 
-def test_feishu_progress_card_parent_row_without_labeled_children_is_unchanged():
+def test_feishu_progress_card_group_row_is_name_and_counter_only():
     from gateway.progress.renderers import render_feishu_progress_card
 
     tracker = ProgressTracker(transaction_id="tx-todo-parallel-unlabeled")
@@ -265,14 +300,11 @@ def test_feishu_progress_card_parent_row_without_labeled_children_is_unchanged()
     ])
 
     card = render_feishu_progress_card(tracker.snapshot(), tool_progress_mode="off")
-    rendered = _rendered(card)
 
-    # Legacy shape preserved: counter only, no participant parens.
-    assert "▸ 常规分组 1/2\\n" in rendered
-    assert "▸ 常规分组 1/2（" not in rendered
+    assert _group_line(card, "常规分组") == "📂 常规分组 1/2"
 
 
-def test_feishu_progress_card_parent_badge_coexists_with_child_participants():
+def test_feishu_progress_card_group_row_drops_parent_executor_badge():
     from gateway.progress.renderers import render_feishu_progress_card
 
     tracker = ProgressTracker(transaction_id="tx-todo-parallel-parent-badge")
@@ -285,9 +317,31 @@ def test_feishu_progress_card_parent_badge_coexists_with_child_participants():
     card = render_feishu_progress_card(tracker.snapshot(), tool_progress_mode="off")
     rendered = _rendered(card)
 
-    # The parent's own explicit executor badge is preserved; the child
-    # participant summary appends after the counter without touching it.
-    assert "▸ \\\\[claude\\\\] PR 验证 1/2（codex）" in rendered
+    # The parent's own executor is a group attribute, not work assignment: it
+    # never reaches the card. Only the child's badge survives.
+    assert _group_line(card, "PR 验证") == "📂 PR 验证 1/2"
+    assert "claude" not in rendered
+    assert "  ✅ \\\\[codex\\\\] ~~本地测试~~" in rendered
+
+
+def test_feishu_progress_card_group_row_uses_non_interactive_marker():
+    from gateway.progress.renderers import render_feishu_progress_card
+
+    tracker = ProgressTracker(transaction_id="tx-todo-group-marker")
+    tracker.update_todo_items([
+        {"id": "goal", "content": "分组标识", "status": "in_progress"},
+        {"id": "a", "content": "子项一", "status": "pending", "parent_id": "goal"},
+    ])
+
+    for language, name in (("zh", "分组标识"), ("en", "分组标识")):
+        card = render_feishu_progress_card(
+            tracker.snapshot(), tool_progress_mode="off", language=language
+        )
+        rendered = _rendered(card)
+        # ``▸`` reads as a clickable collapse control (the TUI uses it that
+        # way); groups use a plain, non-interactive folder marker instead.
+        assert "▸" not in rendered
+        assert _group_line(card, name).startswith("📂 ")
 
 
 def test_feishu_progress_card_never_renders_secret_shaped_executor():
@@ -311,20 +365,24 @@ def test_feishu_progress_card_never_renders_secret_shaped_executor():
     assert "\\\\[" not in rendered
 
 
-def test_feishu_progress_card_labeled_overflow_keeps_hidden_count():
+def test_feishu_progress_card_shows_every_leaf_up_to_the_shared_limit():
     from gateway.progress.renderers import render_feishu_progress_card
+    from gateway.progress.todo_display import MAX_VISIBLE_TODO_LEAVES
 
     tracker = ProgressTracker(transaction_id="tx-todo-executor-overflow")
     tracker.update_todo_items([
         {"id": str(i), "content": f"任务 {i}", "status": "pending", "executor": "codex"}
-        for i in range(15)
+        for i in range(MAX_VISIBLE_TODO_LEAVES)
     ])
 
     card = render_feishu_progress_card(tracker.snapshot(), tool_progress_mode="off")
     rendered = _rendered(card)
 
-    assert "待办 - 0 / 15（0%）" in rendered
-    assert "还有 7 项" in rendered  # 15 items, 8 visible lines → 7 hidden
+    assert f"待办 - 0 / {MAX_VISIBLE_TODO_LEAVES}（0%）" in rendered
+    assert len(_leaf_lines(card)) == MAX_VISIBLE_TODO_LEAVES
+    assert f"任务 {MAX_VISIBLE_TODO_LEAVES - 1}" in rendered
+    # Exactly at the limit there is nothing left to announce.
+    assert "未展示" not in rendered
 
 
 def test_feishu_progress_card_cancelled_todo_uses_forbidden_icon_without_strikethrough():
@@ -396,19 +454,252 @@ def test_feishu_progress_card_todo_block_does_not_leak_secrets():
     assert "待办 - 0 / 1（0%）" in rendered
 
 
-def test_feishu_progress_card_todo_block_caps_lines_with_overflow_note():
+def test_feishu_progress_card_todo_block_reports_global_leaf_overflow():
     from gateway.progress.renderers import render_feishu_progress_card
+    from gateway.progress.todo_display import MAX_VISIBLE_TODO_LEAVES
 
+    total = MAX_VISIBLE_TODO_LEAVES + 1
     tracker = ProgressTracker(transaction_id="tx-todo-overflow")
     tracker.update_todo_items([
-        {"id": str(i), "content": f"任务 {i}", "status": "pending"} for i in range(15)
+        {"id": str(i), "content": f"任务 {i}", "status": "pending"} for i in range(total)
     ])
 
     card = render_feishu_progress_card(tracker.snapshot(), tool_progress_mode="off")
     rendered = _rendered(card)
 
-    assert "待办 - 0 / 15（0%）" in rendered
-    assert "还有" in rendered  # overflow note covers the hidden items
+    # The title counts every leaf, not just the displayed ones.
+    assert f"待办 - 0 / {total}（0%）" in rendered
+    assert len(_leaf_lines(card)) == MAX_VISIBLE_TODO_LEAVES
+    assert "… 还有 1 个任务未展示" in _todo_lines(card)
+    assert f"任务 {total - 1}" not in rendered
+
+
+def test_feishu_progress_card_todo_title_counts_only_leaf_tasks():
+    from gateway.progress.renderers import render_feishu_progress_card
+
+    tracker = ProgressTracker(transaction_id="tx-todo-leaf-count")
+    tracker.update_todo_items(
+        [{"id": "goal", "content": "交付目标", "status": "in_progress"}]
+        + [
+            {"id": f"c{i}", "content": f"子任务 {i}", "status": "pending", "parent_id": "goal"}
+            for i in range(6)
+        ]
+    )
+
+    card = render_feishu_progress_card(tracker.snapshot(), tool_progress_mode="off")
+    rendered = _rendered(card)
+
+    # The group node is a summary row: six leaves, none of them done.
+    assert "待办 - 0 / 6（0%）" in rendered
+    assert "0 / 7" not in rendered
+    assert _group_line(card, "交付目标") == "📂 交付目标 0/6"
+
+
+def test_feishu_progress_card_group_headers_do_not_consume_leaf_budget():
+    from gateway.progress.renderers import render_feishu_progress_card
+    from gateway.progress.todo_display import MAX_VISIBLE_TODO_LEAVES
+
+    per_group = 5
+    groups = MAX_VISIBLE_TODO_LEAVES // per_group
+    items = []
+    for group in range(groups):
+        items.append({"id": f"g{group}", "content": f"任务组 {group}", "status": "in_progress"})
+        items += [
+            {
+                "id": f"g{group}-c{child}",
+                "content": f"任务 {group}-{child}",
+                "status": "pending",
+                "parent_id": f"g{group}",
+            }
+            for child in range(per_group)
+        ]
+
+    tracker = ProgressTracker(transaction_id="tx-todo-group-budget")
+    tracker.update_todo_items(items)
+
+    card = render_feishu_progress_card(tracker.snapshot(), tool_progress_mode="off")
+    rendered = _rendered(card)
+
+    # 20 leaves + 4 group headers: the headers are free, so nothing is hidden.
+    assert f"待办 - 0 / {MAX_VISIBLE_TODO_LEAVES}（0%）" in rendered
+    assert len([line for line in _todo_lines(card) if line.startswith("📂")]) == groups
+    assert len(_leaf_lines(card)) == MAX_VISIBLE_TODO_LEAVES
+    assert "未展示" not in rendered
+
+
+def test_feishu_progress_card_truncated_group_keeps_header_and_reports_group_overflow():
+    from gateway.progress.renderers import render_feishu_progress_card
+    from gateway.progress.todo_display import MAX_VISIBLE_TODO_LEAVES
+
+    hidden = 5
+    total = MAX_VISIBLE_TODO_LEAVES + hidden
+    tracker = ProgressTracker(transaction_id="tx-todo-group-truncated")
+    tracker.update_todo_items(
+        [{"id": "big", "content": "大任务组", "status": "in_progress"}]
+        + [
+            {"id": f"c{i}", "content": f"子任务 {i}", "status": "pending", "parent_id": "big"}
+            for i in range(total)
+        ]
+    )
+
+    card = render_feishu_progress_card(tracker.snapshot(), tool_progress_mode="off")
+    lines = _todo_lines(card)
+    rendered = _rendered(card)
+
+    # The header keeps the true aggregate over every direct child.
+    assert _group_line(card, "大任务组") == f"📂 大任务组 0/{total}"
+    assert len(_leaf_lines(card)) == MAX_VISIBLE_TODO_LEAVES
+    # Both the in-group note and the global note are exact.
+    assert f"  … 本组还有 {hidden} 个任务未展示" in lines
+    assert f"… 还有 {hidden} 个任务未展示" in lines
+    assert f"待办 - 0 / {total}（0%）" in rendered
+
+
+def test_feishu_progress_card_never_renders_group_header_without_visible_children():
+    from gateway.progress.renderers import render_feishu_progress_card
+    from gateway.progress.todo_display import MAX_VISIBLE_TODO_LEAVES
+
+    tail = 3
+    tracker = ProgressTracker(transaction_id="tx-todo-group-orphan")
+    tracker.update_todo_items(
+        [{"id": "first", "content": "首个任务组", "status": "in_progress"}]
+        + [
+            {"id": f"a{i}", "content": f"首组任务 {i}", "status": "pending", "parent_id": "first"}
+            for i in range(MAX_VISIBLE_TODO_LEAVES)
+        ]
+        + [{"id": "second", "content": "次个任务组", "status": "pending"}]
+        + [
+            {"id": f"b{i}", "content": f"次组任务 {i}", "status": "pending", "parent_id": "second"}
+            for i in range(tail)
+        ]
+    )
+
+    card = render_feishu_progress_card(tracker.snapshot(), tool_progress_mode="off")
+    lines = _todo_lines(card)
+    rendered = _rendered(card)
+
+    # The budget is spent on the first group; the second group is dropped whole
+    # rather than leaving a header with no children under it.
+    assert _group_line(card, "首个任务组") == f"📂 首个任务组 0/{MAX_VISIBLE_TODO_LEAVES}"
+    assert "次个任务组" not in rendered
+    assert "次组任务" not in rendered
+    assert f"… 还有 {tail} 个任务未展示" in lines
+    assert f"待办 - 0 / {MAX_VISIBLE_TODO_LEAVES + tail}（0%）" in rendered
+
+
+def test_feishu_progress_card_renders_multiple_groups_with_independent_aggregates():
+    from gateway.progress.renderers import render_feishu_progress_card
+
+    tracker = ProgressTracker(transaction_id="tx-todo-multi-group")
+    tracker.update_todo_items([
+        {"id": "impl", "content": "实现组", "status": "in_progress"},
+        {"id": "impl-a", "content": "写实现", "status": "completed", "parent_id": "impl"},
+        {"id": "impl-b", "content": "补测试", "status": "in_progress", "parent_id": "impl"},
+        {"id": "verify", "content": "验证组", "status": "pending"},
+        {"id": "verify-a", "content": "跑回归", "status": "pending", "parent_id": "verify"},
+        {"id": "verify-b", "content": "复审", "status": "pending", "parent_id": "verify"},
+        {"id": "verify-c", "content": "出报告", "status": "completed", "parent_id": "verify"},
+        {"id": "ship", "content": "独立收尾任务", "status": "pending"},
+    ])
+
+    card = render_feishu_progress_card(tracker.snapshot(), tool_progress_mode="off")
+    rendered = _rendered(card)
+
+    assert _group_line(card, "实现组") == "📂 实现组 1/2"
+    assert _group_line(card, "验证组") == "📂 验证组 1/3"
+    # Six leaves (2 + 3 + one standalone task), two of them completed.
+    assert "待办 - 2 / 6（33%）" in rendered
+    assert "⏳ 独立收尾任务" in rendered
+
+
+def test_feishu_progress_card_allows_parallel_in_progress_leaves_across_groups():
+    from gateway.progress.renderers import render_feishu_progress_card
+
+    tracker = ProgressTracker(transaction_id="tx-todo-cross-group-parallel")
+    tracker.update_todo_items([
+        {"id": "impl", "content": "实现组", "status": "in_progress"},
+        {"id": "impl-a", "content": "写实现", "status": "in_progress", "parent_id": "impl", "executor": "claude"},
+        {"id": "impl-b", "content": "补测试", "status": "pending", "parent_id": "impl"},
+        {"id": "review", "content": "复审组", "status": "in_progress"},
+        {"id": "review-a", "content": "独立复审", "status": "in_progress", "parent_id": "review", "executor": "codex"},
+        {"id": "solo", "content": "并行巡检", "status": "in_progress", "executor": "hermes"},
+    ])
+
+    card = render_feishu_progress_card(tracker.snapshot(), tool_progress_mode="off")
+    lines = _todo_lines(card)
+    rendered = _rendered(card)
+
+    # parent_id only expresses membership: leaves in different groups (and a
+    # standalone leaf) run in_progress at the same time.
+    running = [line for line in lines if "▶️" in line]
+    assert len(running) == 3
+    assert "  ▶️ \\\\[claude\\\\] 写实现" in rendered
+    assert "  ▶️ \\\\[codex\\\\] 独立复审" in rendered
+    assert "▶️ \\\\[hermes\\\\] 并行巡检" in rendered
+    assert _group_line(card, "实现组") == "📂 实现组 0/2"
+    assert _group_line(card, "复审组") == "📂 复审组 0/1"
+
+
+def test_feishu_progress_card_group_row_matches_child_aggregate_without_parent_status():
+    from gateway.progress.renderers import render_feishu_progress_card
+
+    tracker = ProgressTracker(transaction_id="tx-todo-parent-status")
+    tracker.update_todo_items([
+        # The stored parent status lags behind its children; the card must not
+        # show a status that contradicts the aggregate.
+        {"id": "wrap", "content": "收尾组", "status": "pending"},
+        {"id": "wrap-a", "content": "收尾一", "status": "completed", "parent_id": "wrap"},
+        {"id": "wrap-b", "content": "收尾二", "status": "completed", "parent_id": "wrap"},
+    ])
+
+    card = render_feishu_progress_card(tracker.snapshot(), tool_progress_mode="off")
+    rendered = _rendered(card)
+
+    group_line = _group_line(card, "收尾组")
+    assert group_line == "📂 收尾组 2/2"
+    assert not any(glyph in group_line for glyph in ("⏳", "▶️", "✅", "🚫", "❌"))
+    assert "待办 - 2 / 2（100%）" in rendered
+
+
+def test_feishu_progress_card_english_overflow_and_group_copy():
+    from gateway.progress.renderers import render_feishu_progress_card
+    from gateway.progress.todo_display import MAX_VISIBLE_TODO_LEAVES
+
+    hidden = 3
+    total = MAX_VISIBLE_TODO_LEAVES + hidden
+    tracker = ProgressTracker(transaction_id="tx-todo-overflow-en")
+    tracker.update_todo_items(
+        [{"id": "group", "content": "Release gate", "status": "in_progress"}]
+        + [
+            {"id": f"c{i}", "content": f"Task {i}", "status": "pending", "parent_id": "group"}
+            for i in range(total)
+        ]
+    )
+
+    card = render_feishu_progress_card(tracker.snapshot(), language="en", tool_progress_mode="off")
+    lines = _todo_lines(card)
+    rendered = _rendered(card)
+
+    assert f"TODO - 0 / {total} (0%)" in rendered
+    assert _group_line(card, "Release gate") == f"📂 Release gate 0/{total}"
+    assert f"  … {hidden} more in this group" in lines
+    assert f"… {hidden} more tasks not shown" in lines
+    assert "未展示" not in rendered
+
+
+def test_feishu_progress_card_english_overflow_uses_singular_copy():
+    from gateway.progress.renderers import render_feishu_progress_card
+    from gateway.progress.todo_display import MAX_VISIBLE_TODO_LEAVES
+
+    tracker = ProgressTracker(transaction_id="tx-todo-overflow-en-one")
+    tracker.update_todo_items([
+        {"id": str(i), "content": f"Task {i}", "status": "pending"}
+        for i in range(MAX_VISIBLE_TODO_LEAVES + 1)
+    ])
+
+    card = render_feishu_progress_card(tracker.snapshot(), language="en", tool_progress_mode="off")
+
+    assert "… 1 more task not shown" in _todo_lines(card)
 
 
 def test_task_card_hides_archived_todos_and_shows_suspended_hint():
