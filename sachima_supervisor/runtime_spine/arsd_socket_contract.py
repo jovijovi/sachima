@@ -1,20 +1,26 @@
-"""D1 offline Socket API v2 contract boundary for the external ``arsd`` daemon.
+"""P1 offline Socket API v3 contract boundary for the external ``arsd`` daemon.
 
-This module is the ARS 0.6.3 Socket integration plan's D1 slice
-(``docs/plans/2026-08-05-ars-0.6.3-socket-integration-plan.md``): the pure,
-offline contract foundation Sachima will later (D2+) compose into a Runtime
-Spine backend. It contains the default-off :class:`ArsdSupervisorConfig`, the
-injected :class:`ArsdClientFacade` boundary with its lazy short-lived
-:class:`DefaultArsdClientFacade`, stable request identity, exact submit
-request construction, exact ``server_info`` / ``submit`` / ``run_events``
-response validators, and a small Sachima-owned stable error mapping.
+This module is the ARS 0.7.6 Socket API v3 integration plan's P1 slice
+(``docs/plans/2026-08-17-ars-0.7.6-socket-api-v3-integration-plan.md``): the
+pure, offline contract foundation Sachima will later (P2+) compose into a
+Runtime Spine backend. It contains the default-off
+:class:`ArsdSupervisorConfig`, the injected :class:`ArsdClientFacade` boundary
+with its lazy short-lived :class:`DefaultArsdClientFacade`, stable request
+identity, exact submit request construction, the exact ``server_info`` /
+``submit`` / ``run_status`` / ``run_events`` / ``run_cancel`` /
+``session_status`` / ``session_list`` response validators, the admission-
+product pre-check, and a small Sachima-owned stable error mapping.
+
+Every protocol constant here is a **mirror** of the installed exact-pinned
+distribution, drift-locked by the contract tests: if a mirror and the
+distribution disagree, the mirror is the bug.
 
 Boundaries:
 
 * **Default-off.** ``ArsdSupervisorConfig.enabled`` defaults to ``False`` and
   :func:`require_enabled_arsd_supervisor_config` fails closed with a stable
   code unless it is exactly ``True``. Nothing here is wired into Runtime
-  Spine, Gateway, or any composition root — that is D2+.
+  Spine, Gateway, or any composition root — that is P2+.
 * **Offline.** Importing this module never imports ``agent_run_supervisor``
   and never opens a socket. Only :class:`DefaultArsdClientFacade` operations
   lazily import the official client and open one short-lived connection per
@@ -62,22 +68,38 @@ __all__ = [
     "RUNTIME_INVALID_ARSD_CONFIG",
     "ARSD_SUPERVISOR_CONFIG_TYPE",
     "ARSD_REQUIRED_API_VERSION",
+    "ARSD_MAX_ERROR_MESSAGE_CHARS",
     "ARSD_MAX_FRAME_BYTES",
+    "ARSD_MAX_JSON_NESTING_DEPTH",
     "ARSD_MAX_PROMPT_BYTES",
+    "ARSD_MAX_SESSION_ID_CHARS",
+    "ARSD_OPERATIONS",
+    "ARSD_PERMISSION_VIOLATION_REASON",
+    "ARSD_SESSION_ID_PATTERN",
     "ARSD_SPEC_SCHEMA_VERSION",
+    "ARSD_STRUCTURAL_MAX_RUN_EVENT_BUDGET_BYTES",
+    "ARSD_TERMINAL_STATUSES",
     "ArsdClientFacade",
+    "ArsdRunCancelObservation",
     "ArsdRunEventsPage",
+    "ArsdRunStatusObservation",
     "ArsdServerInfo",
+    "ArsdSessionView",
     "ArsdSubmitAccepted",
     "DefaultArsdClientFacade",
     "ArsdSupervisorConfig",
     "arsd_submit_payload_digest",
     "build_arsd_submit_payload",
+    "check_arsd_admission_event_budget",
     "derive_arsd_request_id",
     "map_arsd_client_error_code",
     "require_enabled_arsd_supervisor_config",
+    "validate_arsd_run_cancel_result",
     "validate_arsd_run_events_page",
+    "validate_arsd_run_status",
     "validate_arsd_server_info",
+    "validate_arsd_session_list",
+    "validate_arsd_session_view",
     "validate_arsd_submit_result",
     "validate_arsd_supervisor_config",
 ]
@@ -118,13 +140,15 @@ ARSD_STABLE_CODES = frozenset(
 )
 
 # --------------------------------------------------------------------------- #
-# Stable error mapping (plan §9)
+# Stable error mapping (Spec §13)
 # --------------------------------------------------------------------------- #
-#: Closed mapping from the arsd v1 wire error codes (plus the official
-#: client's local ``CLIENT`` code) to Sachima-owned stable codes. Mirrored
-#: from the pinned 0.6.3 ``agent_run_supervisor.arsd.protocol.ERROR_CODES_V1``
-#: — the contract test imports the real set and fails on drift, so this
-#: mirror can never silently fall behind a pin bump.
+#: Closed mapping from the arsd Socket API v3 wire error codes (plus the
+#: official client's local ``CLIENT`` code) to Sachima-owned stable codes.
+#: Mirrored from the pinned 0.7.6
+#: ``agent_run_supervisor.arsd.protocol.ERROR_CODES`` — the contract test
+#: imports the real set and fails on drift, so this mirror can never silently
+#: fall behind a pin bump. The 17-code set is unchanged from 0.6.3; only the
+#: symbol name moved (Spec D-9).
 _WIRE_CODE_TO_STABLE: dict[str, str] = {
     "UNSUPPORTED_API_VERSION": RUNTIME_ARSD_VERSION_MISMATCH,
     "UNKNOWN_OP": RUNTIME_ARSD_PROTOCOL_VIOLATION,
@@ -161,12 +185,29 @@ def map_arsd_client_error_code(wire_code: Any) -> str:
 
 
 # --------------------------------------------------------------------------- #
-# ArsdSupervisorConfig (plan §5.2)
+# ArsdSupervisorConfig (Spec §12.2)
 # --------------------------------------------------------------------------- #
 ARSD_SUPERVISOR_CONFIG_TYPE = "sachima.runtime_spine.arsd_supervisor_config.v1"
 
-#: Socket API v2 is the only protocol contract this adapter implements.
-ARSD_REQUIRED_API_VERSION = 2
+#: Socket API v3 is the only protocol contract this adapter implements. There
+#: is no per-operation version matrix and no drain window: the verdict is
+#: taken on the envelope (Spec §5.2).
+ARSD_REQUIRED_API_VERSION = 3
+
+#: The closed seven-operation set of Socket API v3. There is no
+#: ``session_close`` — Runs terminate, Sessions do not close (Spec §5.1/§6.1).
+#: Drift-locked against ``protocol.OPERATIONS``.
+ARSD_OPERATIONS = frozenset(
+    {
+        "server_info",
+        "submit",
+        "run_status",
+        "run_events",
+        "run_cancel",
+        "session_status",
+        "session_list",
+    }
+)
 
 #: Repo root of this committed tree: private socket/workspace paths must live
 #: outside it so daemon surfaces can never bind into the tracked worktree.
@@ -184,7 +225,7 @@ _VERSION_RE = re.compile(r"^[0-9][0-9A-Za-z._+-]{0,31}$")
 #: grammar of (registered agent ids, model names, effort levels).
 _WIRE_TOKEN_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
-#: Closed mirror of the pinned 0.6.3 ``native_acp.spec.RunLimits`` fields —
+#: Closed mirror of the pinned 0.7.6 ``native_acp.spec.RunLimits`` fields —
 #: the contract test imports the real dataclass and fails on drift.
 _RUN_LIMIT_KEYS = frozenset(
     {
@@ -197,15 +238,27 @@ _RUN_LIMIT_KEYS = frozenset(
     }
 )
 _INT_RUN_LIMIT_KEYS = frozenset({"max_stderr_bytes", "max_event_bytes", "max_events"})
-#: Closed per-field mirrors of the pinned 0.6.3 ``native_acp.spec`` RunLimits
-#: ceilings, integer floors, and the coupled ``max_event_bytes * max_events``
-#: byte budget — the contract test imports the real constants/dataclass and
-#: fails on drift, so a limits policy the daemon would refuse as
-#: INVALID_REQUEST is never admitted config.
+#: Closed per-field mirrors of the pinned 0.7.6 ``native_acp.spec`` RunLimits
+#: defaults, ceilings, and integer floors — the contract test imports the real
+#: constants/dataclass and fails on drift, so a limits policy the daemon would
+#: refuse as INVALID_REQUEST is never admitted config, and no timeout or byte
+#: number here is one Sachima chose for itself. ``turn_timeout_seconds``
+#: moved in 0.7.2 (default 600.0 -> 21600.0, maximum 86400.0 -> 604800.0,
+#: inclusive); startup-timeout and cancel-grace are unchanged.
+_RUN_LIMIT_DEFAULTS: Mapping[str, int | float] = MappingProxyType(
+    {
+        "startup_timeout_seconds": 60.0,
+        "turn_timeout_seconds": 21_600.0,
+        "cancel_grace_seconds": 10.0,
+        "max_stderr_bytes": 262_144,
+        "max_event_bytes": 65_536,
+        "max_events": 10_000,
+    }
+)
 _RUN_LIMIT_MAX: Mapping[str, int | float] = MappingProxyType(
     {
         "startup_timeout_seconds": 3_600.0,
-        "turn_timeout_seconds": 86_400.0,
+        "turn_timeout_seconds": 604_800.0,
         "cancel_grace_seconds": 300.0,
         "max_stderr_bytes": 67_108_864,
         "max_event_bytes": 1_048_576,
@@ -215,14 +268,25 @@ _RUN_LIMIT_MAX: Mapping[str, int | float] = MappingProxyType(
 _RUN_LIMIT_MIN: Mapping[str, int] = MappingProxyType(
     {"max_stderr_bytes": 1, "max_event_bytes": 256, "max_events": 1}
 )
-_RUN_LIMIT_EVENT_BUDGET_BYTES = 1_073_741_824
+
+#: Mirror of ``native_acp.spec.STRUCTURAL_MAX_RUN_EVENT_BUDGET_BYTES``, which
+#: is ``LIMIT_MAX_EVENT_BYTES_MAX * LIMIT_MAX_EVENTS_MAX``. This is a
+#: **maximum**, never a default: the daemon's *deployment* default is
+#: operator-configured (4 GiB at 0.7.6) and is deliberately not mirrored,
+#: because asserting it would fail against any validly reconfigured daemon.
+#: The value a Run is actually admitted against is the negotiated
+#: ``server_info.limits.max_run_event_budget_bytes`` (Spec §5.3.1).
+ARSD_STRUCTURAL_MAX_RUN_EVENT_BUDGET_BYTES = 1_048_576_000_000
 _MAX_LIMIT_COUNT = 1_000_000_000
 
-#: Closed D0+D1 grant allowlist: the approved plan admits read/search
-#: observation capabilities only — never a write-capable kind, even where the
-#: pinned wire protocol itself would accept one. Membership in the pinned
-#: ``agent_run_supervisor.role.PERMISSION_KINDS`` domain is drift-locked by
-#: the contract tests.
+#: Closed first-integration grant allowlist: the approved plan admits
+#: read/search observation capabilities only — never a write-capable kind,
+#: even where the pinned wire protocol itself would accept one. 0.7.6 can
+#: grant once-scoped ``edit``/``delete``/``move`` where the frozen grant
+#: carries the capability; that path is recorded in the Spec and not opened
+#: here. Membership in the pinned
+#: ``agent_run_supervisor.native_acp.spec.PERMISSION_KINDS`` domain is
+#: drift-locked by the contract tests.
 _GRANTABLE_CAPABILITIES = frozenset({"read", "search"})
 
 
@@ -314,17 +378,26 @@ def _limit_number(key: str, value: Any) -> int | float:
 def _owned_run_limits(value: Any) -> Mapping[str, int | float]:
     """One fully explicit, closed RunLimits-shaped mapping (owned copy).
 
-    Every key of the pinned 0.6.3 ``RunLimits`` must be present — a partial
+    Every key of the pinned 0.7.6 ``RunLimits`` must be present — a partial
     policy would silently inherit daemon-side defaults, which is not an
     admitted bounded policy. Every field is bounded by the exact pinned
-    per-field min/max, and the two event limits must also satisfy the pinned
-    coupled byte budget.
+    per-field min/max, and the coupled ``max_event_bytes * max_events``
+    product must stay within the structural maximum the daemon's own parse
+    path applies.
+
+    Per-field validity does **not** imply admissibility: whether *this*
+    daemon accepts the product is a policy question against its negotiated
+    ``max_run_event_budget_bytes``, answered per admission by
+    :func:`check_arsd_admission_event_budget` (Spec §5.6.2).
     """
 
     if not isinstance(value, Mapping) or set(value) != _RUN_LIMIT_KEYS:
         _invalid_config()
     owned = {key: _limit_number(key, value[key]) for key in sorted(_RUN_LIMIT_KEYS)}
-    if owned["max_event_bytes"] * owned["max_events"] > _RUN_LIMIT_EVENT_BUDGET_BYTES:
+    if (
+        owned["max_event_bytes"] * owned["max_events"]
+        > ARSD_STRUCTURAL_MAX_RUN_EVENT_BUDGET_BYTES
+    ):
         _invalid_config()
     return MappingProxyType(owned)
 
@@ -359,6 +432,7 @@ def _check_arsd_config_fields(config: Any, *, normalize: bool = False) -> None:
         owner = config.owner
         namespace = config.namespace
         socket_path = config.socket_path
+        binding_ledger_path = config.binding_ledger_path
         agent_by_policy_ref = config.agent_by_policy_ref
         model_by_policy_ref = config.model_by_policy_ref
         effort_by_policy_ref = config.effort_by_policy_ref
@@ -386,9 +460,10 @@ def _check_arsd_config_fields(config: Any, *, normalize: bool = False) -> None:
     _safe_config_ref(owner)
     _safe_config_ref(namespace)
     _private_abs_path(socket_path)
+    _private_abs_path(binding_ledger_path)
 
     # One coherent installed/daemon version: the declared expectation must be
-    # the reviewed pin exactly, and only Socket API v2 is implemented here.
+    # the reviewed pin exactly, and only Socket API v3 is implemented here.
     if (
         type(expected_package_version) is not str
         or _VERSION_RE.fullmatch(expected_package_version) is None
@@ -440,15 +515,20 @@ def _check_arsd_config_fields(config: Any, *, normalize: bool = False) -> None:
 
 @dataclass(frozen=True)
 class ArsdSupervisorConfig:
-    """Frozen, default-off config for the arsd Socket API v2 adapter.
+    """Frozen, default-off config for the arsd Socket API v3 adapter.
 
     Carries only host-owned/private mappings and stable policy references —
     never a credential value, prompt, argv, or environment material. The
-    private surfaces (``socket_path`` / ``workspace_by_ref``) are
-    ``repr=False`` and there is deliberately no ``as_dict``/serialize method.
-    ``__post_init__`` runs the full allowlist and replaces every
-    caller-supplied container with an owned immutable copy, so later
-    caller-side mutation can never drift a validated config.
+    private surfaces (``socket_path`` / ``binding_ledger_path`` /
+    ``workspace_by_ref``) are ``repr=False`` and there is deliberately no
+    ``as_dict``/serialize method. ``__post_init__`` runs the full allowlist
+    and replaces every caller-supplied container with an owned immutable copy,
+    so later caller-side mutation can never drift a validated config.
+
+    The field set does not grow for 0.7.6 beyond ``binding_ledger_path``: no
+    profile-source, ACP-mode, or event-budget field exists here. Profile
+    sources are operator territory and the event budget is read from
+    ``server_info``, never declared by Sachima (Spec §12.2).
     """
 
     type: str
@@ -456,6 +536,10 @@ class ArsdSupervisorConfig:
     owner: str
     namespace: str
     socket_path: str = field(repr=False)
+    #: Absolute host-owned private path, outside the tracked repo, for the
+    #: durable ``(task_id, session_id, dispatch_ref)`` -> Run/Session binding
+    #: ledger. P1 validates it; P2 owns the module that writes it.
+    binding_ledger_path: str = field(repr=False)
     agent_by_policy_ref: Mapping[str, str]
     model_by_policy_ref: Mapping[str, str]
     effort_by_policy_ref: Mapping[str, str]
@@ -502,20 +586,82 @@ def require_enabled_arsd_supervisor_config(config: Any) -> ArsdSupervisorConfig:
 
 
 # --------------------------------------------------------------------------- #
-# Stable request identity (plan §6.1)
+# Stable request identity (Spec §7.1)
 # --------------------------------------------------------------------------- #
-#: Closed mirrors of the pinned 0.6.3 wire bounds/versions — contract tests
+#: Closed mirrors of the pinned 0.7.6 wire bounds/versions — contract tests
 #: import the real protocol/spec modules and fail on drift.
-ARSD_SPEC_SCHEMA_VERSION = 2
+ARSD_SPEC_SCHEMA_VERSION = 3
 ARSD_MAX_PROMPT_BYTES = 262_144
 ARSD_MAX_FRAME_BYTES = 1_048_576
+#: Applies to every frame in both directions (``protocol.MAX_JSON_NESTING_DEPTH``).
+ARSD_MAX_JSON_NESTING_DEPTH = 64
+#: The true wire maximum for a remote ``error.message``. Sachima discards that
+#: text entirely; the mirror exists so the discard witness in the contract
+#: tests stays pinned to the real bound (review closure R-4).
+ARSD_MAX_ERROR_MESSAGE_CHARS = 512
+
+#: Mirror of ``agent_run_supervisor.session.SESSION_ID_PATTERN``. Note there
+#: are **no dots**: the retired wire-token grammar accepted them and the
+#: Session grammar does not, so Session ids need their own validator
+#: (Spec D-12).
+ARSD_SESSION_ID_PATTERN = r"[A-Za-z0-9][A-Za-z0-9_\-]*"
+_SESSION_ID_RE = re.compile(ARSD_SESSION_ID_PATTERN)
+#: The bound the real ``AgentRunRequest`` applies to ``session_id``; locked
+#: behaviourally against the distribution rather than copied from a private
+#: symbol, so an unbounded remote id never reaches a Sachima surface.
+ARSD_MAX_SESSION_ID_CHARS = 512
+
+#: Mirror of the five-member Native ACP terminal vocabulary
+#: (``exit_classifier.AgentRunStatus``), in declaration order.
+ARSD_TERMINAL_STATUSES = ("completed", "failed", "cancelled", "timed_out", "unknown")
+
+#: The 0.7.6 terminal *reason* for a denied tool call later reported completed
+#: (Δ-15). It is not a sixth terminal status and never becomes user-visible
+#: text; it maps to a Sachima-owned stable failure category like any other
+#: trusted terminal failure.
+ARSD_PERMISSION_VIOLATION_REASON = "PERMISSION_VIOLATION"
+
+#: Mirrors of the closed quarantine evidence vocabulary
+#: (``session.QUARANTINE_REASON_CODES`` / ``QUARANTINE_EVIDENCE_FIELDS``).
+_QUARANTINE_REASON_CODES = frozenset(
+    {
+        "DISPATCH_OBSERVATION_LOST",
+        "DISPATCH_WITHOUT_TRUSTWORTHY_TERMINAL",
+        "UNTRUSTED_TERMINAL_EVIDENCE",
+        "SWITCH_ROLLBACK_UNPROVEN",
+        "RECONCILED_DISPATCH_WITHOUT_TERMINAL",
+    }
+)
+_QUARANTINE_EVIDENCE_KEYS = frozenset(
+    {"reason_code", "source_run_id", "recorded_at"}
+)
 
 _REQUEST_ID_DERIVATION_TAG = b"sachima-arsd-request-id-v1"
-_SESSION_REUSE_MODES = frozenset({"none", "reuse"})
+
+#: The "I have no Session" statement. It is a distinct sentinel rather than
+#: ``None`` so a Sachima id lookup that returned ``None`` fails closed instead
+#: of silently starting a second conversation against the same agent — the
+#: exact collapse Spec §6.2 forbids. On the wire it means the ``session_id``
+#: key is structurally absent; a present null is ``INVALID_REQUEST``.
+_CREATE_NEW_SESSION = object()
 
 
 def _invalid_request() -> NoReturn:
     raise SpineError(RUNTIME_ARSD_INVALID_REQUEST) from None
+
+
+def _safe_session_token(
+    value: Any, *, code: str = RUNTIME_ARSD_INVALID_REQUEST
+) -> str:
+    """One ARS Session id, on the Session grammar exactly (no dots)."""
+
+    if (
+        type(value) is not str
+        or len(value) > ARSD_MAX_SESSION_ID_CHARS
+        or _SESSION_ID_RE.fullmatch(value) is None
+    ):
+        raise SpineError(code) from None
+    return value
 
 
 def derive_arsd_request_id(task_id: Any, session_id: Any, dispatch_ref: Any) -> str:
@@ -524,7 +670,7 @@ def derive_arsd_request_id(task_id: Any, session_id: Any, dispatch_ref: Any) -> 
     Derived from ``(task_id, session_id, dispatch_ref)`` only — never from
     wall-clock time — so a retry of an uncertain submission reuses the exact
     same id. Length-prefixed hashing makes component-boundary shifts
-    non-colliding. The result satisfies the arsd v1 request-id grammar.
+    non-colliding. The result satisfies the arsd request-id grammar.
     """
 
     parts = (
@@ -541,7 +687,7 @@ def derive_arsd_request_id(task_id: Any, session_id: Any, dispatch_ref: Any) -> 
 
 
 # --------------------------------------------------------------------------- #
-# Submit request construction (plan §6.2)
+# Submit request construction (Spec §6.2)
 # --------------------------------------------------------------------------- #
 def _resolve_ref(mapping: Mapping[str, Any], ref: Any) -> Any:
     key = _safe_id(ref, code=RUNTIME_ARSD_INVALID_REQUEST)
@@ -581,6 +727,27 @@ def _wire_input_refs(value: Any) -> list[dict[str, str]]:
     return refs
 
 
+def _contained_cwd(cwd: Any, workspace_root: str) -> str:
+    """One resolved ``cwd`` proven to sit inside the bound workspace root.
+
+    At 0.7.6 a ``read``/``search`` allow requires every declared path to
+    resolve, through symlinks, inside the bound workspace. A ``cwd`` outside
+    ``workspace_root`` therefore makes every subsequent read/search deny
+    fail-closed, turning a correctly configured Run into a guaranteed failure
+    — so it is refused here, before any facade call (Spec §10.6.2).
+    """
+
+    value = _private_abs_path(cwd, code=RUNTIME_ARSD_INVALID_REQUEST)
+    try:
+        resolved = Path(value).resolve()
+        root = Path(workspace_root).resolve()
+    except (ValueError, OSError):
+        raise SpineError(RUNTIME_ARSD_INVALID_REQUEST) from None
+    if resolved != root and not resolved.is_relative_to(root):
+        _invalid_request()
+    return value
+
+
 def build_arsd_submit_payload(
     config: ArsdSupervisorConfig,
     *,
@@ -590,14 +757,13 @@ def build_arsd_submit_payload(
     workspace_ref: Any,
     run_limits_policy_ref: Any,
     prompt_text: Any,
-    session_reuse: Any = "none",
-    ars_session_id: Any = None,
+    session_id: Any = _CREATE_NEW_SESSION,
     expected_binding_hash: Any = None,
     input_refs: Any = (),
     cwd: Any = None,
     retry_of_run_id: Any = None,
 ) -> dict[str, Any]:
-    """Build the exact Socket API v2 ``submit`` payload for one admitted turn.
+    """Build the exact Socket API v3 ``submit`` payload for one admitted turn.
 
     Every policy-facing value resolves through the enabled config's closed
     maps — an unknown ref fails closed; nothing is passed through verbatim.
@@ -605,22 +771,27 @@ def build_arsd_submit_payload(
     included): it must go to :meth:`ArsdClientFacade.submit` only and never
     into events, projections, logs, or serialized state. ``retry_of_run_id``
     is for an explicit recovery decision only — never an automatic retry.
+
+    The whole Session decision is the presence of ``session_id``: omit the
+    argument to create one new durable Session, or pass an existing id for
+    existing-only reuse. Passing ``None`` is refused rather than treated as
+    create, and the built dict never carries a present-null ``session_id``.
+
+    ``requested_model`` / ``requested_effort`` are re-resolved from the policy
+    maps on **every** call, including every reuse turn — they are properties
+    of the Run, not of the Session, and nothing observed from a past Run feeds
+    back in here. A built literal states what Sachima requested; only ARS's
+    own read-back proves what a Run executed under (Spec §5.5.3).
+
+    There is deliberately no negotiated-budget parameter. The payload is
+    frozen at construction, so a retry after the operator changed the daemon's
+    event budget re-sends byte-identical material rather than re-tuned
+    ``limits`` (Spec §5.3.1 consequence 2). Whether *this* daemon will admit
+    the frozen ``limits`` is the separate question
+    :func:`check_arsd_admission_event_budget` answers per new admission.
     """
 
     validated = require_enabled_arsd_supervisor_config(config)
-
-    reuse = session_reuse
-    if type(reuse) is not str or reuse not in _SESSION_REUSE_MODES:
-        _invalid_request()
-    session_token: str | None
-    if reuse == "reuse":
-        session_token = _safe_wire_token(
-            ars_session_id, code=RUNTIME_ARSD_INVALID_REQUEST
-        )
-    else:
-        if ars_session_id is not None:
-            _invalid_request()
-        session_token = None
 
     binding_hash = (
         None
@@ -632,16 +803,13 @@ def build_arsd_submit_payload(
         if retry_of_run_id is None
         else _safe_wire_token(retry_of_run_id, code=RUNTIME_ARSD_INVALID_REQUEST)
     )
-    cwd_path = (
-        None if cwd is None else _private_abs_path(cwd, code=RUNTIME_ARSD_INVALID_REQUEST)
-    )
+    workspace_root = _resolve_ref(validated.workspace_by_ref, workspace_ref)
+    cwd_path = None if cwd is None else _contained_cwd(cwd, workspace_root)
 
     request: dict[str, Any] = {
         "owner": validated.owner,
         "namespace": validated.namespace,
         "agent_id": _resolve_ref(validated.agent_by_policy_ref, agent_policy_ref),
-        "session_reuse": reuse,
-        "ars_session_id": session_token,
         "expected_binding_hash": binding_hash,
         "input_refs": _wire_input_refs(input_refs),
         "requested_model": _resolve_ref(
@@ -663,13 +831,65 @@ def build_arsd_submit_payload(
         "recovery_policy_hash": validated.recovery_policy_hash,
         "schema_version": ARSD_SPEC_SCHEMA_VERSION,
     }
+    # Reuse adds the key; create leaves it structurally absent. There is no
+    # branch that can write ``None`` into it.
+    if session_id is not _CREATE_NEW_SESSION:
+        request["session_id"] = _safe_session_token(session_id)
+
     return {
         "request": request,
         "prompt_text": _wire_prompt_text(prompt_text),
-        "workspace_root": _resolve_ref(validated.workspace_by_ref, workspace_ref),
+        "workspace_root": workspace_root,
         "cwd": cwd_path,
         "retry_of_run_id": retry_token,
     }
+
+
+def check_arsd_admission_event_budget(
+    limits: Any, *, max_run_event_budget_bytes: Any
+) -> None:
+    """Pre-check one new admission's run limits against the negotiated budget.
+
+    ``RunLimits`` keeps structural per-field maxima **and** the daemon
+    separately refuses an admission whose
+    ``max_event_bytes * max_events`` exceeds its configured
+    ``max_run_event_budget_bytes`` (Δ-10). Per-field validity therefore does
+    not imply admissibility, and this is the function that says so: it fails
+    closed with the stable invalid-request code rather than spending a submit
+    to learn the answer.
+
+    ``max_run_event_budget_bytes`` is the value returned by the fresh
+    ``server_info`` negotiation immediately preceding *this* new admission —
+    never a cached one, and never a mirrored default (Spec §5.3.1).
+
+    Scope is **new admissions only**. A recovery attempt for an uncertain
+    submission — same ``request_id``, byte-equivalent frozen payload —
+    performs no negotiation and is not pre-checked here; ARS resolves it from
+    its durable admission record (Spec §5.6.2, Δ-12).
+
+    This is a guard, not a re-implementation of daemon policy: the daemon
+    remains the authority, and a refusal Sachima did not predict is still
+    handled through the ordinary error mapping.
+    """
+
+    budget = max_run_event_budget_bytes
+    if (
+        isinstance(budget, bool)
+        or type(budget) is not int
+        or budget < 1
+        or budget > ARSD_STRUCTURAL_MAX_RUN_EVENT_BUDGET_BYTES
+    ):
+        _invalid_request()
+    if not isinstance(limits, Mapping) or set(limits) != _RUN_LIMIT_KEYS:
+        _invalid_request()
+    product = 1
+    for key in ("max_event_bytes", "max_events"):
+        value = limits[key]
+        if isinstance(value, bool) or type(value) is not int or value < 1:
+            _invalid_request()
+        product *= value
+    if product > budget:
+        _invalid_request()
 
 
 def arsd_submit_payload_digest(payload: Mapping[str, Any]) -> str:
@@ -690,23 +910,29 @@ def arsd_submit_payload_digest(payload: Mapping[str, Any]) -> str:
 
 
 # --------------------------------------------------------------------------- #
-# Exact response validators (plan §5.4 / §7.1 / §7.3)
+# Exact response validators (Spec §5.3 / §7.2 / §9)
 # --------------------------------------------------------------------------- #
+#: The **top-level** ``server_info`` key set is still exactly five at 0.7.6:
+#: ``v2_only_operations`` retired and ``operations`` took its place. Only the
+#: nested ``limits`` block grew (Δ-8).
 _SERVER_INFO_KEYS = frozenset(
-    {"version", "api_version", "supported_api_versions", "v2_only_operations", "limits"}
+    {"version", "api_version", "supported_api_versions", "operations", "limits"}
 )
-#: Exact pinned 0.6.3 negotiation sets, as the daemon's ``server_info`` emits
-#: them (``list(SUPPORTED_API_VERSIONS)`` / ``sorted(V2_ONLY_OPERATIONS)``) —
-#: closed: only these exact values ever reach the repr-safe
-#: :class:`ArsdServerInfo`. Drift-locked against the real protocol module by
-#: the contract tests.
-_ARSD_SUPPORTED_API_VERSIONS = (1, 2)
-_ARSD_V2_ONLY_OPERATIONS = ("submit",)
-#: The five limits the 0.6.3 daemon reports. The two byte bounds are protocol
-#: constants and must equal our mirrors exactly; the three capacity limits are
-#: operator-configured and must be usable and bounded
-#: (``1 <= value <= _MAX_LIMIT_COUNT``) — an unbounded remote int never
-#: reaches the repr-safe observation.
+#: Exact pinned 0.7.6 negotiation set, as the daemon's ``server_info`` emits it
+#: (``list(SUPPORTED_API_VERSIONS)``) — closed: only this exact value ever
+#: reaches the repr-safe :class:`ArsdServerInfo`. Drift-locked against the real
+#: protocol module by the contract tests.
+_ARSD_SUPPORTED_API_VERSIONS = (3,)
+#: The daemon emits ``sorted(protocol.OPERATIONS)``.
+_ARSD_SORTED_OPERATIONS = tuple(sorted(ARSD_OPERATIONS))
+#: The **six** limits the 0.7.6 daemon reports. The two byte bounds are
+#: protocol constants and must equal our mirrors exactly; the three capacity
+#: limits are operator-configured and must be usable and bounded
+#: (``1 <= value <= _MAX_LIMIT_COUNT``); the sixth is the negotiated per-Run
+#: event budget, read as a runtime value and bounded only by the mirrored
+#: structural maximum — never compared for equality against a default, which
+#: would fail against any validly reconfigured daemon (Spec §5.3.1). An
+#: unbounded remote int never reaches the repr-safe observation.
 _SERVER_INFO_LIMIT_KEYS = frozenset(
     {
         "max_concurrent_runs",
@@ -714,9 +940,36 @@ _SERVER_INFO_LIMIT_KEYS = frozenset(
         "max_prompt_bytes",
         "events_page_limit",
         "event_follow_queue_size",
+        "max_run_event_budget_bytes",
     }
 )
-_SUBMIT_RESULT_KEYS = frozenset({"run_id", "accepted_at"})
+_SERVER_INFO_CAPACITY_KEYS = (
+    "max_concurrent_runs",
+    "events_page_limit",
+    "event_follow_queue_size",
+)
+_SUBMIT_RESULT_KEYS = frozenset({"run_id", "session_id", "accepted_at"})
+_RUN_STATUS_REQUIRED_KEYS = frozenset({"run_id", "session_id"})
+_RUN_STATUS_ACCEPTED_KEYS = frozenset({"run_id", "session_id", "state", "accepted_at"})
+_RUN_STATUS_OPTIONAL_KEYS = frozenset({"progress", "result"})
+_RUN_STATUS_ACCEPTED_STATE = "accepted"
+_RUN_CANCEL_REQUIRED_KEYS = frozenset({"run_id"})
+_RUN_CANCEL_TERMINAL_KEYS = frozenset({"status", "result"})
+_SESSION_VIEW_KEYS = frozenset(
+    {
+        "session_id",
+        "owner",
+        "namespace",
+        "agent_id",
+        "profile_id",
+        "created_at",
+        "updated_at",
+        "last_effective_model",
+        "last_effective_effort",
+        "quarantine",
+    }
+)
+_SESSION_LIST_KEYS = frozenset({"sessions"})
 _RUN_EVENTS_PAGE_KEYS = frozenset({"run_id", "events", "next_from_seq", "exhausted"})
 _TRUNCATION_MARKER_KEYS = frozenset({"seq", "type", "truncated", "truncate_reason"})
 _TRUNCATION_MARKER_REASON = "response_budget"
@@ -737,32 +990,75 @@ def _wire_int(value: Any) -> int:
     return value
 
 
+def _wire_timestamp(value: Any) -> str:
+    """One bounded, timezone-aware ISO timestamp; parse failures never chain."""
+
+    if (
+        type(value) is not str
+        or not value
+        or len(value) > _MAX_TIMESTAMP_CHARS
+        or "\n" in value
+        or "\r" in value
+    ):
+        _protocol_violation()
+    try:
+        moment = _dt.datetime.fromisoformat(value)
+    except ValueError:
+        _protocol_violation()
+    if moment.tzinfo is None:
+        _protocol_violation()
+    return value
+
+
+def _owned_wire_body(value: Any) -> dict[str, Any]:
+    """One raw remote body, copied and owned, never read or echoed."""
+
+    if not isinstance(value, Mapping):
+        _protocol_violation()
+    try:
+        return json.loads(json.dumps(dict(value)))
+    except (TypeError, ValueError, RecursionError):
+        _protocol_violation()
+
+
 @dataclass(frozen=True)
 class ArsdServerInfo:
     """One validated, negotiation-passing ``server_info`` observation.
 
     Carries closed structural data only (versions and integer limits) — safe
     for reprs and diagnostics; still deliberately without a serialize surface.
+    ``max_run_event_budget_bytes`` is the **negotiated runtime value** of the
+    daemon that answered: authority for this admission's budget pre-check, and
+    for nothing else. It is never carried forward to a later admission.
     """
 
     version: str
     api_version: int
     supported_api_versions: tuple[int, ...]
-    v2_only_operations: tuple[str, ...]
+    operations: tuple[str, ...]
     limits: Mapping[str, int]
+
+    @property
+    def max_run_event_budget_bytes(self) -> int:
+        return self.limits["max_run_event_budget_bytes"]
 
 
 def validate_arsd_server_info(
     payload: Any, *, config: ArsdSupervisorConfig
 ) -> ArsdServerInfo:
-    """Exact Socket API v2 preflight negotiation (plan §5.4).
+    """Exact Socket API v3 preflight negotiation (Spec §5.3).
 
     Malformed shape → ``runtime_arsd_protocol_violation``. A structurally
-    well-formed reply that fails package/API/limit compatibility → the single
-    stable ``runtime_arsd_version_mismatch`` backend-unavailable code. Never
-    falls back silently. The negotiation sets are closed: only the exact
-    pinned ``[1, 2]`` / ``["submit"]`` values ever reach
+    well-formed reply that fails package/API/operation/limit compatibility →
+    the single stable ``runtime_arsd_version_mismatch`` backend-unavailable
+    code. Never falls back silently. The negotiation sets are closed: only the
+    exact pinned ``[3]`` / sorted seven-operation values ever reach
     :class:`ArsdServerInfo`, so no remote string survives into a repr surface.
+
+    A five-key ``limits`` block — the 0.7.1 shape — is a protocol violation
+    against a 0.7.6 daemon, not a tolerated older peer: there is no
+    compatibility window and no per-operation version matrix. A seventh key is
+    equally a violation.
     """
 
     validated = validate_arsd_supervisor_config(config)
@@ -780,10 +1076,10 @@ def validate_arsd_server_info(
         _protocol_violation()
     supported = tuple(_wire_int(item) for item in supported_raw)
 
-    v2_only_raw = payload["v2_only_operations"]
-    if not isinstance(v2_only_raw, list):
+    operations_raw = payload["operations"]
+    if not isinstance(operations_raw, list):
         _protocol_violation()
-    for op in v2_only_raw:
+    for op in operations_raw:
         if type(op) is not str or _WIRE_TOKEN_RE.fullmatch(op) is None:
             _protocol_violation()
 
@@ -799,61 +1095,289 @@ def validate_arsd_server_info(
         _version_mismatch()
     if supported != _ARSD_SUPPORTED_API_VERSIONS:
         _version_mismatch()
-    if tuple(v2_only_raw) != _ARSD_V2_ONLY_OPERATIONS:
+    if tuple(operations_raw) != _ARSD_SORTED_OPERATIONS:
         _version_mismatch()
     if limits["max_frame_bytes"] != ARSD_MAX_FRAME_BYTES:
         _version_mismatch()
     if limits["max_prompt_bytes"] != ARSD_MAX_PROMPT_BYTES:
         _version_mismatch()
-    for capacity_key in (
-        "max_concurrent_runs",
-        "events_page_limit",
-        "event_follow_queue_size",
-    ):
+    for capacity_key in _SERVER_INFO_CAPACITY_KEYS:
         if limits[capacity_key] < 1 or limits[capacity_key] > _MAX_LIMIT_COUNT:
             _version_mismatch()
+    budget = limits["max_run_event_budget_bytes"]
+    if budget < 1 or budget > ARSD_STRUCTURAL_MAX_RUN_EVENT_BUDGET_BYTES:
+        _version_mismatch()
 
     return ArsdServerInfo(
         version=version,
         api_version=api_version,
         supported_api_versions=_ARSD_SUPPORTED_API_VERSIONS,
-        v2_only_operations=_ARSD_V2_ONLY_OPERATIONS,
+        operations=_ARSD_SORTED_OPERATIONS,
         limits=MappingProxyType(limits),
     )
 
 
 @dataclass(frozen=True)
 class ArsdSubmitAccepted:
-    """Durable acceptance of one submit: ``run_id`` stays a private locator."""
+    """Durable acceptance of one submit.
+
+    Both ``run_id`` and ``session_id`` are private locators: neither is public
+    status text, and neither is serialized anywhere. Public surfaces carry
+    only Sachima-derived safe refs.
+    """
 
     run_id: str = field(repr=False)
+    session_id: str = field(repr=False)
     accepted_at: str
 
 
 def validate_arsd_submit_result(payload: Any) -> ArsdSubmitAccepted:
-    """Exact ``submit`` result shape: ``{run_id, accepted_at}`` only."""
+    """Exact v3 ``submit`` ack shape: ``{run_id, session_id, accepted_at}``.
+
+    The Session id is learned here and nowhere else — Sachima never derives
+    it, guesses it, or reconstructs it from a ``run_id`` convention
+    (Spec §6.3).
+    """
 
     if not isinstance(payload, Mapping) or set(payload) != _SUBMIT_RESULT_KEYS:
         _protocol_violation()
     run_id = _safe_wire_token(
         payload["run_id"], code=RUNTIME_ARSD_PROTOCOL_VIOLATION
     )
-    accepted_at = payload["accepted_at"]
-    if (
-        type(accepted_at) is not str
-        or not accepted_at
-        or len(accepted_at) > _MAX_TIMESTAMP_CHARS
-        or "\n" in accepted_at
-        or "\r" in accepted_at
-    ):
+    session_id = _safe_session_token(
+        payload["session_id"], code=RUNTIME_ARSD_PROTOCOL_VIOLATION
+    )
+    return ArsdSubmitAccepted(
+        run_id=run_id,
+        session_id=session_id,
+        accepted_at=_wire_timestamp(payload["accepted_at"]),
+    )
+
+
+@dataclass(frozen=True)
+class ArsdRunStatusObservation:
+    """One validated ``run_status`` reply.
+
+    Two exact shapes, never a merge of them: the **acceptance** view
+    (``state == "accepted"`` plus ``accepted_at``, no progress and no result)
+    and the **active** view (the two ids plus optional ``progress`` and/or
+    ``result``). Ids and raw remote bodies stay private.
+    """
+
+    run_id: str = field(repr=False)
+    session_id: str = field(repr=False)
+    state: str | None
+    accepted_at: str | None
+    progress: dict[str, Any] | None = field(repr=False)
+    result: dict[str, Any] | None = field(repr=False)
+
+    @property
+    def has_terminal_result(self) -> bool:
+        return self.result is not None
+
+
+def validate_arsd_run_status(payload: Any, *, run_id: Any) -> ArsdRunStatusObservation:
+    """Exact ``run_status`` validation (Spec §10.1, acceptance row A-11).
+
+    A missing, extra, or off-contract key — including a ``state`` value
+    outside the contract — is a protocol violation, not a tolerated field.
+    The reply's ``run_id`` must echo the one asked about.
+    """
+
+    expected_run = _safe_wire_token(run_id, code=RUNTIME_ARSD_INVALID_REQUEST)
+    if not isinstance(payload, Mapping):
         _protocol_violation()
-    try:
-        moment = _dt.datetime.fromisoformat(accepted_at)
-    except ValueError:
+    keys = set(payload)
+    if not _RUN_STATUS_REQUIRED_KEYS <= keys:
         _protocol_violation()
-    if moment.tzinfo is None:
+    if payload["run_id"] != expected_run:
         _protocol_violation()
-    return ArsdSubmitAccepted(run_id=run_id, accepted_at=accepted_at)
+    session_id = _safe_session_token(
+        payload["session_id"], code=RUNTIME_ARSD_PROTOCOL_VIOLATION
+    )
+
+    if "state" in keys or "accepted_at" in keys:
+        # The acceptance view is all-or-nothing and carries nothing else.
+        if keys != _RUN_STATUS_ACCEPTED_KEYS:
+            _protocol_violation()
+        if payload["state"] != _RUN_STATUS_ACCEPTED_STATE:
+            _protocol_violation()
+        return ArsdRunStatusObservation(
+            run_id=expected_run,
+            session_id=session_id,
+            state=_RUN_STATUS_ACCEPTED_STATE,
+            accepted_at=_wire_timestamp(payload["accepted_at"]),
+            progress=None,
+            result=None,
+        )
+
+    if not keys <= _RUN_STATUS_REQUIRED_KEYS | _RUN_STATUS_OPTIONAL_KEYS:
+        _protocol_violation()
+    return ArsdRunStatusObservation(
+        run_id=expected_run,
+        session_id=session_id,
+        state=None,
+        accepted_at=None,
+        progress=_owned_wire_body(payload["progress"]) if "progress" in keys else None,
+        result=_owned_wire_body(payload["result"]) if "result" in keys else None,
+    )
+
+
+@dataclass(frozen=True)
+class ArsdRunCancelObservation:
+    """One validated ``run_cancel`` reply.
+
+    A cancel that has not yet produced trusted terminal evidence carries the
+    run echo alone. ``cancelled`` is projected only when such evidence
+    follows; the cancel call itself never claims an outcome (Spec §10.4).
+    """
+
+    run_id: str = field(repr=False)
+    status: str | None
+    result: dict[str, Any] | None = field(repr=False)
+
+    @property
+    def has_terminal_result(self) -> bool:
+        return self.result is not None
+
+
+def validate_arsd_run_cancel_result(
+    payload: Any, *, run_id: Any
+) -> ArsdRunCancelObservation:
+    """Exact ``run_cancel`` validation.
+
+    ``status`` and ``result`` arrive together or not at all, and ``status``
+    must be a member of the five-member terminal vocabulary — a terminal
+    *reason* such as ``PERMISSION_VIOLATION`` is not a status (§10.7).
+    """
+
+    expected_run = _safe_wire_token(run_id, code=RUNTIME_ARSD_INVALID_REQUEST)
+    if not isinstance(payload, Mapping):
+        _protocol_violation()
+    keys = set(payload)
+    if not _RUN_CANCEL_REQUIRED_KEYS <= keys:
+        _protocol_violation()
+    if payload["run_id"] != expected_run:
+        _protocol_violation()
+    extra = keys - _RUN_CANCEL_REQUIRED_KEYS
+    if extra and extra != _RUN_CANCEL_TERMINAL_KEYS:
+        _protocol_violation()
+    if not extra:
+        return ArsdRunCancelObservation(run_id=expected_run, status=None, result=None)
+    status = payload["status"]
+    if type(status) is not str or status not in ARSD_TERMINAL_STATUSES:
+        _protocol_violation()
+    return ArsdRunCancelObservation(
+        run_id=expected_run,
+        status=status,
+        result=_owned_wire_body(payload["result"]),
+    )
+
+
+@dataclass(frozen=True)
+class ArsdSessionView:
+    """One validated ``session_status`` / ``session_list`` record (R-5).
+
+    A Session has identity, last-use observations, and optional quarantine
+    evidence — and deliberately no lifecycle state to project. The id is
+    private; the quarantine block is categorical by construction (no exception
+    text, no agent text, no path).
+
+    ``last_effective_model`` / ``last_effective_effort`` are observations of
+    the Session's **last Run**. They are recorded here and fed into nothing:
+    never into request construction, and never treated as the effective
+    configuration of a Run other than the one that produced them (§5.5.4).
+
+    Optionality mirrors the real record rather than Sachima's preference: the
+    daemon guarantees ``session_id``/``owner``/``namespace`` on every view it
+    emits, and declares the remaining observation fields optional, so those
+    are accepted as ``None``. The ten-key set itself stays exact.
+    """
+
+    session_id: str = field(repr=False)
+    owner: str
+    namespace: str
+    agent_id: str | None
+    profile_id: str | None
+    created_at: str | None
+    updated_at: str | None
+    last_effective_model: str | None
+    last_effective_effort: str | None
+    quarantine_reason_code: str | None
+
+    @property
+    def is_reusable(self) -> bool:
+        """A quarantined Session still exists; it is refused for *reuse*."""
+
+        return self.quarantine_reason_code is None
+
+
+def _optional_wire_token(value: Any) -> str | None:
+    if value is None:
+        return None
+    return _safe_wire_token(value, code=RUNTIME_ARSD_PROTOCOL_VIOLATION)
+
+
+def _optional_wire_timestamp(value: Any) -> str | None:
+    if value is None:
+        return None
+    return _wire_timestamp(value)
+
+
+def validate_arsd_session_view(payload: Any) -> ArsdSessionView:
+    """Exact ten-key session view with the closed quarantine block (R-5)."""
+
+    if not isinstance(payload, Mapping) or set(payload) != _SESSION_VIEW_KEYS:
+        _protocol_violation()
+
+    quarantine_raw = payload["quarantine"]
+    reason_code: str | None = None
+    if quarantine_raw is not None:
+        if (
+            not isinstance(quarantine_raw, Mapping)
+            or set(quarantine_raw) != _QUARANTINE_EVIDENCE_KEYS
+        ):
+            _protocol_violation()
+        reason_code = quarantine_raw["reason_code"]
+        if type(reason_code) is not str or reason_code not in _QUARANTINE_REASON_CODES:
+            _protocol_violation()
+        # Read for shape only: the source run id is a private locator and the
+        # timestamp is bounded. Neither reaches the returned view.
+        _safe_wire_token(
+            quarantine_raw["source_run_id"], code=RUNTIME_ARSD_PROTOCOL_VIOLATION
+        )
+        _wire_timestamp(quarantine_raw["recorded_at"])
+
+    return ArsdSessionView(
+        session_id=_safe_session_token(
+            payload["session_id"], code=RUNTIME_ARSD_PROTOCOL_VIOLATION
+        ),
+        owner=_safe_id(payload["owner"], code=RUNTIME_ARSD_PROTOCOL_VIOLATION),
+        namespace=_safe_id(payload["namespace"], code=RUNTIME_ARSD_PROTOCOL_VIOLATION),
+        agent_id=_optional_wire_token(payload["agent_id"]),
+        profile_id=_optional_wire_token(payload["profile_id"]),
+        created_at=_optional_wire_timestamp(payload["created_at"]),
+        updated_at=_optional_wire_timestamp(payload["updated_at"]),
+        last_effective_model=_optional_wire_token(payload["last_effective_model"]),
+        last_effective_effort=_optional_wire_token(payload["last_effective_effort"]),
+        quarantine_reason_code=reason_code,
+    )
+
+
+def validate_arsd_session_list(payload: Any) -> tuple[ArsdSessionView, ...]:
+    """Exact ``session_list`` page: ``{"sessions": [<session_view>, ...]}``.
+
+    The top-level key set is exactly ``{"sessions"}`` and the value is a list.
+    A bare session record at the top level is a protocol violation, never a
+    tolerated shape.
+    """
+
+    if not isinstance(payload, Mapping) or set(payload) != _SESSION_LIST_KEYS:
+        _protocol_violation()
+    sessions_raw = payload["sessions"]
+    if not isinstance(sessions_raw, list):
+        _protocol_violation()
+    return tuple(validate_arsd_session_view(item) for item in sessions_raw)
 
 
 def _is_truncation_marker(event: Mapping[str, Any]) -> bool:
@@ -871,7 +1395,7 @@ class ArsdRunEventsPage:
 
     ``run_id`` and the raw event evidence are private (``repr=False``, no
     serialize surface). ``resume_cursor`` / ``has_more`` are the foreign
-    read-model cursor translation (plan §7.3): resuming with
+    read-model cursor translation (Spec §9.2): resuming with
     ``from_seq=resume_cursor`` neither duplicates nor drops records. The
     cursor never becomes Sachima ``TaskEventLog.seq``.
     """
@@ -894,7 +1418,7 @@ class ArsdRunEventsPage:
 def validate_arsd_run_events_page(
     payload: Any, *, run_id: Any, from_seq: Any
 ) -> ArsdRunEventsPage:
-    """Exact non-follow ``run_events`` page validation (plan §7.1/§7.3).
+    """Exact non-follow ``run_events`` page validation (Spec §9.1/§9.2).
 
     Verifies the run echo, the closed page shape, strictly ascending post-
     cursor sequences, exact ``next_from_seq`` semantics (highest returned
@@ -948,7 +1472,7 @@ def validate_arsd_run_events_page(
         _protocol_violation()
 
     # A byte-budget truncation marker only ever stands alone on a page the
-    # daemon reports as not exhausted (mirrors the 0.6.3 handler).
+    # daemon reports as not exhausted (mirrors the 0.7.6 handler).
     if marker_count and (marker_count != 1 or len(owned_events) != 1 or exhausted):
         _protocol_violation()
 
@@ -962,9 +1486,10 @@ def validate_arsd_run_events_page(
 
 
 # --------------------------------------------------------------------------- #
-# Injected client facade boundary (plan §5.3)
+# Injected client facade boundary (Spec §5.1)
 # --------------------------------------------------------------------------- #
-#: Mirror of the arsd v1 request-id grammar (``[A-Za-z0-9._-]``, 1..128).
+#: Mirror of the arsd request-id grammar (``[A-Za-z0-9._-]``, 1..128) —
+#: unchanged at v3.
 _WIRE_REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 
 #: The official client's *local* transport-loss raises during a roundtrip —
@@ -977,12 +1502,16 @@ _LOCAL_TRANSPORT_LOSS_CODES = frozenset({"INTERNAL", "MALFORMED_FRAME"})
 
 @runtime_checkable
 class ArsdClientFacade(Protocol):
-    """The injected Socket API v2 client boundary the D2+ backend depends on.
+    """The injected Socket API v3 client boundary the P2+ backend depends on.
 
     Implementations perform exactly one bounded daemon operation per call and
     return the raw result mapping; validation stays in the pure
     ``validate_arsd_*`` functions. Tests inject doubles; production uses
     :class:`DefaultArsdClientFacade`.
+
+    Six of the seven v3 operations appear here — every one this integration
+    uses. There is no ``session_close`` (the operation does not exist) and no
+    ``follow`` path.
     """
 
     def server_info(self) -> Mapping[str, Any]: ...
@@ -991,9 +1520,17 @@ class ArsdClientFacade(Protocol):
         self, *, request_id: str, payload: Mapping[str, Any]
     ) -> Mapping[str, Any]: ...
 
+    def run_status(self, run_id: str) -> Mapping[str, Any]: ...
+
     def run_events(
         self, run_id: str, *, from_seq: int, limit: int | None = None
     ) -> Mapping[str, Any]: ...
+
+    def run_cancel(self, run_id: str) -> Mapping[str, Any]: ...
+
+    def session_status(self, session_id: str) -> Mapping[str, Any]: ...
+
+    def session_list(self) -> Mapping[str, Any]: ...
 
 
 class DefaultArsdClientFacade:
@@ -1095,6 +1632,10 @@ class DefaultArsdClientFacade:
             submission=True,
         )
 
+    def run_status(self, run_id: str) -> Mapping[str, Any]:
+        token = _safe_wire_token(run_id, code=RUNTIME_ARSD_INVALID_REQUEST)
+        return self._operate(lambda client: client.run_status(token))
+
     def run_events(
         self, run_id: str, *, from_seq: int, limit: int | None = None
     ) -> Mapping[str, Any]:
@@ -1110,3 +1651,14 @@ class DefaultArsdClientFacade:
                 token, from_seq=from_seq, limit=limit, follow=False
             )
         )
+
+    def run_cancel(self, run_id: str) -> Mapping[str, Any]:
+        token = _safe_wire_token(run_id, code=RUNTIME_ARSD_INVALID_REQUEST)
+        return self._operate(lambda client: client.run_cancel(token))
+
+    def session_status(self, session_id: str) -> Mapping[str, Any]:
+        token = _safe_session_token(session_id)
+        return self._operate(lambda client: client.session_status(token))
+
+    def session_list(self) -> Mapping[str, Any]:
+        return self._operate(lambda client: client.session_list())

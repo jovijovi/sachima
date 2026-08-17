@@ -1,36 +1,36 @@
-"""PR-LS3 — agent-run-supervisor caller-API compatibility smoke tests.
+"""Artifact-shape live-progress smoke tests (local/offline).
 
-These tests exercise the PR-LS3 *local/offline* compatibility smoke seam
+These tests exercise the *local/offline* smoke seam
 (``agent_run_supervisor_live_progress_smoke``), which reads **synthetic**
-artifacts through the **real** ``agent_run_supervisor.hermes_caller.events``
-caller/read API and maps them into Sachima's already-validated refs-only
-read-models (``LiveProgressProjection`` / the combined live workbench view) plus a
-small stable smoke report. Nothing here launches a real AGENT / acpx / npx / npm
-process, opens a socket, starts a runtime / Temporal service, or touches a
-Gateway / Feishu / IM / delivery surface — the smoke only ever reads two files
-from a temp dir through the injected caller API.
+artifacts through the real default reader and maps them into Sachima's
+already-validated refs-only read-models (``LiveProgressProjection`` / the
+combined live workbench view) plus a small stable smoke report. Nothing here
+launches a real AGENT or child process, opens a socket, starts a runtime /
+Temporal service, or touches a Gateway / Feishu / IM / delivery surface — the
+smoke only ever reads two files from a temp dir.
+
+The **caller-API compatibility** framing is retired (ARS 0.7.6 plan §11, seams
+S-5/S-14). The producer's caller/read API was removed upstream at 0.7.x and the
+default reader became Sachima's own stdlib JSON/JSONL reader over the same
+artifact shapes, so there is no external API left to be compatible *with* — and
+no distribution left to gate on. The eight formerly ``@_requires_real_api``
+tests are re-anchored on that reader and now **run** instead of skipping
+forever: what they always really locked is the artifact-shape contract
+(available projection + combined view, ``has_more`` / ``next_cursor`` /
+``after_seq`` cursor alignment, nullable ``kind`` / ``status`` / ``text_length``
+normalization, legacy no-``seq`` 1-based line-cursor fallback, and corrupt
+fail-closed), and that contract still matters.
 
 Two families of test:
 
-* **Safety / import-absent tests (always run)** — driven with in-test fake
-  readers or a monkeypatched-absent library, they prove the smoke fails closed to
-  a stable ``live_progress_unavailable`` / ``live_progress_corrupt`` report /
-  projection with no raw import-error text, path, or ``summary`` free text in any
-  serialized surface, and that forged report objects fail closed.
-* **Real caller-API compatibility tests (skipped when the distribution is
-  absent)** — they write synthetic ``progress.json`` + ``normalized-events.jsonl``
-  to a temp dir and read them through the real caller API to lock Sachima's reader
-  contract (available projection + combined view, ``has_more`` / ``next_cursor`` /
-  ``after_seq`` cursor alignment, nullable ``kind`` / ``status`` / ``text_length``
-  normalization, legacy no-``seq`` 1-based line-cursor fallback, and corrupt
-  fail-closed) against the current agent-run-supervisor API. The real API comes
-  ONLY from the installed exact-pinned ``agent-run-supervisor`` distribution
-  (``uv sync --extra dev`` / ``--extra agent-run-supervisor``) — there is no
-  source-path fallback; unreleased ARS changes are validated by installing a
-  locally built wheel / editable package into an isolated environment. On a lean
-  environment without the extra these tests skip with a clear reason, and a
-  guard test turns "distribution installed but API not importable" into a hard
-  failure instead of a silent skip.
+* **Safety / absent-artifact tests** — driven with in-test fake readers or an
+  absent artifact dir, they prove the smoke fails closed to a stable
+  ``live_progress_unavailable`` / ``live_progress_corrupt`` report / projection
+  with no raw error text, path, or ``summary`` free text in any serialized
+  surface, and that forged report objects fail closed.
+* **Artifact-shape tests** — they write synthetic ``progress.json`` +
+  ``normalized-events.jsonl`` to a temp dir and read them through the real
+  default reader.
 
 Synthetic-artifact schema note (the single format assumption): the real caller
 API is outside this worktree's read sandbox, so the on-disk shapes below are built
@@ -49,7 +49,6 @@ forbidden-surface canaries only, never behavior.
 from __future__ import annotations
 
 import importlib
-import importlib.metadata
 import json
 import re
 from pathlib import Path
@@ -75,61 +74,18 @@ from sachima_supervisor.runtime_spine.agent_run_supervisor_port import (
 _SMOKE = "sachima_supervisor.runtime_spine.agent_run_supervisor_live_progress_smoke"
 _PROJECTION = "sachima_supervisor.runtime_spine.live_progress_projection"
 
-_ARS_DISTRIBUTION = "agent-run-supervisor"
-
 
 def _mod():
     return importlib.import_module(_SMOKE)
 
 
 # --------------------------------------------------------------------------- #
-# Real caller-API discovery — the installed distribution only, else skip.
-# --------------------------------------------------------------------------- #
-def _load_real_caller_api():
-    try:
-        return importlib.import_module("agent_run_supervisor.hermes_caller.events")
-    except Exception:
-        return None
-
-
-def _ars_distribution_installed() -> bool:
-    try:
-        importlib.metadata.version(_ARS_DISTRIBUTION)
-    except importlib.metadata.PackageNotFoundError:
-        return False
-    return True
-
-
-_REAL_CALLER_API = _load_real_caller_api()
-_requires_real_api = pytest.mark.skipif(
-    _REAL_CALLER_API is None,
-    reason=(
-        "agent_run_supervisor.hermes_caller.events not importable — install the "
-        "pinned distribution via `uv sync --extra dev` (or --extra "
-        "agent-run-supervisor); import-absent and safety tests still run"
-    ),
-)
-
-
-def test_real_caller_api_importable_when_distribution_installed():
-    """Distribution present ⇒ the caller API must import — never a silent skip.
-
-    With the ``agent-run-supervisor`` distribution installed (the CI dev
-    posture), a failure to import ``agent_run_supervisor.hermes_caller.events``
-    means the packaged module layout drifted; that must fail loudly here
-    instead of silently degrading the whole real-API family into skips.
-    """
-
-    if not _ars_distribution_installed():
-        pytest.skip(
-            "agent-run-supervisor distribution not installed — provision via "
-            "the dev / agent-run-supervisor extra"
-        )
-    assert _REAL_CALLER_API is not None, (
-        "agent-run-supervisor is installed but "
-        "agent_run_supervisor.hermes_caller.events failed to import — the "
-        "packaged caller API moved; fix the pin or the reader's lazy target"
-    )
+# The producer caller-API gate is retired with the seam it guarded (S-5/S-14).
+# ``test_real_caller_api_importable_when_distribution_installed`` went first
+# (plan P1-k): it asserted "distribution installed => the caller module must
+# import", a premise 0.7.x killed. The ``@_requires_real_api`` skip mark it
+# shared went with the rest of the seam here — a gate on a module that can
+# never exist again is a test that can never run again.
 
 
 # --------------------------------------------------------------------------- #
@@ -288,37 +244,34 @@ def test_smoke_symbols_available_from_runtime_spine_package():
 
 
 # --------------------------------------------------------------------------- #
-# B. Import-absent → unavailable projection / blocked report, no raw error text
+# B. Unreadable artifact → unavailable projection / blocked report, no raw path
 # --------------------------------------------------------------------------- #
-def _monkeypatch_absent_library(monkeypatch):
-    lpp = importlib.import_module(_PROJECTION)
-    real = lpp.importlib.import_module
+def _absent_artifact_dir(tmp_path):
+    """A private path with no artifact in it, carrying a leak canary."""
 
-    def _boom(name, *a, **k):
-        if name.startswith("agent_run_supervisor"):
-            raise ImportError("agent_run_supervisor absent on host: /home/user/secret")
-        return real(name, *a, **k)
-
-    monkeypatch.setattr(lpp.importlib, "import_module", _boom)
+    return str(tmp_path / "secret" / "run_absent")
 
 
-def test_import_absent_projection_is_unavailable(monkeypatch, tmp_path):
+def test_absent_artifact_projection_is_unavailable(tmp_path):
     m = _mod()
-    _monkeypatch_absent_library(monkeypatch)
-    # reader=None → the smoke wires the real DefaultLiveProgressReader, which now
-    # fails closed because the library import is forced absent.
-    proj = m.smoke_live_progress_projection(str(tmp_path), "artifact_local_0")
+    # reader=None → the smoke wires the real DefaultLiveProgressReader, which
+    # fails closed because there is no artifact to read.
+    artifact_dir = _absent_artifact_dir(tmp_path)
+    proj = m.smoke_live_progress_projection(artifact_dir, "artifact_local_0")
     assert proj.available is False
     assert proj.error_code == LIVE_PROGRESS_UNAVAILABLE
     assert proj.records == ()
     assert scan_for_leak(proj.as_dict()) is None
-    assert b"secret" not in serialize_live_progress_projection(proj)
+    # The private path handed to the reader never reaches the safe surface.
+    blob = serialize_live_progress_projection(proj)
+    assert b"secret" not in blob
+    assert artifact_dir.encode("utf-8") not in blob
 
 
-def test_import_absent_report_is_blocked_unavailable(monkeypatch, tmp_path):
+def test_absent_artifact_report_is_blocked_unavailable(tmp_path):
     m = _mod()
-    _monkeypatch_absent_library(monkeypatch)
-    report = m.smoke_live_progress_report(str(tmp_path), "artifact_local_0", task_id="task_alpha")
+    artifact_dir = _absent_artifact_dir(tmp_path)
+    report = m.smoke_live_progress_report(artifact_dir, "artifact_local_0", task_id="task_alpha")
     assert report.outcome == "unavailable"
     assert report.available is False
     assert report.error_code == LIVE_PROGRESS_UNAVAILABLE
@@ -327,20 +280,19 @@ def test_import_absent_report_is_blocked_unavailable(monkeypatch, tmp_path):
     assert report.observed_event_count == 0
     assert report.resume_cursor is None and report.has_more is False and report.stale is False
     assert scan_for_leak(report.as_dict()) is None
-    # The raw import-error text (incl. the path in it) never surfaces.
+    # The private artifact path never surfaces, in any form.
     blob = m.serialize_live_progress_smoke_report(report)
-    for marker in (b"secret", b"/home/", b"ImportError", b"absent on host"):
+    for marker in (b"secret", b"/home/", b"/tmp/", artifact_dir.encode("utf-8")):
         assert marker not in blob
 
 
-def test_smoke_module_default_reader_is_the_real_caller_seam():
+def test_smoke_module_default_reader_is_the_real_reader():
     m = _mod()
-    # With no injected reader the smoke must use the real lazy caller reader — never
-    # a fake — so a real-API run actually exercises agent_run_supervisor.
+    # With no injected reader the smoke must use the real DefaultLiveProgressReader
+    # — never a fake — so the artifact-shape tests exercise the real thing.
     proj = m.smoke_live_progress_projection("/tmp/does/not/matter", "artifact_local_0")
-    # Without the extra installed the lazy import fails closed; with the
-    # distribution installed the nonexistent dir carries no progress. Either
-    # way: a clean unavailable/corrupt projection, never a raise.
+    # A nonexistent dir carries no progress: a clean unavailable/corrupt
+    # projection, never a raise.
     assert proj.available is False
     assert proj.error_code in (LIVE_PROGRESS_UNAVAILABLE, LIVE_PROGRESS_CORRUPT)
 
@@ -555,10 +507,9 @@ def test_smoke_source_wires_no_real_runtime_or_delivery():
 
 
 # --------------------------------------------------------------------------- #
-# G. Real caller-API compatibility smoke (skipped when the library is absent)
+# G. Artifact-shape smoke over the real default reader (always runs)
 # --------------------------------------------------------------------------- #
-@_requires_real_api
-def test_real_api_happy_path_projection_available(tmp_path):
+def test_stdlib_reader_happy_path_projection_available(tmp_path):
     m = _mod()
     _write_progress(tmp_path, state="running", last_seq=3, event_count=3)
     _write_events(
@@ -579,8 +530,7 @@ def test_real_api_happy_path_projection_available(tmp_path):
     assert scan_for_leak(proj.as_dict()) is None
 
 
-@_requires_real_api
-def test_real_api_cursor_alignment(tmp_path):
+def test_stdlib_reader_cursor_alignment(tmp_path):
     m = _mod()
     _write_progress(tmp_path, last_seq=5, event_count=5)
     _write_events(tmp_path, [_event(seq=i, event_family="tool", kind="call", status="running", text_length=i) for i in range(1, 6)])
@@ -595,8 +545,7 @@ def test_real_api_cursor_alignment(tmp_path):
     assert page2.resume_cursor == 4 and page2.has_more is True
 
 
-@_requires_real_api
-def test_real_api_nullable_fields_normalize(tmp_path):
+def test_stdlib_reader_nullable_fields_normalize(tmp_path):
     m = _mod()
     _write_progress(tmp_path, last_seq=2, event_count=2)
     _write_events(
@@ -618,8 +567,7 @@ def test_real_api_nullable_fields_normalize(tmp_path):
     assert b"None" not in blob and b"summary" not in blob
 
 
-@_requires_real_api
-def test_real_api_legacy_no_seq_line_cursor_fallback(tmp_path):
+def test_stdlib_reader_legacy_no_seq_line_cursor_fallback(tmp_path):
     m = _mod()
     _write_progress(tmp_path, last_seq=3, event_count=3)
     # No ``seq`` field → the caller API falls back to a 1-based line cursor.
@@ -641,8 +589,7 @@ def test_real_api_legacy_no_seq_line_cursor_fallback(tmp_path):
     assert all(s > 1 for s in [r.seq for r in resumed.records])
 
 
-@_requires_real_api
-def test_real_api_corrupt_progress_fails_closed(tmp_path):
+def test_stdlib_reader_corrupt_progress_fails_closed(tmp_path):
     m = _mod()
     # A non-integer where the caller API expects an int → ValueError on load.
     _write_progress_raw(
@@ -663,8 +610,7 @@ def test_real_api_corrupt_progress_fails_closed(tmp_path):
     assert b"not-an-int" not in m.serialize_live_progress_smoke_report(report)
 
 
-@_requires_real_api
-def test_real_api_corrupt_event_fails_closed(tmp_path):
+def test_stdlib_reader_corrupt_event_fails_closed(tmp_path):
     m = _mod()
     _write_progress(tmp_path, last_seq=2, event_count=2)
     # Second event carries a present-but-invalid text_length (negative): the caller
@@ -684,8 +630,7 @@ def test_real_api_corrupt_event_fails_closed(tmp_path):
     assert proj.records == ()
 
 
-@_requires_real_api
-def test_real_api_combined_workbench_view_available(tmp_path):
+def test_stdlib_reader_combined_workbench_view_available(tmp_path):
     m = _mod()
     reg, port, ref = _running_port()
     _write_progress(tmp_path, last_seq=2, event_count=2)
@@ -707,8 +652,7 @@ def test_real_api_combined_workbench_view_available(tmp_path):
     assert scan_for_leak(data) is None
 
 
-@_requires_real_api
-def test_real_api_report_available_over_synthetic_dir(tmp_path):
+def test_stdlib_reader_report_available_over_synthetic_dir(tmp_path):
     m = _mod()
     _write_progress(tmp_path, last_seq=1, event_count=1)
     _write_events(tmp_path, [_event(seq=1, event_family="tool", kind="call", status="running", text_length=0)])

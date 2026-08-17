@@ -5,18 +5,20 @@ This module is the local/offline **binding seam** between a locally tracked
 progress from. It resolves a ``(task_id, session_id)`` / :class:`SessionRef`
 identity to three things:
 
-* a **private** ``artifact_dir`` (a real filesystem path) that is reader-only —
-  it is passed to the injected live-progress reader only and is **never**
-  serialized, logged, or scanned into any public projection / source output;
+* a **tagged private locator** that is reader-only — under the default
+  ``artifact_file`` kind it is an ``artifact_dir`` (a real filesystem path);
+  under ``arsd_run`` it is a private ``run_id``. It is passed to the injected
+  live-progress reader only and is **never** serialized, logged, or scanned
+  into any public projection / source output;
 * a **safe** ``artifact_ref`` (a bounded public handle, never a path); and
 * a foreign ``last_seen_cursor`` — an agent-run-supervisor live-progress
   read-model cursor. Sachima's ``TaskEventLog`` stays the sole per-``task_id``
   seq authority; this cursor is surfaced/stored but is never appended to it.
 
 The public :class:`LiveProgressSource` value object carries only the safe metadata
-(``type`` / ``task_id`` / ``session_id`` / ``artifact_ref`` / ``last_seen_cursor``);
-it has no ``artifact_dir`` field, so it structurally cannot serialize the private
-path. The host-owned :class:`LiveProgressSourceBindings` store holds the private
+(``type`` / ``task_id`` / ``session_id`` / ``artifact_ref`` / ``last_seen_cursor``
+/ ``source_kind``); it has no locator field, so it structurally cannot serialize
+the private path or a raw ``run_id``. The host-owned :class:`LiveProgressSourceBindings` store holds the private
 ``artifact_dir`` alongside the safe source, hands the real path only to the
 builder's reader, and returns only the safe metadata to any serialization path.
 
@@ -48,6 +50,10 @@ from .events import SpineError, _safe_id, safe_task_id, scan_for_leak
 from .execution_port import LivenessState, SessionRef, validate_session_ref
 from .live_progress_projection import LiveProgressReader
 from .registry import TaskRegistry
+from .supervisor_turn_backend import (
+    SOURCE_KIND_ARTIFACT_FILE,
+    SUPERVISOR_SOURCE_KINDS,
+)
 
 # --------------------------------------------------------------------------- #
 # Stable code (module-local; the message IS the code, never raw input)
@@ -93,15 +99,24 @@ def _safe_cursor(value: Any) -> int | None:
 
 
 def _safe_private_dir(value: Any) -> str:
-    """Validate the PRIVATE reader-only ``artifact_dir``.
+    """Validate the PRIVATE reader-only locator.
 
-    Rejected on: a non-string or an empty string. A private path is legitimately
-    allowed to carry filesystem material — that is exactly why it is kept out of
+    Rejected on: a non-string or an empty string. A private locator is
+    legitimately allowed to carry filesystem material (an ``artifact_dir``) or a
+    raw id (an ``arsd_run`` ``run_id``) — that is exactly why it is kept out of
     the serializable :class:`LiveProgressSource` and is only ever handed to the
     injected reader; it is never run through the no-leak scan or serialized.
     """
 
     if type(value) is not str or value == "":
+        _invalid()
+    return value
+
+
+def _safe_source_kind(value: Any) -> str:
+    """Validate the closed read-model source tag (``artifact_file``/``arsd_run``)."""
+
+    if type(value) is not str or value not in SUPERVISOR_SOURCE_KINDS:
         _invalid()
     return value
 
@@ -116,6 +131,7 @@ def _raw_source_dict(source: Any) -> dict[str, Any]:
         "session_id": source.session_id,
         "artifact_ref": source.artifact_ref,
         "last_seen_cursor": source.last_seen_cursor,
+        "source_kind": source.source_kind,
     }
 
 
@@ -134,6 +150,7 @@ def _check_live_progress_source_fields(source: Any) -> None:
         session_id = source.session_id
         artifact_ref = source.artifact_ref
         last_seen_cursor = source.last_seen_cursor
+        source_kind = source.source_kind
     except AttributeError:
         _invalid()
 
@@ -143,6 +160,7 @@ def _check_live_progress_source_fields(source: Any) -> None:
     _safe_session_id(session_id)
     _safe_artifact_ref(artifact_ref)
     _safe_cursor(last_seen_cursor)
+    _safe_source_kind(source_kind)
 
     if scan_for_leak(_raw_source_dict(source)) is not None:
         _invalid()
@@ -152,12 +170,13 @@ def _check_live_progress_source_fields(source: Any) -> None:
 class LiveProgressSource:
     """Frozen, refs-only, serializable source metadata for one bound session.
 
-    Carries only the safe public signal — identity plus the safe ``artifact_ref``
-    handle and the foreign ``last_seen_cursor``. It has **no** ``artifact_dir``
-    field, so it structurally cannot serialize the private reader path.
-    ``__post_init__`` re-runs the full allowlist so a directly-constructed or forged
-    source fails closed, and ``as_dict`` / ``serialize_...`` re-validate before
-    emitting.
+    Carries only the safe public signal — identity plus the ``source_kind`` tag,
+    the safe ``artifact_ref`` handle (an ``artifact_``/``turn_`` handle under
+    ``artifact_file``, a ``run_`` handle under ``arsd_run``), and the foreign
+    ``last_seen_cursor``. It has **no** locator field, so it structurally cannot
+    serialize the private reader path or a raw ``run_id``. ``__post_init__``
+    re-runs the full allowlist so a directly-constructed or forged source fails
+    closed, and ``as_dict`` / ``serialize_...`` re-validate before emitting.
     """
 
     type: str
@@ -165,6 +184,7 @@ class LiveProgressSource:
     session_id: str
     artifact_ref: str
     last_seen_cursor: int | None
+    source_kind: str = SOURCE_KIND_ARTIFACT_FILE
 
     def __post_init__(self) -> None:
         _check_live_progress_source_fields(self)
@@ -177,6 +197,7 @@ class LiveProgressSource:
             "session_id": self.session_id,
             "artifact_ref": self.artifact_ref,
             "last_seen_cursor": self.last_seen_cursor,
+            "source_kind": self.source_kind,
         }
 
 
@@ -197,8 +218,8 @@ def validate_live_progress_source(source: Any) -> LiveProgressSource:
 def serialize_live_progress_source(source: LiveProgressSource) -> bytes:
     """Byte-stable canonical JSON serialization after full re-validation.
 
-    Only the safe metadata is serialized; the private ``artifact_dir`` is not a
-    field of :class:`LiveProgressSource` and cannot appear here.
+    Only the safe metadata is serialized; the private locator is not a field of
+    :class:`LiveProgressSource` and cannot appear here.
     """
 
     validated = validate_live_progress_source(source)
@@ -211,12 +232,14 @@ def serialize_live_progress_source(source: LiveProgressSource) -> bytes:
 @dataclass(frozen=True, repr=False)
 class ResolvedLiveProgressSource:
     """Host-owned handoff carrying the safe :class:`LiveProgressSource` plus the
-    PRIVATE ``artifact_dir``.
+    PRIVATE locator its ``source.source_kind`` tags.
 
-    The ``artifact_dir`` is a real reader-only path: it is meant only to be passed
-    to the live-progress reader by the builder. This holder deliberately exposes no
-    ``as_dict`` / ``serialize`` surface and opts out of dataclass ``repr`` so the
-    private path cannot leak through routine object logging. Serialize ``.source``
+    Under the default ``artifact_file`` kind the locator is a real reader-only
+    path — hence the field name — and under ``arsd_run`` it is a private
+    ``run_id``; either way it is meant only to be passed to the live-progress
+    reader by the builder. This holder deliberately exposes no ``as_dict`` /
+    ``serialize`` surface and opts out of dataclass ``repr`` so the private
+    locator cannot leak through routine object logging. Serialize ``.source``
     when a public handle is needed.
     """
 
@@ -250,8 +273,8 @@ def _coerce_key(ref: Any, session_id: Any) -> tuple[str, str]:
 class LiveProgressSourceBindings:
     """In-memory, lock-guarded, host-owned map of session identity → source binding.
 
-    Each binding stores the PRIVATE reader-only ``artifact_dir`` next to the safe
-    :class:`LiveProgressSource`. ``resolve`` hands the private path to the builder
+    Each binding stores the PRIVATE reader-only locator next to the safe
+    :class:`LiveProgressSource`. ``resolve`` hands the private locator to the builder
     via a :class:`ResolvedLiveProgressSource`; ``resolve_source`` returns only the
     serializable safe metadata. The store owns its state (``_bindings`` / ``_lock``
     are ``init=False``), so the only construction is zero-arg
@@ -275,34 +298,63 @@ class LiveProgressSourceBindings:
         *,
         last_seen_cursor: int | None = None,
     ) -> LiveProgressSource:
-        """Bind (upsert) a session identity to its private dir + safe source.
+        """Bind (upsert) a session identity to a private ``artifact_dir`` + safe source.
 
-        Validates every field, rejecting a raw/leaky id/ref or an empty/unsafe
-        private ``artifact_dir`` before storing. Returns the safe
-        :class:`LiveProgressSource`; the private ``artifact_dir`` is held internally
-        and never returned by any serialization path.
+        The ``artifact_file`` special case of :meth:`bind_source`, kept as the
+        name every offline/artifact caller already uses.
+        """
+
+        return self.bind_source(
+            task_id,
+            session_id,
+            SOURCE_KIND_ARTIFACT_FILE,
+            artifact_dir,
+            artifact_ref,
+            last_seen_cursor=last_seen_cursor,
+        )
+
+    def bind_source(
+        self,
+        task_id: str,
+        session_id: str,
+        source_kind: str,
+        private_locator: str,
+        artifact_ref: str,
+        *,
+        last_seen_cursor: int | None = None,
+    ) -> LiveProgressSource:
+        """Bind (upsert) a session identity to a tagged private locator + safe source.
+
+        ``source_kind`` tags what the locator is: an ``artifact_dir`` under
+        ``artifact_file``, a private ``run_id`` under ``arsd_run``. Validates
+        every field, rejecting an unknown tag, a raw/leaky id/ref, or an
+        empty/unsafe private locator before storing. Returns the safe
+        :class:`LiveProgressSource`; the locator is held internally and never
+        returned by any serialization path.
         """
 
         safe_task = _safe_source_task_id(task_id)
         safe_session = _safe_session_id(session_id)
-        safe_dir = _safe_private_dir(artifact_dir)
+        safe_kind = _safe_source_kind(source_kind)
+        safe_locator = _safe_private_dir(private_locator)
         source = LiveProgressSource(
             type=LIVE_PROGRESS_SOURCE_TYPE,
             task_id=safe_task,
             session_id=safe_session,
             artifact_ref=_safe_artifact_ref(artifact_ref),
             last_seen_cursor=_safe_cursor(last_seen_cursor),
+            source_kind=safe_kind,
         )
         with self._lock:
             self._bindings[(safe_task, safe_session)] = ResolvedLiveProgressSource(
-                source=validate_live_progress_source(source), artifact_dir=safe_dir
+                source=validate_live_progress_source(source), artifact_dir=safe_locator
             )
         return source
 
     def resolve(self, ref: Any, session_id: Any = None) -> ResolvedLiveProgressSource:
         """Resolve a :class:`SessionRef` / ``(task_id, session_id)`` to its binding.
 
-        Returns the private handoff (safe source + reader-only ``artifact_dir``). A
+        Returns the private handoff (safe source + reader-only locator). A
         missing / forged / mismatched key fails closed with the stable
         ``runtime_invalid_live_progress_source`` code and never echoes the key.
         """
@@ -312,7 +364,7 @@ class LiveProgressSourceBindings:
             resolved = self._bindings.get(key)
         if resolved is None:
             _invalid()
-        # Re-validate the safe half at the boundary; the private dir stays private.
+        # Re-validate the safe half at the boundary; the locator stays private.
         validate_live_progress_source(resolved.source)
         return resolved
 
@@ -346,6 +398,7 @@ class LiveProgressSourceBindings:
                 session_id=prior.session_id,
                 artifact_ref=prior.artifact_ref,
                 last_seen_cursor=safe_cursor,
+                source_kind=prior.source_kind,
             )
             self._bindings[key] = ResolvedLiveProgressSource(
                 source=updated, artifact_dir=resolved.artifact_dir

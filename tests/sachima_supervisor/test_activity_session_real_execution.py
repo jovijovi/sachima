@@ -2,15 +2,16 @@
 
 These exercise the Sachima-owned local/offline bridge that wires the Phase E
 state machine (``create_session`` / ``send_session_turn`` / ``close_session``)
-to a real ``agent_run_supervisor.session_runtime.SessionRuntime`` — while
-keeping the committed source default-off, fail-closed, CI-safe, and free of any
-``agent_run_supervisor`` import at module-import time.
+to an injected persistent-session runtime backend — while keeping the committed
+source default-off, fail-closed, CI-safe, and free of any producer import.
 
-Every runtime touch in these tests goes through an *injected fake backend*; the
-real backend (which lazily imports ``agent_run_supervisor``) is never loaded
-here, proving the module imports and validates safely without the external
-package installed. A separate, explicitly provisioned real smoke (run by the
-operator) exercises the default backend.
+The in-tree default backend, and the goal-turn composition that delegated to
+the producer's goal compiler, are **retired** (ARS 0.7.6 plan §11, seam S-2):
+the modules they called were removed upstream at 0.7.x. What is proven here is
+that the bridge is fake/offline-only — every runtime touch goes through an
+*injected* backend, and asking for the retired default or a composed goal turn
+fails closed with a stable code instead of degrading to a launcher or emulating
+a compiler.
 """
 
 from __future__ import annotations
@@ -52,7 +53,6 @@ from sachima_supervisor.activity_session_lifecycle import (
     send_session_turn,
 )
 from sachima_supervisor.activity_session_real_execution import (
-    _AgentRunSupervisorBackend,
     PHASE_E2_REAL_SESSION_APPROVAL_TOKEN,
     RealPersistentSessionConfig,
     RealSessionExecutionError,
@@ -949,55 +949,24 @@ def test_completed_turn_with_unknown_observed_effect_stays_compatible(
 
 
 # --------------------------------------------------------------------------- #
-# Goal-turn composition (delegates to agent_run_supervisor.goal when shipped)
+# Goal-turn composition — retired (seam S-2)
 # --------------------------------------------------------------------------- #
-def test_compose_goal_turn_prompt_fails_closed_without_goal_module(monkeypatch) -> None:
-    # Deterministically simulate a pre-0.1.4 library (no goal module):
-    # composing a goal turn must fail closed with a stable code, never send
-    # unvalidated text.
-    monkeypatch.setitem(sys.modules, "agent_run_supervisor.goal", None)
+def test_compose_goal_turn_prompt_is_retired_and_fails_closed() -> None:
+    """No compiler, no template, no unvalidated ``/goal`` text.
+
+    It delegated to the producer's role-aware goal compiler, which 0.7.x
+    removed. Composing the contract text locally would send something a
+    non-native adapter silently no-ops, so the seam refuses with the stable
+    code it always used for "no compiler available".
+    """
 
     with pytest.raises(RealSessionExecutionError) as excinfo:
         compose_goal_turn_prompt("ship the report")
-
     assert excinfo.value.error_code == "activity_goal_unsupported"
+    # It composed nothing on the way out: no template text is returned anywhere.
+    assert "/goal" not in str(excinfo.value)
 
 
-def test_compose_goal_turn_prompt_delegates_to_goal_module(monkeypatch) -> None:
-    stub = types.ModuleType("agent_run_supervisor.goal")
-
-    class _StubGoalError(ValueError):
-        pass
-
-    def _compose(text: str) -> str:
-        if text.startswith("/"):
-            raise _StubGoalError("nested slash command")
-        return "/goal " + text.strip()
-
-    stub.GoalPromptError = _StubGoalError
-    stub.compose_goal_prompt = _compose
-    monkeypatch.setitem(sys.modules, "agent_run_supervisor.goal", stub)
-
-    assert compose_goal_turn_prompt("ship the report") == "/goal ship the report"
-
-
-def test_compose_goal_turn_prompt_maps_rejection_to_stable_code(monkeypatch) -> None:
-    stub = types.ModuleType("agent_run_supervisor.goal")
-
-    class _StubGoalError(ValueError):
-        pass
-
-    def _compose(text: str) -> str:
-        raise _StubGoalError("rejected")
-
-    stub.GoalPromptError = _StubGoalError
-    stub.compose_goal_prompt = _compose
-    monkeypatch.setitem(sys.modules, "agent_run_supervisor.goal", stub)
-
-    with pytest.raises(RealSessionExecutionError) as excinfo:
-        compose_goal_turn_prompt("/clear")
-
-    assert excinfo.value.error_code == "activity_goal_rejected"
 
 
 def test_replay_does_not_create_extra_runtime_calls(tmp_path: Path) -> None:
@@ -1064,340 +1033,12 @@ def test_public_function_signatures() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Smoke-script wiring (deterministic, fake backend; no acpx required)
+# Smoke-script wiring — the Phase E-2 smoke script is retired (seam S-6)
 # --------------------------------------------------------------------------- #
-def _load_smoke_module() -> Any:
-    import importlib.util
+def test_the_phase_e2_persistent_session_smoke_script_is_retired() -> None:
+    """It drove the removed session runtime; it is deleted, not re-pointed."""
 
-    path = REPO_ROOT / "scripts" / "sachima_phase_e2_persistent_session_smoke.py"
-    spec = importlib.util.spec_from_file_location("e2_smoke_under_test", path)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-def test_smoke_run_lifecycle_with_fake_backend(tmp_path: Path) -> None:
-    smoke = _load_smoke_module()
-    backend = FakeBackend(artifact_count=1)
-    config = _config(tmp_path)
-
-    lifecycle = smoke.run_lifecycle(config=config, backend=backend)
-    pipeline = lifecycle["execution_pipeline"]
-    assert pipeline["create"]["lifecycle_state"] == "session_open"
-    assert pipeline["turn"]["status"] == "completed"
-    assert pipeline["turn"]["final_message_persisted"] is False
-    assert pipeline["close"]["lifecycle_state"] == "session_closed"
-    assert lifecycle["business_task"] == {"business_verdict": None, "cancellation_executed": False}
-
-    store = lifecycle["_store"]
-    verify = smoke.post_verify(store=store, config=config, mode="self_test")
-    smoke.assert_post_verify(verify, mode="self_test")
-    assert verify["closed"] is True
-    assert verify["turn_count_state_machine"] == 1
-    assert verify["npx_in_runner"] is False
-    assert backend.create_calls == 1
-    assert backend.send_calls == 1
-    assert backend.close_calls == 1
-
-
-def test_smoke_real_post_verify_requires_business_marker(tmp_path: Path) -> None:
-    smoke = _load_smoke_module()
-    config = _config(tmp_path)
-    backend = FakeBackend(artifact_count=1)
-
-    assert config.runtime_session_id is not None
-    assert config.sessions_dir is not None
-    lifecycle = smoke.run_lifecycle(config=config, backend=backend)
-    store = lifecycle["_store"]
-
-    turn_dir = Path(config.sessions_dir) / config.runtime_session_id / "turns" / "turn_001"
-    turn_dir.mkdir(parents=True)
-    session_json = Path(config.sessions_dir) / config.runtime_session_id / "session.json"
-    session_json.parent.mkdir(parents=True, exist_ok=True)
-    session_json.write_text(
-        json.dumps({"state": "closed", "acpx_version": "0.12.0", "adapter_agent": "codex", "role_id": "sachima.session_worker.persistent"}),
-        encoding="utf-8",
-    )
-    (turn_dir / "result.json").write_text(
-        json.dumps({"final_message": smoke.TURN_MARKER}), encoding="utf-8"
-    )
-
-    verify = smoke.post_verify(store=store, config=config, mode="real")
-    smoke.assert_post_verify(verify, mode="real")
-    assert verify["business_marker_checked"] is True
-    assert verify["business_marker_matches"] is True
-
-
-def test_smoke_real_post_verify_rejects_wrong_business_marker(tmp_path: Path) -> None:
-    smoke = _load_smoke_module()
-    config = _config(tmp_path)
-    backend = FakeBackend(artifact_count=1)
-
-    assert config.runtime_session_id is not None
-    assert config.sessions_dir is not None
-    lifecycle = smoke.run_lifecycle(config=config, backend=backend)
-    store = lifecycle["_store"]
-
-    turn_dir = Path(config.sessions_dir) / config.runtime_session_id / "turns" / "turn_001"
-    turn_dir.mkdir(parents=True)
-    session_json = Path(config.sessions_dir) / config.runtime_session_id / "session.json"
-    session_json.parent.mkdir(parents=True, exist_ok=True)
-    session_json.write_text(
-        json.dumps({"state": "closed", "acpx_version": "0.12.0", "adapter_agent": "codex", "role_id": "sachima.session_worker.persistent"}),
-        encoding="utf-8",
-    )
-    (turn_dir / "result.json").write_text(
-        json.dumps({"final_message": "WRONG_MARKER"}), encoding="utf-8"
-    )
-
-    verify = smoke.post_verify(store=store, config=config, mode="real")
-    with pytest.raises(smoke.SmokeError, match="final_message did not match"):
-        smoke.assert_post_verify(verify, mode="real")
-
-
-# --------------------------------------------------------------------------- #
-# WP2: bounded multi-turn session
-# --------------------------------------------------------------------------- #
-def test_smoke_multi_turn_lifecycle_with_fake_backend(tmp_path: Path) -> None:
-    """WP2: run_lifecycle accepts turn_prompts and drives N turns in one session."""
-    smoke = _load_smoke_module()
-    backend = FakeBackend(artifact_count=1)
-    config = _config(tmp_path)
-
-    # Desired WP2 API: turn_prompts drives multiple turns within a single session.
-    lifecycle = smoke.run_lifecycle(
-        config=config,
-        backend=backend,
-        turn_prompts=("turn1", "turn2"),
-    )
-
-    assert lifecycle.get("turn_count") == 2
-    # One session created, two turns sent — no second session opened.
-    assert backend.create_calls == 1
-    assert backend.send_calls == 2
-
-
-def test_smoke_post_verify_reports_multi_turn(tmp_path: Path) -> None:
-    """WP2: post_verify and assert_post_verify accept and validate N-turn sessions."""
-    smoke = _load_smoke_module()
-    backend = FakeBackend(artifact_count=1)
-    config = _config(tmp_path)
-
-    # Build a 2-turn session manually through the state machine.
-    store = SessionLifecycleStore()
-    store.grant_lease(
-        activity_id=smoke.ACTIVITY_ID,
-        lease_id=smoke.LEASE_ID,
-        lease_epoch=1,
-        lease_holder_ref=smoke.LEASE_HOLDER,
-        state_version=0,
-    )
-
-    create_res = create_session(
-        SessionCreateRequest(
-            activity_id=smoke.ACTIVITY_ID,
-            transaction_ref=smoke.TXN_REF,
-            operation_ref=smoke.OP_REF,
-            session_id=smoke.SESSION_REF,
-            idempotency_key="idem_wp2_pv_create",
-            role_key=ROLE_KEY,
-            approval_token=SESSION_LIFECYCLE_APPROVAL_TOKEN,
-            enabled=True,
-            role_file_digest=config.expected_role_digest,
-            prompt_ref="claim_prompt_wp2_pv_create",
-            context_refs=("claim_context_wp2_pv",),
-            cwd_ref="workspace_ref_phase_e2_smoke",
-            allowed_roots_ref="allowed_roots_ref_phase_e2_smoke",
-            lease_id=smoke.LEASE_ID,
-            lease_epoch=1,
-            lease_holder_ref=smoke.LEASE_HOLDER,
-            expected_state_version=0,
-            operator_gate=True,
-            max_turns=4,
-            max_artifacts_per_turn=8,
-        ),
-        store=store,
-        open_session=bind_open_session(config, backend=backend),
-    )
-    assert create_res.ok
-    binding = create_res.session_binding
-
-    for i, prompt in enumerate(("wp2-turn1", "wp2-turn2"), start=1):
-        turn_res = send_session_turn(
-            SessionSendRequest(
-                activity_id=smoke.ACTIVITY_ID,
-                session_id=smoke.SESSION_REF,
-                transaction_ref=smoke.TXN_REF,
-                operation_ref=smoke.OP_REF,
-                idempotency_key=f"idem_wp2_pv_send_{i:03d}",
-                approval_token=SESSION_LIFECYCLE_APPROVAL_TOKEN,
-                enabled=True,
-                session_binding=binding,
-                prompt_ref=f"claim_prompt_wp2_pv_send_{i:03d}",
-                context_refs=(f"claim_context_wp2_pv_send_{i:03d}",),
-                lease_id=smoke.LEASE_ID,
-                lease_epoch=1,
-                lease_holder_ref=smoke.LEASE_HOLDER,
-                expected_state_version=i,
-                operator_gate=True,
-            ),
-            store=store,
-            run_turn=bind_run_turn(config, prompt, backend=backend),
-        )
-        assert turn_res.ok, f"turn {i} failed: {turn_res.status}"
-
-    close_res = close_session(
-        SessionCloseRequest(
-            activity_id=smoke.ACTIVITY_ID,
-            session_id=smoke.SESSION_REF,
-            transaction_ref=smoke.TXN_REF,
-            operation_ref=smoke.OP_REF,
-            idempotency_key="idem_wp2_pv_close",
-            approval_token=SESSION_LIFECYCLE_APPROVAL_TOKEN,
-            enabled=True,
-            session_binding=binding,
-            lease_id=smoke.LEASE_ID,
-            lease_epoch=1,
-            lease_holder_ref=smoke.LEASE_HOLDER,
-            expected_state_version=3,
-            operator_gate=True,
-        ),
-        store=store,
-        apply_close=bind_close_session(config, backend=backend),
-    )
-    assert close_res.ok
-
-    verify = smoke.post_verify(store=store, config=config, mode="self_test")
-    assert verify["turn_count_state_machine"] == 2
-
-    smoke.assert_post_verify(verify, mode="self_test")
-
-
-def test_smoke_empty_turn_prompts_rejected_before_runtime_session(tmp_path: Path) -> None:
-    """WP2: run_lifecycle(turn_prompts=()) raises SmokeError before any backend call."""
-    smoke = _load_smoke_module()
-    backend = ExplodingBackend()  # any backend touch is a test failure
-    config = _config(tmp_path)
-
-    with pytest.raises(smoke.SmokeError, match=r"(?i)(at least 1 turn|turn_prompts)"):
-        smoke.run_lifecycle(config=config, backend=backend, turn_prompts=())
-
-
-def test_smoke_real_post_verify_n_turn_checks_all_results(tmp_path: Path) -> None:
-    """WP2: post_verify real-mode checks business_marker across all N turn result files."""
-    smoke = _load_smoke_module()
-    config = _config(tmp_path)
-    backend = FakeBackend(artifact_count=1)
-
-    lifecycle = smoke.run_lifecycle(config=config, backend=backend, turn_prompts=("turn1", "turn2"))
-
-    sessions_root = Path(config.sessions_dir)
-    session_dir = sessions_root / config.runtime_session_id
-    session_dir.mkdir(parents=True, exist_ok=True)
-    (session_dir / "session.json").write_text(
-        json.dumps({"state": "closed"}), encoding="utf-8"
-    )
-    for turn_name in ("turn_001", "turn_002"):
-        turn_dir = session_dir / "turns" / turn_name
-        turn_dir.mkdir(parents=True)
-        (turn_dir / "result.json").write_text(
-            json.dumps({"final_message": smoke.TURN_MARKER}), encoding="utf-8"
-        )
-
-    verify = smoke.post_verify(store=lifecycle["_store"], config=config, mode="real")
-
-    assert verify["supervisor_turn_count"] == 2
-    assert verify["business_marker_checked"] is True
-    assert verify["business_marker_matches"] is True
-    smoke.assert_post_verify(verify, mode="real")
-
-
-def test_wp2_cli_turn_count_flag(tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
-    """WP2 CLI: --turn-count 2 drives two turns through the bounded smoke CLI."""
-    smoke = _load_smoke_module()
-
-    exit_code = smoke.main([
-        "--self-test",
-        "--sessions-dir", str(tmp_path / "sessions"),
-        "--evidence-dir", str(tmp_path / "evidence"),
-        "--work-dir", str(tmp_path / "work"),
-        "--allow-repo-paths",
-        "--turn-count", "2",
-    ])
-
-    captured = capsys.readouterr()
-    summary = json.loads(captured.out)
-    assert exit_code == 0
-    assert summary["turn_count"] == 2
-    assert summary["post_verify"]["turn_count_state_machine"] == 2
-    assert summary["execution_pipeline"]["close"]["lifecycle_state"] == "session_closed"
-
-
-def test_wp3b_cli_cancel_during_turn_self_test(tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
-    """WP3b CLI: --cancel-during-turn exercises bounded cancellation wiring in self-test mode."""
-    smoke = _load_smoke_module()
-
-    exit_code = smoke.main([
-        "--self-test",
-        "--sessions-dir", str(tmp_path / "sessions"),
-        "--evidence-dir", str(tmp_path / "evidence"),
-        "--work-dir", str(tmp_path / "work"),
-        "--allow-repo-paths",
-        "--cancel-during-turn",
-    ])
-
-    captured = capsys.readouterr()
-    summary = json.loads(captured.out)
-    assert exit_code == 0
-    assert summary["cancel_during_turn"] is True
-    assert summary["execution_pipeline"]["cancel_request"]["status"] == "cancel_requested"
-    assert summary["execution_pipeline"]["interrupt"]["status"] == "cancelled"
-    assert summary["execution_pipeline"]["turn"]["status"] != "completed"
-    assert summary["execution_pipeline"]["turn"]["interrupted_observed"] is True
-    assert summary["business_task"]["cancellation_executed"] is True
-    assert summary["business_task"]["cleanup_verified"] is True
-    assert summary["business_task"]["backend_abort_calls"] == 1
-    assert summary["business_task"]["backend_released_turn"] is True
-    assert summary["execution_pipeline"]["close"]["lifecycle_state"] == "session_closed"
-
-
-def test_wp3b_cancel_during_turn_summary_must_prove_interruption() -> None:
-    smoke = _load_smoke_module()
-    lifecycle = {
-        "execution_pipeline": {
-            "turn": {"status": "completed", "interrupted_observed": False},
-        },
-        "business_task": {
-            "cancellation_executed": False,
-            "backend_abort_calls": 1,
-            "backend_released_turn": True,
-        },
-    }
-
-    with pytest.raises(smoke.SmokeError):
-        smoke.assert_cancel_during_turn_observed(lifecycle)
-
-
-def test_wp3b_cli_cancel_during_turn_real_mode_is_not_claimed(
-    tmp_path: Path, capsys: pytest.CaptureFixture
-) -> None:
-    """WP3b CLI: real acpx cancel smoke is fail-closed until host/ACP semantics are proven."""
-    smoke = _load_smoke_module()
-
-    exit_code = smoke.main([
-        "--sessions-dir", str(tmp_path / "sessions"),
-        "--evidence-dir", str(tmp_path / "evidence"),
-        "--work-dir", str(tmp_path / "work"),
-        "--allow-repo-paths",
-        "--cancel-during-turn",
-    ])
-
-    captured = capsys.readouterr()
-    summary = json.loads(captured.out)
-    assert exit_code == 2
-    assert summary["ok"] is False
-    assert "self-test only" in summary["skipped"]
+    assert not (REPO_ROOT / "scripts" / "sachima_phase_e2_persistent_session_smoke.py").exists()
 
 
 # --------------------------------------------------------------------------- #
@@ -1438,33 +1079,28 @@ def test_wp3b_bind_real_cancellation_is_exported() -> None:
     assert "config" in params, f"bind_real_cancellation must accept 'config'; got {params}"
 
 
-def test_wp3b_default_backend_abort_uses_session_runtime_cancelled_flag(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_the_default_runtime_backend_is_retired_and_must_be_injected(
+    tmp_path: Path,
 ) -> None:
-    """Default backend maps SessionRuntime.abort(...).cancelled, not a nonexistent record.state."""
-    config = _config(tmp_path)
-    resolved = validate_real_session_config(config)
-    backend = _AgentRunSupervisorBackend()
-    calls: list[dict[str, Any]] = []
+    """No default backend, and no stub standing in for one (seam S-2).
 
-    class RuntimeWithAbort:
-        def abort(self, **kwargs: Any) -> Any:
-            calls.append(kwargs)
-            return _FakeAbortResult(cancelled=True)
+    The default drove the removed session runtime. Rather than emulate it or
+    return something whose failures would surface later and elsewhere, the
+    bridge refuses at the boundary — so a caller learns it must inject a
+    backend before anything is attempted.
+    """
 
-    monkeypatch.setattr(
-        backend,
-        "_runtime_and_role",
-        lambda _resolved_config: (RuntimeWithAbort(), object()),
-    )
+    import sachima_supervisor.activity_session_real_execution as _m
 
-    result = backend.abort(resolved)
+    assert not hasattr(_m, "_AgentRunSupervisorBackend")
+    with pytest.raises(RealSessionExecutionError) as excinfo:
+        _m._resolve_backend(None)
+    assert excinfo.value.error_code == "activity_supervisor_failed"
 
-    assert result.cancelled is True
-    assert result.state == "cancelled"
-    assert len(calls) == 1
-    assert calls[0]["session_id"] == resolved.runtime_session_id
-    assert calls[0]["cwd"] == resolved.work_dir
+    # And it really is only the default that is gone: an injected backend is
+    # returned untouched.
+    injected = FakeBackend()
+    assert _m._resolve_backend(injected) is injected
 
 
 # --- gate: wrong token does not touch backend --------------------------------

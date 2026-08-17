@@ -1,28 +1,41 @@
-"""Gateway host binding — default-off ``library`` backend mode (ARS-INT S3).
+"""Gateway host binding — P5 composition: exactly ``fake`` or ``arsd``.
 
-Pins the backend-selection seam added to ``gateway/sachima_live_progress_binding``:
+Focused RED/GREEN acceptance tests for the P5 slice of the ARS 0.7.6 Socket
+API v3 integration plan
+(``docs/plans/2026-08-17-ars-0.7.6-socket-api-v3-integration-plan.md`` §11).
+This file is the former ``library``-mode binding suite, re-anchored on the
+retirement: the seam it used to prove is gone, and what it proves now is that
+selecting it fails closed.
+
+What is proven here:
 
 * the implicit default and the explicit ``fake`` value keep today's static
-  bindings-file composition byte-for-byte (summary now names the backend);
-* ``library`` mode is DOUBLE default-off: it needs the ``hermes_internal``
-  surface gate AND an explicit library config file; it then composes the
-  formal execution bundle (registry + real library backend + port +
-  dispatcher + LS4-A-gated display service) with **no** static bindings file
-  and **no** hand-copied artifact dirs;
-* every failure path (unknown backend value, missing/malformed/disabled
-  config) logs one stable code, unbinds the tool AND the bundle, and never
-  echoes a path/value or crashes the gateway startup path.
+  bindings-file composition, and the ``fake`` path imports **no**
+  ``agent_run_supervisor`` at all — proven in a fresh interpreter (A-21, P5-e);
+* ``library`` — from the backend env or from a library-shaped config file —
+  yields its own **distinct** stable migration code naming ``fake`` and
+  ``arsd``, binds nothing, dispatches nothing, launches nothing, and is never
+  silently rewritten to another backend (A-18, P5-a/P5-e);
+* ``arsd`` is triple default-off: it needs the exact ``hermes_internal``
+  surface gate AND an explicit private config file AND ``enabled`` exactly
+  ``True``; every failure path leaves the tool unbound with one stable code and
+  never falls back to another backend (A-21, P5-c/P5-e);
+* the backend vocabulary is exactly ``("fake", "arsd")`` — nothing else, in
+  either case, is admitted.
 
 Pure local/offline: no Gateway process, Feishu/IM/delivery surface, listener,
-or Temporal Worker is started, and composing the library bundle launches no
-acpx/AGENT/subprocess. Forbidden terms in this prose are no-leak boundary
-canaries only, never behavior.
+Temporal Worker, daemon, or socket is started, and no test composes an
+**enabled** ``arsd`` config, so no daemon operation is ever attempted.
+Forbidden terms in this prose are no-leak boundary canaries only, never
+behavior.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -30,36 +43,39 @@ import pytest
 import gateway.sachima_live_progress_binding as binding_mod
 import tools.sachima_live_progress_tool as tool_mod
 from tools.registry import invalidate_check_fn_cache, registry
-from sachima_supervisor.runtime_spine import scan_for_leak
-from sachima_supervisor.runtime_spine.agent_run_supervisor_execution_binding import (
-    AgentRunSupervisorExecutionBinding,
-)
 from sachima_supervisor.runtime_spine.agent_run_supervisor_library_backend import (
     ARS_LIBRARY_CONFIG_TYPE,
+    LIBRARY_MIGRATION_MESSAGE,
+    RUNTIME_LIBRARY_BACKEND_RETIRED,
+)
+from sachima_supervisor.runtime_spine.arsd_socket_contract import (
+    ARSD_SUPERVISOR_CONFIG_TYPE,
+    EXPECTED_AGENT_RUN_SUPERVISOR_VERSION,
 )
 
 _SURFACE_ENV = tool_mod.SACHIMA_LIVE_PROGRESS_SURFACE_ENV
 _FILE_ENV = binding_mod.SACHIMA_LIVE_PROGRESS_BINDINGS_FILE_ENV
 _BACKEND_ENV = binding_mod.SACHIMA_LIVE_PROGRESS_BACKEND_ENV
-_LIBRARY_CONFIG_ENV = binding_mod.SACHIMA_ARS_LIBRARY_CONFIG_FILE_ENV
+_ARSD_CONFIG_ENV = binding_mod.SACHIMA_ARSD_CONFIG_FILE_ENV
 _TOOL = tool_mod.TOOL_NAME
 
 _DISABLED = binding_mod.SACHIMA_LIVE_PROGRESS_HOST_BINDING_DISABLED
 _ABSENT = binding_mod.SACHIMA_LIVE_PROGRESS_HOST_BINDING_ABSENT
 _INVALID = binding_mod.SACHIMA_LIVE_PROGRESS_HOST_BINDING_INVALID
 _BOUND = binding_mod.SACHIMA_LIVE_PROGRESS_HOST_BINDING_BOUND
+_RETIRED = binding_mod.SACHIMA_LIVE_PROGRESS_HOST_BINDING_RETIRED
 
 
 @pytest.fixture(autouse=True)
 def _default_off(monkeypatch):
-    for env in (_SURFACE_ENV, _FILE_ENV, _BACKEND_ENV, _LIBRARY_CONFIG_ENV):
+    for env in (_SURFACE_ENV, _FILE_ENV, _BACKEND_ENV, _ARSD_CONFIG_ENV):
         monkeypatch.delenv(env, raising=False)
     tool_mod.unbind_live_progress_display_service()
     invalidate_check_fn_cache()
     yield
     # Clear the envs BEFORE the reset rebind so the disabled path runs and
-    # deterministically drops both the tool service and the library bundle.
-    for env in (_SURFACE_ENV, _FILE_ENV, _BACKEND_ENV, _LIBRARY_CONFIG_ENV):
+    # deterministically drops both the tool service and any bound bundle.
+    for env in (_SURFACE_ENV, _FILE_ENV, _BACKEND_ENV, _ARSD_CONFIG_ENV):
         monkeypatch.delenv(env, raising=False)
     binding_mod.bind_live_progress_display_from_env()
     tool_mod.unbind_live_progress_display_service()
@@ -67,35 +83,84 @@ def _default_off(monkeypatch):
 
 
 def _write_library_config(tmp_path: Path, *, enabled: bool = True) -> str:
-    binary = tmp_path / "bin" / "acpx"
-    binary.parent.mkdir(exist_ok=True)
-    binary.write_text("#!/bin/sh\n", encoding="utf-8")
-    work = tmp_path / "work"
-    work.mkdir(exist_ok=True)
+    """A file in the shape the retired ``library`` mode used to consume.
+
+    It exists to prove that presenting one now fails closed with the migration
+    code: the composition never parses it, never resolves a role/workspace, and
+    never reaches a supervisor library.
+    """
+
     payload = {
         "type": ARS_LIBRARY_CONFIG_TYPE,
         "enabled": enabled,
         "approval_ref": "approval_arsint_s3",
         "sessions_dir": str(tmp_path / "sessions"),
-        "workspace_by_ref": {"ws_arsint": str(work)},
+        "workspace_by_ref": {"ws_arsint": str(tmp_path / "work")},
         "role_by_ref": {
             "policy_read_only": {
                 "schema_version": 1,
                 "role_id": "readonly-reviewer",
-                "runner": {
-                    "type": "acpx",
-                    "acpx_version": "0.12.0",
-                    "acpx_binary": None,
-                },
+                "runner": {"type": "acpx", "acpx_version": "0.12.0", "acpx_binary": None},
                 "permissions": {"read": True, "search": True},
                 "session": {"strategy": "persistent"},
             }
         },
         "session_prefix": "sachima",
-        "acpx_binary": str(binary),
         "stale_after_seconds": 900,
     }
     config_file = tmp_path / "ars_library_config.json"
+    config_file.write_text(json.dumps(payload), encoding="utf-8")
+    return str(config_file)
+
+
+def _arsd_payload(tmp_path: Path, *, enabled: bool) -> dict:
+    return {
+        "type": ARSD_SUPERVISOR_CONFIG_TYPE,
+        "approval_ref": "approval_arsd_p5_offline",
+        "owner": "sachima_host",
+        "namespace": "sachima_tasks",
+        "socket_path": str(tmp_path / "private" / "arsd.sock"),
+        "binding_ledger_path": str(tmp_path / "private" / "arsd-run-bindings.json"),
+        "agent_by_policy_ref": {"policy_agent": "reader-agent"},
+        "model_by_policy_ref": {"policy_model": "claude-sonnet-5"},
+        "effort_by_policy_ref": {"policy_effort": "medium"},
+        "workspace_by_ref": {"ws_main": str(tmp_path / "private" / "workspace")},
+        "run_limits_by_policy_ref": {
+            "policy_limits": {
+                "startup_timeout_seconds": 60.0,
+                "turn_timeout_seconds": 600.0,
+                "cancel_grace_seconds": 10.0,
+                "max_stderr_bytes": 262_144,
+                "max_event_bytes": 65_536,
+                "max_events": 10_000,
+            }
+        },
+        "grant_ref": "grant_reader_v1",
+        "grant_hash": "sha256:" + "a" * 64,
+        "grant_role_hash": "sha256:" + "b" * 64,
+        "grant_capabilities": ["read", "search"],
+        "mcp_snapshot_hashes": ["sha256:" + "c" * 64],
+        "credential_refs": ["cred_reader_github"],
+        "evidence_policy_hash": "sha256:" + "d" * 64,
+        "recovery_policy_hash": "sha256:" + "e" * 64,
+        "expected_package_version": EXPECTED_AGENT_RUN_SUPERVISOR_VERSION,
+        "required_api_version": 3,
+        "enabled": enabled,
+    }
+
+
+def _write_arsd_config(tmp_path: Path, *, enabled: bool = False, **overrides) -> str:
+    """A private ``arsd`` config file.
+
+    ``enabled`` defaults to **False** on purpose: an enabled config would make
+    the composition negotiate with a daemon, and no test in this file is
+    allowed to reach one. The enabled variant is only ever written for gates
+    that refuse *before* the config is read.
+    """
+
+    payload = _arsd_payload(tmp_path, enabled=enabled)
+    payload.update(overrides)
+    config_file = tmp_path / "arsd_config.json"
     config_file.write_text(json.dumps(payload), encoding="utf-8")
     return str(config_file)
 
@@ -107,8 +172,6 @@ def _call_tool(args: dict) -> dict:
 # --------------------------------------------------------------------------- #
 # A. The fake backend stays the default; the summary names the backend
 # --------------------------------------------------------------------------- #
-
-
 def test_default_backend_is_fake_and_named_in_summary(monkeypatch, tmp_path):
     artifact_dir = tmp_path / "run"
     artifact_dir.mkdir()
@@ -136,15 +199,20 @@ def test_default_backend_is_fake_and_named_in_summary(monkeypatch, tmp_path):
     assert binding_mod.bound_execution_binding() is None
 
 
-def test_explicit_fake_value_keeps_fake_mode(monkeypatch):
+@pytest.mark.parametrize("value", ["fake", "  fake  ", "", "   "])
+def test_unset_or_blank_or_explicit_fake_all_stay_fake(monkeypatch, value):
     monkeypatch.setenv(_SURFACE_ENV, "hermes_internal")
-    monkeypatch.setenv(_BACKEND_ENV, "fake")
+    monkeypatch.setenv(_BACKEND_ENV, value)
     summary = binding_mod.bind_live_progress_display_from_env()
     assert summary["code"] == _ABSENT
     assert summary["backend"] == "fake"
 
 
-@pytest.mark.parametrize("backend", ["real", "cli", "LIBRARY", "1"])
+def test_valid_backends_are_exactly_fake_and_arsd():
+    assert binding_mod._VALID_BACKENDS == ("fake", "arsd")
+
+
+@pytest.mark.parametrize("backend", ["real", "cli", "LIBRARY", "1", "acpx"])
 def test_unknown_backend_value_fails_closed(monkeypatch, backend, caplog):
     monkeypatch.setenv(_SURFACE_ENV, "hermes_internal")
     monkeypatch.setenv(_BACKEND_ENV, backend)
@@ -158,92 +226,37 @@ def test_unknown_backend_value_fails_closed(monkeypatch, backend, caplog):
 
 
 # --------------------------------------------------------------------------- #
-# B. Library mode is double default-off and fail-closed
+# B. ``library`` is retired behind its own distinct migration code (P5-a/P5-e)
 # --------------------------------------------------------------------------- #
-
-
-def test_library_mode_requires_surface_gate(monkeypatch, tmp_path):
-    monkeypatch.setenv(_BACKEND_ENV, "library")
-    monkeypatch.setenv(_LIBRARY_CONFIG_ENV, _write_library_config(tmp_path))
-    summary = binding_mod.bind_live_progress_display_from_env()
-    assert summary["code"] == _DISABLED
-    assert tool_mod._bound_service() is None
-    assert binding_mod.bound_execution_binding() is None
-
-
-def test_library_mode_without_config_file_reports_absent(monkeypatch):
+def test_library_selection_yields_the_distinct_migration_code(monkeypatch, caplog):
     monkeypatch.setenv(_SURFACE_ENV, "hermes_internal")
     monkeypatch.setenv(_BACKEND_ENV, "library")
-    summary = binding_mod.bind_live_progress_display_from_env()
-    assert summary["code"] == _ABSENT
-    assert summary["backend"] == "library"
-    assert tool_mod._bound_service() is None
-    assert binding_mod.bound_execution_binding() is None
-
-
-@pytest.mark.parametrize(
-    "payload",
-    [
-        "{not json",
-        json.dumps(["not", "a", "dict"]),
-        json.dumps({"unexpected_key": True}),
-    ],
-)
-def test_library_mode_malformed_config_fails_closed(monkeypatch, tmp_path, payload, caplog):
-    config_file = tmp_path / "bad_config.json"
-    config_file.write_text(payload, encoding="utf-8")
-    monkeypatch.setenv(_SURFACE_ENV, "hermes_internal")
-    monkeypatch.setenv(_BACKEND_ENV, "library")
-    monkeypatch.setenv(_LIBRARY_CONFIG_ENV, str(config_file))
     with caplog.at_level(logging.WARNING, logger=binding_mod.__name__):
         summary = binding_mod.bind_live_progress_display_from_env()
-    assert summary["code"] == _INVALID
-    assert tool_mod._bound_service() is None
-    assert binding_mod.bound_execution_binding() is None
-    assert str(config_file) not in caplog.text
-
-
-def test_library_mode_disabled_config_fails_closed(monkeypatch, tmp_path):
-    monkeypatch.setenv(_SURFACE_ENV, "hermes_internal")
-    monkeypatch.setenv(_BACKEND_ENV, "library")
-    monkeypatch.setenv(
-        _LIBRARY_CONFIG_ENV, _write_library_config(tmp_path, enabled=False)
-    )
-    summary = binding_mod.bind_live_progress_display_from_env()
-    assert summary["code"] == _INVALID
-    assert tool_mod._bound_service() is None
-    assert binding_mod.bound_execution_binding() is None
-
-
-# --------------------------------------------------------------------------- #
-# C. Library mode bound posture
-# --------------------------------------------------------------------------- #
-
-
-def test_library_mode_binds_bundle_and_display_service(monkeypatch, tmp_path):
-    monkeypatch.setenv(_SURFACE_ENV, "hermes_internal")
-    monkeypatch.setenv(_BACKEND_ENV, "library")
-    monkeypatch.setenv(_LIBRARY_CONFIG_ENV, _write_library_config(tmp_path))
-
-    summary = binding_mod.bind_live_progress_display_from_env()
-    assert summary["code"] == _BOUND
+    assert summary["code"] == _RETIRED == RUNTIME_LIBRARY_BACKEND_RETIRED
     assert summary["backend"] == "library"
-    assert summary["binding_count"] == 0 and summary["bindings"] == []
-    assert scan_for_leak(summary) is None
-    assert str(tmp_path) not in json.dumps(summary)
-
-    bundle = binding_mod.bound_execution_binding()
-    assert isinstance(bundle, AgentRunSupervisorExecutionBinding)
-    assert tool_mod._bound_service() is bundle.display_service
-
-    # No sessions were launched and nothing is bound yet: queries fail closed
-    # with the LS4-A stable code, never an exception or raw material.
-    invalidate_check_fn_cache()
-    result = _call_tool({"task_id": "task_alpha", "session_id": "sess_1"})
-    assert result == {"error": "runtime_invalid_live_progress_query"}
+    # Distinct from "the daemon is down" and from "your config is malformed":
+    # an operator can tell "you selected a retired mode" from either.
+    assert summary["code"] not in (_INVALID, _ABSENT, _DISABLED, _BOUND)
 
 
-def test_library_mode_ignores_static_bindings_file(monkeypatch, tmp_path):
+def test_library_selection_names_the_supported_choices_without_echoing_input(
+    monkeypatch, tmp_path, caplog
+):
+    monkeypatch.setenv(_SURFACE_ENV, "hermes_internal")
+    monkeypatch.setenv(_BACKEND_ENV, "library")
+    monkeypatch.setenv(_ARSD_CONFIG_ENV, _write_library_config(tmp_path))
+    with caplog.at_level(logging.WARNING, logger=binding_mod.__name__):
+        summary = binding_mod.bind_live_progress_display_from_env()
+    assert summary["code"] == _RETIRED
+    assert "fake" in LIBRARY_MIGRATION_MESSAGE and "arsd" in LIBRARY_MIGRATION_MESSAGE
+    assert LIBRARY_MIGRATION_MESSAGE.startswith(RUNTIME_LIBRARY_BACKEND_RETIRED)
+    assert LIBRARY_MIGRATION_MESSAGE in caplog.text
+    # The migration notice is a fixed literal: no path, no value, no body.
+    assert str(tmp_path) not in caplog.text
+
+
+def test_library_selection_binds_nothing_and_dispatches_nothing(monkeypatch, tmp_path):
     artifact_dir = tmp_path / "run"
     artifact_dir.mkdir()
     static = tmp_path / "bindings.json"
@@ -263,30 +276,290 @@ def test_library_mode_ignores_static_bindings_file(monkeypatch, tmp_path):
     )
     monkeypatch.setenv(_SURFACE_ENV, "hermes_internal")
     monkeypatch.setenv(_BACKEND_ENV, "library")
+    # Both a static bindings file AND a library config file are present: a
+    # retired selection consumes neither.
     monkeypatch.setenv(_FILE_ENV, str(static))
-    monkeypatch.setenv(_LIBRARY_CONFIG_ENV, _write_library_config(tmp_path))
+
     summary = binding_mod.bind_live_progress_display_from_env()
-    assert summary["code"] == _BOUND
+    assert summary["code"] == _RETIRED
+    assert summary["binding_count"] == 0 and summary["bindings"] == []
+    assert tool_mod._bound_service() is None
+    assert binding_mod.bound_execution_binding() is None
+
+    # Nothing is dispatchable: the tool itself still fails closed.
+    invalidate_check_fn_cache()
+    assert _call_tool({"task_id": "task_alpha", "session_id": "sess_1"}) == {
+        "error": "sachima_live_progress_display_unbound"
+    }
+
+
+def test_library_selection_is_never_rewritten_to_fake_or_arsd(monkeypatch, tmp_path):
+    """No silent rewrite: a bound fake service is dropped, not kept or reused."""
+
+    artifact_dir = tmp_path / "run"
+    artifact_dir.mkdir()
+    cfg = tmp_path / "bindings.json"
+    cfg.write_text(
+        json.dumps(
+            {
+                "bindings": [
+                    {
+                        "task_id": "task_live_smoke",
+                        "artifact_dir": str(artifact_dir),
+                        "artifact_ref": "artifact_live_smoke_0",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(_SURFACE_ENV, "hermes_internal")
+    monkeypatch.setenv(_FILE_ENV, str(cfg))
+    assert binding_mod.bind_live_progress_display_from_env()["code"] == _BOUND
+    assert tool_mod._bound_service() is not None
+
+    monkeypatch.setenv(_BACKEND_ENV, "library")
+    summary = binding_mod.bind_live_progress_display_from_env()
+    assert summary["code"] == _RETIRED
     assert summary["backend"] == "library"
-    assert summary["binding_count"] == 0
+    assert tool_mod._bound_service() is None
 
 
-def test_rebind_from_library_to_fake_clears_bundle(monkeypatch, tmp_path):
+def test_library_config_file_env_knob_is_gone(monkeypatch, tmp_path):
+    """The old private-config knob no longer exists, and setting it is inert."""
+
+    assert not hasattr(binding_mod, "SACHIMA_ARS_LIBRARY_CONFIG_FILE_ENV")
+    assert "SACHIMA_ARS_LIBRARY_CONFIG_FILE" not in binding_mod.__all__
     monkeypatch.setenv(_SURFACE_ENV, "hermes_internal")
     monkeypatch.setenv(_BACKEND_ENV, "library")
-    monkeypatch.setenv(_LIBRARY_CONFIG_ENV, _write_library_config(tmp_path))
-    assert binding_mod.bind_live_progress_display_from_env()["code"] == _BOUND
-    assert binding_mod.bound_execution_binding() is not None
+    monkeypatch.setenv("SACHIMA_ARS_LIBRARY_CONFIG_FILE", _write_library_config(tmp_path))
+    summary = binding_mod.bind_live_progress_display_from_env()
+    assert summary["code"] == _RETIRED
+    assert binding_mod.bound_execution_binding() is None
+
+
+def test_the_migration_code_is_in_the_modules_stable_code_set():
+    assert _RETIRED in binding_mod.SACHIMA_LIVE_PROGRESS_HOST_BINDING_STABLE_CODES
+    # The gateway mirrors the spine's one migration seam rather than minting a
+    # second code that could drift away from it.
+    assert _RETIRED == RUNTIME_LIBRARY_BACKEND_RETIRED
+
+
+# --------------------------------------------------------------------------- #
+# C. ``arsd`` is triple default-off (P5-c/P5-e)
+# --------------------------------------------------------------------------- #
+def test_arsd_is_unreachable_without_exact_enabled_true_and_the_surface_gate(
+    monkeypatch, tmp_path
+):
+    # (1) enabled=True but NO surface gate: refused before the file is read.
+    monkeypatch.setenv(_BACKEND_ENV, "arsd")
+    monkeypatch.setenv(_ARSD_CONFIG_ENV, _write_arsd_config(tmp_path, enabled=True))
+    summary = binding_mod.bind_live_progress_display_from_env()
+    assert summary["code"] == _DISABLED
+    assert tool_mod._bound_service() is None
+    assert binding_mod.bound_execution_binding() is None
+
+    # (2) the surface gate, an explicit config file, but enabled is not True.
+    monkeypatch.setenv(_SURFACE_ENV, "hermes_internal")
+    monkeypatch.setenv(_ARSD_CONFIG_ENV, _write_arsd_config(tmp_path, enabled=False))
+    summary = binding_mod.bind_live_progress_display_from_env()
+    assert summary["code"] == _INVALID
+    assert summary["backend"] == "arsd"
+    assert tool_mod._bound_service() is None
+    assert binding_mod.bound_execution_binding() is None
+
+    # (3) the surface gate and enabled=True, but no config file at all.
+    monkeypatch.delenv(_ARSD_CONFIG_ENV, raising=False)
+    summary = binding_mod.bind_live_progress_display_from_env()
+    assert summary["code"] == _ABSENT
+    assert summary["backend"] == "arsd"
+    assert tool_mod._bound_service() is None
+    assert binding_mod.bound_execution_binding() is None
+
+
+@pytest.mark.parametrize("blank", ["", "   "])
+def test_arsd_with_a_blank_config_path_reports_absent(monkeypatch, blank):
+    monkeypatch.setenv(_SURFACE_ENV, "hermes_internal")
+    monkeypatch.setenv(_BACKEND_ENV, "arsd")
+    monkeypatch.setenv(_ARSD_CONFIG_ENV, blank)
+    summary = binding_mod.bind_live_progress_display_from_env()
+    assert summary["code"] == _ABSENT
+    assert summary["backend"] == "arsd"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        "{not json",
+        json.dumps(["not", "a", "dict"]),
+        json.dumps({"unexpected_key": True}),
+    ],
+)
+def test_arsd_malformed_config_fails_closed(monkeypatch, tmp_path, payload, caplog):
+    config_file = tmp_path / "bad_arsd_config.json"
+    config_file.write_text(payload, encoding="utf-8")
+    monkeypatch.setenv(_SURFACE_ENV, "hermes_internal")
+    monkeypatch.setenv(_BACKEND_ENV, "arsd")
+    monkeypatch.setenv(_ARSD_CONFIG_ENV, str(config_file))
+    with caplog.at_level(logging.WARNING, logger=binding_mod.__name__):
+        summary = binding_mod.bind_live_progress_display_from_env()
+    assert summary["code"] == _INVALID
+    assert summary["backend"] == "arsd"
+    assert tool_mod._bound_service() is None
+    assert binding_mod.bound_execution_binding() is None
+    assert str(config_file) not in caplog.text
+
+
+def test_a_library_config_file_under_the_arsd_knob_yields_the_migration_code(
+    monkeypatch, tmp_path, caplog
+):
+    """Selecting the retired backend *via config* answers with the same code.
+
+    An operator who repoints the new knob at the old file learns that the mode
+    is retired, not that their file is malformed — and nothing is migrated,
+    converted, or composed on the way to saying so.
+    """
+
+    monkeypatch.setenv(_SURFACE_ENV, "hermes_internal")
+    monkeypatch.setenv(_BACKEND_ENV, "arsd")
+    monkeypatch.setenv(_ARSD_CONFIG_ENV, _write_library_config(tmp_path))
+    with caplog.at_level(logging.WARNING, logger=binding_mod.__name__):
+        summary = binding_mod.bind_live_progress_display_from_env()
+    assert summary["code"] == _RETIRED
+    assert tool_mod._bound_service() is None
+    assert binding_mod.bound_execution_binding() is None
+
+
+def test_a_failed_arsd_composition_never_falls_back_to_fake(monkeypatch, tmp_path):
+    """No automatic fallback: a static bindings file is not a consolation prize."""
+
+    artifact_dir = tmp_path / "run"
+    artifact_dir.mkdir()
+    static = tmp_path / "bindings.json"
+    static.write_text(
+        json.dumps(
+            {
+                "bindings": [
+                    {
+                        "task_id": "task_live_smoke",
+                        "artifact_dir": str(artifact_dir),
+                        "artifact_ref": "artifact_live_smoke_0",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(_SURFACE_ENV, "hermes_internal")
+    monkeypatch.setenv(_BACKEND_ENV, "arsd")
+    monkeypatch.setenv(_FILE_ENV, str(static))
+    monkeypatch.setenv(_ARSD_CONFIG_ENV, _write_arsd_config(tmp_path, enabled=False))
+    summary = binding_mod.bind_live_progress_display_from_env()
+    assert summary["code"] == _INVALID
+    assert summary["backend"] == "arsd"
+    assert summary["binding_count"] == 0
+    assert tool_mod._bound_service() is None
+
+
+def test_rebind_from_arsd_to_fake_clears_any_bundle(monkeypatch, tmp_path):
+    monkeypatch.setenv(_SURFACE_ENV, "hermes_internal")
+    monkeypatch.setenv(_BACKEND_ENV, "arsd")
+    monkeypatch.setenv(_ARSD_CONFIG_ENV, _write_arsd_config(tmp_path, enabled=False))
+    assert binding_mod.bind_live_progress_display_from_env()["code"] == _INVALID
+    assert binding_mod.bound_execution_binding() is None
 
     monkeypatch.setenv(_BACKEND_ENV, "fake")
     summary = binding_mod.bind_live_progress_display_from_env()
     assert summary["backend"] == "fake"
+    assert summary["code"] == _ABSENT
     assert binding_mod.bound_execution_binding() is None
 
 
-def test_binding_module_still_has_no_direct_ars_import():
+# --------------------------------------------------------------------------- #
+# D. Import purity on the default path (A-1 final enumeration, P5-e)
+# --------------------------------------------------------------------------- #
+_FAKE_PATH_PROBE = """
+import json, os, sys
+
+os.environ["SACHIMA_LIVE_PROGRESS_DISPLAY_SURFACE"] = "hermes_internal"
+os.environ["SACHIMA_LIVE_PROGRESS_BINDINGS_FILE"] = sys.argv[1]
+os.environ.pop("SACHIMA_LIVE_PROGRESS_BACKEND", None)
+
+import gateway.sachima_live_progress_binding as binding_mod
+
+summary = binding_mod.bind_live_progress_display_from_env()
+leaked = sorted(name for name in sys.modules if name.split(".")[0] == "agent_run_supervisor")
+print(json.dumps({"code": summary["code"], "backend": summary["backend"], "leaked": leaked}))
+"""
+
+
+def test_fake_is_the_default_and_needs_no_agent_run_supervisor_import(tmp_path):
+    """A-21/A-1: the default path is green with the producer never imported.
+
+    Run in a fresh interpreter, because an unrelated test in the same session
+    may already have imported the distribution for its own drift lock.
+    """
+
+    artifact_dir = tmp_path / "run"
+    artifact_dir.mkdir()
+    (artifact_dir / "progress.json").write_text(
+        json.dumps({"schema_version": 1, "state": "running", "last_seq": 0, "event_count": 0}),
+        encoding="utf-8",
+    )
+    bindings_file = tmp_path / "bindings.json"
+    bindings_file.write_text(
+        json.dumps(
+            {
+                "bindings": [
+                    {
+                        "task_id": "task_live_smoke",
+                        "artifact_dir": str(artifact_dir),
+                        "artifact_ref": "artifact_live_smoke_0",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    completed = subprocess.run(
+        [sys.executable, "-c", _FAKE_PATH_PROBE, str(bindings_file)],
+        cwd=str(Path(binding_mod.__file__).resolve().parents[1]),
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert completed.returncode == 0, completed.stderr
+    observed = json.loads(completed.stdout.strip().splitlines()[-1])
+    assert observed["code"] == _BOUND
+    assert observed["backend"] == "fake"
+    assert observed["leaked"] == []
+
+
+def test_binding_module_has_no_direct_ars_import_and_no_retired_module_name():
     import re
 
     src = Path(binding_mod.__file__).read_text(encoding="utf-8")
     assert re.search(r"(?m)^\s*(import|from)\s+agent_run_supervisor", src) is None
     assert "sys.path" not in src
+    for retired in ("session_runtime", "session_inspect", "hermes_caller", "acpx"):
+        assert retired not in src
+
+
+def test_the_arsd_config_key_allowlist_matches_the_config_dataclass() -> None:
+    """A drifted allowlist is how a grant field gets silently dropped.
+
+    The gateway refuses unknown keys rather than ignoring them, so the
+    allowlist has to be the config's exact field set — a field added upstream
+    and forgotten here would make every valid file invalid, and a stale extra
+    key would let a typo through.
+    """
+
+    import dataclasses
+
+    from sachima_supervisor.runtime_spine.arsd_socket_contract import (
+        ArsdSupervisorConfig,
+    )
+
+    assert binding_mod._ARSD_CONFIG_KEYS == frozenset(
+        field.name for field in dataclasses.fields(ArsdSupervisorConfig)
+    )

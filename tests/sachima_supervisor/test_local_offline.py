@@ -54,7 +54,7 @@ _EXPECTED_PAYLOAD_KEYS = {
 # --------------------------------------------------------------------------- #
 @dataclass
 class _FakeCallerResult:
-    """Stand-in for agent_run_supervisor.caller.CallerResult."""
+    """Stand-in for the producer's caller result shape."""
 
     status: str
     artifact_refs: tuple[str, ...] = ()
@@ -63,7 +63,7 @@ class _FakeCallerResult:
 
 
 class _RecordingSpecFactory:
-    """Stand-in for CallerInvocationSpec — records the kwargs it is built with."""
+    """Stand-in for the caller invocation spec — records its build kwargs."""
 
     def __init__(self) -> None:
         self.calls: list[dict[str, Any]] = []
@@ -74,7 +74,7 @@ class _RecordingSpecFactory:
 
 
 class _StrictCallerInvocationSpecFactory:
-    """Signature-shaped fake matching agent_run_supervisor.caller.CallerInvocationSpec."""
+    """Signature-shaped fake matching the producer's caller invocation spec."""
 
     def __init__(self) -> None:
         self.calls: list[dict[str, Any]] = []
@@ -569,14 +569,14 @@ def test_supported_modes_accepted(mode: str) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# 7. Module import works when agent_run_supervisor is not installed.
+# 7. The producer caller API is retired: this seam needs no distribution at all
+#    (ARS 0.7.6 plan §11, seam S-3).
 # --------------------------------------------------------------------------- #
 def test_module_imports_without_agent_run_supervisor_installed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # Block the optional library entirely (None in sys.modules -> ImportError).
     monkeypatch.setitem(sys.modules, "agent_run_supervisor", None)
-    monkeypatch.setitem(sys.modules, "agent_run_supervisor.caller", None)
 
     module = importlib.import_module("sachima_supervisor.local_offline")
 
@@ -584,17 +584,38 @@ def test_module_imports_without_agent_run_supervisor_installed(
     assert hasattr(module, "invoke_local_offline_supervisor")
 
 
-def test_missing_library_without_injection_fails_closed(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setitem(sys.modules, "agent_run_supervisor", None)
-    monkeypatch.setitem(sys.modules, "agent_run_supervisor.caller", None)
+def test_uninjected_invocation_fails_closed_with_the_migration_code() -> None:
+    """Not "install the library" — the module it named no longer exists.
+
+    An operator told "the library is unavailable" would go looking for a
+    package to install that would not help. The distinct migration code says
+    what is true: this backend is retired, and names the two that are not.
+    """
+
+    from sachima_supervisor.runtime_spine.agent_run_supervisor_library_backend import (
+        LIBRARY_MIGRATION_MESSAGE,
+        RUNTIME_LIBRARY_BACKEND_RETIRED,
+    )
+
     request = _request()
 
     with pytest.raises(LocalOfflineSupervisorError) as exc:
         invoke_local_offline_supervisor(request)  # no injected fakes
 
-    assert exc.value.error_code == "supervisor_library_unavailable"
+    assert exc.value.error_code == RUNTIME_LIBRARY_BACKEND_RETIRED
+    assert "fake" in LIBRARY_MIGRATION_MESSAGE and "arsd" in LIBRARY_MIGRATION_MESSAGE
+
+
+def test_building_a_spec_without_injection_fails_closed_too(tmp_path: Path) -> None:
+    """Both retired resolutions answer the same way — no half-open path."""
+
+    from sachima_supervisor.runtime_spine.agent_run_supervisor_library_backend import (
+        RUNTIME_LIBRARY_BACKEND_RETIRED,
+    )
+
+    with pytest.raises(LocalOfflineSupervisorError) as exc:
+        build_caller_invocation_spec(_request())
+    assert exc.value.error_code == RUNTIME_LIBRARY_BACKEND_RETIRED
 
 
 # --------------------------------------------------------------------------- #

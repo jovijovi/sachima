@@ -4,11 +4,19 @@ This is a **default-off, local/offline, caller-owned** seam. A local
 Sachima/FlowWeaver/Hermes controller (the caller — explicitly *not* the
 Hermes Gateway) can use it to:
 
-  * build an ``agent_run_supervisor.caller.CallerInvocationSpec`` from a
-    sanitized request assembled out of claim-check refs,
-  * call ``invoke_caller`` (starting with dry-run / config-preview),
-  * map the returned ``CallerResult`` into a caller-owned offline view model,
+  * build a caller invocation spec from a sanitized request assembled out of
+    claim-check refs,
+  * invoke it (starting with dry-run / config-preview),
+  * map the returned result into a caller-owned offline view model,
   * and write a sanitized local JSON evidence file.
+
+**The producer-side caller API is retired** (ARS 0.7.6 plan §11, seam S-3):
+0.7.x removed the module this seam used to resolve its spec factory and
+invoker from. Both resolutions now fail closed with the one stable migration
+code, naming the supported backends, unless the caller injects its own — no
+emulation, no shim, no rewrite to another backend. Everything else in this
+module (validation, the mode allowlist, the boundary scan, the view model, the
+evidence file) is unchanged and still exercised by injected fakes.
 
 Boundaries enforced here (see the design packet
 ``docs/plans/2026-06-03-agent-run-supervisor-sachima-local-offline-integration-design.md``):
@@ -17,9 +25,10 @@ Boundaries enforced here (see the design packet
     token; a missing/false/mismatched gate fails closed with a stable error
     code, before any optional dependency is imported or the supervisor called.
   * Only a fixed allowlist of modes is accepted (no cancel/rollback).
-  * The supervisor library is imported lazily inside the invocation path only,
-    so importing this module never requires ``agent_run_supervisor``. Tests
-    inject fakes instead.
+  * No producer library is imported on any path: the lazy resolutions the
+    invocation path used are retired, so importing this module — and running
+    every offline test — requires no external distribution at all. Callers
+    inject their own factory/invoker; tests inject fakes.
   * ``business_verdict`` from the library always stays ``None``; only a
     caller-supplied ``caller_verdict`` may travel in the offline view model.
   * Raw prompt/context, platform-private ids, card JSON, media paths, tool
@@ -38,7 +47,12 @@ import re
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, NoReturn
+
+from .runtime_spine.agent_run_supervisor_library_backend import (
+    LIBRARY_MIGRATION_MESSAGE,
+    RUNTIME_LIBRARY_BACKEND_RETIRED,
+)
 
 # --------------------------------------------------------------------------- #
 # Approval token + allowlists
@@ -270,32 +284,32 @@ def _validate_boundary(request: LocalOfflineSupervisorRequest) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Lazy optional dependency resolution (only inside the invocation path)
+# Dependency resolution — injected only; the producer caller API is retired
 # --------------------------------------------------------------------------- #
+def _retired() -> NoReturn:
+    """One stable migration answer for both retired resolutions (seam S-3).
+
+    The producer's caller API is gone at this pin, so there is nothing to
+    import lazily and nothing to degrade to. It carries the distinct migration
+    code — not "the library is not installed", which would send an operator
+    looking for a package to install that would not help.
+    """
+
+    raise LocalOfflineSupervisorError(
+        RUNTIME_LIBRARY_BACKEND_RETIRED, LIBRARY_MIGRATION_MESSAGE
+    )
+
+
 def _resolve_spec_factory(spec_factory: Callable[..., Any] | None) -> Callable[..., Any]:
-    if spec_factory is not None:
-        return spec_factory
-    try:
-        from agent_run_supervisor.caller import CallerInvocationSpec
-    except Exception:
-        raise LocalOfflineSupervisorError(
-            "supervisor_library_unavailable",
-            "agent_run_supervisor is not installed",
-        ) from None
-    return CallerInvocationSpec
+    if spec_factory is None:
+        _retired()
+    return spec_factory
 
 
 def _resolve_invoke_caller(invoke_caller: Callable[[Any], Any] | None) -> Callable[[Any], Any]:
-    if invoke_caller is not None:
-        return invoke_caller
-    try:
-        from agent_run_supervisor.caller import invoke_caller as resolved_invoke_caller
-    except Exception:
-        raise LocalOfflineSupervisorError(
-            "supervisor_library_unavailable",
-            "agent_run_supervisor is not installed",
-        ) from None
-    return resolved_invoke_caller
+    if invoke_caller is None:
+        _retired()
+    return invoke_caller
 
 
 # --------------------------------------------------------------------------- #

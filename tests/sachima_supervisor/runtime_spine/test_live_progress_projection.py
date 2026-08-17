@@ -12,7 +12,9 @@ codes, the no-leak serialized bytes, forgery rejection, and determinism.
 from __future__ import annotations
 
 import importlib
+import json
 import re
+from pathlib import Path
 
 import pytest
 
@@ -259,23 +261,97 @@ def test_progress_present_empty_page_is_available_just_started():
 
 
 # --------------------------------------------------------------------------- #
-# 4. Lazy default reader with absent library → unavailable, no ImportError escape
+# 4. The stdlib default reader — absent artifact → unavailable, no raise; a
+#    real artifact → available. No producer library is involved either way.
 # --------------------------------------------------------------------------- #
-def test_default_reader_absent_library_unavailable(monkeypatch):
+def test_default_stdlib_reader_absent_artifact_is_unavailable(tmp_path):
     m = _mod()
-    real = m.importlib.import_module
-
-    def _boom(name, *a, **k):
-        if name.startswith("agent_run_supervisor"):
-            raise ImportError("agent_run_supervisor absent on host")
-        return real(name, *a, **k)
-
-    monkeypatch.setattr(m.importlib, "import_module", _boom)
     reader = m.DefaultLiveProgressReader()
-    proj = m.build_live_progress_projection(reader, "/tmp/run/abc", "artifact_local_0")
+    proj = m.build_live_progress_projection(
+        reader, str(tmp_path / "missing_run"), "artifact_local_0"
+    )
     assert proj.available is False
     assert proj.error_code == "live_progress_unavailable"
     assert proj.records == ()
+
+
+def _write_artifact(tmp_path, *, events, state="running", last_seq=2, event_count=2):
+    run = tmp_path / "run_abc"
+    run.mkdir(exist_ok=True)
+    (run / "progress.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "state": state,
+                "last_seq": last_seq,
+                "event_count": event_count,
+                "updated_at": "2026-08-17T04:05:06+00:00",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run / "normalized-events.jsonl").write_text(
+        "".join(json.dumps(event) + "\n" for event in events), encoding="utf-8"
+    )
+    return str(run)
+
+
+def test_default_stdlib_reader_maps_a_real_artifact_directory(tmp_path):
+    m = _mod()
+    artifact_dir = _write_artifact(
+        tmp_path,
+        events=[
+            {"seq": 1, "type": "run_started", "family": "run_started", "kind": None,
+             "status": "running", "text_length": 0, "summary": "s"},
+            {"seq": 2, "type": "agent_message", "family": "agent_message",
+             "kind": "assistant", "status": "running", "text_length": 7,
+             "summary": "s"},
+        ],
+    )
+
+    proj = m.build_live_progress_projection(
+        m.DefaultLiveProgressReader(), artifact_dir, "artifact_local_0"
+    )
+    assert proj.available is True and proj.error_code is None
+    assert proj.supervisor_state == "active"
+    assert proj.observed_event_count == 2 and proj.observed_last_seq == 2
+    assert proj.resume_cursor == 2 and proj.has_more is False
+    assert [rec.kind for rec in proj.records] == ["unknown", "assistant"]
+    assert [rec.text_length for rec in proj.records] == [0, 7]
+    assert scan_for_leak(proj.as_dict()) is None
+    assert artifact_dir not in json.dumps(proj.as_dict())
+
+    # The cursor is exclusive, and an exhausted tail is honest about it.
+    tail = m.build_live_progress_projection(
+        m.DefaultLiveProgressReader(), artifact_dir, "artifact_local_0", after_seq=1
+    )
+    assert [rec.seq for rec in tail.records] == [2]
+
+    # A malformed line is a fail-closed corrupt page, never a repaired one.
+    (Path(artifact_dir) / "normalized-events.jsonl").write_text(
+        "{not json}\n", encoding="utf-8"
+    )
+    corrupt = m.build_live_progress_projection(
+        m.DefaultLiveProgressReader(), artifact_dir, "artifact_local_0"
+    )
+    assert corrupt.available is False and corrupt.error_code == "live_progress_corrupt"
+
+
+def test_default_stdlib_reader_needs_no_producer_library(monkeypatch):
+    """The reader keeps working with every supervisor module unimportable."""
+
+    import builtins
+
+    m = _mod()
+    real_import = builtins.__import__
+
+    def _refuse(name, *args, **kwargs):
+        if name.startswith("agent_run_supervisor"):
+            raise ImportError("no supervisor distribution on this host")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _refuse)
+    assert m.DefaultLiveProgressReader().load_progress("/nonexistent/run") is None
 
 
 # --------------------------------------------------------------------------- #
@@ -677,11 +753,128 @@ def test_package_exports_available():
 def test_no_top_level_ars_import_and_no_execution_tokens():
     m = _mod()
     src = open(m.__file__, encoding="utf-8").read()
-    # No top-level (or any) direct import of the ARS library — lazy string only.
+    # No import of the producer library at all — not top level, not lazy.
     assert re.search(r"(?m)^\s*(import|from)\s+agent_run_supervisor", src) is None
-    # The ARS caller module is reached only lazily, as an importlib string literal.
-    assert "agent_run_supervisor.hermes_caller.events" in src
+    # And no module path left to import: the default reader is stdlib-only, so
+    # `fake` is functional with no agent_run_supervisor reference whatsoever.
+    assert "agent_run_supervisor" not in src
+    assert "progress.json" in src and "normalized-events.jsonl" in src
     # No real runtime / process / agent-launch primitives in the new behavior.
     lowered = src.lower()
     for token in ("subprocess", "acpx", "npx", "os.system", ".popen(", "socket.socket"):
         assert token not in lowered, token
+
+
+# --------------------------------------------------------------------------- #
+# 14. Artifact `seq` evidence — synthesized only when the key is ABSENT
+# --------------------------------------------------------------------------- #
+def _events_artifact(tmp_path, events):
+    run = tmp_path / "run_seq"
+    run.mkdir(exist_ok=True)
+    (run / "progress.json").write_text(
+        json.dumps(
+            {"schema_version": 1, "state": "running", "last_seq": 2, "event_count": 2}
+        ),
+        encoding="utf-8",
+    )
+    (run / "normalized-events.jsonl").write_text(
+        "".join(json.dumps(event) + "\n" for event in events), encoding="utf-8"
+    )
+    return str(run)
+
+
+def test_default_stdlib_reader_synthesizes_seq_only_for_a_legacy_stream(tmp_path):
+    """A stream with no `seq` key at all keeps its 1-based line positions."""
+
+    m = _mod()
+    artifact_dir = _events_artifact(
+        tmp_path,
+        [
+            {"family": "run_started", "status": "running", "text_length": 0},
+            {"family": "agent_message", "status": "running", "text_length": 4},
+        ],
+    )
+    proj = m.build_live_progress_projection(
+        m.DefaultLiveProgressReader(), artifact_dir, "artifact_local_0"
+    )
+    assert proj.available is True and proj.error_code is None
+    assert [rec.seq for rec in proj.records] == [1, 2]
+
+
+@pytest.mark.parametrize(
+    "bad_seq",
+    [
+        pytest.param("2", id="string"),
+        pytest.param(True, id="bool"),
+        pytest.param(2.0, id="float"),
+        pytest.param(None, id="null"),
+        pytest.param([2], id="list"),
+    ],
+)
+def test_default_stdlib_reader_fails_closed_on_a_present_non_integer_seq(
+    tmp_path, bad_seq
+):
+    """A PRESENT `seq` is evidence: a non-int one is corrupt, never guessed at.
+
+    Synthesizing a line number over a malformed value would invent an ordering
+    the artifact never stated, and silently renumber the caller's cursor.
+    """
+
+    m = _mod()
+    artifact_dir = _events_artifact(
+        tmp_path,
+        [
+            {"seq": 1, "family": "run_started", "status": "running", "text_length": 0},
+            {
+                "seq": bad_seq,
+                "family": "agent_message",
+                "status": "running",
+                "text_length": 4,
+            },
+        ],
+    )
+    proj = m.build_live_progress_projection(
+        m.DefaultLiveProgressReader(), artifact_dir, "artifact_local_0"
+    )
+    assert proj.available is False
+    assert proj.error_code == "live_progress_corrupt"
+    assert proj.records == ()
+    assert scan_for_leak(proj.as_dict()) is None
+    assert str(bad_seq) not in json.dumps(proj.as_dict())
+
+
+@pytest.mark.parametrize("bad_seq", [pytest.param(-1, id="negative"), pytest.param(0, id="zero")])
+def test_default_stdlib_reader_validates_the_seq_domain_before_the_cursor(
+    tmp_path, bad_seq
+):
+    """An out-of-domain `seq` cannot hide below a non-null cursor.
+
+    Filtering first would let a negative or zero `seq` — a value the
+    projection itself refuses — vanish from a resumed page, so the artifact
+    would read as clean precisely when it is not.
+    """
+
+    m = _mod()
+    artifact_dir = _events_artifact(
+        tmp_path,
+        [
+            {"seq": 2, "family": "agent_message", "status": "running", "text_length": 4},
+            {
+                "seq": bad_seq,
+                "family": "agent_message",
+                "status": "running",
+                "text_length": 4,
+            },
+        ],
+    )
+
+    proj = m.build_live_progress_projection(
+        m.DefaultLiveProgressReader(),
+        artifact_dir,
+        "artifact_local_0",
+        after_seq=1,
+    )
+    assert proj.available is False
+    assert proj.error_code == "live_progress_corrupt"
+    assert proj.records == ()
+    assert scan_for_leak(proj.as_dict()) is None
