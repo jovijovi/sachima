@@ -1,14 +1,14 @@
 """PR3 Runtime Spine — Sachima live progress safe projection.
 
-This module is a **local/offline, refs-only read-model** over an
-agent-run-supervisor run's already-merged caller cursor API shape: a
-``load_progress(artifact_dir) -> ProgressSnapshot | None`` summary plus one
-``read_event_page(artifact_dir, *, after_seq, limit) -> EventPage`` cursor page.
-It maps those into a frozen, validated, byte-stable :class:`LiveProgressProjection`
-that carries only refs / counts / coarse observed states / booleans / a resume
-cursor / a stable ``error_code`` — never raw ``text`` / ``content`` / ``message``
-/ ``body``, the ARS ``summary`` free text, artifact filesystem paths, platform
-ids, secrets, exception text, or tracebacks.
+This module is a **local/offline, refs-only read-model** over one supervised
+run's progress artifact: a ``load_progress(artifact_dir) -> summary | None``
+document plus one ``read_event_page(artifact_dir, *, after_seq, limit) -> page``
+cursor page. It maps those into a frozen, validated, byte-stable
+:class:`LiveProgressProjection` that carries only refs / counts / coarse
+observed states / booleans / a resume cursor / a stable ``error_code`` — never
+raw ``text`` / ``content`` / ``message`` / ``body``, the artifact's own
+free-text summary, artifact filesystem paths, platform ids, secrets, exception
+text, or tracebacks.
 
 It is deliberately **not** live IM progress, Gateway behavior, production
 progress, real AGENT execution, or a business verdict. The supervisor's own
@@ -17,25 +17,27 @@ Sachima's ``TaskEventLog`` remains the sole per-``task_id`` seq + verdict
 authority, and this projection never appends to it — the ARS ``seq`` / cursor is
 a foreign read-model cursor only.
 
-The producer library (``agent_run_supervisor``) resolves only from the
-installed exact-pinned ``agent-run-supervisor`` distribution (the
-``agent-run-supervisor`` / ``dev`` extra in ``pyproject.toml``) and the reader
-is **injected**: the default :class:`DefaultLiveProgressReader` lazily imports
-the ARS caller events module inside each call and fails closed to a
-``live_progress_unavailable`` projection when the extra is not installed —
-there is no top-level ``agent_run_supervisor`` import anywhere in this module
-and no source-path / ``sys.path`` fallback anywhere in the repo. Building and
-serializing are pure and side-effect-free: no process, socket, Gateway / IM /
-delivery, durable Worker/service, or agent launch. Forbidden terms below appear
-only as no-leak denylist boundary prose, never as behavior.
+The reader is **injected**, and the default
+:class:`DefaultLiveProgressReader` is Sachima-owned and **stdlib-only**: it
+reads the same ``progress.json`` / ``normalized-events.jsonl`` artifact shapes
+with :mod:`json` and :mod:`pathlib` and nothing else. There is no producer-
+library import anywhere in this module — not lazy, not at top level — and no
+source-path / ``sys.path`` fallback anywhere in the repo, so the offline read
+model stays fully functional on a host where no supervisor distribution is
+installed at all. A missing artifact fails closed to a
+``live_progress_unavailable`` projection and a malformed one to
+``live_progress_corrupt``; neither ever raises. Building and serializing are
+pure and side-effect-free: no process, socket, Gateway / IM / delivery,
+durable Worker/service, or agent launch. Forbidden terms below appear only as
+no-leak denylist boundary prose, never as behavior.
 """
 
 from __future__ import annotations
 
-import importlib
 import json
 import re
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, NoReturn, Protocol, runtime_checkable
 
 from .events import (
@@ -92,9 +94,11 @@ _SAFE_TOKEN_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 #: Bound shared by cursors/counts read from the foreign artifact.
 _MAX_COUNT = 1_000_000_000
 
-#: Lazy import target — reached only inside :func:`_import_caller_events`, never
-#: as a top-level ``import agent_run_supervisor``.
-_ARS_CALLER_EVENTS_MODULE = "agent_run_supervisor.hermes_caller.events"
+#: The two files one supervised run's artifact directory carries: a summary
+#: document and an append-only normalized event stream. They are the read
+#: model's whole surface — no other file, and no directory listing, is read.
+_PROGRESS_FILENAME = "progress.json"
+_EVENTS_FILENAME = "normalized-events.jsonl"
 
 
 def _invalid() -> NoReturn:
@@ -468,30 +472,17 @@ def validate_live_progress_projection(obj: Any) -> LiveProgressProjection:
 # Injected reader boundary
 # --------------------------------------------------------------------------- #
 class _ReaderUnavailable(Exception):
-    """Module-local: the ARS caller library is not importable on this host.
+    """Module-local: an injected reader has nothing to read on this host.
 
-    The builder maps it to a ``live_progress_unavailable`` projection so no
-    ``ImportError`` ever escapes to the caller.
+    The builder maps it to a ``live_progress_unavailable`` projection, so a
+    reader that cannot reach its source never raises through to the caller.
+    The stdlib reader below states the same thing by returning ``None``.
     """
-
-
-def _import_caller_events() -> Any:
-    """Lazily import the ARS caller events module — NEVER at module top level.
-
-    Any import failure (an environment without the ``agent-run-supervisor``
-    extra installed) is collapsed to :class:`_ReaderUnavailable` with no
-    chained raw exception text.
-    """
-
-    try:
-        return importlib.import_module(_ARS_CALLER_EVENTS_MODULE)
-    except Exception:
-        raise _ReaderUnavailable from None
 
 
 @runtime_checkable
 class LiveProgressReader(Protocol):
-    """The injected read-only boundary over ARS artifact progress + event pages."""
+    """The injected read-only boundary over artifact progress + event pages."""
 
     def load_progress(self, artifact_dir: str) -> Any | None: ...
 
@@ -500,25 +491,119 @@ class LiveProgressReader(Protocol):
     ) -> Any: ...
 
 
-class DefaultLiveProgressReader:
-    """Default reader that lazily imports the ARS caller events module per call.
+@dataclass(frozen=True)
+class ArtifactProgressSnapshot:
+    """The summary document, read as-is and validated by the builder."""
 
-    The module resolves from the installed ``agent-run-supervisor``
-    distribution; on an environment without the extra both methods fail closed
-    via :class:`_ReaderUnavailable`, which the builder turns into a clean
-    ``live_progress_unavailable`` projection. There is no top-level
-    ``agent_run_supervisor`` import — a top-level import would break package import
-    everywhere the library is missing.
+    schema_version: Any
+    state: Any
+    last_seq: Any
+    event_count: Any
+
+
+@dataclass(frozen=True)
+class ArtifactEventRecord:
+    """One raw normalized-event line. Nullable fields stay nullable here.
+
+    The builder owns the closed allowlist; this record deliberately does not
+    pre-judge, transform, or drop a field, so a malformed one fails closed
+    there rather than being silently normalized on the way in.
     """
 
-    def load_progress(self, artifact_dir: str) -> Any | None:
-        return _import_caller_events().load_progress(artifact_dir)
+    seq: int
+    family: Any
+    kind: Any
+    status: Any
+    text_length: Any
+
+
+@dataclass(frozen=True)
+class ArtifactEventPage:
+    """One bounded page plus its resume cursor (a foreign read-model value)."""
+
+    records: tuple[ArtifactEventRecord, ...]
+    next_cursor: int | None
+    has_more: bool
+
+
+class DefaultLiveProgressReader:
+    """Sachima-owned, stdlib-only reader over one run's artifact directory.
+
+    It reads exactly two files with :mod:`json` and :mod:`pathlib`: the
+    ``progress.json`` summary and the ``normalized-events.jsonl`` stream. It
+    imports no producer library, so the offline read model works unchanged on
+    a host with no supervisor distribution installed.
+
+    Fail-closed by construction: an absent artifact is ``None`` / an empty
+    page (the builder's ``live_progress_unavailable``), and malformed bytes
+    raise out of :mod:`json` for the builder to collapse into
+    ``live_progress_corrupt`` — this reader never repairs, guesses, or echoes
+    what it could not parse.
+    """
+
+    def load_progress(self, artifact_dir: str) -> ArtifactProgressSnapshot | None:
+        try:
+            raw = (Path(artifact_dir) / _PROGRESS_FILENAME).read_text(encoding="utf-8")
+        except (FileNotFoundError, NotADirectoryError, IsADirectoryError):
+            return None
+        document = json.loads(raw)
+        if not isinstance(document, dict):
+            raise ValueError("progress document must be an object")
+        return ArtifactProgressSnapshot(
+            schema_version=document["schema_version"],
+            state=document.get("state"),
+            last_seq=document["last_seq"],
+            event_count=document["event_count"],
+        )
 
     def read_event_page(
         self, artifact_dir: str, *, after_seq: int | None = None, limit: int = 100
-    ) -> Any:
-        return _import_caller_events().read_event_page(
-            artifact_dir, after_seq=after_seq, limit=limit
+    ) -> ArtifactEventPage:
+        try:
+            text = (Path(artifact_dir) / _EVENTS_FILENAME).read_text(encoding="utf-8")
+        except (FileNotFoundError, NotADirectoryError, IsADirectoryError):
+            text = ""
+
+        records: list[ArtifactEventRecord] = []
+        for index, line in enumerate(text.splitlines(), start=1):
+            stripped = line.strip()
+            if not stripped:
+                continue
+            event = json.loads(stripped)
+            if not isinstance(event, dict):
+                raise ValueError("event line must be an object")
+            if "seq" in event:
+                # A present seq is the artifact's own evidence, and it is
+                # validated against the projection's own domain HERE, before
+                # the cursor filter below. Filtering first would let a value
+                # the projection refuses — a negative, a zero, an oversized
+                # one — vanish from a resumed page, so a corrupt artifact
+                # would read as clean precisely when it is not. Synthesizing a
+                # position over it is equally refused: that would invent an
+                # ordering the artifact never stated.
+                seq = _safe_seq(event["seq"])
+            else:
+                # Legacy stream without an explicit seq: the 1-based line
+                # position is the only monotonic value the file states.
+                seq = index
+            if after_seq is not None and seq <= after_seq:
+                continue
+            records.append(
+                ArtifactEventRecord(
+                    seq=seq,
+                    # The event-type token rides under either key.
+                    family=event.get("family", event.get("type")),
+                    kind=event.get("kind"),
+                    status=event.get("status"),
+                    text_length=event.get("text_length"),
+                )
+            )
+
+        page = tuple(records[:limit])
+        return ArtifactEventPage(
+            records=page,
+            next_cursor=page[-1].seq if page else after_seq,
+            has_more=len(records) > limit,
         )
 
 
@@ -739,6 +824,9 @@ __all__ = [
     "OBSERVED_EVENT_STATUSES",
     "LiveProgressReader",
     "DefaultLiveProgressReader",
+    "ArtifactEventPage",
+    "ArtifactEventRecord",
+    "ArtifactProgressSnapshot",
     "LiveProgressEventRecord",
     "LiveProgressProjection",
     "build_live_progress_projection",

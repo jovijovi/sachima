@@ -3,10 +3,16 @@
 This module is the next narrow slice after the Phase E local/offline lifecycle
 state machine (``activity_session_lifecycle``). It lets a local Sachima /
 FlowWeaver / Hermes controller drive the **existing** Phase E state machine with
-work outcomes produced by a *real*
-``agent_run_supervisor.session_runtime.SessionRuntime`` — open a persistent
-session, run one read-only turn, and close it — while keeping the committed
-source default-off, fail-closed, and CI-safe.
+work outcomes produced by an injected persistent-session runtime backend — open
+a persistent session, run one read-only turn, and close it — while keeping the
+committed source default-off, fail-closed, and CI-safe.
+
+The in-tree default backend that drove a real supervisor session runtime is
+**retired** (ARS 0.7.6 plan §11, seam S-2): the library modules it called were
+removed upstream at 0.7.x, and this module is fake/offline-only now. A backend
+must be injected; without one every entry point fails closed with the stable
+supervisor-failed code, and nothing is launched, spawned, or emulated in its
+place.
 
 What this slice is, and is deliberately NOT:
 
@@ -14,11 +20,11 @@ What this slice is, and is deliberately NOT:
     Phase E-2 approval token and ``enabled is True`` before anything else; a
     missing / false / mismatched gate fails closed with a stable error code
     *before* any optional dependency is imported or any runtime is touched.
-  * **Bounded real execution, local/offline only.** The only real surface is a
-    pinned local ``acpx`` persistent session through ``SessionRuntime``. There is
-    no Gateway, Feishu, IM delivery, public ingress, live/default-on behavior,
-    production config write, service restart, platform-adapter mutation, or real
-    delivery anywhere in this module.
+  * **Bounded offline execution only.** The only surface is an injected backend
+    driving a persistent session. There is no Gateway, Feishu, IM delivery,
+    public ingress, live/default-on behavior, production config write, service
+    restart, platform-adapter mutation, or real delivery anywhere in this
+    module.
   * **Pinned local acpx only.** The runner provenance gate requires
     ``runner.acpx_binary`` to be a non-null *absolute local* path whose basename
     is not a package-manager / shell launcher (``npx``/``npm``/``pnpm``/``yarn``/
@@ -29,9 +35,9 @@ What this slice is, and is deliberately NOT:
     requires the distinct WP3b cancellation approval token before it can call the
     local supervisor abort path. Without that exact gate, cancellation still
     fails closed with ``activity_cancel_not_approved`` before runtime touch.
-  * **Lazy import.** ``agent_run_supervisor`` is imported lazily, only inside the
-    default runtime backend's methods. Importing this module — and validating a
-    config — never requires the external package, so normal CI is unaffected.
+  * **No producer import at all.** With the default backend retired, this
+    module imports no ``agent_run_supervisor`` on any path. Importing it — and
+    validating a config — never requires the external package.
   * **Sanitized projections only.** Runtime outcomes are mapped to the state
     machine's ``SessionWorkOutcome`` carrying only stable codes, an opaque
     derived ``session_binding`` (a hash of the runtime/acpx session id, never the
@@ -440,93 +446,23 @@ def _require_offline_dir(value: Any, label: str, allow_repo_paths: bool) -> str:
 
 
 # --------------------------------------------------------------------------- #
-# Runtime backends (the only place agent_run_supervisor is imported)
+# Runtime backend resolution (injected only; the real one is retired)
 # --------------------------------------------------------------------------- #
-class _AgentRunSupervisorBackend:
-    """Default backend: lazily imports ``agent_run_supervisor`` and drives a
-    real local ``SessionRuntime``. Only the neutral runtime-result shapes leave
-    this class — never a final message, raw prompt, or tool output."""
-
-    def _runtime_and_role(self, resolved: ResolvedRealSessionConfig) -> tuple[Any, Any]:
-        from agent_run_supervisor.role import load_role  # lazy: not needed in CI
-        from agent_run_supervisor.session_runtime import SessionRuntime
-
-        role = load_role(resolved.role_mapping)
-        runtime = SessionRuntime(sessions_dir=Path(resolved.sessions_dir))
-        return runtime, role
-
-    def create(self, resolved: ResolvedRealSessionConfig) -> _RuntimeCreateResult:
-        runtime, role = self._runtime_and_role(resolved)
-        outcome = runtime.create_session(
-            role=role,
-            session_id=resolved.runtime_session_id,
-            session_name=resolved.session_name,
-            cwd=resolved.work_dir,
-        )
-        return _RuntimeCreateResult(
-            acpx_session_id=outcome.record.acpx_session_id, state=outcome.record.state
-        )
-
-    def send(self, resolved: ResolvedRealSessionConfig, prompt: str) -> _RuntimeTurnResult:
-        runtime, role = self._runtime_and_role(resolved)
-        outcome = runtime.send(
-            role=role,
-            session_id=resolved.runtime_session_id,
-            prompt=prompt,
-            cwd=resolved.work_dir,
-        )
-        status_value = getattr(outcome.status, "value", outcome.status)
-        completed = status_value == "completed"
-        artifact_count = 0
-        try:
-            artifact_count = sum(1 for p in Path(outcome.turn_dir).iterdir() if p.is_file())
-        except OSError:
-            artifact_count = 0
-        raw_effect = None
-        result_payload = getattr(outcome, "result", None)
-        if isinstance(result_payload, dict):
-            raw_effect = result_payload.get("observed_effect")
-        return _RuntimeTurnResult(
-            completed=completed,
-            status_label=str(status_value),
-            turn_id=outcome.turn_id,
-            artifact_count=artifact_count,
-            observed_effect=raw_effect if isinstance(raw_effect, bool) else None,
-        )
-
-    def close(self, resolved: ResolvedRealSessionConfig) -> _RuntimeCloseResult:
-        runtime, role = self._runtime_and_role(resolved)
-        outcome = runtime.close(
-            role=role, session_id=resolved.runtime_session_id, cwd=resolved.work_dir
-        )
-        return _RuntimeCloseResult(
-            closed=outcome.record.state == "closed", state=outcome.record.state
-        )
-
-    def best_effort_close(self, resolved: ResolvedRealSessionConfig) -> None:
-        # Graceful, swallowing close used as a leak guard. Never aborts/kills,
-        # never raises: a cleanup failure must not mask the original error.
-        try:
-            self.close(resolved)
-        except Exception:
-            pass
-
-    def abort(self, resolved: ResolvedRealSessionConfig) -> _RuntimeAbortResult:
-        runtime, role = self._runtime_and_role(resolved)
-        outcome = runtime.abort(
-            role=role,
-            session_id=resolved.runtime_session_id,
-            cwd=resolved.work_dir,
-        )
-        cancelled = getattr(outcome, "cancelled", False) is True
-        return _RuntimeAbortResult(
-            cancelled=cancelled,
-            state="cancelled" if cancelled else None,
-        )
-
-
 def _resolve_backend(backend: Any | None) -> Any:
-    return backend if backend is not None else _AgentRunSupervisorBackend()
+    """The injected backend, or fail closed — there is no default any more.
+
+    The in-tree default drove a supervisor session runtime that no longer
+    exists (seam S-2). Rather than emulate it, degrade to a launcher, or return
+    a stub whose failures would surface later and elsewhere, this refuses at
+    the boundary with the module's own stable code.
+    """
+
+    if backend is None:
+        raise RealSessionExecutionError(
+            _ERROR_SUPERVISOR_FAILED,
+            "the real persistent-session runtime backend is retired; inject one",
+        )
+    return backend
 
 
 # --------------------------------------------------------------------------- #
@@ -563,34 +499,24 @@ def _failed_outcome(error_code: str = _ERROR_SUPERVISOR_FAILED) -> SessionWorkOu
 
 
 def compose_goal_turn_prompt(goal_text: str) -> str:
-    """Compose a validated ``/goal <text>`` turn prompt for a persistent session.
+    """Fail closed: goal-turn composition is retired at this pin.
 
-    Delegates to ``agent_run_supervisor.goal.compose_goal_prompt`` (shipped
-    since agent-run-supervisor 0.1.4), which fails closed on empty text,
-    nested slash commands, and control characters. Literal ``/goal`` text is
-    only meaningful to adapters with native ``/goal`` support: since 0.1.5 the
-    upstream ``session send --goal-file`` path instead compiles adapter-correct
-    ``goal-contract/v1`` text via ``goal.compile_goal_prompt(role, GoalSpec)``,
-    which non-native adapters (e.g. Codex behind acpx) require — wiring goal
-    turns for such adapters must use that role-aware compiler, not this
-    passthrough. When the installed library predates goal-turn composition
-    (<= 0.1.3), this fails closed with ``activity_goal_unsupported`` rather
-    than sending unvalidated text; a rejected goal maps to
-    ``activity_goal_rejected``. The (lazy) import keeps module import free of
-    any agent_run_supervisor dependency.
+    It used to delegate to the supervisor library's goal compiler, which was
+    removed upstream at 0.7.x along with the rest of the legacy library surface
+    (seam S-2). A goal turn is only meaningful if the adapter-correct contract
+    text is compiled by the producer that owns the contract, so composing one
+    here from a literal template would send unvalidated text that a non-native
+    adapter would silently no-op. It refuses with the same stable
+    ``activity_goal_unsupported`` code the missing-compiler path always used;
+    a caller that needs goal turns supplies compiled text through its own
+    injected backend.
     """
 
-    try:
-        from agent_run_supervisor.goal import GoalPromptError, compose_goal_prompt
-    except ImportError:
-        raise RealSessionExecutionError(
-            _ERROR_GOAL_UNSUPPORTED,
-            "goal-turn composition requires agent-run-supervisor >= 0.1.4",
-        ) from None
-    try:
-        return compose_goal_prompt(goal_text)
-    except GoalPromptError as exc:
-        raise RealSessionExecutionError(_ERROR_GOAL_REJECTED, str(exc)) from None
+    _ = goal_text
+    raise RealSessionExecutionError(
+        _ERROR_GOAL_UNSUPPORTED,
+        "goal-turn composition is retired; supply compiled goal text instead",
+    )
 
 
 # --------------------------------------------------------------------------- #

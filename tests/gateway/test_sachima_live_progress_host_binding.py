@@ -16,13 +16,14 @@ Proves the LS4 Gateway/Feishu host binding seam stays default-off and fail-close
   registry + port + real lazy reader + LS4-A ``hermes_internal`` gate + display
   service), binds it into the tool, and returns a refs-only summary (task /
   session / artifact_ref — never the private ``artifact_dir``);
-* real caller API — with the exact-pinned ``agent-run-supervisor`` distribution
-  installed (``uv sync --extra dev`` / ``--extra agent-run-supervisor``; there
-  is no source-path fallback), a synthetic ``progress.json`` +
-  ``normalized-events.jsonl`` artifact dir is read end-to-end through the REAL
-  ``agent_run_supervisor.hermes_caller.events`` reader (never an in-test fake)
-  and the tool returns an available ``live_progress_display.v1`` envelope for
-  the real ``task_id/session_id``.
+* real reader — a synthetic ``progress.json`` + ``normalized-events.jsonl``
+  artifact dir is read end-to-end through the REAL default reader (never an
+  in-test fake) and the tool returns an available ``live_progress_display.v1``
+  envelope for the real ``task_id/session_id``. That reader is now Sachima's
+  own stdlib JSON/JSONL reader (ARS 0.7.6 plan §11, seams S-4/S-8): the
+  producer caller API it used to resolve was removed upstream, so these two
+  tests no longer gate on a distribution and no longer skip — they run
+  everywhere.
 
 Everything runs pure local/offline: no Gateway process, Feishu / IM / delivery
 surface, listener, or Temporal Worker is started — the "gateway" here is only
@@ -53,29 +54,6 @@ _DISABLED = binding_mod.SACHIMA_LIVE_PROGRESS_HOST_BINDING_DISABLED
 _ABSENT = binding_mod.SACHIMA_LIVE_PROGRESS_HOST_BINDING_ABSENT
 _INVALID = binding_mod.SACHIMA_LIVE_PROGRESS_HOST_BINDING_INVALID
 _BOUND = binding_mod.SACHIMA_LIVE_PROGRESS_HOST_BINDING_BOUND
-
-
-# --------------------------------------------------------------------------- #
-# Real caller-API discovery — the installed distribution only, else skip
-# (mirrors tests/sachima_supervisor/runtime_spine/test_agent_run_supervisor_live_progress_smoke.py,
-# which also guards "distribution installed ⇒ API importable" as a hard failure)
-# --------------------------------------------------------------------------- #
-def _load_real_caller_api():
-    try:
-        return importlib.import_module("agent_run_supervisor.hermes_caller.events")
-    except Exception:
-        return None
-
-
-_REAL_CALLER_API = _load_real_caller_api()
-_requires_real_api = pytest.mark.skipif(
-    _REAL_CALLER_API is None,
-    reason=(
-        "agent_run_supervisor.hermes_caller.events not importable — install the "
-        "pinned distribution via `uv sync --extra dev` (or --extra "
-        "agent-run-supervisor); default-off and fail-closed tests still run"
-    ),
-)
 
 
 # --------------------------------------------------------------------------- #
@@ -400,10 +378,9 @@ def test_gateway_runner_wires_binding_behind_guard():
 
 
 # --------------------------------------------------------------------------- #
-# E. Real caller-API end-to-end smoke (skipped when the distribution is absent)
+# E. Real-reader end-to-end smoke (the Sachima-owned stdlib reader; no gate)
 # --------------------------------------------------------------------------- #
-@_requires_real_api
-def test_real_api_end_to_end_display_available(monkeypatch, tmp_path):
+def test_real_reader_end_to_end_display_available(monkeypatch, tmp_path):
     """Acceptance 3+4: real reader, real task/session, available display."""
 
     artifact_dir = tmp_path / "ars_run"
@@ -457,8 +434,7 @@ def test_real_api_end_to_end_display_available(monkeypatch, tmp_path):
     assert "HERMES_RICH_RESULT_JSON_BEGIN" not in raw
 
 
-@_requires_real_api
-def test_real_api_after_seq_override_pages_forward(monkeypatch, tmp_path):
+def test_real_reader_after_seq_override_pages_forward(monkeypatch, tmp_path):
     artifact_dir = tmp_path / "ars_run"
     artifact_dir.mkdir()
     _write_progress(artifact_dir, last_seq=5, event_count=5)

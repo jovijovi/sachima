@@ -1,14 +1,19 @@
 """Real import-compatibility smokes for the pinned agent-run-supervisor.
 
-D0 of the ARS 0.6.3 Socket integration plan
-(``docs/plans/2026-08-05-ars-0.6.3-socket-integration-plan.md``): the library
-facade modules Sachima lazily imports today (``session_runtime``, ``session``,
-``role``, ``workspace``, ``goal``, ``session_inspect``,
-``hermes_caller.events``) and the official Socket API v2 client module
-(``agent_run_supervisor.arsd.client``) must import for real from the installed
-exact-pinned distribution — injected-double tests alone cannot prove the
-packaged module layout. Importing must open no daemon/socket connection and
-leave no runtime side effect.
+P1 of the ARS 0.7.6 Socket API v3 integration plan
+(``docs/plans/2026-08-17-ars-0.7.6-socket-api-v3-integration-plan.md``): the
+modules Sachima actually consumes from the installed exact-pinned
+distribution must import for real — injected-double tests alone cannot prove
+the packaged module layout. Importing must open no daemon/socket connection
+and leave no runtime side effect.
+
+0.7.x removed the legacy library surface (``role``, ``workspace``,
+``session_runtime``, ``session_inspect``, ``goal``, ``hermes_caller.events``).
+This file's gate is "distribution installed", not "module exists", so listing
+a removed module here would hard-fail rather than skip. The list is therefore
+the consumed set and nothing else — there is no compatibility shim, and the
+``library`` seam those modules belonged to is retired outright by a later
+stage.
 
 These smokes skip only on lean environments without the distribution; with the
 distribution installed (the CI dev posture) a failed import is a loud failure,
@@ -29,17 +34,15 @@ import pytest
 
 from sachima_supervisor.supervisor_library import AGENT_RUN_SUPERVISOR_DISTRIBUTION
 
-#: Library facade modules the existing backend/readers lazily import, plus the
-#: official Socket API v2 client module the D1 offline adapter binds to.
+#: The modules Sachima consumes from the 0.7.6 distribution: the official
+#: Socket API v3 client and the four modules the offline contract mirrors are
+#: drift-locked against.
 FACADE_MODULES = (
-    "agent_run_supervisor.session_runtime",
     "agent_run_supervisor.session",
-    "agent_run_supervisor.role",
-    "agent_run_supervisor.workspace",
-    "agent_run_supervisor.goal",
-    "agent_run_supervisor.session_inspect",
-    "agent_run_supervisor.hermes_caller.events",
     "agent_run_supervisor.arsd.client",
+    "agent_run_supervisor.arsd.protocol",
+    "agent_run_supervisor.native_acp.spec",
+    "agent_run_supervisor.exit_classifier",
 )
 
 
@@ -71,13 +74,13 @@ def test_facade_module_imports_for_real(module_name: str) -> None:
 
 @_requires_distribution
 def test_official_arsd_client_class_importable() -> None:
-    """The D1 adapter's only client entrypoint exists in the pinned package."""
+    """The adapter's only client entrypoint exists in the pinned package."""
 
     client_mod = importlib.import_module("agent_run_supervisor.arsd.client")
     arsd_client = getattr(client_mod, "ArsdClient", None)
     assert isinstance(arsd_client, type), (
         "agent_run_supervisor.arsd.client.ArsdClient must be a class in the "
-        "pinned distribution — the Socket API v2 adapter depends on it"
+        "pinned distribution — the Socket API v3 adapter depends on it"
     )
 
 

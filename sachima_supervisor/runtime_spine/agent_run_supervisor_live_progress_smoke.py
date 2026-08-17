@@ -1,25 +1,30 @@
-"""PR-LS3 Runtime Spine — agent-run-supervisor caller-API compatibility smoke.
+"""Runtime Spine — artifact-shape live-progress smoke (local/offline).
 
 A thin **local/offline** seam that reads already-written **synthetic** artifacts
 (a ``progress.json`` summary + a ``normalized-events.jsonl`` cursor stream) through
-the **real** ``agent_run_supervisor.hermes_caller.events`` caller/read API and maps
-them into Sachima's existing refs-only, fail-closed read-models — the PR3
+the Sachima-owned :class:`DefaultLiveProgressReader` and maps them into Sachima's
+existing refs-only, fail-closed read-models — the PR3
 :class:`LiveProgressProjection` and the PR-LS1 combined live workbench view — plus
 a small stable :class:`LiveProgressSmokeReport` that records only the smoke's
 coarse outcome (``available`` / ``unavailable`` / ``corrupt``) and the already-safe
 mirror fields.
 
-This module is a **compatibility smoke, not a runtime feature**. It is pure and
+This module was the LS3 **producer caller-API** compatibility smoke. That seam
+is retired (ARS 0.7.6 plan §11, S-5): the producer's caller/read API was removed
+upstream at 0.7.x and the default reader became Sachima's own stdlib JSON/JSONL
+reader over the same artifact shapes. What survives is a smoke over those
+shapes, which is what it was always really checking — and it now runs everywhere
+instead of skipping wherever a distribution was missing.
+
+It is a **shape smoke, not a runtime feature**. It is pure and
 side-effect-free: it reads files only, through the injected reader, and never
 writes an artifact, appends a ``TaskEventLog`` event, launches a real AGENT /
 runner / OS process, opens a network listener, starts a runtime / Temporal
-service, or calls a Gateway / Feishu / IM / delivery surface. The producer library
-is reached **only** lazily inside the existing :class:`DefaultLiveProgressReader`
-(no top-level ``agent_run_supervisor`` import here) and resolves only from the
-installed exact-pinned ``agent-run-supervisor`` distribution, so on an
-environment without the extra every helper fails closed to a clean
+service, or calls a Gateway / Feishu / IM / delivery surface. No producer
+distribution is imported on any path, so an environment without the extra reads
+exactly the same way; an absent or unreadable artifact fails closed to a clean
 ``live_progress_unavailable`` report / projection without leaking the raw
-import-error text.
+error text.
 
 Every public surface reuses the existing builders/validators and carries only the
 already-sanitized safe signal: refs / safe handles / bounded counts / coarse
@@ -298,17 +303,17 @@ def serialize_live_progress_smoke_report(report: LiveProgressSmokeReport) -> byt
 
 
 # --------------------------------------------------------------------------- #
-# Smoke entry points — real caller API by default, injectable reader for tests
+# Smoke entry points — the real default reader, injectable for fault fixtures
 # --------------------------------------------------------------------------- #
 def _resolve_reader(reader: Any) -> LiveProgressReader:
-    """Default to the real lazy caller reader; accept an injected one for tests.
+    """Default to the real reader; accept an injected one for fault fixtures.
 
     With ``reader=None`` the smoke wires the existing
-    :class:`DefaultLiveProgressReader`, which lazily imports the real
-    ``agent_run_supervisor.hermes_caller.events`` caller API per call and fails
-    closed to ``live_progress_unavailable`` when the library is absent. An injected
-    reader (an in-test fake) lets the safety / fail-closed paths run without the
-    real library.
+    :class:`DefaultLiveProgressReader` — Sachima's own stdlib JSON/JSONL reader
+    over the artifact shapes — which fails closed to
+    ``live_progress_unavailable`` when there is nothing to read. An injected
+    reader (an in-test fake) is how the corrupt/raising paths are driven, since
+    a real artifact directory cannot be made to raise on demand.
     """
 
     return DefaultLiveProgressReader() if reader is None else reader

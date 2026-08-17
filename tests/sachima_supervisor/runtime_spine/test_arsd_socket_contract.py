@@ -1,12 +1,17 @@
-"""D1 offline Socket API v2 contract tests for the arsd adapter boundary.
+"""P1 offline Socket API v3 contract tests for the arsd adapter boundary.
 
-Covers the ARS 0.6.3 Socket integration plan D1 slice
-(``docs/plans/2026-08-05-ars-0.6.3-socket-integration-plan.md``): the
+Covers the ARS 0.7.6 Socket API v3 integration plan P1 slice
+(``docs/plans/2026-08-17-ars-0.7.6-socket-api-v3-integration-plan.md``): the
 default-off :class:`ArsdSupervisorConfig`, the injected
 :class:`ArsdClientFacade` boundary with its lazy short-lived production
-facade, stable request identity, exact request construction, exact
-``server_info`` / ``submit`` / ``run_events`` validators, and the
-Sachima-owned stable error mapping.
+facade, stable request identity, exact request construction, the exact
+``server_info`` / ``submit`` / ``run_status`` / ``run_events`` /
+``run_cancel`` / ``session_status`` / ``session_list`` validators, the
+admission-product pre-check, and the Sachima-owned stable error mapping.
+
+Every mirror in the contract module is drift-locked here against the
+installed exact-pinned distribution: a mirror and the distribution that
+disagree mean the mirror is the bug.
 
 Everything here is hermetic and offline: the only sockets ever touched are
 throwaway AF_UNIX fake-socket servers owned by this file. No real daemon, no
@@ -90,7 +95,7 @@ def test_contract_module_import_is_pure() -> None:
 # --------------------------------------------------------------------------- #
 # Stable error mapping (plan §9): closed Sachima-owned codes, no remote text.
 # --------------------------------------------------------------------------- #
-#: The exact wire→Sachima closed mapping. Every arsd v1 wire code must map to
+#: The exact wire→Sachima closed mapping. Every arsd v3 wire code must map to
 #: one Sachima-owned stable code; anything off-contract collapses to INTERNAL.
 _WIRE_TO_STABLE = {
     "UNSUPPORTED_API_VERSION": RUNTIME_ARSD_VERSION_MISMATCH,
@@ -126,13 +131,16 @@ def test_wire_mapping_covers_the_installed_client_error_set() -> None:
     """Contract with the real pinned distribution: no wire code is unmapped.
 
     Imports the real protocol module (test-time only) and asserts our closed
-    mapping covers exactly ``ERROR_CODES_V1`` plus the client-local ``CLIENT``
+    mapping covers exactly ``ERROR_CODES`` plus the client-local ``CLIENT``
     code — a pin bump that adds/renames wire codes fails here instead of
-    collapsing new codes to INTERNAL silently.
+    collapsing new codes to INTERNAL silently. The anchor moved from the
+    retired ``ERROR_CODES_V1`` symbol at 0.7.x (Spec D-9); the 17-code set
+    itself is unchanged.
     """
 
     protocol = pytest.importorskip("agent_run_supervisor.arsd.protocol")
-    assert set(_WIRE_TO_STABLE) == set(protocol.ERROR_CODES_V1) | {"CLIENT"}
+    assert set(_WIRE_TO_STABLE) == set(protocol.ERROR_CODES) | {"CLIENT"}
+    assert len(protocol.ERROR_CODES) == 17
 
 
 @pytest.mark.parametrize(
@@ -184,6 +192,7 @@ def test_spine_error_from_mapping_never_carries_remote_text() -> None:
 # --------------------------------------------------------------------------- #
 SOCKET_CANARY = "/tmp/sachima-canary/arsd-private.sock"
 WORKSPACE_CANARY = "/tmp/sachima-canary/private-workspace"
+LEDGER_CANARY = "/tmp/sachima-canary/arsd-run-bindings.json"
 
 
 def _valid_config_kwargs(**overrides):
@@ -193,10 +202,11 @@ def _valid_config_kwargs(**overrides):
 
     kwargs = {
         "type": ARSD_SUPERVISOR_CONFIG_TYPE,
-        "approval_ref": "approval_arsd_d1_offline",
+        "approval_ref": "approval_arsd_p1_offline",
         "owner": "sachima_host",
         "namespace": "sachima_tasks",
         "socket_path": SOCKET_CANARY,
+        "binding_ledger_path": LEDGER_CANARY,
         "agent_by_policy_ref": {"policy_reader": "reader-agent"},
         "model_by_policy_ref": {"policy_reader": "claude-sonnet-5"},
         "effort_by_policy_ref": {"policy_reader": "medium"},
@@ -243,7 +253,7 @@ def test_config_defaults_are_off_and_pinned_to_the_reviewed_contract() -> None:
     config = _make_config()
     assert config.enabled is False
     assert config.expected_package_version == EXPECTED_AGENT_RUN_SUPERVISOR_VERSION
-    assert config.required_api_version == ARSD_REQUIRED_API_VERSION == 2
+    assert config.required_api_version == ARSD_REQUIRED_API_VERSION == 3
 
 
 def test_enabled_gate_fails_closed_unless_exactly_true() -> None:
@@ -281,6 +291,10 @@ def test_enabled_must_be_exactly_bool_true_not_truthy() -> None:
         {"socket_path": ""},
         {"socket_path": "relative/path.sock"},
         {"socket_path": 7},
+        {"binding_ledger_path": ""},
+        {"binding_ledger_path": "relative/ledger.json"},
+        {"binding_ledger_path": 7},
+        {"binding_ledger_path": None},
         {"agent_by_policy_ref": {}},
         {"agent_by_policy_ref": {"reader": "reader-agent"}},
         {"agent_by_policy_ref": {"policy_reader": ""}},
@@ -304,8 +318,10 @@ def test_enabled_must_be_exactly_bool_true_not_truthy() -> None:
         {"evidence_policy_hash": ""},
         {"recovery_policy_hash": None},
         {"expected_package_version": "0.1.7"},
+        {"expected_package_version": "0.6.3"},
         {"expected_package_version": "9.9.9"},
         {"required_api_version": 1},
+        {"required_api_version": 2},
         {"required_api_version": True},
     ],
 )
@@ -338,7 +354,32 @@ def test_config_repr_and_str_never_leak_private_values() -> None:
     for rendering in (repr(config), str(config)):
         assert SOCKET_CANARY not in rendering
         assert WORKSPACE_CANARY not in rendering
+        assert LEDGER_CANARY not in rendering
         assert "sachima-canary" not in rendering
+
+
+def test_binding_ledger_path_is_private_and_outside_the_tracked_repo() -> None:
+    """P1-f: the durable binding ledger P2 will consume is a private host path.
+
+    It is carried like ``socket_path`` — validated by the one shared private
+    path boundary, absent from every rendering surface, and refused when it
+    would bind inside the tracked worktree.
+    """
+
+    from pathlib import Path
+
+    config = _make_config()
+    assert config.binding_ledger_path == LEDGER_CANARY
+
+    repo_root = Path(
+        __import__(
+            "sachima_supervisor.runtime_spine.arsd_socket_contract",
+            fromlist=["_REPO_ROOT"],
+        )._REPO_ROOT
+    )
+    with pytest.raises(SpineError) as excinfo:
+        _make_config(binding_ledger_path=str(repo_root / "arsd-bindings.json"))
+    _assert_stable_code_only(excinfo, RUNTIME_INVALID_ARSD_CONFIG)
 
 
 def test_config_has_no_serialize_surface() -> None:
@@ -369,7 +410,7 @@ def test_config_maps_are_owned_immutable_copies() -> None:
 
 
 def test_run_limits_mirror_matches_the_installed_distribution() -> None:
-    """Drift-lock: our closed RunLimits key mirror equals the real 0.6.3 spec."""
+    """Drift-lock: our closed RunLimits key mirror equals the real 0.7.6 spec."""
 
     import dataclasses
 
@@ -414,26 +455,31 @@ def test_write_capable_grant_capabilities_fail_closed(capabilities) -> None:
 
 
 def test_grant_capability_allowlist_drift_locks_the_pinned_permission_domain() -> None:
-    """One closed allowlist, checked against every pinned permission kind.
+    """B-7: one closed allowlist, checked against every pinned permission kind.
 
-    Imports the real 0.6.3 permission domain and asserts: the local allowlist
-    is exactly ``{"read", "search"}`` and stays inside the pinned domain, each
-    allowlisted kind is admitted end-to-end (config plus the real
-    ``parse_submit``), and every other pinned kind fails closed. A pin bump
-    that renames or extends the permission domain fails here instead of
-    drifting silently.
+    Imports the real 0.7.6 permission domain — ``native_acp.spec``, since the
+    retired ``agent_run_supervisor.role`` anchor no longer exists (Spec D-10) —
+    and asserts: the local allowlist is exactly ``{"read", "search"}`` and
+    stays inside the pinned domain, each allowlisted kind is admitted
+    end-to-end (config plus the real ``parse_submit``), and every other pinned
+    kind fails closed. 0.7.6's once-scoped ``edit``/``delete``/``move`` allow
+    path (Δ-14) is recorded in the Spec and deliberately not opened here, so
+    those kinds stay on the failing side of this loop.
     """
 
-    role = pytest.importorskip("agent_run_supervisor.role")
+    spec = pytest.importorskip("agent_run_supervisor.native_acp.spec")
     protocol = pytest.importorskip("agent_run_supervisor.arsd.protocol")
     from sachima_supervisor.runtime_spine.arsd_socket_contract import (
         _GRANTABLE_CAPABILITIES,
     )
 
     assert _GRANTABLE_CAPABILITIES == frozenset({"read", "search"})
-    assert _GRANTABLE_CAPABILITIES < set(role.PERMISSION_KINDS)
+    assert _GRANTABLE_CAPABILITIES < set(spec.PERMISSION_KINDS)
+    # A-27 / Δ-14: the write family exists upstream and stays closed here.
+    assert {"edit", "delete", "move"} & set(spec.PERMISSION_KINDS)
+    assert not {"edit", "delete", "move"} & _GRANTABLE_CAPABILITIES
 
-    for kind in role.PERMISSION_KINDS:
+    for kind in spec.PERMISSION_KINDS:
         if kind in _GRANTABLE_CAPABILITIES:
             config = _make_config(enabled=True, grant_capabilities=(kind,))
             assert config.grant_capabilities == (kind,)
@@ -445,9 +491,20 @@ def test_grant_capability_allowlist_drift_locks_the_pinned_permission_domain() -
             assert excinfo.value.code == RUNTIME_INVALID_ARSD_CONFIG
 
 
+@pytest.mark.parametrize("write_kind", ["edit", "delete", "move"])
+def test_write_capability_in_grant_capabilities_fails_closed(write_kind) -> None:
+    """A-27: a config naming a 0.7.6 write-family capability fails closed at
+    construction, before any socket call. The once-scoped allow path exists
+    upstream; the first Sachima integration stays read/search-only."""
+
+    with pytest.raises(SpineError) as excinfo:
+        _make_config(grant_capabilities=("read", write_kind))
+    _assert_stable_code_only(excinfo, RUNTIME_INVALID_ARSD_CONFIG)
+
+
 def test_read_search_grant_is_accepted_and_parses_under_the_pinned_protocol() -> None:
     """Positive control: the approved read/search grant builds a payload the
-    real 0.6.3 wire validator accepts unchanged."""
+    real 0.7.6 wire validator accepts unchanged."""
 
     protocol = pytest.importorskip("agent_run_supervisor.arsd.protocol")
     config = _make_config(enabled=True, grant_capabilities=("read", "search"))
@@ -457,7 +514,7 @@ def test_read_search_grant_is_accepted_and_parses_under_the_pinned_protocol() ->
 
 # --------------------------------------------------------------------------- #
 # RunLimits bounds mirror (formal review blocker 2): every per-field min/max
-# and the coupled event budget of the installed 0.6.3 spec, enforced locally.
+# and the structural event budget of the installed 0.7.6 spec, enforced locally.
 # --------------------------------------------------------------------------- #
 def _limits_with(**overrides):
     limits = dict(_valid_config_kwargs()["run_limits_by_policy_ref"]["policy_reader"])
@@ -466,14 +523,17 @@ def _limits_with(**overrides):
 
 
 def test_run_limit_bounds_mirror_the_pinned_spec_constants() -> None:
-    """Drift-lock: the local per-field ceilings/floors and the coupled event
-    budget equal the real 0.6.3 spec constants exactly — no arbitrary local
-    limits."""
+    """B-11 drift-lock: the local per-field ceilings/floors equal the real
+    0.7.6 spec constants exactly — no arbitrary local limits.
+
+    The two values 0.7.2 moved (Δ-1, Δ-2) are asserted by name below; this
+    lock is what makes the mirror follow the distribution rather than a
+    number written in by hand.
+    """
 
     spec = pytest.importorskip("agent_run_supervisor.native_acp.spec")
     from sachima_supervisor.runtime_spine.arsd_socket_contract import (
         _INT_RUN_LIMIT_KEYS,
-        _RUN_LIMIT_EVENT_BUDGET_BYTES,
         _RUN_LIMIT_KEYS,
         _RUN_LIMIT_MAX,
         _RUN_LIMIT_MIN,
@@ -490,7 +550,6 @@ def test_run_limit_bounds_mirror_the_pinned_spec_constants() -> None:
     assert set(_RUN_LIMIT_MAX) == set(_RUN_LIMIT_KEYS)
     assert set(_RUN_LIMIT_MIN) == set(_INT_RUN_LIMIT_KEYS)
     assert _RUN_LIMIT_MIN["max_event_bytes"] == spec.LIMIT_MAX_EVENT_BYTES_MIN
-    assert _RUN_LIMIT_EVENT_BUDGET_BYTES == spec.LIMIT_EVENT_BUDGET_BYTES
     # The two integer floors the spec keeps unnamed (minimum=1) are
     # behaviour-locked against the real RunLimits dataclass.
     for key in ("max_stderr_bytes", "max_events"):
@@ -500,12 +559,97 @@ def test_run_limit_bounds_mirror_the_pinned_spec_constants() -> None:
             spec.RunLimits(**_limits_with(**{key: 0}))
 
 
+def test_run_limit_defaults_and_maxima_are_the_exact_installed_0_7_6_values() -> None:
+    """B-11 / Δ-1 – Δ-3: the two values 0.7.2 moved, and the two pairs it did
+    not, asserted against the installed distribution rather than written in.
+
+    ``turn_timeout_seconds`` default ``21600.0`` (6 h) and the inclusive
+    ``LIMIT_TURN_TIMEOUT_SECONDS_MAX`` ``604800.0`` (7 d) are read off the real
+    module first, so this fails if the distribution ever disagrees with the
+    numbers the Spec calibrated against. The startup-timeout and cancel-grace
+    default/max pairs are asserted at their unchanged 0.7.1 values so a later
+    silent move is caught rather than absorbed.
+    """
+
+    import dataclasses
+
+    spec = pytest.importorskip("agent_run_supervisor.native_acp.spec")
+    from sachima_supervisor.runtime_spine.arsd_socket_contract import (
+        _RUN_LIMIT_DEFAULTS,
+        _RUN_LIMIT_MAX,
+    )
+
+    real_defaults = {
+        field.name: field.default for field in dataclasses.fields(spec.RunLimits)
+    }
+    assert dict(_RUN_LIMIT_DEFAULTS) == real_defaults
+
+    # Δ-1 / Δ-2 — the calibrated move, exact and inclusive.
+    assert real_defaults["turn_timeout_seconds"] == 21_600.0
+    assert spec.LIMIT_TURN_TIMEOUT_SECONDS_MAX == 604_800.0
+    assert _RUN_LIMIT_DEFAULTS["turn_timeout_seconds"] == 21_600.0
+    assert _RUN_LIMIT_MAX["turn_timeout_seconds"] == 604_800.0
+    # Inclusive: the maximum itself is admissible, Sachima-side and upstream.
+    _make_config(run_limits_by_policy_ref={"policy_reader": _limits_with(
+        turn_timeout_seconds=604_800.0
+    )})
+    spec.RunLimits(**_limits_with(turn_timeout_seconds=604_800.0))
+
+    # Δ-3 — recorded as unchanged so the timeout move is not over-read.
+    assert real_defaults["startup_timeout_seconds"] == 60.0
+    assert spec.LIMIT_STARTUP_TIMEOUT_SECONDS_MAX == 3_600.0
+    assert real_defaults["cancel_grace_seconds"] == 10.0
+    assert spec.LIMIT_CANCEL_GRACE_SECONDS_MAX == 300.0
+
+
+def test_no_sachima_invented_number_lives_in_the_run_limit_mirror_set() -> None:
+    """B-11's second half: every mirrored limit number is the distribution's.
+
+    Each value in ``_RUN_LIMIT_MAX`` / ``_RUN_LIMIT_DEFAULTS`` must be present
+    in the set of real spec values; a number Sachima chose for itself would not
+    appear there and fails here.
+    """
+
+    import dataclasses
+
+    spec = pytest.importorskip("agent_run_supervisor.native_acp.spec")
+    from sachima_supervisor.runtime_spine.arsd_socket_contract import (
+        ARSD_STRUCTURAL_MAX_RUN_EVENT_BUDGET_BYTES,
+        _RUN_LIMIT_DEFAULTS,
+        _RUN_LIMIT_MAX,
+        _RUN_LIMIT_MIN,
+    )
+
+    real_values = {
+        spec.LIMIT_STARTUP_TIMEOUT_SECONDS_MAX,
+        spec.LIMIT_TURN_TIMEOUT_SECONDS_MAX,
+        spec.LIMIT_CANCEL_GRACE_SECONDS_MAX,
+        spec.LIMIT_MAX_STDERR_BYTES_MAX,
+        spec.LIMIT_MAX_EVENT_BYTES_MAX,
+        spec.LIMIT_MAX_EVENTS_MAX,
+        spec.LIMIT_MAX_EVENT_BYTES_MIN,
+        spec.STRUCTURAL_MAX_RUN_EVENT_BUDGET_BYTES,
+        1,  # the spec's unnamed integer floor (``minimum=1``)
+    }
+    real_values |= {
+        field.default for field in dataclasses.fields(spec.RunLimits)
+    }
+    mirrored = (
+        set(_RUN_LIMIT_MAX.values())
+        | set(_RUN_LIMIT_MIN.values())
+        | set(_RUN_LIMIT_DEFAULTS.values())
+        | {ARSD_STRUCTURAL_MAX_RUN_EVENT_BUDGET_BYTES}
+    )
+    assert mirrored <= real_values
+
+
 @pytest.mark.parametrize(
     "limit_field,value",
     [
         ("startup_timeout_seconds", 3601),
         ("startup_timeout_seconds", 3600.5),
-        ("turn_timeout_seconds", 86_401),
+        ("turn_timeout_seconds", 604_801),
+        ("turn_timeout_seconds", 604_800.5),
         ("cancel_grace_seconds", 300.5),
         ("max_stderr_bytes", 67_108_865),
         ("max_event_bytes", 1_048_577),
@@ -513,8 +657,10 @@ def test_run_limit_bounds_mirror_the_pinned_spec_constants() -> None:
         ("max_events", 1_000_001),
     ],
 )
-def test_run_limits_outside_the_pinned_bounds_fail_closed(limit_field, value) -> None:
-    """A limits policy the installed 0.6.3 daemon would refuse as
+def test_run_limits_above_the_mirrored_maximum_fail_closed_at_config_construction(
+    limit_field, value
+) -> None:
+    """A limits policy the installed 0.7.6 daemon would refuse as
     INVALID_REQUEST is never admitted config — the reviewed repro is
     ``startup_timeout_seconds=3601``. The identical mapping on the wire is
     the oracle: the real ``parse_submit`` refuses it too."""
@@ -537,15 +683,14 @@ def test_run_limits_outside_the_pinned_bounds_fail_closed(limit_field, value) ->
 
 
 def test_run_limit_exact_boundaries_are_accepted_like_the_pinned_spec() -> None:
-    """Positive control: exact per-field ceilings and floors (with a
-    satisfiable coupled budget) are admitted locally and parse under the real
-    pinned protocol."""
+    """Positive control: exact per-field ceilings and floors are admitted
+    locally and parse under the real pinned protocol."""
 
     protocol = pytest.importorskip("agent_run_supervisor.arsd.protocol")
     for limits in (
         {
             "startup_timeout_seconds": 3600.0,
-            "turn_timeout_seconds": 86_400.0,
+            "turn_timeout_seconds": 604_800.0,
             "cancel_grace_seconds": 300.0,
             "max_stderr_bytes": 67_108_864,
             "max_event_bytes": 1_048_576,
@@ -561,29 +706,46 @@ def test_run_limit_exact_boundaries_are_accepted_like_the_pinned_spec() -> None:
         assert command.request.limits.max_events == limits["max_events"]
 
 
-def test_run_limit_event_budget_coupling_matches_the_pinned_spec() -> None:
-    """The coupled ``max_event_bytes * max_events`` budget of the installed
-    0.6.3 spec is enforced locally: the exact budget is admitted, one event
-    over it fails closed, and the real ``parse_submit`` agrees."""
+def test_structural_event_budget_is_mirrored_as_a_maximum_not_a_default() -> None:
+    """B-12 / Δ-11: ``STRUCTURAL_MAX_RUN_EVENT_BUDGET_BYTES`` is the product of
+    the two per-field maxima, mirrored as a **maximum**.
 
-    protocol = pytest.importorskip("agent_run_supervisor.arsd.protocol")
-    at_budget = _limits_with(max_event_bytes=1_048_576, max_events=1024)
-    over_budget = _limits_with(max_event_bytes=1_048_576, max_events=1025)
+    Asserted against the real module, and proven to behave as a maximum: the
+    full per-field ceiling set — whose product *is* the structural maximum —
+    is admissible under the real structural policy and as Sachima config. The
+    4 GiB deployment default (Δ-9) is deliberately not equality-asserted
+    anywhere; it is a daemon configuration value, and this test pins that no
+    Sachima mirror carries it.
+    """
 
-    accepted = _make_config(
-        enabled=True, run_limits_by_policy_ref={"policy_reader": at_budget}
+    spec = pytest.importorskip("agent_run_supervisor.native_acp.spec")
+    from sachima_supervisor.runtime_spine.arsd_socket_contract import (
+        ARSD_STRUCTURAL_MAX_RUN_EVENT_BUDGET_BYTES,
+        _RUN_LIMIT_MAX,
     )
-    protocol.parse_submit(_build_payload(config=accepted))
 
-    with pytest.raises(SpineError) as excinfo:
-        _make_config(run_limits_by_policy_ref={"policy_reader": over_budget})
-    _assert_stable_code_only(excinfo, RUNTIME_INVALID_ARSD_CONFIG)
+    assert (
+        ARSD_STRUCTURAL_MAX_RUN_EVENT_BUDGET_BYTES
+        == spec.STRUCTURAL_MAX_RUN_EVENT_BUDGET_BYTES
+        == spec.LIMIT_MAX_EVENT_BYTES_MAX * spec.LIMIT_MAX_EVENTS_MAX
+    )
 
-    payload = _build_payload(config=_make_config(enabled=True))
-    payload["request"]["limits"].update(over_budget)
-    with pytest.raises(protocol.ProtocolError) as protocol_excinfo:
-        protocol.parse_submit(payload)
-    assert protocol_excinfo.value.code == protocol.INVALID_REQUEST
+    ceiling = _limits_with(
+        max_event_bytes=_RUN_LIMIT_MAX["max_event_bytes"],
+        max_events=_RUN_LIMIT_MAX["max_events"],
+    )
+    assert (
+        ceiling["max_event_bytes"] * ceiling["max_events"]
+        == ARSD_STRUCTURAL_MAX_RUN_EVENT_BUDGET_BYTES
+    )
+    # A maximum is inclusive: the structural policy admits the product itself.
+    spec.RunLimits(**ceiling, event_budget_policy=spec.STRUCTURAL_EVENT_BUDGET_POLICY)
+    _make_config(enabled=True, run_limits_by_policy_ref={"policy_reader": ceiling})
+
+    # No mirror is the 4 GiB deployment default (Δ-9 / Spec §5.3.1).
+    four_gib = 4 * 1024 * 1024 * 1024
+    assert ARSD_STRUCTURAL_MAX_RUN_EVENT_BUDGET_BYTES != four_gib
+    assert four_gib not in set(_RUN_LIMIT_MAX.values())
 
 
 def test_boundary_validator_rejects_forgeries_and_returns_config_unchanged() -> None:
@@ -680,6 +842,10 @@ def test_request_id_rejects_unsafe_identity_components(
 # Submit request construction (plan §6.2): exact wire shape, refs resolved
 # through the closed config maps only.
 # --------------------------------------------------------------------------- #
+#: Sentinel for "this request key is structurally absent" in diff comparisons.
+_ABSENT = object()
+
+
 def _build_payload(config=None, **overrides):
     from sachima_supervisor.runtime_spine.arsd_socket_contract import (
         build_arsd_submit_payload,
@@ -699,7 +865,7 @@ def _build_payload(config=None, **overrides):
     return build_arsd_submit_payload(config, **kwargs)
 
 
-def test_submit_payload_has_the_exact_v2_wire_shape() -> None:
+def test_submit_payload_has_the_exact_v3_wire_shape() -> None:
     from sachima_supervisor.runtime_spine.arsd_socket_contract import (
         ARSD_SPEC_SCHEMA_VERSION,
     )
@@ -721,8 +887,11 @@ def test_submit_payload_has_the_exact_v2_wire_shape() -> None:
     assert request["owner"] == "sachima_host"
     assert request["namespace"] == "sachima_tasks"
     assert request["agent_id"] == "reader-agent"
-    assert request["session_reuse"] == "none"
-    assert request["ars_session_id"] is None
+    # Schema 3 retired the reuse mode entirely: the whole Session decision is
+    # the presence of ``session_id`` (Spec D-7 / §6.2).
+    assert "session_reuse" not in request
+    assert "ars_session_id" not in request
+    assert "session_id" not in request
     assert request["expected_binding_hash"] is None
     assert request["input_refs"] == []
     assert request["requested_model"] == "claude-sonnet-5"
@@ -743,11 +912,11 @@ def test_submit_payload_has_the_exact_v2_wire_shape() -> None:
     }
     assert request["evidence_policy_hash"] == "sha256:" + "d" * 64
     assert request["recovery_policy_hash"] == "sha256:" + "e" * 64
-    assert request["schema_version"] == ARSD_SPEC_SCHEMA_VERSION == 2
+    assert request["schema_version"] == ARSD_SPEC_SCHEMA_VERSION == 3
 
 
 def test_submit_payload_parses_under_the_real_pinned_protocol() -> None:
-    """The built payload must satisfy the installed 0.6.3 ``parse_submit``.
+    """The built payload must satisfy the installed 0.7.6 ``parse_submit``.
 
     This is the exact-contract lock: Sachima's builder output round-trips
     through the real wire validator (test-time import only) so a field-name or
@@ -758,28 +927,98 @@ def test_submit_payload_parses_under_the_real_pinned_protocol() -> None:
     payload = _build_payload()
     command = protocol.parse_submit(payload)
     assert command.request.owner == "sachima_host"
-    assert command.request.schema_version == 2
+    assert command.request.schema_version == 3
+    assert command.request.session_id is None
     assert command.prompt_text == PROMPT_CANARY
 
 
-def test_submit_payload_session_reuse_contract() -> None:
-    reuse = _build_payload(
-        session_reuse="reuse", ars_session_id="run-1234abcd-ephemeral"
-    )
-    assert reuse["request"]["session_reuse"] == "reuse"
-    assert reuse["request"]["ars_session_id"] == "run-1234abcd-ephemeral"
+# --------------------------------------------------------------------------- #
+# Session create vs. reuse (Spec §6.2 / A-5 / A-6): the whole Session decision
+# is the *presence* of ``request.session_id``. Absent creates; present-valid
+# reuses; present-null is INVALID_REQUEST and must never leave Sachima.
+# --------------------------------------------------------------------------- #
+REUSE_SESSION_ID = "sess-4f2a9c11b7d3"
+
+
+def test_submit_payload_omits_the_session_key_entirely_on_create() -> None:
+    """A-5: create says "I have no Session" by omitting the key.
+
+    The real wire parser is the oracle for what an omitted key means, and the
+    same request dict carrying an explicit ``None`` is refused by it — which
+    is exactly why the builder may never produce one.
+    """
+
+    protocol = pytest.importorskip("agent_run_supervisor.arsd.protocol")
+
+    payload = _build_payload()
+    assert "session_id" not in payload["request"]
+    assert protocol.parse_submit(payload).request.session_id is None
+
+    # The oracle: present-null is a wire violation, not a tolerated create.
+    present_null = _build_payload()
+    present_null["request"]["session_id"] = None
+    with pytest.raises(protocol.ProtocolError) as excinfo:
+        protocol.parse_submit(present_null)
+    assert excinfo.value.code == protocol.INVALID_REQUEST
+
+
+def test_submit_payload_carries_a_valid_session_id_verbatim_on_reuse() -> None:
+    """A-6: a valid id is carried through unchanged and parses upstream."""
+
+    protocol = pytest.importorskip("agent_run_supervisor.arsd.protocol")
+
+    payload = _build_payload(session_id=REUSE_SESSION_ID)
+    assert payload["request"]["session_id"] == REUSE_SESSION_ID
+    assert protocol.parse_submit(payload).request.session_id == REUSE_SESSION_ID
+
+    # Reuse changes exactly one key relative to create — nothing else moves.
+    create = _build_payload()
+    differing = {
+        key
+        for key in set(create["request"]) | set(payload["request"])
+        if create["request"].get(key, _ABSENT) != payload["request"].get(key, _ABSENT)
+    }
+    assert differing == {"session_id"}
+
+
+def test_submit_payload_explicit_null_session_id_fails_closed() -> None:
+    """A-5: a Sachima id lookup that returned ``None`` must not silently start
+    a second conversation. Passing ``None`` explicitly is a fail-closed
+    invalid request, and creating requires omitting the argument."""
 
     with pytest.raises(SpineError) as excinfo:
-        _build_payload(session_reuse="reuse")
-    assert excinfo.value.code == RUNTIME_ARSD_INVALID_REQUEST
+        _build_payload(session_id=None)
+    _assert_stable_code_only(excinfo, RUNTIME_ARSD_INVALID_REQUEST)
+
+
+@pytest.mark.parametrize(
+    "bad_session_id",
+    [
+        "sess.4f2a9c11",
+        "run4abc.ephemeral",
+        "_leading_underscore",
+        "-leading-dash",
+        "has space",
+        "has/slash",
+        "..",
+        "",
+        7,
+        True,
+        [],
+        {},
+    ],
+)
+def test_submit_payload_off_grammar_session_id_fails_closed_without_a_socket_call(
+    bad_session_id,
+) -> None:
+    """A-6: an id violating ``[A-Za-z0-9][A-Za-z0-9_\\-]*`` — a dotted one
+    included, which the retired wire-token grammar would have accepted — fails
+    closed Sachima-side. The builder is pure, so no socket call is reachable
+    from here at all."""
 
     with pytest.raises(SpineError) as excinfo:
-        _build_payload(session_reuse="attach")
-    assert excinfo.value.code == RUNTIME_ARSD_INVALID_REQUEST
-
-    with pytest.raises(SpineError) as excinfo:
-        _build_payload(session_reuse="none", ars_session_id="run-1-ephemeral")
-    assert excinfo.value.code == RUNTIME_ARSD_INVALID_REQUEST
+        _build_payload(session_id=bad_session_id)
+    _assert_stable_code_only(excinfo, RUNTIME_ARSD_INVALID_REQUEST)
 
 
 def test_submit_payload_rejects_unknown_refs_fail_closed() -> None:
@@ -841,17 +1080,6 @@ def test_submit_payload_unencodable_prompt_is_invalid_request_not_a_crash(
     rendering = repr(excinfo.value) + str(excinfo.value) + repr(excinfo.value.args)
     assert "surrogate" not in rendering.lower()
     assert "\ud800" not in rendering and "\udfff" not in rendering
-
-
-@pytest.mark.parametrize("bad_reuse", [[], {}, ["none"]])
-def test_submit_payload_unhashable_session_reuse_is_invalid_request_not_a_crash(
-    bad_reuse,
-) -> None:
-    """An unhashable session_reuse fails closed — never a raw TypeError."""
-
-    with pytest.raises(SpineError) as excinfo:
-        _build_payload(session_reuse=bad_reuse)
-    _assert_stable_code_only(excinfo, RUNTIME_ARSD_INVALID_REQUEST)
 
 
 def test_submit_payload_input_refs_are_claim_checks_only() -> None:
@@ -990,28 +1218,287 @@ def test_malformed_external_paths_fail_closed_at_the_shared_boundary(
 
 def test_submit_payload_valid_cwd_is_preserved_through_the_path_boundary() -> None:
     """The repair must not narrow valid behavior: a well-formed private
-    absolute cwd still passes through verbatim."""
+    absolute cwd inside the bound workspace still passes through verbatim."""
 
-    cwd = "/tmp/sachima-canary/task-cwd"
+    cwd = WORKSPACE_CANARY + "/task-cwd"
     assert _build_payload(cwd=cwd)["cwd"] == cwd
+
+
+# --------------------------------------------------------------------------- #
+# cwd containment (Δ-13 / Spec §10.6.2 / A-28): at 0.7.6 a read/search allow
+# requires every declared path to resolve inside the bound workspace, so a cwd
+# outside ``workspace_root`` turns a correctly configured Run into a
+# guaranteed failure. That is checkable offline, before any socket call.
+# --------------------------------------------------------------------------- #
+class _ExplodingFacade:
+    """A facade double whose every operation fails the test if reached."""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def _forbidden(self, op: str):
+        self.calls.append(op)
+        raise AssertionError(f"no facade call may be reachable here: {op}")
+
+    def server_info(self):
+        self._forbidden("server_info")
+
+    def submit(self, *, request_id, payload):
+        self._forbidden("submit")
+
+    def run_status(self, run_id):
+        self._forbidden("run_status")
+
+    def run_events(self, run_id, *, from_seq, limit=None):
+        self._forbidden("run_events")
+
+    def run_cancel(self, run_id):
+        self._forbidden("run_cancel")
+
+    def session_status(self, session_id):
+        self._forbidden("session_status")
+
+    def session_list(self):
+        self._forbidden("session_list")
+
+
+def _build_then_submit(facade, config=None, **overrides):
+    """Build a payload and hand it straight to the facade.
+
+    This is the shape every later dispatch takes: construct, then submit. It
+    exists so the "fails closed **before** any facade call" tests are not
+    vacuous — with a valid payload the armed double is genuinely reached
+    (proven by :func:`test_the_exploding_facade_double_is_armed`), so a test
+    that never reaches it proves the builder refused first.
+    """
+
+    payload = _build_payload(config=config, **overrides)
+    return facade.submit(request_id="sachima-offline-construction-probe", payload=payload)
+
+
+def test_the_exploding_facade_double_is_armed() -> None:
+    """Control for the two fail-closed-before-any-call tests below: a payload
+    the builder accepts does reach ``facade.submit``."""
+
+    facade = _ExplodingFacade()
+    with pytest.raises(AssertionError):
+        _build_then_submit(facade)
+    assert facade.calls == ["submit"]
+
+
+@pytest.mark.parametrize(
+    "cwd",
+    [
+        "/tmp/sachima-canary/other-workspace",
+        "/tmp/sachima-canary",
+        "/tmp",
+        "/tmp/sachima-canary/private-workspace-sibling",
+        "/tmp/sachima-canary/private-workspace/../escape",
+    ],
+    ids=["sibling", "parent", "root", "prefix_lookalike", "traversal"],
+)
+def test_cwd_outside_workspace_root_fails_closed_before_any_facade_call(cwd) -> None:
+    """A-28: the containment check runs inside the builder, so a submit that
+    would make every read/search deny fail-closed never leaves Sachima.
+
+    The facade double raises on any call; the builder is the only thing that
+    runs, and it must refuse first. A path that merely shares a textual prefix
+    with the workspace root is outside it, and traversal is resolved before
+    the comparison rather than compared as text.
+    """
+
+    facade = _ExplodingFacade()
+    with pytest.raises(SpineError) as excinfo:
+        _build_then_submit(facade, cwd=cwd)
+    _assert_stable_code_only(excinfo, RUNTIME_ARSD_INVALID_REQUEST)
+    assert facade.calls == []
+    assert "sachima-canary" not in _rendered_chain(excinfo)
+
+
+@pytest.mark.parametrize(
+    "cwd",
+    [
+        WORKSPACE_CANARY,
+        WORKSPACE_CANARY + "/task-cwd",
+        WORKSPACE_CANARY + "/nested/deeper",
+        WORKSPACE_CANARY + "/nested/../task-cwd",
+    ],
+    ids=["root_itself", "child", "grandchild", "traversal_back_inside"],
+)
+def test_cwd_inside_workspace_root_is_accepted(cwd) -> None:
+    """A-28's other half: containment must not narrow valid behaviour. The
+    workspace root itself is inside itself, and a path that resolves back
+    inside is accepted."""
+
+    assert _build_payload(cwd=cwd)["cwd"] == cwd
+
+
+# --------------------------------------------------------------------------- #
+# Per-Run configuration override (Spec §5.5 / A-25): model and effort come
+# from the closed policy maps on every Run, and from nowhere else. These are
+# **construction** proofs — a built request literal says what Sachima
+# requested, never what the Run executed under (Spec §5.5.3, gate E-9).
+# --------------------------------------------------------------------------- #
+def _two_policy_config():
+    return _make_config(
+        enabled=True,
+        agent_by_policy_ref={
+            "policy_reader": "reader-agent",
+            "policy_deep": "reader-agent",
+        },
+        model_by_policy_ref={
+            "policy_reader": "claude-sonnet-5",
+            "policy_deep": "claude-opus-5",
+        },
+        effort_by_policy_ref={
+            "policy_reader": "medium",
+            "policy_deep": "high",
+        },
+        run_limits_by_policy_ref={
+            "policy_reader": _limits_with(),
+            "policy_deep": _limits_with(),
+        },
+    )
+
+
+def test_two_policy_refs_produce_payloads_differing_in_exactly_model_and_effort() -> None:
+    """A-25: the maps are load-bearing, and their scope is exactly two values.
+
+    A builder that ignored the refs produces an empty difference and fails
+    here; one that leaked a ref into another field produces a wider difference
+    and also fails.
+    """
+
+    config = _two_policy_config()
+    first = _build_payload(
+        config=config, model_policy_ref="policy_reader", effort_policy_ref="policy_reader"
+    )
+    second = _build_payload(
+        config=config, model_policy_ref="policy_deep", effort_policy_ref="policy_deep"
+    )
+
+    differing = {
+        key
+        for key in set(first["request"]) | set(second["request"])
+        if first["request"].get(key, _ABSENT) != second["request"].get(key, _ABSENT)
+    }
+    assert differing == {"requested_model", "requested_effort"}
+    assert first["request"]["requested_model"] == "claude-sonnet-5"
+    assert first["request"]["requested_effort"] == "medium"
+    assert second["request"]["requested_model"] == "claude-opus-5"
+    assert second["request"]["requested_effort"] == "high"
+    # Outside ``request`` nothing moves either.
+    for key in ("prompt_text", "workspace_root", "cwd", "retry_of_run_id"):
+        assert first[key] == second[key]
+
+
+def test_a_reuse_turn_carries_its_own_newly_resolved_pair() -> None:
+    """A-25 / §5.5.4: model and effort are properties of the Run, not the
+    Session. A second Run reusing one Session under a different policy ref
+    carries the newly resolved pair — nothing is cached onto the binding."""
+
+    config = _two_policy_config()
+    first = _build_payload(
+        config=config,
+        model_policy_ref="policy_reader",
+        effort_policy_ref="policy_reader",
+    )
+    reuse = _build_payload(
+        config=config,
+        session_id=REUSE_SESSION_ID,
+        model_policy_ref="policy_deep",
+        effort_policy_ref="policy_deep",
+    )
+    assert first["request"]["requested_model"] == "claude-sonnet-5"
+    assert reuse["request"]["requested_model"] == "claude-opus-5"
+    assert reuse["request"]["requested_effort"] == "high"
+    assert reuse["request"]["session_id"] == REUSE_SESSION_ID
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"model_policy_ref": "policy_unmapped"},
+        {"effort_policy_ref": "policy_unmapped"},
+    ],
+)
+def test_unmapped_model_or_effort_policy_ref_fails_closed_before_any_facade_call(
+    overrides,
+) -> None:
+    """A-25 / §5.5.2 rule 3: no implicit fallback and no submit with a hole in
+    it. The facade double raises on call; the builder refuses first."""
+
+    facade = _ExplodingFacade()
+    with pytest.raises(SpineError) as excinfo:
+        _build_then_submit(facade, **overrides)
+    _assert_stable_code_only(excinfo, RUNTIME_ARSD_INVALID_REQUEST)
+    assert facade.calls == []
+
+
+def test_no_code_path_reads_last_effective_values_back_into_request_construction() -> None:
+    """A-25 / R-5: ``session_status``'s ``last_effective_*`` are observations of
+    a past Run. Nothing in the builder's construction surface names them, so
+    the per-Run override cannot silently degrade into a Session-level setting.
+    """
+
+    import inspect
+
+    import sachima_supervisor.runtime_spine.arsd_socket_contract as contract
+
+    builder_source = inspect.getsource(contract.build_arsd_submit_payload)
+    assert "last_effective" not in builder_source
+    assert (
+        "last_effective_model"
+        not in inspect.signature(contract.build_arsd_submit_payload).parameters
+    )
+
+    # The session view carries the observations, and they are not accepted by
+    # the builder under any keyword.
+    with pytest.raises(TypeError):
+        _build_payload(last_effective_model="claude-opus-5")
 
 
 # --------------------------------------------------------------------------- #
 # server_info negotiation validator (plan §5.4): exact preflight contract.
 # --------------------------------------------------------------------------- #
+#: The seven-operation closed set exactly as the daemon emits it
+#: (``sorted(protocol.OPERATIONS)``); drift-locked below.
+V3_OPERATIONS = [
+    "run_cancel",
+    "run_events",
+    "run_status",
+    "server_info",
+    "session_list",
+    "session_status",
+    "submit",
+]
+
+#: A plausible operator-configured negotiated event budget. Never the 4 GiB
+#: deployment default: no test may equality-assert that (Δ-9 / A-22).
+NEGOTIATED_EVENT_BUDGET = 2_147_483_648
+
+V3_LIMITS = {
+    "max_concurrent_runs": 4,
+    "max_frame_bytes": 1_048_576,
+    "max_prompt_bytes": 262_144,
+    "events_page_limit": 256,
+    "event_follow_queue_size": 1024,
+    "max_run_event_budget_bytes": NEGOTIATED_EVENT_BUDGET,
+}
+
+#: The 0.7.1 five-key ``limits`` block — a protocol violation against a 0.7.6
+#: daemon, not a tolerated older peer (Δ-8 / A-22).
+V2_LIMITS = {key: value for key, value in V3_LIMITS.items()
+             if key != "max_run_event_budget_bytes"}
+
+
 def _server_info_payload(**overrides):
     payload = {
-        "version": "0.6.3",
-        "api_version": 2,
-        "supported_api_versions": [1, 2],
-        "v2_only_operations": ["submit"],
-        "limits": {
-            "max_concurrent_runs": 4,
-            "max_frame_bytes": 1_048_576,
-            "max_prompt_bytes": 262_144,
-            "events_page_limit": 256,
-            "event_follow_queue_size": 1024,
-        },
+        "version": "0.7.6",
+        "api_version": 3,
+        "supported_api_versions": [3],
+        "operations": list(V3_OPERATIONS),
+        "limits": dict(V3_LIMITS),
     }
     payload.update(overrides)
     return payload
@@ -1027,46 +1514,139 @@ def _validate_server_info(payload, config=None):
     return validate_arsd_server_info(payload, config=config)
 
 
-def test_server_info_negotiation_accepts_the_exact_063_v2_shape() -> None:
+def _limits_override(**changes):
+    limits = dict(V3_LIMITS)
+    limits.update(changes)
+    return {"limits": limits}
+
+
+def test_server_info_negotiation_accepts_the_exact_076_v3_shape() -> None:
     info = _validate_server_info(_server_info_payload())
-    assert info.version == "0.6.3"
-    assert info.api_version == 2
-    assert info.supported_api_versions == (1, 2)
-    assert info.v2_only_operations == ("submit",)
-    assert dict(info.limits) == {
-        "max_concurrent_runs": 4,
-        "max_frame_bytes": 1_048_576,
-        "max_prompt_bytes": 262_144,
-        "events_page_limit": 256,
-        "event_follow_queue_size": 1024,
+    assert info.version == "0.7.6"
+    assert info.api_version == 3
+    assert info.supported_api_versions == (3,)
+    assert info.operations == tuple(V3_OPERATIONS)
+    assert dict(info.limits) == dict(V3_LIMITS)
+    # The negotiated budget is carried as a runtime observation, never
+    # compared for equality against a mirrored default (Spec §5.3.1).
+    assert info.max_run_event_budget_bytes == NEGOTIATED_EVENT_BUDGET
+
+
+def test_server_info_top_level_key_set_is_still_exactly_five() -> None:
+    """Δ-8 / A-22: only the nested ``limits`` block grew. The top-level key
+    set is unchanged at five, and ``v2_only_operations`` is gone (A-3)."""
+
+    payload = _server_info_payload()
+    assert set(payload) == {
+        "version",
+        "api_version",
+        "supported_api_versions",
+        "operations",
+        "limits",
     }
+    assert len(payload) == 5
+    _validate_server_info(payload)
+
+
+def test_server_info_still_carrying_v2_only_operations_is_a_protocol_violation() -> None:
+    """A-3: the retired v2 key is an extra key, not a tolerated leftover."""
+
+    with pytest.raises(SpineError) as excinfo:
+        _validate_server_info(_server_info_payload(v2_only_operations=["submit"]))
+    _assert_stable_code_only(excinfo, RUNTIME_ARSD_PROTOCOL_VIOLATION)
+
+
+def test_server_info_limits_requires_exactly_six_keys() -> None:
+    """A-22 / Δ-8: the six-key block is accepted; the 0.7.1 five-key block and
+    a seven-key block are each a protocol violation, not a tolerated peer.
+
+    There is no compatibility window and no per-operation version matrix, so
+    an older-shaped ``limits`` is a violation rather than a negotiated
+    downgrade.
+    """
+
+    _validate_server_info(_server_info_payload())
+
+    seven_keys = dict(V3_LIMITS)
+    seven_keys["max_run_event_follow_bytes"] = 1024
+    for bad_limits in (V2_LIMITS, seven_keys):
+        with pytest.raises(SpineError) as excinfo:
+            _validate_server_info(_server_info_payload(limits=dict(bad_limits)))
+        _assert_stable_code_only(excinfo, RUNTIME_ARSD_PROTOCOL_VIOLATION)
+
+
+def test_run_event_budget_is_read_as_negotiated_not_asserted_as_a_default() -> None:
+    """A-22 / Δ-9: two different valid budgets both negotiate successfully.
+
+    The operator owns this number. Sachima reads whatever the daemon reports,
+    bounded only by the structural maximum, and no test anywhere
+    equality-asserts the 4 GiB deployment default.
+    """
+
+    from sachima_supervisor.runtime_spine.arsd_socket_contract import (
+        ARSD_STRUCTURAL_MAX_RUN_EVENT_BUDGET_BYTES,
+    )
+
+    for budget in (
+        1,
+        1_073_741_824,
+        NEGOTIATED_EVENT_BUDGET,
+        ARSD_STRUCTURAL_MAX_RUN_EVENT_BUDGET_BYTES,
+    ):
+        info = _validate_server_info(
+            _server_info_payload(**_limits_override(max_run_event_budget_bytes=budget))
+        )
+        assert info.max_run_event_budget_bytes == budget
+
+
+@pytest.mark.parametrize(
+    "bad_budget",
+    [0, -1, 1_048_576_000_001],
+    ids=["zero", "negative", "above_structural_maximum"],
+)
+def test_server_info_out_of_range_event_budget_is_a_mismatch(bad_budget) -> None:
+    """The negotiated budget must be a positive int at most the mirrored
+    structural maximum — a daemon reporting otherwise is not a contract this
+    adapter implements."""
+
+    from sachima_supervisor.runtime_spine.arsd_socket_contract import (
+        RUNTIME_ARSD_VERSION_MISMATCH,
+    )
+
+    with pytest.raises(SpineError) as excinfo:
+        _validate_server_info(
+            _server_info_payload(
+                **_limits_override(max_run_event_budget_bytes=bad_budget)
+            )
+        )
+    _assert_stable_code_only(excinfo, RUNTIME_ARSD_VERSION_MISMATCH)
 
 
 @pytest.mark.parametrize(
     "overrides",
     [
         {"version": "0.1.7"},
-        {"version": "0.7.0"},
-        {"api_version": 1},
-        {"api_version": 3},
-        {"supported_api_versions": [1]},
-        {"v2_only_operations": []},
-        {"v2_only_operations": ["run_events"]},
-        {"limits": {"max_concurrent_runs": 0, "max_frame_bytes": 1_048_576,
-                    "max_prompt_bytes": 262_144, "events_page_limit": 256,
-                    "event_follow_queue_size": 1024}},
-        {"limits": {"max_concurrent_runs": 4, "max_frame_bytes": 999,
-                    "max_prompt_bytes": 262_144, "events_page_limit": 256,
-                    "event_follow_queue_size": 1024}},
-        {"limits": {"max_concurrent_runs": 4, "max_frame_bytes": 1_048_576,
-                    "max_prompt_bytes": 1, "events_page_limit": 256,
-                    "event_follow_queue_size": 1024}},
+        {"version": "0.6.3"},
+        {"version": "0.7.5"},
+        {"api_version": 2},
+        {"api_version": 4},
+        {"supported_api_versions": [2, 3]},
+        {"supported_api_versions": [2]},
+        {"operations": []},
+        {"operations": sorted(V3_OPERATIONS + ["session_close"])},
+        {"operations": sorted(set(V3_OPERATIONS) - {"run_cancel"})},
+        {"operations": list(reversed(V3_OPERATIONS))},
+        _limits_override(max_concurrent_runs=0),
+        _limits_override(max_frame_bytes=999),
+        _limits_override(max_prompt_bytes=1),
     ],
 )
 def test_server_info_incompatibility_is_one_stable_mismatch_code(
     overrides: dict,
 ) -> None:
-    """Package/API/limit mismatch → one stable backend-unavailable code."""
+    """Package/API/operation/limit mismatch → one stable backend-unavailable
+    code. ``session_close`` does not exist in v3 and an eighth operation is a
+    different contract, not an extension."""
 
     from sachima_supervisor.runtime_spine.arsd_socket_contract import (
         RUNTIME_ARSD_VERSION_MISMATCH,
@@ -1086,33 +1666,18 @@ def test_server_info_incompatibility_is_one_stable_mismatch_code(
         {},
         _server_info_payload(version=7),
         _server_info_payload(api_version=True),
-        _server_info_payload(api_version="2"),
-        _server_info_payload(supported_api_versions="12"),
-        _server_info_payload(supported_api_versions=[1, True]),
-        _server_info_payload(v2_only_operations="submit"),
-        _server_info_payload(v2_only_operations=[7]),
+        _server_info_payload(api_version="3"),
+        _server_info_payload(supported_api_versions="3"),
+        _server_info_payload(supported_api_versions=[3, True]),
+        _server_info_payload(operations="submit"),
+        _server_info_payload(operations=[7]),
         _server_info_payload(limits=None),
         _server_info_payload(limits={}),
         _server_info_payload(extra_key=1),
-        _server_info_payload(
-            limits={
-                "max_concurrent_runs": 4,
-                "max_frame_bytes": 1_048_576,
-                "max_prompt_bytes": 262_144,
-                "events_page_limit": 256,
-                "event_follow_queue_size": 1024,
-                "surprise": 1,
-            }
-        ),
-        _server_info_payload(
-            limits={
-                "max_concurrent_runs": "4",
-                "max_frame_bytes": 1_048_576,
-                "max_prompt_bytes": 262_144,
-                "events_page_limit": 256,
-                "event_follow_queue_size": 1024,
-            }
-        ),
+        _server_info_payload(**_limits_override(surprise=1)),
+        _server_info_payload(**_limits_override(max_concurrent_runs="4")),
+        _server_info_payload(**_limits_override(max_run_event_budget_bytes=True)),
+        _server_info_payload(**_limits_override(max_run_event_budget_bytes="1024")),
     ],
 )
 def test_malformed_server_info_is_a_protocol_violation(payload) -> None:
@@ -1125,25 +1690,30 @@ REMOTE_OP_CANARY = "remote-detail-canary-7d9f"
 
 
 @pytest.mark.parametrize(
-    "v2_only",
+    "operations",
     [
-        ["submit", REMOTE_OP_CANARY],
-        [REMOTE_OP_CANARY, "submit"],
+        sorted(V3_OPERATIONS + [REMOTE_OP_CANARY]),
+        [REMOTE_OP_CANARY] + V3_OPERATIONS,
         [REMOTE_OP_CANARY],
-        ["submit", "submit"],
-        ["submit", "run_events"],
+        sorted(V3_OPERATIONS + ["submit"]),
+        sorted(V3_OPERATIONS + ["session_close"]),
     ],
-    ids=["extra_canary", "canary_first", "canary_only", "duplicate", "extra_known_op"],
+    ids=[
+        "extra_canary",
+        "canary_first",
+        "canary_only",
+        "duplicate",
+        "retired_session_close",
+    ],
 )
-def test_server_info_v2_only_operations_must_be_exactly_the_pinned_set(
-    v2_only,
-) -> None:
-    """Pinned 0.6.3 fact: ``submit`` is the only v2-only operation. Extra,
-    duplicate, or arbitrary remote entries are rejected before
-    ``ArsdServerInfo`` exists — a remote token never reaches a repr surface."""
+def test_server_info_operations_must_be_exactly_the_closed_seven(operations) -> None:
+    """Pinned 0.7.6 fact: exactly seven operations, sorted, and there is no
+    ``session_close``. Extra, duplicate, or arbitrary remote entries are
+    rejected before ``ArsdServerInfo`` exists — a remote token never reaches a
+    repr surface."""
 
     with pytest.raises(SpineError) as excinfo:
-        _validate_server_info(_server_info_payload(v2_only_operations=v2_only))
+        _validate_server_info(_server_info_payload(operations=operations))
     _assert_stable_code_only(excinfo, RUNTIME_ARSD_VERSION_MISMATCH)
     assert REMOTE_OP_CANARY not in _rendered_chain(excinfo)
 
@@ -1153,14 +1723,14 @@ def test_server_info_v2_only_operations_must_be_exactly_the_pinned_set(
     ["remote detail canary 7d9f", "x" * 4096, "bad\nop-canary-7d9f", ""],
     ids=["spaces", "unbounded", "newline", "empty"],
 )
-def test_server_info_malformed_v2_only_entries_are_protocol_violations(
+def test_server_info_malformed_operation_entries_are_protocol_violations(
     bad_entry,
 ) -> None:
     """An off-grammar operation token is malformed shape, not a compat verdict."""
 
     with pytest.raises(SpineError) as excinfo:
         _validate_server_info(
-            _server_info_payload(v2_only_operations=["submit", bad_entry])
+            _server_info_payload(operations=V3_OPERATIONS + [bad_entry])
         )
     _assert_stable_code_only(excinfo, RUNTIME_ARSD_PROTOCOL_VIOLATION)
     rendered = _rendered_chain(excinfo)
@@ -1171,13 +1741,13 @@ def test_server_info_malformed_v2_only_entries_are_protocol_violations(
 
 @pytest.mark.parametrize(
     "supported",
-    [[1, 2, 31337], [2, 1], [1, 2, 2], [2], [1, 2, 10**4000]],
-    ids=["extra_version", "reordered", "duplicate", "subset", "unbounded_int"],
+    [[3, 31337], [3, 2], [3, 3], [2], [3, 10**4000]],
+    ids=["extra_version", "with_v2", "duplicate", "only_v2", "unbounded_int"],
 )
 def test_server_info_supported_versions_must_be_exactly_the_pinned_tuple(
     supported,
 ) -> None:
-    """Pinned 0.6.3 fact: the daemon reports ``[1, 2]`` exactly. Any other
+    """Pinned 0.7.6 fact: the daemon reports ``[3]`` exactly. Any other
     well-formed int list is a different contract — and an unbounded remote
     int never reaches the repr-safe observation."""
 
@@ -1196,10 +1766,10 @@ def test_server_info_supported_versions_must_be_exactly_the_pinned_tuple(
 def test_server_info_unbounded_capacity_limits_never_reach_the_observation(
     capacity_key,
 ) -> None:
-    limits = dict(_server_info_payload()["limits"])
-    limits[capacity_key] = 10**4000
     with pytest.raises(SpineError) as excinfo:
-        _validate_server_info(_server_info_payload(limits=limits))
+        _validate_server_info(
+            _server_info_payload(**_limits_override(**{capacity_key: 10**4000}))
+        )
     _assert_stable_code_only(excinfo, RUNTIME_ARSD_VERSION_MISMATCH)
     assert str(10**4000) not in _rendered_chain(excinfo)
 
@@ -1208,7 +1778,7 @@ def test_server_info_version_canary_never_survives_or_renders() -> None:
     """A regex-valid but off-pin version string is rejected with the stable
     mismatch code and never rendered anywhere."""
 
-    off_pin_version = "0.6.3rc-canary-7d9f"
+    off_pin_version = "0.7.6rc-canary-7d9f"
     with pytest.raises(SpineError) as excinfo:
         _validate_server_info(_server_info_payload(version=off_pin_version))
     _assert_stable_code_only(excinfo, RUNTIME_ARSD_VERSION_MISMATCH)
@@ -1216,35 +1786,277 @@ def test_server_info_version_canary_never_survives_or_renders() -> None:
 
 
 def test_server_info_mirror_constants_match_the_pinned_protocol() -> None:
+    """B-4: every protocol mirror is asserted against the imported real module.
+
+    ``V2_ONLY_OPERATIONS`` is gone at v3 (Spec D-5); its absence is asserted
+    so a re-introduction cannot pass unnoticed.
+    """
+
     from sachima_supervisor.runtime_spine.arsd_socket_contract import (
+        ARSD_MAX_ERROR_MESSAGE_CHARS,
         ARSD_MAX_FRAME_BYTES,
+        ARSD_MAX_JSON_NESTING_DEPTH,
         ARSD_MAX_PROMPT_BYTES,
+        ARSD_OPERATIONS,
         ARSD_REQUIRED_API_VERSION,
+        _ARSD_SUPPORTED_API_VERSIONS,
     )
 
     protocol = pytest.importorskip("agent_run_supervisor.arsd.protocol")
     assert ARSD_MAX_FRAME_BYTES == protocol.MAX_FRAME_BYTES
     assert ARSD_MAX_PROMPT_BYTES == protocol.MAX_PROMPT_BYTES
-    assert ARSD_REQUIRED_API_VERSION == protocol.ARSD_API_VERSION
+    assert ARSD_MAX_JSON_NESTING_DEPTH == protocol.MAX_JSON_NESTING_DEPTH
+    assert ARSD_MAX_ERROR_MESSAGE_CHARS == protocol.MAX_ERROR_MESSAGE_CHARS
+    assert ARSD_REQUIRED_API_VERSION == protocol.ARSD_API_VERSION == 3
     assert ARSD_REQUIRED_API_VERSION in protocol.SUPPORTED_API_VERSIONS
-    assert "submit" in protocol.V2_ONLY_OPERATIONS
-
-    from sachima_supervisor.runtime_spine.arsd_socket_contract import (
-        _ARSD_SUPPORTED_API_VERSIONS,
-        _ARSD_V2_ONLY_OPERATIONS,
-    )
+    assert not hasattr(protocol, "V2_ONLY_OPERATIONS")
 
     # The closed negotiation mirrors equal the exact wire emission of the
     # pinned daemon (``list(...)`` / ``sorted(...)`` in its server_info).
-    assert _ARSD_SUPPORTED_API_VERSIONS == tuple(protocol.SUPPORTED_API_VERSIONS)
-    assert _ARSD_V2_ONLY_OPERATIONS == tuple(sorted(protocol.V2_ONLY_OPERATIONS))
+    assert _ARSD_SUPPORTED_API_VERSIONS == tuple(protocol.SUPPORTED_API_VERSIONS) == (3,)
+    assert ARSD_OPERATIONS == frozenset(protocol.OPERATIONS)
+    assert len(ARSD_OPERATIONS) == 7
+    assert "session_close" not in ARSD_OPERATIONS
+    assert V3_OPERATIONS == sorted(protocol.OPERATIONS)
 
     spec = pytest.importorskip("agent_run_supervisor.native_acp.spec")
     from sachima_supervisor.runtime_spine.arsd_socket_contract import (
         ARSD_SPEC_SCHEMA_VERSION,
     )
 
-    assert ARSD_SPEC_SCHEMA_VERSION == spec.SPEC_SCHEMA_VERSION
+    assert ARSD_SPEC_SCHEMA_VERSION == spec.SPEC_SCHEMA_VERSION == 3
+
+
+def test_request_field_set_and_required_split_match_the_real_dataclass() -> None:
+    """B-6 schema drift: the built request's field set is exactly the real
+    ``AgentRunRequest`` contract, and the per-Run override fields are named
+    explicitly so an upstream rename or removal breaks the lock instead of
+    silently emptying the override (Spec §5.5.5)."""
+
+    import dataclasses
+
+    spec = pytest.importorskip("agent_run_supervisor.native_acp.spec")
+
+    real_fields = {field.name for field in dataclasses.fields(spec.AgentRunRequest)}
+    optional = {
+        field.name
+        for field in dataclasses.fields(spec.AgentRunRequest)
+        if field.default is not dataclasses.MISSING
+    }
+    required = real_fields - optional
+
+    assert {"requested_model", "requested_effort"} <= required
+    assert optional == {"session_id", "schema_version"}
+
+    create = _build_payload()["request"]
+    assert set(create) == required | {"schema_version"}
+    reuse = _build_payload(session_id=REUSE_SESSION_ID)["request"]
+    assert set(reuse) == real_fields
+
+
+def test_session_id_grammar_mirrors_the_real_session_pattern() -> None:
+    """B-8: Sachima's session-id validator matches ``SESSION_ID_PATTERN``.
+
+    Dots are the drift that matters — the retired wire-token grammar allowed
+    them and the Session grammar does not (Spec D-12) — so the two validators
+    are compared over a table that includes one.
+    """
+
+    from sachima_supervisor.runtime_spine.arsd_socket_contract import (
+        ARSD_SESSION_ID_PATTERN,
+        _safe_session_token,
+    )
+
+    session = pytest.importorskip("agent_run_supervisor.session")
+    assert ARSD_SESSION_ID_PATTERN == session.SESSION_ID_PATTERN
+
+    for candidate in (
+        "sess-4f2a9c11b7d3",
+        "a",
+        "A0_-",
+        session.SESSION_ID_PREFIX + "0" * 32,
+        "sess.4f2a",
+        "-lead",
+        "_lead",
+        "",
+        "has space",
+        "has/slash",
+    ):
+        theirs = session.is_valid_session_id(candidate)
+        try:
+            _safe_session_token(candidate)
+        except SpineError:
+            ours = False
+        else:
+            ours = True
+        assert ours is theirs, candidate
+
+
+def test_session_id_length_bound_matches_the_real_request_validator() -> None:
+    """The bound Sachima applies to a remote session id is the distribution's
+    own, proven behaviourally rather than copied from a private symbol."""
+
+    from sachima_supervisor.runtime_spine.arsd_socket_contract import (
+        ARSD_MAX_SESSION_ID_CHARS,
+        _safe_session_token,
+    )
+
+    spec = pytest.importorskip("agent_run_supervisor.native_acp.spec")
+
+    def _request_with(session_id):
+        return spec.AgentRunRequest(
+            owner="sachima_host",
+            namespace="sachima_tasks",
+            agent_id="reader-agent",
+            expected_binding_hash=None,
+            input_refs=(),
+            requested_model="claude-sonnet-5",
+            requested_effort="medium",
+            grant_ref="grant_reader_v1",
+            grant_hash="sha256:" + "a" * 64,
+            grant_role_hash="sha256:" + "b" * 64,
+            grant_capabilities=("read", "search"),
+            mcp_snapshot_hashes=(),
+            credential_refs=(),
+            limits=spec.RunLimits(),
+            evidence_policy_hash="sha256:" + "d" * 64,
+            recovery_policy_hash="sha256:" + "e" * 64,
+            session_id=session_id,
+        )
+
+    at_bound = "s" * ARSD_MAX_SESSION_ID_CHARS
+    over_bound = "s" * (ARSD_MAX_SESSION_ID_CHARS + 1)
+    _request_with(at_bound)
+    with pytest.raises(spec.SpecValidationError):
+        _request_with(over_bound)
+
+    assert _safe_session_token(at_bound) == at_bound
+    with pytest.raises(SpineError) as excinfo:
+        _safe_session_token(over_bound)
+    _assert_stable_code_only(excinfo, RUNTIME_ARSD_INVALID_REQUEST)
+
+
+def test_terminal_status_vocabulary_mirrors_the_real_enum() -> None:
+    """B-9: the five-member Run terminal vocabulary is anchored to the real
+    enum, with no sixth member — a permission violation is a terminal
+    *reason*, not a status (Δ-15 / §10.7)."""
+
+    from sachima_supervisor.runtime_spine.arsd_socket_contract import (
+        ARSD_TERMINAL_STATUSES,
+        ARSD_PERMISSION_VIOLATION_REASON,
+    )
+
+    exit_classifier = pytest.importorskip("agent_run_supervisor.exit_classifier")
+    real = tuple(status.value for status in exit_classifier.AgentRunStatus)
+    assert ARSD_TERMINAL_STATUSES == real
+    assert ARSD_TERMINAL_STATUSES == (
+        "completed",
+        "failed",
+        "cancelled",
+        "timed_out",
+        "unknown",
+    )
+    assert len(ARSD_TERMINAL_STATUSES) == 5
+    assert ARSD_PERMISSION_VIOLATION_REASON not in ARSD_TERMINAL_STATUSES
+
+
+def test_transport_terminal_vocabulary_is_disjoint_from_canonical_status_values() -> None:
+    """R-6: ``timed_out`` and ``unknown`` are transport tokens with no
+    canonical counterpart, so neither can ever be appended as a Sachima
+    status. The three that share a name are the three that legitimately map
+    straight through."""
+
+    from sachima_supervisor.runtime_spine import events as spine_events
+    from sachima_supervisor.runtime_spine.arsd_socket_contract import (
+        ARSD_TERMINAL_STATUSES,
+    )
+
+    assert "timed_out" not in spine_events.STATUS_VALUES
+    assert "unknown" not in spine_events.STATUS_VALUES
+    assert set(ARSD_TERMINAL_STATUSES) & set(spine_events.STATUS_VALUES) == {
+        "completed",
+        "failed",
+        "cancelled",
+    }
+
+
+def test_permission_violation_terminal_reason_is_anchored_to_the_distribution() -> None:
+    """B-13: the mirror is anchored to the real 0.7.6 detail code.
+
+    The exact module path is resolved here against the installed
+    distribution (gate E-2): at 0.7.6 the token is the categorical
+    ``detail_code`` classification emitted by
+    ``agent_run_supervisor.native_acp.run_task``, and it is not a module-level
+    constant anywhere in the package. The module is imported directly rather
+    than through ``importorskip`` so an absent or renamed anchor **fails**
+    here instead of skipping.
+    """
+
+    import importlib
+    import inspect
+
+    from sachima_supervisor.runtime_spine.arsd_socket_contract import (
+        ARSD_PERMISSION_VIOLATION_REASON,
+    )
+
+    pytest.importorskip("agent_run_supervisor")
+    run_task = importlib.import_module("agent_run_supervisor.native_acp.run_task")
+    source = inspect.getsource(run_task)
+
+    assert ARSD_PERMISSION_VIOLATION_REASON == "PERMISSION_VIOLATION"
+    assert (
+        f'detail_code = "{ARSD_PERMISSION_VIOLATION_REASON}"' in source
+    ), (
+        "the 0.7.6 permission-violation terminal reason moved or was renamed — "
+        "re-resolve the anchor rather than weakening this lock"
+    )
+
+    # It is a terminal *reason*, not an observation refusal and not a status.
+    observation = importlib.import_module("agent_run_supervisor.native_acp.observation")
+    assert ARSD_PERMISSION_VIOLATION_REASON not in observation.OBSERVATION_REFUSALS
+    assert "CONFIG_FIDELITY" in observation.OBSERVATION_REFUSALS
+
+
+def test_quarantine_mirrors_match_the_real_session_module() -> None:
+    """R-5: the closed five-member quarantine reason vocabulary and the exact
+    three evidence fields are the distribution's, not Sachima's."""
+
+    from sachima_supervisor.runtime_spine.arsd_socket_contract import (
+        _QUARANTINE_EVIDENCE_KEYS,
+        _QUARANTINE_REASON_CODES,
+    )
+
+    session = pytest.importorskip("agent_run_supervisor.session")
+    assert _QUARANTINE_REASON_CODES == frozenset(session.QUARANTINE_REASON_CODES)
+    assert len(_QUARANTINE_REASON_CODES) == 5
+    assert _QUARANTINE_EVIDENCE_KEYS == frozenset(session.QUARANTINE_EVIDENCE_FIELDS)
+    assert _QUARANTINE_EVIDENCE_KEYS == frozenset(
+        {"reason_code", "source_run_id", "recorded_at"}
+    )
+
+
+def test_server_info_limit_key_mirror_matches_the_real_daemon_emission() -> None:
+    """B-12 first half: the six-key ``limits`` mirror is the real key set the
+    0.7.6 handler emits, read off its own source rather than transcribed."""
+
+    import importlib
+    import inspect
+
+    from sachima_supervisor.runtime_spine.arsd_socket_contract import (
+        _SERVER_INFO_KEYS,
+        _SERVER_INFO_LIMIT_KEYS,
+    )
+
+    pytest.importorskip("agent_run_supervisor")
+    handlers = importlib.import_module("agent_run_supervisor.arsd.handlers")
+    source = inspect.getsource(handlers.ArsdHandlers._server_info)
+
+    assert len(_SERVER_INFO_LIMIT_KEYS) == 6
+    for key in _SERVER_INFO_LIMIT_KEYS:
+        assert f'"{key}"' in source, key
+    for key in _SERVER_INFO_KEYS:
+        assert f'"{key}"' in source, key
+    assert "v2_only_operations" not in source
 
 
 # --------------------------------------------------------------------------- #
@@ -1258,20 +2070,37 @@ def _validate_submit(payload):
     return validate_arsd_submit_result(payload)
 
 
+ACCEPTED_AT = "2026-08-17T10:00:00+00:00"
+
+
+def _submit_ack(**overrides):
+    ack = {
+        "run_id": "1f2e3d4c5b6a",
+        "session_id": REUSE_SESSION_ID,
+        "accepted_at": ACCEPTED_AT,
+    }
+    ack.update(overrides)
+    return ack
+
+
 def test_submit_result_returns_accepted_identity() -> None:
-    accepted = _validate_submit(
-        {"run_id": "1f2e3d4c5b6a", "accepted_at": "2026-08-05T10:00:00+00:00"}
-    )
+    """A-4: the v3 ack is exactly ``{run_id, session_id, accepted_at}``."""
+
+    accepted = _validate_submit(_submit_ack())
     assert accepted.run_id == "1f2e3d4c5b6a"
-    assert accepted.accepted_at == "2026-08-05T10:00:00+00:00"
+    assert accepted.session_id == REUSE_SESSION_ID
+    assert accepted.accepted_at == ACCEPTED_AT
 
 
-def test_submit_result_keeps_run_id_out_of_repr() -> None:
+def test_submit_result_keeps_both_ids_out_of_repr() -> None:
+    """A-4: ``run_id`` and ``session_id`` are both private locators."""
+
     accepted = _validate_submit(
-        {"run_id": "private4runid", "accepted_at": "2026-08-05T10:00:00+00:00"}
+        _submit_ack(run_id="private4runid", session_id="private4sessionid")
     )
     rendering = repr(accepted) + str(accepted)
     assert "private4runid" not in rendering
+    assert "private4sessionid" not in rendering
     for attr in ("as_dict", "to_dict", "serialize", "to_json"):
         assert not hasattr(accepted, attr)
 
@@ -1283,18 +2112,27 @@ def test_submit_result_keeps_run_id_out_of_repr() -> None:
         [],
         {},
         {"run_id": "abc"},
-        {"accepted_at": "2026-08-05T10:00:00+00:00"},
-        {"run_id": "abc", "accepted_at": "2026-08-05T10:00:00+00:00", "x": 1},
-        {"run_id": "", "accepted_at": "2026-08-05T10:00:00+00:00"},
-        {"run_id": 7, "accepted_at": "2026-08-05T10:00:00+00:00"},
-        {"run_id": "bad run id", "accepted_at": "2026-08-05T10:00:00+00:00"},
-        {"run_id": "abc", "accepted_at": "not a timestamp"},
-        {"run_id": "abc", "accepted_at": "2026-08-05T10:00:00"},
-        {"run_id": "abc", "accepted_at": None},
-        {"run_id": "abc", "accepted_at": "2026-08-05T10:00:00+00:00\nx"},
+        {"run_id": "abc", "accepted_at": ACCEPTED_AT},
+        {"session_id": REUSE_SESSION_ID, "accepted_at": ACCEPTED_AT},
+        {"run_id": "abc", "session_id": REUSE_SESSION_ID},
+        _submit_ack(x=1),
+        _submit_ack(run_id=""),
+        _submit_ack(run_id=7),
+        _submit_ack(run_id="bad run id"),
+        _submit_ack(session_id=""),
+        _submit_ack(session_id=None),
+        _submit_ack(session_id="sess.dotted"),
+        _submit_ack(session_id=7),
+        _submit_ack(accepted_at="not a timestamp"),
+        _submit_ack(accepted_at="2026-08-17T10:00:00"),
+        _submit_ack(accepted_at=None),
+        _submit_ack(accepted_at=ACCEPTED_AT + "\nx"),
     ],
 )
 def test_malformed_submit_result_is_a_protocol_violation(payload) -> None:
+    """A-4: a missing ``session_id``, an extra key, an off-grammar id, or a
+    bad timestamp is a protocol violation."""
+
     with pytest.raises(SpineError) as excinfo:
         _validate_submit(payload)
     assert excinfo.value.code == RUNTIME_ARSD_PROTOCOL_VIOLATION
@@ -1313,7 +2151,7 @@ def test_submit_result_timestamp_parse_failure_never_chains_remote_text(
     rendering of the stable error."""
 
     with pytest.raises(SpineError) as excinfo:
-        _validate_submit({"run_id": "run4abc", "accepted_at": bad_timestamp})
+        _validate_submit(_submit_ack(run_id="run4abc", accepted_at=bad_timestamp))
     _assert_stable_code_only(excinfo, RUNTIME_ARSD_PROTOCOL_VIOLATION)
     assert excinfo.value.__cause__ is None
     assert excinfo.value.__suppress_context__ is True
@@ -1322,6 +2160,653 @@ def test_submit_result_timestamp_parse_failure_never_chains_remote_text(
     assert "isoformat" not in rendered
     assert "99:99" not in rendered
     assert "ValueError" not in rendered
+
+
+# --------------------------------------------------------------------------- #
+# run_status validator (A-11): the acceptance view and the active view are two
+# exact shapes. A missing, extra, or off-contract key — including a ``state``
+# value outside the contract — is a protocol violation, never a tolerated
+# field.
+# --------------------------------------------------------------------------- #
+RUN_RESULT_CANARY = {"status": "completed", "detail": "remote result canary 7d9f"}
+PROGRESS_CANARY = {"phase": "running", "note": "remote progress canary 7d9f"}
+
+
+def _validate_run_status(payload, *, run_id="run4abc"):
+    from sachima_supervisor.runtime_spine.arsd_socket_contract import (
+        validate_arsd_run_status,
+    )
+
+    return validate_arsd_run_status(payload, run_id=run_id)
+
+
+def test_run_status_acceptance_view_is_the_exact_four_key_shape() -> None:
+    observed = _validate_run_status(
+        {
+            "run_id": "run4abc",
+            "session_id": REUSE_SESSION_ID,
+            "state": "accepted",
+            "accepted_at": ACCEPTED_AT,
+        }
+    )
+    assert observed.state == "accepted"
+    assert observed.accepted_at == ACCEPTED_AT
+    assert observed.progress is None
+    assert observed.result is None
+    assert observed.has_terminal_result is False
+
+
+def test_run_status_active_view_carries_optional_progress_and_result() -> None:
+    minimal = _validate_run_status(
+        {"run_id": "run4abc", "session_id": REUSE_SESSION_ID}
+    )
+    assert minimal.state is None
+    assert minimal.progress is None and minimal.result is None
+    assert minimal.has_terminal_result is False
+
+    progressing = _validate_run_status(
+        {
+            "run_id": "run4abc",
+            "session_id": REUSE_SESSION_ID,
+            "progress": dict(PROGRESS_CANARY),
+        }
+    )
+    assert progressing.progress == PROGRESS_CANARY
+    assert progressing.has_terminal_result is False
+
+    terminal = _validate_run_status(
+        {
+            "run_id": "run4abc",
+            "session_id": REUSE_SESSION_ID,
+            "progress": dict(PROGRESS_CANARY),
+            "result": dict(RUN_RESULT_CANARY),
+        }
+    )
+    assert terminal.result == RUN_RESULT_CANARY
+    assert terminal.has_terminal_result is True
+
+
+def test_run_status_keeps_ids_and_raw_bodies_out_of_every_rendering() -> None:
+    observed = _validate_run_status(
+        {
+            "run_id": "run4abc",
+            "session_id": "private4sessionid",
+            "progress": dict(PROGRESS_CANARY),
+            "result": dict(RUN_RESULT_CANARY),
+        }
+    )
+    rendering = repr(observed) + str(observed)
+    assert "private4sessionid" not in rendering
+    assert "canary" not in rendering
+    for attr in ("as_dict", "to_dict", "serialize", "to_json"):
+        assert not hasattr(observed, attr)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        None,
+        [],
+        {},
+        {"run_id": "run4abc"},
+        {"session_id": REUSE_SESSION_ID},
+        {"run_id": "run4abc", "session_id": REUSE_SESSION_ID, "x": 1},
+        {"run_id": "other4run", "session_id": REUSE_SESSION_ID},
+        {"run_id": "run4abc", "session_id": "sess.dotted"},
+        {"run_id": "run4abc", "session_id": None},
+        {"run_id": "run4abc", "session_id": REUSE_SESSION_ID, "state": "accepted"},
+        {
+            "run_id": "run4abc",
+            "session_id": REUSE_SESSION_ID,
+            "state": "running",
+            "accepted_at": ACCEPTED_AT,
+        },
+        {
+            "run_id": "run4abc",
+            "session_id": REUSE_SESSION_ID,
+            "state": "accepted",
+            "accepted_at": "not a timestamp",
+        },
+        {
+            "run_id": "run4abc",
+            "session_id": REUSE_SESSION_ID,
+            "state": "accepted",
+            "accepted_at": ACCEPTED_AT,
+            "progress": {},
+        },
+        {"run_id": "run4abc", "session_id": REUSE_SESSION_ID, "progress": []},
+        {"run_id": "run4abc", "session_id": REUSE_SESSION_ID, "result": "done"},
+        {"run_id": "run4abc", "session_id": REUSE_SESSION_ID, "accepted_at": ACCEPTED_AT},
+    ],
+    ids=[
+        "none",
+        "list",
+        "empty",
+        "missing_session",
+        "missing_run",
+        "extra_key",
+        "run_echo_mismatch",
+        "dotted_session",
+        "null_session",
+        "accepted_without_timestamp",
+        "off_contract_state",
+        "bad_accepted_timestamp",
+        "accepted_view_with_progress",
+        "progress_not_a_mapping",
+        "result_not_a_mapping",
+        "timestamp_without_state",
+    ],
+)
+def test_malformed_run_status_is_a_protocol_violation(payload) -> None:
+    with pytest.raises(SpineError) as excinfo:
+        _validate_run_status(payload)
+    assert excinfo.value.code == RUNTIME_ARSD_PROTOCOL_VIOLATION
+
+
+# --------------------------------------------------------------------------- #
+# run_cancel validator: the run echo alone, or the run echo plus trusted
+# terminal evidence. ``cancelled`` is never claimed from the cancel call.
+# --------------------------------------------------------------------------- #
+def _validate_run_cancel(payload, *, run_id="run4abc"):
+    from sachima_supervisor.runtime_spine.arsd_socket_contract import (
+        validate_arsd_run_cancel_result,
+    )
+
+    return validate_arsd_run_cancel_result(payload, run_id=run_id)
+
+
+def test_run_cancel_without_terminal_evidence_claims_nothing() -> None:
+    observed = _validate_run_cancel({"run_id": "run4abc"})
+    assert observed.status is None
+    assert observed.result is None
+    assert observed.has_terminal_result is False
+
+
+def test_run_cancel_with_trusted_terminal_evidence_carries_the_status() -> None:
+    observed = _validate_run_cancel(
+        {
+            "run_id": "run4abc",
+            "status": "cancelled",
+            "result": dict(RUN_RESULT_CANARY),
+        }
+    )
+    assert observed.status == "cancelled"
+    assert observed.has_terminal_result is True
+    assert "canary" not in repr(observed) + str(observed)
+
+
+@pytest.mark.parametrize("status", ["completed", "failed", "cancelled", "timed_out", "unknown"])
+def test_run_cancel_accepts_every_member_of_the_terminal_vocabulary(status) -> None:
+    observed = _validate_run_cancel(
+        {"run_id": "run4abc", "status": status, "result": {"status": status}}
+    )
+    assert observed.status == status
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        None,
+        {},
+        {"run_id": "other4run"},
+        {"run_id": "run4abc", "x": 1},
+        {"run_id": "run4abc", "status": "cancelled"},
+        {"run_id": "run4abc", "result": dict(RUN_RESULT_CANARY)},
+        {"run_id": "run4abc", "status": "accepted", "result": {}},
+        {"run_id": "run4abc", "status": "PERMISSION_VIOLATION", "result": {}},
+        {"run_id": "run4abc", "status": None, "result": {}},
+        {"run_id": "run4abc", "status": "cancelled", "result": []},
+    ],
+    ids=[
+        "none",
+        "empty",
+        "run_echo_mismatch",
+        "extra_key",
+        "status_without_result",
+        "result_without_status",
+        "off_vocabulary_status",
+        "terminal_reason_is_not_a_status",
+        "null_status",
+        "result_not_a_mapping",
+    ],
+)
+def test_malformed_run_cancel_is_a_protocol_violation(payload) -> None:
+    with pytest.raises(SpineError) as excinfo:
+        _validate_run_cancel(payload)
+    assert excinfo.value.code == RUNTIME_ARSD_PROTOCOL_VIOLATION
+
+
+# --------------------------------------------------------------------------- #
+# session_status / session_list validators (R-5): the exact ten-key view, the
+# closed quarantine block, and a top level that is never a bare record.
+# --------------------------------------------------------------------------- #
+def _session_view(**overrides):
+    view = {
+        "session_id": REUSE_SESSION_ID,
+        "owner": "sachima_host",
+        "namespace": "sachima_tasks",
+        "agent_id": "reader-agent",
+        "profile_id": "reader-profile",
+        "created_at": "2026-08-17T09:00:00+00:00",
+        "updated_at": ACCEPTED_AT,
+        "last_effective_model": "claude-sonnet-5",
+        "last_effective_effort": "medium",
+        "quarantine": None,
+    }
+    view.update(overrides)
+    return view
+
+
+def _validate_session_view(payload):
+    from sachima_supervisor.runtime_spine.arsd_socket_contract import (
+        validate_arsd_session_view,
+    )
+
+    return validate_arsd_session_view(payload)
+
+
+def _validate_session_list(payload):
+    from sachima_supervisor.runtime_spine.arsd_socket_contract import (
+        validate_arsd_session_list,
+    )
+
+    return validate_arsd_session_list(payload)
+
+
+def test_session_view_accepts_the_exact_ten_key_shape() -> None:
+    view = _validate_session_view(_session_view())
+    assert view.session_id == REUSE_SESSION_ID
+    assert view.owner == "sachima_host"
+    assert view.agent_id == "reader-agent"
+    assert view.last_effective_model == "claude-sonnet-5"
+    assert view.last_effective_effort == "medium"
+    assert view.quarantine_reason_code is None
+    assert view.is_reusable is True
+
+
+def test_session_view_optionality_mirrors_the_real_session_record() -> None:
+    """The ten-key set is exact; which of those ten may be null is the
+    distribution's declaration, not Sachima's preference.
+
+    A Session whose first Run has produced no observations, or a record
+    predating a field, legitimately reports them absent. The daemon guarantees
+    ``session_id``/``owner``/``namespace`` on every view it emits — it refuses
+    or skips a record without them — so those three stay required here.
+    """
+
+    import dataclasses
+
+    session = pytest.importorskip("agent_run_supervisor.session")
+    optional_on_the_record = {
+        field.name
+        for field in dataclasses.fields(session.SessionRecord)
+        if field.default is None
+    }
+
+    nullable_view_keys = {
+        "agent_id": "native_agent_id",
+        "profile_id": "native_profile_id",
+        "created_at": "created_at",
+        "updated_at": "updated_at",
+        "last_effective_model": "last_effective_model",
+        "last_effective_effort": "last_effective_effort",
+    }
+    for view_key, record_field in nullable_view_keys.items():
+        assert record_field in optional_on_the_record, view_key
+        view = _validate_session_view(_session_view(**{view_key: None}))
+        assert getattr(view, view_key) is None
+
+    # All of them absent at once is still a well-formed view.
+    view = _validate_session_view(
+        _session_view(**{key: None for key in nullable_view_keys})
+    )
+    assert view.session_id == REUSE_SESSION_ID
+    assert view.owner == "sachima_host"
+    assert view.is_reusable is True
+
+
+def test_session_view_quarantine_blocks_reuse_and_stays_categorical() -> None:
+    view = _validate_session_view(
+        _session_view(
+            quarantine={
+                "reason_code": "UNTRUSTED_TERMINAL_EVIDENCE",
+                "source_run_id": "private4runid",
+                "recorded_at": ACCEPTED_AT,
+            }
+        )
+    )
+    assert view.is_reusable is False
+    assert view.quarantine_reason_code == "UNTRUSTED_TERMINAL_EVIDENCE"
+    rendering = repr(view) + str(view)
+    assert "private4runid" not in rendering
+    assert REUSE_SESSION_ID not in rendering
+    for attr in ("as_dict", "to_dict", "serialize", "to_json"):
+        assert not hasattr(view, attr)
+
+
+@pytest.mark.parametrize(
+    "reason_code",
+    [
+        "DISPATCH_OBSERVATION_LOST",
+        "DISPATCH_WITHOUT_TRUSTWORTHY_TERMINAL",
+        "UNTRUSTED_TERMINAL_EVIDENCE",
+        "SWITCH_ROLLBACK_UNPROVEN",
+        "RECONCILED_DISPATCH_WITHOUT_TERMINAL",
+    ],
+)
+def test_session_view_accepts_every_closed_quarantine_reason(reason_code) -> None:
+    view = _validate_session_view(
+        _session_view(
+            quarantine={
+                "reason_code": reason_code,
+                "source_run_id": "run4abc",
+                "recorded_at": ACCEPTED_AT,
+            }
+        )
+    )
+    assert view.quarantine_reason_code == reason_code
+    assert view.is_reusable is False
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        None,
+        [],
+        {},
+        _session_view(extra=1),
+        {k: v for k, v in _session_view().items() if k != "quarantine"},
+        _session_view(session_id="sess.dotted"),
+        _session_view(session_id=None),
+        _session_view(owner=""),
+        _session_view(agent_id="bad agent id"),
+        _session_view(created_at="not a timestamp"),
+        _session_view(updated_at="2026-08-17T10:00:00"),
+        _session_view(owner=None),
+        _session_view(namespace=None),
+        _session_view(last_effective_model="model with spaces"),
+        _session_view(quarantine={}),
+        _session_view(quarantine={"reason_code": "UNTRUSTED_TERMINAL_EVIDENCE"}),
+        _session_view(
+            quarantine={
+                "reason_code": "NOT_A_REASON",
+                "source_run_id": "run4abc",
+                "recorded_at": ACCEPTED_AT,
+            }
+        ),
+        _session_view(
+            quarantine={
+                "reason_code": "UNTRUSTED_TERMINAL_EVIDENCE",
+                "source_run_id": "run4abc",
+                "recorded_at": ACCEPTED_AT,
+                "message": "remote text",
+            }
+        ),
+    ],
+)
+def test_malformed_session_view_is_a_protocol_violation(payload) -> None:
+    with pytest.raises(SpineError) as excinfo:
+        _validate_session_view(payload)
+    assert excinfo.value.code == RUNTIME_ARSD_PROTOCOL_VIOLATION
+
+
+def test_session_list_accepts_an_empty_session_page() -> None:
+    assert _validate_session_list({"sessions": []}) == ()
+
+
+def test_session_list_validates_every_element_through_the_view_validator() -> None:
+    views = _validate_session_list(
+        {"sessions": [_session_view(), _session_view(session_id="sess-second")]}
+    )
+    assert len(views) == 2
+    assert views[1].session_id == "sess-second"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        _session_view(),
+        {"sessions": _session_view()},
+        {"sessions": None},
+        {"sessions": [], "cursor": None},
+        {"records": []},
+        {"sessions": [_session_view(), _session_view(quarantine={})]},
+        None,
+        [],
+    ],
+    ids=[
+        "bare_session_record",
+        "sessions_is_a_record",
+        "sessions_not_a_list",
+        "extra_top_level_key",
+        "wrong_top_level_key",
+        "bad_element",
+        "none",
+        "list",
+    ],
+)
+def test_malformed_session_list_is_a_protocol_violation(payload) -> None:
+    """R-5: a bare session record at the top level is a protocol violation,
+    never a tolerated shape."""
+
+    with pytest.raises(SpineError) as excinfo:
+        _validate_session_list(payload)
+    assert excinfo.value.code == RUNTIME_ARSD_PROTOCOL_VIOLATION
+
+
+def test_last_effective_values_are_never_read_back_into_request_construction() -> None:
+    """R-5 / §5.5.4: the observations exist on the view and reach nothing.
+
+    A payload built while holding a validated view that reports one pair is
+    identical to one built without the view at all — the maps are the only
+    source, so an observation cannot become the next Run's configuration.
+    """
+
+    view = _validate_session_view(
+        _session_view(last_effective_model="claude-opus-5", last_effective_effort="high")
+    )
+    assert view.last_effective_model == "claude-opus-5"
+
+    config = _two_policy_config()
+    with_view = _build_payload(
+        config=config,
+        session_id=view.session_id,
+        model_policy_ref="policy_reader",
+        effort_policy_ref="policy_reader",
+    )
+    assert with_view["request"]["requested_model"] == "claude-sonnet-5"
+    assert with_view["request"]["requested_effort"] == "medium"
+
+
+# --------------------------------------------------------------------------- #
+# Admission-product pre-check (Δ-10 / §5.6.2 / A-23): per-field validity does
+# not imply admissibility. The negotiated budget is a parameter, so this is
+# testable offline against injected budgets.
+# --------------------------------------------------------------------------- #
+def _check_admission(limits, budget):
+    from sachima_supervisor.runtime_spine.arsd_socket_contract import (
+        check_arsd_admission_event_budget,
+    )
+
+    return check_arsd_admission_event_budget(
+        limits, max_run_event_budget_bytes=budget
+    )
+
+
+def test_run_limits_within_per_field_maxima_can_still_fail_the_admission_product() -> None:
+    """A-23: the whole point — a structurally valid entry the daemon refuses.
+
+    Every field of ``ceiling`` satisfies its per-field maximum and the config
+    admits it; the product ``max_event_bytes * max_events`` nonetheless
+    exceeds the negotiated budget, so the pre-check refuses before a submit is
+    spent learning it. Omit the pre-check and this fails.
+    """
+
+    from sachima_supervisor.runtime_spine.arsd_socket_contract import _RUN_LIMIT_MAX
+
+    ceiling = _limits_with(
+        max_event_bytes=_RUN_LIMIT_MAX["max_event_bytes"],
+        max_events=_RUN_LIMIT_MAX["max_events"],
+    )
+    config = _make_config(
+        enabled=True, run_limits_by_policy_ref={"policy_reader": ceiling}
+    )
+    admitted = dict(config.run_limits_by_policy_ref["policy_reader"])
+    product = admitted["max_event_bytes"] * admitted["max_events"]
+
+    with pytest.raises(SpineError) as excinfo:
+        _check_admission(admitted, NEGOTIATED_EVENT_BUDGET)
+    _assert_stable_code_only(excinfo, RUNTIME_ARSD_INVALID_REQUEST)
+
+    # Inclusive at the budget, refused one byte over it.
+    _check_admission(admitted, product)
+    with pytest.raises(SpineError) as excinfo:
+        _check_admission(admitted, product - 1)
+    _assert_stable_code_only(excinfo, RUNTIME_ARSD_INVALID_REQUEST)
+
+
+def test_admission_pre_check_agrees_with_the_real_daemon_policy() -> None:
+    """The pre-check is a guard, not a second policy: the real
+    ``admit_event_budget`` reaches the same verdict for the same inputs."""
+
+    protocol = pytest.importorskip("agent_run_supervisor.arsd.protocol")
+    spec = pytest.importorskip("agent_run_supervisor.native_acp.spec")
+
+    limits = _limits_with(max_event_bytes=1_048_576, max_events=4096)
+    product = limits["max_event_bytes"] * limits["max_events"]
+
+    for budget, admissible in ((product, True), (product - 1, False)):
+        policy = spec.EventBudgetPolicy(max_run_event_budget_bytes=budget)
+        real_limits = spec.RunLimits(
+            **limits, event_budget_policy=spec.STRUCTURAL_EVENT_BUDGET_POLICY
+        )
+        if admissible:
+            protocol.admit_event_budget(real_limits, policy)
+            _check_admission(limits, budget)
+        else:
+            with pytest.raises(protocol.ProtocolError) as protocol_excinfo:
+                protocol.admit_event_budget(real_limits, policy)
+            assert protocol_excinfo.value.code == protocol.INVALID_REQUEST
+            with pytest.raises(SpineError) as excinfo:
+                _check_admission(limits, budget)
+            _assert_stable_code_only(excinfo, RUNTIME_ARSD_INVALID_REQUEST)
+
+
+@pytest.mark.parametrize(
+    "budget",
+    [0, -1, None, "1024", True, 1.5, 1_048_576_000_001],
+    ids=[
+        "zero",
+        "negative",
+        "none",
+        "string",
+        "bool",
+        "float",
+        "above_structural_maximum",
+    ],
+)
+def test_admission_pre_check_refuses_an_unusable_negotiated_budget(budget) -> None:
+    """A budget Sachima cannot trust is not a reason to submit anyway."""
+
+    with pytest.raises(SpineError) as excinfo:
+        _check_admission(_limits_with(), budget)
+    _assert_stable_code_only(excinfo, RUNTIME_ARSD_INVALID_REQUEST)
+
+
+def test_admission_pre_check_refuses_an_off_contract_limits_mapping() -> None:
+    from sachima_supervisor.runtime_spine.arsd_socket_contract import _RUN_LIMIT_KEYS
+
+    partial = {key: 1 for key in sorted(_RUN_LIMIT_KEYS)[:2]}
+    for bad_limits in (None, [], {}, partial, {**_limits_with(), "surprise": 1}):
+        with pytest.raises(SpineError) as excinfo:
+            _check_admission(bad_limits, NEGOTIATED_EVENT_BUDGET)
+        _assert_stable_code_only(excinfo, RUNTIME_ARSD_INVALID_REQUEST)
+
+
+def test_retry_payload_is_byte_equivalent_across_a_changed_negotiated_budget() -> None:
+    """A-24 / Δ-12: a retry re-sends the frozen payload unchanged.
+
+    The builder has no negotiated-budget input at all, so a payload built
+    after the operator lowered the budget is byte-identical to the original
+    and carries the same digest. Re-tuning ``limits`` to fit a new budget
+    would break byte-equivalence and earn ``IDEMPOTENCY_CONFLICT``, which
+    §7.1 requires Sachima to fail closed on.
+    """
+
+    import inspect
+
+    from sachima_supervisor.runtime_spine.arsd_socket_contract import (
+        arsd_submit_payload_digest,
+        build_arsd_submit_payload,
+        derive_arsd_request_id,
+    )
+
+    config = _make_config(enabled=True)
+    original = _build_payload(config=config)
+    original_digest = arsd_submit_payload_digest(original)
+
+    # The negotiated budget moves between submit and retry (two different
+    # valid negotiations); the frozen payload does not.
+    high = _validate_server_info(
+        _server_info_payload(**_limits_override(max_run_event_budget_bytes=2**31))
+    )
+    low = _validate_server_info(
+        _server_info_payload(**_limits_override(max_run_event_budget_bytes=2**20))
+    )
+    assert high.max_run_event_budget_bytes != low.max_run_event_budget_bytes
+
+    retry = _build_payload(config=config)
+    assert retry == original
+    assert arsd_submit_payload_digest(retry) == original_digest
+
+    request_id = derive_arsd_request_id("task_alpha", "sess_alpha", "dispatch_0001")
+    assert (
+        derive_arsd_request_id("task_alpha", "sess_alpha", "dispatch_0001") == request_id
+    )
+
+    # Structural proof that no budget can reach the builder in the first
+    # place: not as a parameter, and not as a name its code touches.
+    parameters = inspect.signature(build_arsd_submit_payload).parameters
+    assert not [name for name in parameters if "budget" in name]
+    code = build_arsd_submit_payload.__code__
+    touched = set(code.co_names) | set(code.co_varnames)
+    assert not [name for name in touched if "budget" in name]
+
+
+# --------------------------------------------------------------------------- #
+# R-4 discard witness: ``MAX_ERROR_MESSAGE_CHARS`` is mirrored and has exactly
+# one real consumer — the proof that a remote message at the true wire maximum
+# reaches no Sachima surface at all.
+# --------------------------------------------------------------------------- #
+def test_remote_error_message_at_the_contract_maximum_is_fully_discarded() -> None:
+    from sachima_supervisor.runtime_spine.arsd_socket_contract import (
+        ARSD_MAX_ERROR_MESSAGE_CHARS,
+        map_arsd_client_error_code,
+    )
+
+    marker = "LEAKMARKER7d9f"
+    message = (marker * (ARSD_MAX_ERROR_MESSAGE_CHARS // len(marker) + 1))[
+        :ARSD_MAX_ERROR_MESSAGE_CHARS
+    ]
+    assert len(message) == ARSD_MAX_ERROR_MESSAGE_CHARS
+
+    class _RemoteError(Exception):
+        def __init__(self) -> None:
+            super().__init__(message)
+            self.code = "OWNER_MISMATCH"
+
+    try:
+        raise SpineError(map_arsd_client_error_code(_RemoteError().code)) from None
+    except SpineError as err:
+        rendered = (
+            repr(err)
+            + str(err)
+            + repr(err.args)
+            + "".join(traceback.format_exception(err))
+        )
+    assert marker not in rendered
+    assert message not in rendered
+    assert rendered.count("runtime_arsd_policy_denied") >= 1
 
 
 # --------------------------------------------------------------------------- #
@@ -1634,6 +3119,60 @@ def test_default_facade_satisfies_the_injected_boundary() -> None:
     assert issubclass(DefaultArsdClientFacade, ArsdClientFacade)
 
 
+def test_facade_surface_is_the_six_operations_this_integration_uses() -> None:
+    """P1-e: the facade gains ``run_status``/``run_cancel``/``session_status``/
+    ``session_list``. There is no ``session_close`` — the operation does not
+    exist in v3 — and no ``follow`` path."""
+
+    from sachima_supervisor.runtime_spine.arsd_socket_contract import (
+        ARSD_OPERATIONS,
+        DefaultArsdClientFacade,
+    )
+
+    exposed = {
+        name
+        for name in ARSD_OPERATIONS
+        if callable(getattr(DefaultArsdClientFacade, name, None))
+    }
+    assert exposed == set(ARSD_OPERATIONS)
+    assert not hasattr(DefaultArsdClientFacade, "session_close")
+    assert not hasattr(DefaultArsdClientFacade, "run_events_follow")
+
+
+def test_every_added_operation_uses_one_short_lived_connection(
+    fake_arsd_server,
+) -> None:
+    """P1-e: the added read operations keep the existing per-operation
+    lifecycle — one fresh client, one roundtrip, one close."""
+
+    replies = {
+        "run_status": {"run_id": "run4abc", "session_id": REUSE_SESSION_ID},
+        "run_cancel": {"run_id": "run4abc"},
+        "session_status": _session_view(),
+        "session_list": {"sessions": []},
+    }
+    server = fake_arsd_server(
+        lambda envelope: _result_frame(
+            envelope["request_id"], replies[envelope["op"]]
+        )
+    )
+    facade = _facade_for(server)
+
+    assert facade.run_status("run4abc")["run_id"] == "run4abc"
+    assert facade.run_cancel("run4abc")["run_id"] == "run4abc"
+    assert facade.session_status(REUSE_SESSION_ID)["session_id"] == REUSE_SESSION_ID
+    assert facade.session_list() == {"sessions": []}
+
+    assert server.connections == 4
+    assert [env["op"] for env in server.received] == [
+        "run_status",
+        "run_cancel",
+        "session_status",
+        "session_list",
+    ]
+    assert all(env["api_version"] == 3 for env in server.received)
+
+
 def test_facade_construction_never_connects(fake_arsd_server) -> None:
     """Composing the facade is not a daemon probe (plan §10: zero submits)."""
 
@@ -1642,7 +3181,7 @@ def test_facade_construction_never_connects(fake_arsd_server) -> None:
     assert server.connections == 0
 
 
-def test_v2_negotiation_roundtrip_over_the_wire(fake_arsd_server) -> None:
+def test_v3_negotiation_roundtrip_over_the_wire(fake_arsd_server) -> None:
     """server_info over real client + fake socket, validated exactly."""
 
     server = fake_arsd_server(
@@ -1652,9 +3191,9 @@ def test_v2_negotiation_roundtrip_over_the_wire(fake_arsd_server) -> None:
     info = _validate_server_info(
         facade.server_info(), config=_make_config(enabled=True)
     )
-    assert info.version == "0.6.3"
+    assert info.version == "0.7.6"
     assert server.received[0]["op"] == "server_info"
-    assert server.received[0]["api_version"] == 2
+    assert server.received[0]["api_version"] == 3
     assert server.received[0]["payload"] == {}
 
 
@@ -1683,8 +3222,7 @@ def test_submit_retry_reuses_identical_request_identity_and_bytes(
 
     server = fake_arsd_server(
         lambda envelope: _result_frame(
-            envelope["request_id"],
-            {"run_id": "run4abc", "accepted_at": "2026-08-05T10:00:00+00:00"},
+            envelope["request_id"], _submit_ack(run_id="run4abc")
         )
     )
     facade = _facade_for(server)
@@ -1699,6 +3237,7 @@ def test_submit_retry_reuses_identical_request_identity_and_bytes(
     )
 
     assert first.run_id == second.run_id == "run4abc"
+    assert first.session_id == second.session_id == REUSE_SESSION_ID
     assert [env["request_id"] for env in server.received] == [request_id, request_id]
     assert server.received[0]["op"] == "submit"
     wire_digests = {
@@ -2030,7 +3569,7 @@ def test_fresh_connection_after_loss_no_silent_retry(fake_arsd_server) -> None:
     info = _validate_server_info(
         facade.server_info(), config=_make_config(enabled=True)
     )
-    assert info.api_version == 2
+    assert info.api_version == 3
     assert server.connections == 2
     assert [env["op"] for env in server.received] == ["server_info", "server_info"]
 
@@ -2055,6 +3594,13 @@ def test_facade_rejects_invalid_local_inputs_before_any_connection(
         lambda: facade.run_events("run4abc", from_seq=True, limit=8),
         lambda: facade.run_events("run4abc", from_seq=0, limit=0),
         lambda: facade.run_events("run4abc", from_seq=0, limit=True),
+        lambda: facade.run_status("bad run!"),
+        lambda: facade.run_status(7),
+        lambda: facade.run_cancel("bad run!"),
+        lambda: facade.run_cancel(None),
+        lambda: facade.session_status("sess.dotted"),
+        lambda: facade.session_status(""),
+        lambda: facade.session_status(None),
     ):
         with pytest.raises(SpineError) as excinfo:
             call()
