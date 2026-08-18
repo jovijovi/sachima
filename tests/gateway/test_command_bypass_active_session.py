@@ -252,6 +252,27 @@ class TestCommandBypassActiveSession:
         )
 
     @pytest.mark.asyncio
+    async def test_delegate_bypasses_guard(self):
+        """/delegate must bypass so it starts parallel supervised work
+        instead of interrupting the conversation the user is having.
+
+        Queued, it would be discarded by the slash-command safety net and the
+        delegated task would silently never exist.
+        """
+        adapter = _make_adapter()
+        sk = _session_key()
+        adapter._active_sessions[sk] = asyncio.Event()
+
+        await adapter.handle_message(_make_event("/delegate audit the changelog"))
+
+        assert sk not in adapter._pending_messages, (
+            "/delegate was queued as a pending message instead of being dispatched"
+        )
+        assert any("handled:delegate" in r for r in adapter.sent_responses), (
+            "/delegate response was not sent back to the user"
+        )
+
+    @pytest.mark.asyncio
     async def test_queue_bypasses_guard(self):
         """/queue must bypass so it can queue without interrupting."""
         adapter = _make_adapter()
@@ -326,7 +347,7 @@ class TestAllResolvableCommandsBypassGuard:
         for cmd in (
             "model", "reasoning", "personality", "voice", "insights", "title",
             "resume", "retry", "undo", "compress", "usage",
-            "reload-mcp", "sethome", "reset",
+            "reload-mcp", "sethome", "reset", "delegate",
         ):
             assert should_bypass_active_session(cmd) is True, (
                 f"/{cmd} must bypass the active-session guard"

@@ -2012,6 +2012,77 @@ class GatewaySlashCommandsMixin:
             )
         return t("gateway.rollback.restore_failed", error=result["error"])
 
+    async def _handle_delegate_command(self, event: MessageEvent) -> str:
+        """Handle ``/delegate <task>`` — hand one task to the external AGENT.
+
+        The **one** entry point for delegation, reached identically from the
+        cold slash path and from the running-agent fast path in
+        ``gateway/run.py``. It starts no agent of its own and never touches the
+        local conversation: the task goes to the composed Sachima ↔ ARS
+        execution bundle, and this returns the acceptance immediately.
+
+        Empty text creates nothing at all — no task, no session, no held
+        payload, no background work — and answers with the usage line alone.
+
+        With no ``arsd`` bundle composed there is no external AGENT path to
+        delegate to, and this says so rather than quietly running the task
+        locally: a delegation that silently became an ordinary turn is worse
+        than one that did not happen.
+        """
+
+        from gateway.sachima_delegate import (
+            DELEGATE_ACCEPTED_TEMPLATE,
+            DELEGATE_REFUSED,
+            DELEGATE_UNAVAILABLE,
+            DELEGATE_USAGE,
+            DelegateTarget,
+            bound_delegate_coordinator,
+        )
+
+        task_text = (event.get_command_args() or "").strip()
+        if not task_text:
+            return DELEGATE_USAGE
+
+        coordinator = bound_delegate_coordinator()
+        if coordinator is None:
+            return DELEGATE_UNAVAILABLE
+
+        source = event.source
+        target = DelegateTarget(
+            platform=source.platform.value if source.platform else "",
+            chat_id=source.chat_id,
+            thread_id=source.thread_id,
+        )
+        event_message_id = self._reply_anchor_for_event(event)
+
+        async def _notify(notify_target: "DelegateTarget", text: str) -> None:
+            """Deliver one sparse update back to the chat that asked."""
+
+            adapter = self.adapters.get(source.platform)
+            if adapter is None:
+                logger.warning(
+                    "No adapter for platform %s; delegate update dropped",
+                    source.platform,
+                )
+                return
+            await adapter.send(
+                notify_target.chat_id,
+                text,
+                metadata=self._thread_metadata_for_source(source, event_message_id),
+            )
+
+        try:
+            submission = coordinator.submit_new(
+                task_text, target=target, notifier=_notify
+            )
+        except Exception:
+            # One stable answer — never the rejected material or the raised
+            # text, both of which can carry private config refs.
+            logger.warning("Sachima delegate submission refused")
+            return DELEGATE_REFUSED
+
+        return DELEGATE_ACCEPTED_TEMPLATE.format(task_ref=submission.task_id)
+
     async def _handle_background_command(self, event: MessageEvent) -> str:
         """Handle /background <prompt> — run a prompt in a separate background session.
 

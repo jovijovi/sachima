@@ -531,6 +531,53 @@ def test_composition_negotiates_server_info_once_and_fails_closed_on_mismatch(
     assert "daemon unreachable" not in _rendered(excinfo)
 
 
+def test_composed_backend_retains_the_negotiated_typed_info(tmp_path: Path) -> None:
+    """The negotiation the constructor already performed stays readable.
+
+    A composed backend has *proven* the contract; throwing that proof away
+    would force every later reader either to negotiate again — a socket call
+    for a value already known — or to mirror a default beside it, which is a
+    fallback wearing a constant's name.
+    """
+
+    from sachima_supervisor.runtime_spine.arsd_socket_contract import ArsdServerInfo
+
+    backend, facade, _ = _backend(tmp_path)
+    info = backend.negotiated_server_info
+    assert type(info) is ArsdServerInfo
+    assert info.api_version == 3
+    assert info.max_concurrent_runs == 4
+
+    # Reading it is a read: no second negotiation, no socket operation at all.
+    before = list(facade.calls)
+    for _ in range(5):
+        assert backend.negotiated_server_info.max_concurrent_runs == 4
+    assert facade.calls == before
+
+
+def test_a_failed_negotiation_leaves_no_backend_and_no_capacity_to_read(
+    tmp_path: Path,
+) -> None:
+    """No fallback number: a backend that cannot negotiate never exists, so
+    there is nothing to read a capacity off."""
+
+    unreachable = _FacadeDouble()
+    unreachable.server_info_error = _TransportLoss("daemon unreachable")
+    with pytest.raises(SpineError) as excinfo:
+        _backend(tmp_path, unreachable)
+    assert excinfo.value.code == RUNTIME_ARSD_UNAVAILABLE
+
+
+def test_backend_source_carries_no_mirrored_concurrency_default() -> None:
+    """The one admissible source of capacity is the live negotiation."""
+
+    mod = _mod()
+    for name in dir(mod):
+        value = getattr(mod, name)
+        if "CONCURRENT" in name.upper() and isinstance(value, int):
+            raise AssertionError(f"mirrored concurrency constant: {name}")
+
+
 def test_backend_module_imports_without_agent_run_supervisor() -> None:
     for name in list(sys.modules):
         if name.startswith("agent_run_supervisor"):
@@ -2708,3 +2755,157 @@ def test_recovery_under_the_original_identity_still_resends_the_frozen_request(
     assert recovered.result.supervisor_status == "accepted"
     assert facade.ops("submit") == 2
     assert facade.submitted[0] == facade.submitted[1]
+
+
+# --------------------------------------------------------------------------- #
+# Bounded terminal result (Milestone A, task 7): the Run-facing surface a
+# delegated submission reports from. It reads what ARS already returned and
+# browses nothing — no artifact dir, no new operation, no rehydrate.
+# --------------------------------------------------------------------------- #
+FINAL_MESSAGE_CANARY = "the delegated agent finished and reported this"
+
+
+def _terminal_body(status: str = "completed", **overrides: Any) -> dict[str, Any]:
+    body: dict[str, Any] = {
+        "run_id": RUN_ID_CANARY,
+        "status": status,
+        "final_message": FINAL_MESSAGE_CANARY,
+        "truncated": False,
+        "truncate_reason": None,
+        "run_dir": WORKSPACE_CANARY,
+    }
+    body.update(overrides)
+    return body
+
+
+def _dispatched_task(tmp_path: Path):
+    backend, facade, _ = _backend(tmp_path)
+    _attach(backend)
+    _dispatch(backend)
+    return backend, facade, derive_arsd_backend_handle(TASK_ID)
+
+
+def test_a_nonterminal_run_has_no_final_message(tmp_path: Path) -> None:
+    """Accepted, or progress with no terminal: there is nothing to report yet,
+    and inventing an empty answer would read as "it finished, silently"."""
+
+    backend, facade, handle = _dispatched_task(tmp_path)
+    assert backend.observe_run(handle) == "accepted"
+    assert backend.observe_run_result(handle) is None
+
+    facade.run_status_payload = {"progress": {"state": "running"}}
+    assert backend.observe_run(handle) == "accepted"
+    assert backend.observe_run_result(handle) is None
+
+
+def test_a_task_that_dispatched_nothing_has_no_terminal_result(tmp_path: Path) -> None:
+    backend, _, _ = _backend(tmp_path)
+    _attach(backend)
+    handle = derive_arsd_backend_handle(TASK_ID)
+    assert backend.observe_run(handle) is None
+    assert backend.observe_run_result(handle) is None
+
+
+def test_a_completed_run_exposes_the_bounded_final_message(tmp_path: Path) -> None:
+    backend, facade, handle = _dispatched_task(tmp_path)
+    facade.run_status_payload = {"result": _terminal_body("completed")}
+
+    projected = backend.observe_run_result(handle)
+    assert projected is not None
+    assert projected.status == "completed"
+    assert projected.final_message == FINAL_MESSAGE_CANARY
+    assert projected.truncated is False
+    assert projected.truncate_reason is None
+    # The private locator and run dir stay behind: this is a projection, not
+    # the body it was projected from.
+    rendered = repr(projected) + str(projected)
+    assert RUN_ID_CANARY not in rendered
+    assert WORKSPACE_CANARY not in rendered
+
+
+def test_a_truncated_final_message_keeps_its_marker(tmp_path: Path) -> None:
+    backend, facade, handle = _dispatched_task(tmp_path)
+    facade.run_status_payload = {
+        "result": _terminal_body(
+            "completed", truncated=True, truncate_reason="max_final_message_bytes"
+        )
+    }
+
+    projected = backend.observe_run_result(handle)
+    assert projected.truncated is True
+    assert projected.truncate_reason == "max_final_message_bytes"
+
+
+@pytest.mark.parametrize("terminal", ["failed", "cancelled", "timed_out", "unknown"])
+def test_a_failed_run_preserves_its_stable_terminal_classification(
+    tmp_path: Path, terminal: str
+) -> None:
+    """The neutral terminal the R-6 mapping derived is the one projected —
+    the projection never re-reads the body's own status token."""
+
+    backend, facade, handle = _dispatched_task(tmp_path)
+    facade.run_status_payload = {"result": _terminal_body(terminal, final_message="")}
+
+    projected = backend.observe_run_result(handle)
+    assert projected.status == terminal
+    assert backend.observe_run(handle) == terminal
+
+
+def test_a_permission_violation_completed_run_is_projected_as_failed(
+    tmp_path: Path,
+) -> None:
+    """A denied tool call reported ``completed`` must never read as success —
+    on the terminal projection exactly as on ``observe_run`` (Spec §10.7)."""
+
+    backend, facade, handle = _dispatched_task(tmp_path)
+    facade.run_status_payload = {
+        "result": _terminal_body("completed", reason=ARSD_PERMISSION_VIOLATION_REASON)
+    }
+
+    projected = backend.observe_run_result(handle)
+    assert projected.status == "failed"
+    assert ARSD_PERMISSION_VIOLATION_REASON not in repr(projected)
+
+
+def test_a_settled_terminal_outlives_the_run_being_cleared(tmp_path: Path) -> None:
+    """The daemon may forget a Run Sachima still has to report on.
+
+    Once trusted evidence settled the verdict, the projection is remembered
+    rather than re-asked for — otherwise the one notification a delegated
+    submission owes its chat could be lost to a forgotten Run.
+    """
+
+    backend, facade, handle = _dispatched_task(tmp_path)
+    facade.run_status_payload = {"result": _terminal_body("completed")}
+    first = backend.observe_run_result(handle)
+    assert first.final_message == FINAL_MESSAGE_CANARY
+
+    calls_before = list(facade.calls)
+    again = backend.observe_run_result(handle)
+    assert again == first
+    # No active Run left to observe, so no further socket operation happens.
+    assert facade.calls == calls_before
+
+
+def test_an_untrusted_terminal_body_yields_no_projection(tmp_path: Path) -> None:
+    """Evidence that cannot be read is contained, never projected as an
+    answer with an empty message."""
+
+    backend, facade, handle = _dispatched_task(tmp_path)
+    facade.run_status_payload = {"result": {"status": "not_a_terminal"}}
+    with pytest.raises(SpineError) as excinfo:
+        backend.observe_run_result(handle)
+    assert excinfo.value.code == RUNTIME_ARSD_INTERNAL
+
+
+def test_the_terminal_projection_reads_no_artifact_and_adds_no_operation(
+    tmp_path: Path,
+) -> None:
+    """A-1: no artifact browsing, no API change. The whole terminal answer
+    comes from the ``run_status`` reply that was already being read."""
+
+    backend, facade, handle = _dispatched_task(tmp_path)
+    facade.run_status_payload = {"result": _terminal_body("completed")}
+    backend.observe_run_result(handle)
+    assert set(facade.calls) <= {"server_info", "submit", "run_status", "session_status"}
+    assert "run_events" not in facade.calls

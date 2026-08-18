@@ -32,6 +32,7 @@ behavior.
 
 from __future__ import annotations
 
+import importlib
 import json
 import logging
 import subprocess
@@ -563,3 +564,239 @@ def test_the_arsd_config_key_allowlist_matches_the_config_dataclass() -> None:
     assert binding_mod._ARSD_CONFIG_KEYS == frozenset(
         field.name for field in dataclasses.fields(ArsdSupervisorConfig)
     )
+
+
+# --------------------------------------------------------------------------- #
+# E. The delegate seam (Milestone A, task 3): one bundle, one payload resolver
+# --------------------------------------------------------------------------- #
+class _MinimalFacade:
+    """A Socket API v3 facade double — the only "daemon" in this section.
+
+    Composition performs exactly one operation (``server_info``), so that is
+    the only one this double ever has to answer for real. The rest exist
+    because the injected boundary is a Protocol: a partial implementation
+    would not satisfy ``isinstance`` and would fail the composition for the
+    wrong reason.
+    """
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def server_info(self):
+        self.calls.append("server_info")
+        return {
+            "version": EXPECTED_AGENT_RUN_SUPERVISOR_VERSION,
+            "api_version": 3,
+            "supported_api_versions": [3],
+            "operations": [
+                "run_cancel",
+                "run_events",
+                "run_status",
+                "server_info",
+                "session_list",
+                "session_status",
+                "submit",
+            ],
+            "limits": {
+                "max_concurrent_runs": 10,
+                "max_frame_bytes": 1_048_576,
+                "max_prompt_bytes": 262_144,
+                "events_page_limit": 256,
+                "event_follow_queue_size": 1024,
+                "max_run_event_budget_bytes": 2_147_483_648,
+            },
+        }
+
+    def submit(self, *, request_id, payload):
+        raise AssertionError("no submit may run here")
+
+    def run_status(self, run_id):
+        raise AssertionError("no run_status may run here")
+
+    def run_events(self, run_id, *, from_seq, limit=None):
+        raise AssertionError("no run_events may run here")
+
+    def run_cancel(self, run_id):
+        raise AssertionError("no run_cancel may run here")
+
+    def session_status(self, session_id):
+        raise AssertionError("no session_status may run here")
+
+    def session_list(self):
+        raise AssertionError("no session_list may run here")
+
+
+def _compose_arsd(monkeypatch, tmp_path, *, facade=None):
+    """Bind the ``arsd`` backend with an injected facade, and capture kwargs.
+
+    ``bind_arsd_execution`` is patched at its **source** module (the binding
+    imports it per call), so the real composition root still runs — this
+    substitutes the daemon, not the seam under test.
+    """
+
+    from sachima_supervisor.runtime_spine import (
+        agent_run_supervisor_execution_binding as compose_mod,
+    )
+
+    facade = _MinimalFacade() if facade is None else facade
+    captured: dict = {}
+    real_bind = compose_mod.bind_arsd_execution
+
+    def _bind(config, **kwargs):
+        captured.update(kwargs)
+        captured["config"] = config
+        return real_bind(config, facade=facade, **kwargs)
+
+    monkeypatch.setattr(compose_mod, "bind_arsd_execution", _bind)
+    (tmp_path / "private").mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv(_SURFACE_ENV, "hermes_internal")
+    monkeypatch.setenv(_BACKEND_ENV, "arsd")
+    monkeypatch.setenv(_ARSD_CONFIG_ENV, _write_arsd_config(tmp_path, enabled=True))
+    summary = binding_mod.bind_live_progress_display_from_env()
+    return summary, captured, facade
+
+
+def test_arsd_binding_injects_the_delegate_payload_resolver(monkeypatch, tmp_path):
+    """A-1: the composed bundle's dispatcher resolves through the host's own
+    claim-check store, so the exact task text never rides on a request."""
+
+    import gateway.sachima_delegate as delegate_mod
+
+    delegate_mod.delegate_payload_store().clear()
+    summary, captured, _ = _compose_arsd(monkeypatch, tmp_path)
+    assert summary["code"] == _BOUND and summary["backend"] == "arsd"
+
+    resolver = captured["payload_resolver"]
+    assert resolver is not None
+    ref = delegate_mod.delegate_payload_store().put("private delegate task text")
+    assert resolver(ref) == "private delegate task text"
+    delegate_mod.delegate_payload_store().clear()
+
+
+def test_delegate_and_live_progress_share_exactly_one_bundle(monkeypatch, tmp_path):
+    """A-1: no second registry / backend / port / dispatcher / bindings.
+
+    The delegate coordinator and the live-progress read chain are two views of
+    one spine; composing a second one would let a Run be dispatched into a
+    conversation the display service knows nothing about.
+    """
+
+    import gateway.sachima_delegate as delegate_mod
+
+    summary, _, _ = _compose_arsd(monkeypatch, tmp_path)
+    assert summary["code"] == _BOUND
+
+    bundle = binding_mod.bound_execution_binding()
+    coordinator = delegate_mod.bound_delegate_coordinator()
+    assert bundle is not None and coordinator is not None
+    assert coordinator.binding is bundle
+    assert coordinator.binding.dispatcher is bundle.dispatcher
+    assert bundle.dispatcher.registry is bundle.registry
+    assert bundle.dispatcher.bindings is bundle.bindings
+    assert bundle.query_service.registry is bundle.registry
+    assert bundle.query_service.port is bundle.port
+    assert bundle.display_service is tool_mod._bound_service()
+
+
+def test_the_bound_coordinator_capacity_comes_from_the_live_negotiation(
+    monkeypatch, tmp_path
+):
+    """A-1: ``server_info.limits.max_concurrent_runs`` and nothing else."""
+
+    import gateway.sachima_delegate as delegate_mod
+
+    summary, _, facade = _compose_arsd(monkeypatch, tmp_path)
+    assert summary["code"] == _BOUND
+    coordinator = delegate_mod.bound_delegate_coordinator()
+    assert coordinator.capacity == 10
+    assert facade.calls == ["server_info"]
+
+
+@pytest.mark.parametrize("backend_value", ["", "fake"])
+def test_the_fake_backend_binds_no_delegate_coordinator(
+    monkeypatch, tmp_path, backend_value
+):
+    """Default-off is unchanged: the fake path composes no execution bundle,
+    so there is nothing for ``/delegate`` to drive."""
+
+    import gateway.sachima_delegate as delegate_mod
+
+    artifact_dir = tmp_path / "run"
+    artifact_dir.mkdir()
+    bindings_file = tmp_path / "bindings.json"
+    bindings_file.write_text(
+        json.dumps(
+            {
+                "bindings": [
+                    {
+                        "task_id": "task_live_smoke",
+                        "artifact_dir": str(artifact_dir),
+                        "artifact_ref": "artifact_live_smoke_0",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(_SURFACE_ENV, "hermes_internal")
+    monkeypatch.setenv(_BACKEND_ENV, backend_value)
+    monkeypatch.setenv(_FILE_ENV, str(bindings_file))
+    summary = binding_mod.bind_live_progress_display_from_env()
+    assert summary["code"] == _BOUND and summary["backend"] == "fake"
+    assert binding_mod.bound_execution_binding() is None
+    assert delegate_mod.bound_delegate_coordinator() is None
+
+
+def test_a_disabled_or_failed_arsd_config_binds_no_delegate_coordinator(
+    monkeypatch, tmp_path
+):
+    import gateway.sachima_delegate as delegate_mod
+
+    monkeypatch.setenv(_SURFACE_ENV, "hermes_internal")
+    monkeypatch.setenv(_BACKEND_ENV, "arsd")
+    monkeypatch.setenv(_ARSD_CONFIG_ENV, _write_arsd_config(tmp_path, enabled=False))
+    summary = binding_mod.bind_live_progress_display_from_env()
+    assert summary["code"] == _INVALID
+    assert binding_mod.bound_execution_binding() is None
+    assert delegate_mod.bound_delegate_coordinator() is None
+
+
+def test_rebinding_away_from_arsd_drops_the_delegate_coordinator(monkeypatch, tmp_path):
+    """A stale coordinator would keep dispatching into a retired bundle."""
+
+    import gateway.sachima_delegate as delegate_mod
+
+    summary, _, _ = _compose_arsd(monkeypatch, tmp_path)
+    assert summary["code"] == _BOUND
+    assert delegate_mod.bound_delegate_coordinator() is not None
+
+    monkeypatch.setenv(_BACKEND_ENV, "fake")
+    monkeypatch.delenv(_FILE_ENV, raising=False)
+    assert binding_mod.bind_live_progress_display_from_env()["code"] == _ABSENT
+    assert binding_mod.bound_execution_binding() is None
+    assert delegate_mod.bound_delegate_coordinator() is None
+
+
+def test_composing_the_bundle_still_submits_nothing(monkeypatch, tmp_path):
+    """Composition is not a dispatch: a bound coordinator has started no Run."""
+
+    import gateway.sachima_delegate as delegate_mod
+
+    summary, _, facade = _compose_arsd(monkeypatch, tmp_path)
+    assert summary["code"] == _BOUND
+    assert facade.calls == ["server_info"]
+    coordinator = delegate_mod.bound_delegate_coordinator()
+    assert coordinator.active_count() == 0
+    assert delegate_mod.delegate_payload_store().count() == 0
+
+
+def test_the_binding_never_calls_rehydrate_source_binding():
+    """Milestone A composes; it does not recover a prior process's Runs."""
+
+    src = Path(binding_mod.__file__).read_text(encoding="utf-8")
+    assert "rehydrate_source_binding" not in src
+    delegate_src = Path(
+        importlib.import_module("gateway.sachima_delegate").__file__
+    ).read_text(encoding="utf-8")
+    assert "rehydrate_source_binding" not in delegate_src
+    assert "recover_dispatch" not in delegate_src
