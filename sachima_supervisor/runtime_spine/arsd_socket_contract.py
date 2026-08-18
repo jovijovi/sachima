@@ -49,7 +49,7 @@ from types import MappingProxyType
 from typing import Any, Mapping, NoReturn, Protocol, runtime_checkable
 
 from ..supervisor_library import EXPECTED_AGENT_RUN_SUPERVISOR_VERSION
-from .events import SpineError, _safe_digest, _safe_id, safe_role_key
+from .events import SpineError, _safe_digest, _safe_id
 
 __all__ = [
     "ARSD_STABLE_CODES",
@@ -68,7 +68,10 @@ __all__ = [
     "RUNTIME_INVALID_ARSD_CONFIG",
     "ARSD_SUPERVISOR_CONFIG_TYPE",
     "ARSD_REQUIRED_API_VERSION",
+    "ARSD_FINAL_MESSAGE_TRUNCATE_REASON",
     "ARSD_MAX_ERROR_MESSAGE_CHARS",
+    "ARSD_MAX_FIELD_CHARS",
+    "ARSD_MAX_FINAL_MESSAGE_BYTES",
     "ARSD_MAX_FRAME_BYTES",
     "ARSD_MAX_JSON_NESTING_DEPTH",
     "ARSD_MAX_PROMPT_BYTES",
@@ -86,6 +89,7 @@ __all__ = [
     "ArsdServerInfo",
     "ArsdSessionView",
     "ArsdSubmitAccepted",
+    "ArsdTerminalResult",
     "DefaultArsdClientFacade",
     "ArsdSupervisorConfig",
     "arsd_submit_payload_digest",
@@ -93,6 +97,7 @@ __all__ = [
     "check_arsd_admission_event_budget",
     "derive_arsd_request_id",
     "map_arsd_client_error_code",
+    "project_arsd_terminal_result",
     "require_enabled_arsd_supervisor_config",
     "validate_arsd_run_cancel_result",
     "validate_arsd_run_events_page",
@@ -222,8 +227,21 @@ _POLICY_REF_PREFIX = "policy_"
 _VERSION_RE = re.compile(r"^[0-9][0-9A-Za-z._+-]{0,31}$")
 
 #: Opaque single-line wire tokens Sachima forwards but does not own the
-#: grammar of (registered agent ids, model names, effort levels).
+#: grammar of (registered agent ids, effort levels, run ids).
+#:
+#: Model selectors are deliberately **not** in this family any more: the
+#: pinned request validates ``requested_model`` as bounded printable text,
+#: and the configured Claude selector ``opus[1m]`` is unspellable here. See
+#: :func:`_safe_config_text`.
 _WIRE_TOKEN_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+
+#: The bound the pinned 0.7.6 ``AgentRunRequest`` applies to a plain text
+#: field (``native_acp.spec._require_text``'s default). Mirrored, not
+#: imported, and drift-locked behaviourally in the contract tests against a
+#: real request rather than against a private symbol. It is the same pinned
+#: bound :data:`ARSD_MAX_SESSION_ID_CHARS` mirrors for Session ids, kept as
+#: its own name because the two fields are validated by different grammars.
+ARSD_MAX_FIELD_CHARS = 512
 
 #: Closed mirror of the pinned 0.7.6 ``native_acp.spec.RunLimits`` fields —
 #: the contract test imports the real dataclass and fails on drift.
@@ -279,15 +297,20 @@ _RUN_LIMIT_MIN: Mapping[str, int] = MappingProxyType(
 ARSD_STRUCTURAL_MAX_RUN_EVENT_BUDGET_BYTES = 1_048_576_000_000
 _MAX_LIMIT_COUNT = 1_000_000_000
 
-#: Closed first-integration grant allowlist: the approved plan admits
-#: read/search observation capabilities only — never a write-capable kind,
-#: even where the pinned wire protocol itself would accept one. 0.7.6 can
-#: grant once-scoped ``edit``/``delete``/``move`` where the frozen grant
-#: carries the capability; that path is recorded in the Spec and not opened
-#: here. Membership in the pinned
-#: ``agent_run_supervisor.native_acp.spec.PERMISSION_KINDS`` domain is
-#: drift-locked by the contract tests.
-_GRANTABLE_CAPABILITIES = frozenset({"read", "search"})
+#: Closed grant allowlist: the exact capability vocabulary the configured
+#: **author** role requires — ``read``/``search`` to observe a workspace and
+#: ``write``/``execute`` to author in it. It is a strict subset of the pinned
+#: ``agent_run_supervisor.native_acp.spec.PERMISSION_KINDS`` domain, and the
+#: contract tests drift-lock it against that domain in both directions.
+#:
+#: The earlier read/search-only projection is retired, not narrowed by accident:
+#: it could not express the grant the deployed 0.7.6 role is configured with, so
+#: every author config failed closed at construction and no supervised authoring
+#: Run could be admitted at all. Widening to the author vocabulary is not a
+#: licence to carry the rest of the domain — ``delete``, ``move``, ``terminal``,
+#: ``fetch``, ``switch_mode`` and ``other`` are admitted by the daemon and
+#: refused here, because this role does not require them.
+_GRANTABLE_CAPABILITIES = frozenset({"read", "search", "write", "execute"})
 
 
 # Every stable raiser suppresses exception context (``from None`` semantics):
@@ -307,9 +330,41 @@ def _safe_config_digest(value: Any) -> str:
 
 
 def _safe_wire_token(value: Any, *, code: str = RUNTIME_INVALID_ARSD_CONFIG) -> str:
-    """One opaque single-line wire token (agent id / model / effort / run id)."""
+    """One opaque single-line wire token (agent id / effort / run id)."""
 
     if type(value) is not str or _WIRE_TOKEN_RE.fullmatch(value) is None:
+        raise SpineError(code) from None
+    return value
+
+
+def _safe_config_text(value: Any, *, code: str = RUNTIME_INVALID_ARSD_CONFIG) -> str:
+    """One bounded printable wire **text** field (namespace / model selector).
+
+    These two are not identifier-like and never were: the pinned 0.7.6
+    request validates ``namespace`` and ``requested_model`` with
+    ``native_acp.spec._require_text`` — non-empty, printable, at most
+    :data:`ARSD_MAX_FIELD_CHARS` characters — and the daemon then
+    exact-matches ``(owner, namespace)`` against the caller's registration.
+    Validating them through the safe-id / wire-token grammars refused the
+    values the deployed route is actually configured with (the registered
+    namespace ``hermes/default`` and the selector ``opus[1m]``), so no
+    deployable config could submit at all.
+
+    This is a **separation, not a widening**: owner, agent id, effort,
+    grant/approval/credential refs, digests, run ids and Session ids keep
+    their exact narrow grammars, and the contract tests lock that split in
+    both directions. Mirroring the pinned rule exactly is also what keeps
+    the refusal honest — Sachima never admits text the daemon would reject.
+
+    ``str.isprintable()`` is the pinned predicate and already excludes every
+    control character (newline, tab, carriage return, NUL), so the field
+    stays single-line without a second rule. Rejected material is never
+    echoed: the raised message IS the stable code.
+    """
+
+    if type(value) is not str or not value or len(value) > ARSD_MAX_FIELD_CHARS:
+        raise SpineError(code) from None
+    if not value.isprintable():
         raise SpineError(code) from None
     return value
 
@@ -348,11 +403,18 @@ def _prefixed_ref(value: Any, prefix: str) -> str:
 
 
 def _grant_capability(value: Any) -> str:
-    """One admitted grant capability: safe shape AND on the closed read/search
-    allowlist — an off-allowlist kind fails closed even where the pinned wire
-    protocol would accept it."""
+    """One admitted grant capability: safe shape AND on the closed allowlist.
 
-    token = safe_role_key(value, code=RUNTIME_INVALID_ARSD_CONFIG)
+    The membership check is the whole gate. It deliberately does **not** run
+    the launch-spec role heuristic on the way in: that heuristic refuses any
+    identifier merely *containing* ``write``, which is right for a Sachima role
+    key and wrong for a capability name the deployed daemon defines — it would
+    refuse ``write`` itself, so the closed allowlist below could never admit the
+    author vocabulary it names. An off-allowlist kind still fails closed, even
+    where the pinned wire protocol would accept it.
+    """
+
+    token = _safe_id(value, code=RUNTIME_INVALID_ARSD_CONFIG)
     if token not in _GRANTABLE_CAPABILITIES:
         _invalid_config()
     return token
@@ -458,7 +520,7 @@ def _check_arsd_config_fields(config: Any, *, normalize: bool = False) -> None:
         _invalid_config()
     _prefixed_ref(approval_ref, _APPROVAL_REF_PREFIX)
     _safe_config_ref(owner)
-    _safe_config_ref(namespace)
+    _safe_config_text(namespace)
     _private_abs_path(socket_path)
     _private_abs_path(binding_ledger_path)
 
@@ -481,7 +543,7 @@ def _check_arsd_config_fields(config: Any, *, normalize: bool = False) -> None:
         agent_by_policy_ref, key_prefix=_POLICY_REF_PREFIX, item=_safe_wire_token
     )
     owned_models = _owned_ref_map(
-        model_by_policy_ref, key_prefix=_POLICY_REF_PREFIX, item=_safe_wire_token
+        model_by_policy_ref, key_prefix=_POLICY_REF_PREFIX, item=_safe_config_text
     )
     owned_efforts = _owned_ref_map(
         effort_by_policy_ref, key_prefix=_POLICY_REF_PREFIX, item=_safe_wire_token
@@ -1042,6 +1104,18 @@ class ArsdServerInfo:
     def max_run_event_budget_bytes(self) -> int:
         return self.limits["max_run_event_budget_bytes"]
 
+    @property
+    def max_concurrent_runs(self) -> int:
+        """How many Runs this daemon will hold at once, as it just said.
+
+        A typed accessor for the same reason the event budget has one: it is
+        the *only* admissible answer to that question. There is deliberately no
+        mirrored default beside it — a constant here would be a fallback, and a
+        fallback is how a host admits more work than the daemon accepted.
+        """
+
+        return self.limits["max_concurrent_runs"]
+
 
 def validate_arsd_server_info(
     payload: Any, *, config: ArsdSupervisorConfig
@@ -1223,6 +1297,107 @@ def validate_arsd_run_status(payload: Any, *, run_id: Any) -> ArsdRunStatusObser
     )
 
 
+#: Sachima's mirror of the pinned ARS final-message byte ceiling. It is a
+#: bound, never a policy: ARS clips at exactly this ceiling and records that it
+#: did, so mirroring it only decides what happens to a body that somehow
+#: arrives longer — it gets clipped here too, rather than carried onward
+#: unbounded. Drift-locked against ``agent_run_supervisor.result`` by the
+#: contract tests.
+ARSD_MAX_FINAL_MESSAGE_BYTES = 65_536
+#: The exact reason token ARS records when it clipped a final message. Reused
+#: rather than re-minted, so Sachima's own clip is legible as the same fact.
+ARSD_FINAL_MESSAGE_TRUNCATE_REASON = "max_final_message_bytes"
+
+#: The bounded token charset a truncation reason may use. Foreign free text
+#: beside the marker is dropped; the marker itself is preserved.
+_TRUNCATE_REASON_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+
+_TERMINAL_RESULT_STATUS_KEY = "status"
+_TERMINAL_RESULT_REASON_KEY = "reason"
+_FINAL_MESSAGE_KEY = "final_message"
+_TRUNCATED_KEY = "truncated"
+_TRUNCATE_REASON_KEY = "truncate_reason"
+
+
+def _clip_utf8(text: str, max_bytes: int) -> tuple[str, bool]:
+    """Clip ``text`` to ``max_bytes`` on a character boundary."""
+
+    encoded = text.encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return text, False
+    clipped = encoded[:max_bytes]
+    while clipped:
+        try:
+            return clipped.decode("utf-8"), True
+        except UnicodeDecodeError:
+            clipped = clipped[:-1]
+    return "", True
+
+
+@dataclass(frozen=True)
+class ArsdTerminalResult:
+    """The bounded terminal answer a finished Run already returned.
+
+    Exactly the four fields ARS 0.7.6 puts on a trusted Native terminal that
+    describe *the answer*: the neutral terminal status, the agent's own final
+    message, and whether that message was clipped. Everything else on the
+    terminal body — the Run id, the private run dir, the evidence paths, the
+    usage block — is deliberately absent: reading them is artifact browsing,
+    and this projection exists precisely so a delegated submission never has to
+    do any.
+
+    ``final_message`` is the one free-form field, so it is ``repr=False``: it
+    is a payload to deliver to the chat that asked for it, never material for a
+    log line or a diagnostic rendering.
+    """
+
+    status: str
+    final_message: str = field(repr=False)
+    truncated: bool
+    truncate_reason: str | None
+
+
+def project_arsd_terminal_result(result: Any, *, status: Any) -> ArsdTerminalResult:
+    """Project one trusted terminal body into the bounded four-field answer.
+
+    ``status`` is the **neutral** terminal the caller already derived through
+    the R-6 mapping, not the body's own token: that mapping is where a
+    ``PERMISSION_VIOLATION`` ``completed`` becomes ``failed``, and re-reading
+    the raw status here would quietly undo it.
+
+    A body that cannot be read, or a status outside the closed terminal
+    vocabulary, is a contained internal failure — never a fabricated answer
+    with an empty message, which would read as "it finished, silently".
+    """
+
+    if type(status) is not str or status not in ARSD_TERMINAL_STATUSES:
+        raise SpineError(RUNTIME_ARSD_INTERNAL) from None
+    if not isinstance(result, Mapping):
+        raise SpineError(RUNTIME_ARSD_INTERNAL) from None
+
+    raw_message = result.get(_FINAL_MESSAGE_KEY)
+    message = raw_message if type(raw_message) is str else ""
+    message, clipped = _clip_utf8(message, ARSD_MAX_FINAL_MESSAGE_BYTES)
+
+    truncated = result.get(_TRUNCATED_KEY) is True or clipped
+    reason: str | None = None
+    if truncated:
+        raw_reason = result.get(_TRUNCATE_REASON_KEY)
+        if type(raw_reason) is str and _TRUNCATE_REASON_RE.fullmatch(raw_reason):
+            reason = raw_reason
+        elif clipped:
+            # Sachima's own clip states its own reason; an unreadable remote
+            # one is dropped rather than echoed or guessed at.
+            reason = ARSD_FINAL_MESSAGE_TRUNCATE_REASON
+
+    return ArsdTerminalResult(
+        status=status,
+        final_message=message,
+        truncated=truncated,
+        truncate_reason=reason,
+    )
+
+
 @dataclass(frozen=True)
 class ArsdRunCancelObservation:
     """One validated ``run_cancel`` reply.
@@ -1318,6 +1493,12 @@ def _optional_wire_token(value: Any) -> str | None:
     return _safe_wire_token(value, code=RUNTIME_ARSD_PROTOCOL_VIOLATION)
 
 
+def _optional_config_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    return _safe_config_text(value, code=RUNTIME_ARSD_PROTOCOL_VIOLATION)
+
+
 def _optional_wire_timestamp(value: Any) -> str | None:
     if value is None:
         return None
@@ -1353,12 +1534,14 @@ def validate_arsd_session_view(payload: Any) -> ArsdSessionView:
             payload["session_id"], code=RUNTIME_ARSD_PROTOCOL_VIOLATION
         ),
         owner=_safe_id(payload["owner"], code=RUNTIME_ARSD_PROTOCOL_VIOLATION),
-        namespace=_safe_id(payload["namespace"], code=RUNTIME_ARSD_PROTOCOL_VIOLATION),
+        namespace=_safe_config_text(
+            payload["namespace"], code=RUNTIME_ARSD_PROTOCOL_VIOLATION
+        ),
         agent_id=_optional_wire_token(payload["agent_id"]),
         profile_id=_optional_wire_token(payload["profile_id"]),
         created_at=_optional_wire_timestamp(payload["created_at"]),
         updated_at=_optional_wire_timestamp(payload["updated_at"]),
-        last_effective_model=_optional_wire_token(payload["last_effective_model"]),
+        last_effective_model=_optional_config_text(payload["last_effective_model"]),
         last_effective_effort=_optional_wire_token(payload["last_effective_effort"]),
         quarantine_reason_code=reason_code,
     )

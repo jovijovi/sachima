@@ -120,11 +120,13 @@ from .arsd_socket_contract import (
     ArsdServerInfo,
     ArsdSubmitAccepted,
     ArsdSupervisorConfig,
+    ArsdTerminalResult,
     _safe_wire_token,
     arsd_submit_payload_digest,
     build_arsd_submit_payload,
     check_arsd_admission_event_budget,
     derive_arsd_request_id,
+    project_arsd_terminal_result,
     require_enabled_arsd_supervisor_config,
     validate_arsd_run_cancel_result,
     validate_arsd_run_events_page,
@@ -445,6 +447,10 @@ class _TaskEntry:
     #: settled verdict outlives the Run being cleared as the active one — the
     #: daemon may already have forgotten a Run Sachima still has to report.
     last_run_status: str | None = None
+    #: The bounded terminal answer that came with that verdict, remembered for
+    #: the same reason and repr-excluded for the same reason its free-form
+    #: field is: it is a payload to deliver, not diagnostic material.
+    last_terminal_result: ArsdTerminalResult | None = field(default=None, repr=False)
     cancel_confirmed: bool = False
 
 
@@ -497,9 +503,29 @@ class ArsdSupervisorBackend:
         self._lock = threading.RLock()
         self._by_task: dict[str, _TaskEntry] = {}
         self._by_handle: dict[str, _TaskEntry] = {}
+        #: The most recent negotiation this backend actually passed. Set by
+        #: :meth:`_negotiate` itself, so it is never a value nobody validated.
+        self._server_info: ArsdServerInfo | None = None
         # Composition-time negotiation: a backend that cannot prove the
         # contract never becomes composable (Spec §5.3.1).
         self._negotiate()
+
+    @property
+    def negotiated_server_info(self) -> ArsdServerInfo:
+        """The last ``server_info`` this backend negotiated and validated.
+
+        A composed backend has already proven the contract; retaining that
+        proof is what lets a caller read a negotiated limit — the concurrency
+        bound in particular — without either spending a socket call to re-ask
+        or mirroring a default beside it. Reading it negotiates nothing: it is
+        the answer of the most recent admission (or of composition, for a
+        backend that has not admitted one yet), never a fresh question.
+        """
+
+        info = self._server_info
+        if info is None:  # pragma: no cover - construction negotiates first
+            _unavailable()
+        return info
 
     @property
     def task_locks(self) -> TaskOperationLocks:
@@ -607,6 +633,26 @@ class ArsdSupervisorBackend:
         entry = self._require_handle(handle)
         self._require_no_unresolved_intent(entry.task_id)
         return self._reconcile_active_run(entry)
+
+    def observe_run_result(self, handle: str) -> ArsdTerminalResult | None:
+        """This task's bounded terminal answer, or ``None`` while there is none.
+
+        ``None`` is the honest answer for a task that dispatched nothing and
+        for a Run that is still going: a projection with an empty message would
+        read as "it finished, silently", which is the one thing a delegated
+        submission must never report.
+
+        It reads exactly the ``run_status`` reply :meth:`observe_run` already
+        reads — no artifact directory, no extra operation, no rehydrate — and
+        the settled answer outlives the Run being cleared, because the daemon
+        may forget a Run before Sachima has reported it.
+        """
+
+        entry = self._require_handle(handle)
+        self._require_no_unresolved_intent(entry.task_id)
+        self._reconcile_active_run(entry)
+        with self._lock:
+            return entry.last_terminal_result
 
     def liveness(self, handle: str) -> str:
         """Liveness is the Session's, for the same reason ``status`` is."""
@@ -1199,7 +1245,11 @@ class ArsdSupervisorBackend:
             raise
         except Exception:
             _unavailable()
-        return validate_arsd_server_info(raw, config=self._config)
+        info = validate_arsd_server_info(raw, config=self._config)
+        # Retained only after it validated: a failed negotiation must leave the
+        # previously proven answer standing rather than half-replace it.
+        self._server_info = info
+        return info
 
     def _require_no_unresolved_intent(self, safe_task: str) -> None:
         """Refuse while any dispatch of this task is still uncertain.
@@ -1356,10 +1406,15 @@ class ArsdSupervisorBackend:
             # Evidence we cannot trust is a contained internal failure — never
             # a fabricated terminal, and never confused with observation loss.
             raise SpineError(RUNTIME_ARSD_INTERNAL) from None
+        # Projected from the *neutral* terminal, so a PERMISSION_VIOLATION Run
+        # reported ``completed`` stays ``failed`` on the answer as well as on
+        # the status.
+        projected = project_arsd_terminal_result(observation.result, status=neutral)
         with self._lock:
             if entry.active_run_id == run_id:
                 entry.active_run_id = None
                 entry.last_run_status = neutral
+                entry.last_terminal_result = projected
         return neutral
 
     def _end_task(self, entry: _TaskEntry, *, run_status: str | None = None) -> str:
@@ -1412,6 +1467,9 @@ class ArsdSupervisorBackend:
         with self._lock:
             entry.active_run_id = ack.run_id
             entry.last_run_status = None
+            # A new Run's answer is not the previous Run's: the remembered
+            # terminal goes with the verdict it belonged to.
+            entry.last_terminal_result = None
             entry.cancel_confirmed = False
         run_ref = binding.run_ref
         if run_ref is None:  # pragma: no cover - an accepted record always has one

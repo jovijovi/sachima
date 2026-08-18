@@ -59,6 +59,12 @@ import logging
 import os
 from typing import Any
 
+from gateway.sachima_delegate import (
+    bind_delegate_coordinator,
+    delegate_payload_resolver,
+    unbind_delegate_coordinator,
+)
+
 logger = logging.getLogger(__name__)
 
 # --------------------------------------------------------------------------- #
@@ -189,6 +195,12 @@ def bound_execution_binding() -> Any | None:
 def _set_execution_binding(bundle: Any | None) -> None:
     global _execution_binding
     _execution_binding = bundle
+    if bundle is None:
+        # The delegate coordinator exists only for a live bundle. Clearing it
+        # here — rather than at each of the five unbind call sites — is what
+        # makes "no bundle" and "no coordinator" one fact instead of two that
+        # can drift apart.
+        unbind_delegate_coordinator()
 
 
 class _RetiredBackendSelected(Exception):
@@ -199,7 +211,7 @@ class _RetiredBackendSelected(Exception):
     """
 
 
-def _build_arsd_execution_binding(config_file: str) -> Any:
+def _build_arsd_execution_binding(config_file: str) -> tuple[Any, Any]:
     """Compose the ``arsd`` execution bundle from the private config file.
 
     Raises on any deviation (unreadable/malformed file, unknown keys, a
@@ -209,9 +221,12 @@ def _build_arsd_execution_binding(config_file: str) -> Any:
     :class:`_RetiredBackendSelected` instead, so the operator gets the distinct
     migration code rather than a generic parse verdict.
 
-    The LS4-A gate is the approved ``hermes_internal`` internal surface.
-    Nothing live/default-on and no payload resolver is wired here, so the
-    bundle's dispatcher stays fail-closed and composing it submits no Run.
+    The LS4-A gate is the approved ``hermes_internal`` internal surface. The
+    dispatcher is given the host's own claim-check resolver — the one seam by
+    which a ``/delegate`` submission can turn an opaque ref back into the exact
+    task text — and nothing else changes: composing the bundle resolves no ref,
+    dispatches no turn, and submits no Run. It is a capability the bundle now
+    *has*, not work it does.
     """
 
     from sachima_supervisor.runtime_spine import hermes_internal_query_gate
@@ -234,7 +249,12 @@ def _build_arsd_execution_binding(config_file: str) -> Any:
     if not set(payload).issubset(_ARSD_CONFIG_KEYS):
         raise ValueError(SACHIMA_LIVE_PROGRESS_HOST_BINDING_INVALID)
     config = ArsdSupervisorConfig(**payload)
-    return bind_arsd_execution(config, gate=hermes_internal_query_gate())
+    bundle = bind_arsd_execution(
+        config,
+        gate=hermes_internal_query_gate(),
+        payload_resolver=delegate_payload_resolver(),
+    )
+    return bundle, config
 
 
 def _load_binding_entries(bindings_file: str) -> list[dict[str, Any]]:
@@ -427,8 +447,12 @@ def _bind_arsd_backend(tool_mod: Any) -> dict[str, Any]:
         )
 
     try:
-        bundle = _build_arsd_execution_binding(raw_config.strip())
+        bundle, config = _build_arsd_execution_binding(raw_config.strip())
         tool_mod.bind_live_progress_display_service(bundle.display_service)
+        # The delegate coordinator is bound over the bundle that was just
+        # composed, never beside it: one registry, backend, port, dispatcher,
+        # and bindings store serve both the display chain and `/delegate`.
+        bind_delegate_coordinator(bundle, config)
     except _RetiredBackendSelected:
         return _retired(tool_mod)
     except Exception:

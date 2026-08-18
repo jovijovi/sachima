@@ -23,6 +23,7 @@ from __future__ import annotations
 import importlib
 import sys
 import traceback
+from pathlib import Path
 
 import pytest
 
@@ -311,7 +312,7 @@ def test_enabled_must_be_exactly_bool_true_not_truthy() -> None:
         {"grant_ref": ""},
         {"grant_hash": "not-a-digest"},
         {"grant_role_hash": "sha256:" + "z" * 64},
-        {"grant_capabilities": ("read", "write")},
+        {"grant_capabilities": ("read", "move")},
         {"grant_capabilities": ("read", "deliver")},
         {"mcp_snapshot_hashes": ("plain",)},
         {"credential_refs": ("cred_ok", 7)},
@@ -426,28 +427,39 @@ def test_run_limits_mirror_matches_the_installed_distribution() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# D0+D1 grant capability allowlist (formal review blocker 1): the approved
-# plan admits read/search observation capabilities only. One closed local
-# allowlist, drift-locked against the entire pinned permission domain.
+# Grant capability allowlist: the AUTHOR vocabulary the deployed 0.7.6 role
+# actually needs — ``read``/``search`` to observe and ``write``/``execute`` to
+# author. One closed local allowlist, drift-locked against the entire pinned
+# permission domain; every other pinned kind, and everything outside the
+# domain, still fails closed.
 # --------------------------------------------------------------------------- #
+#: The exact capability vocabulary the configured author role requires. The
+#: obsolete read/search-only projection could not express it, so a configured
+#: author grant failed closed at construction and no ``/delegate`` Run could
+#: ever be admitted.
+AUTHOR_GRANT_CAPABILITIES = frozenset({"read", "search", "write", "execute"})
+
+
 @pytest.mark.parametrize(
     "capabilities",
     [
         ("delete",),
-        ("execute",),
         ("terminal",),
         ("move",),
         ("fetch",),
         ("switch_mode",),
         ("other",),
         ("read", "delete"),
-        ("search", "execute"),
+        ("write", "move"),
+        # Outside the pinned permission domain entirely.
+        ("deliver",),
+        ("read", "bogus_capability"),
     ],
 )
-def test_write_capable_grant_capabilities_fail_closed(capabilities) -> None:
-    """A non-read/search capability is invalid config — even where the pinned
-    wire protocol itself would accept it: the D0+D1 plan authorizes no
-    write-capable role."""
+def test_capabilities_outside_the_author_vocabulary_fail_closed(capabilities) -> None:
+    """A capability the configured role does not require is invalid config —
+    even where the pinned wire protocol itself would accept it. Widening to the
+    author vocabulary is not a licence to carry every pinned kind."""
 
     with pytest.raises(SpineError) as excinfo:
         _make_config(grant_capabilities=capabilities)
@@ -459,12 +471,10 @@ def test_grant_capability_allowlist_drift_locks_the_pinned_permission_domain() -
 
     Imports the real 0.7.6 permission domain — ``native_acp.spec``, since the
     retired ``agent_run_supervisor.role`` anchor no longer exists (Spec D-10) —
-    and asserts: the local allowlist is exactly ``{"read", "search"}`` and
-    stays inside the pinned domain, each allowlisted kind is admitted
-    end-to-end (config plus the real ``parse_submit``), and every other pinned
-    kind fails closed. 0.7.6's once-scoped ``edit``/``delete``/``move`` allow
-    path (Δ-14) is recorded in the Spec and deliberately not opened here, so
-    those kinds stay on the failing side of this loop.
+    and asserts: the local allowlist is exactly the author vocabulary and stays
+    inside the pinned domain, each allowlisted kind is admitted end-to-end
+    (config plus the real ``parse_submit``), and every other pinned kind fails
+    closed.
     """
 
     spec = pytest.importorskip("agent_run_supervisor.native_acp.spec")
@@ -473,11 +483,12 @@ def test_grant_capability_allowlist_drift_locks_the_pinned_permission_domain() -
         _GRANTABLE_CAPABILITIES,
     )
 
-    assert _GRANTABLE_CAPABILITIES == frozenset({"read", "search"})
+    assert _GRANTABLE_CAPABILITIES == AUTHOR_GRANT_CAPABILITIES
     assert _GRANTABLE_CAPABILITIES < set(spec.PERMISSION_KINDS)
-    # A-27 / Δ-14: the write family exists upstream and stays closed here.
-    assert {"edit", "delete", "move"} & set(spec.PERMISSION_KINDS)
-    assert not {"edit", "delete", "move"} & _GRANTABLE_CAPABILITIES
+    # The kinds the author role does not need stay closed even though the
+    # deployed daemon would admit them.
+    assert {"delete", "move", "terminal"} & set(spec.PERMISSION_KINDS)
+    assert not {"delete", "move", "terminal"} & _GRANTABLE_CAPABILITIES
 
     for kind in spec.PERMISSION_KINDS:
         if kind in _GRANTABLE_CAPABILITIES:
@@ -491,20 +502,32 @@ def test_grant_capability_allowlist_drift_locks_the_pinned_permission_domain() -
             assert excinfo.value.code == RUNTIME_INVALID_ARSD_CONFIG
 
 
-@pytest.mark.parametrize("write_kind", ["edit", "delete", "move"])
-def test_write_capability_in_grant_capabilities_fails_closed(write_kind) -> None:
-    """A-27: a config naming a 0.7.6 write-family capability fails closed at
-    construction, before any socket call. The once-scoped allow path exists
-    upstream; the first Sachima integration stays read/search-only."""
+@pytest.mark.parametrize("unknown_kind", ["edit", "deliver", "approve", "mutate"])
+def test_capabilities_outside_the_pinned_domain_fail_closed(unknown_kind) -> None:
+    """A capability the deployed daemon has no vocabulary for fails closed at
+    construction, before any socket call. ``edit`` is the trap: it is a real
+    ACP *tool-call kind* upstream but never a *grant capability*, so admitting
+    it would send the daemon a request it would refuse."""
 
     with pytest.raises(SpineError) as excinfo:
-        _make_config(grant_capabilities=("read", write_kind))
+        _make_config(grant_capabilities=("read", unknown_kind))
     _assert_stable_code_only(excinfo, RUNTIME_INVALID_ARSD_CONFIG)
 
 
+def test_author_grant_is_accepted_and_parses_under_the_pinned_protocol() -> None:
+    """The configured author grant builds a payload the real 0.7.6 wire
+    validator accepts unchanged — the whole point of the widening."""
+
+    protocol = pytest.importorskip("agent_run_supervisor.arsd.protocol")
+    capabilities = ("execute", "read", "search", "write")
+    config = _make_config(enabled=True, grant_capabilities=capabilities)
+    command = protocol.parse_submit(_build_payload(config=config))
+    assert command.request.grant_capabilities == capabilities
+
+
 def test_read_search_grant_is_accepted_and_parses_under_the_pinned_protocol() -> None:
-    """Positive control: the approved read/search grant builds a payload the
-    real 0.7.6 wire validator accepts unchanged."""
+    """Positive control: the narrower read/search grant still parses, so the
+    widening never became a requirement to grant more."""
 
     protocol = pytest.importorskip("agent_run_supervisor.arsd.protocol")
     config = _make_config(enabled=True, grant_capabilities=("read", "search"))
@@ -1532,6 +1555,34 @@ def test_server_info_negotiation_accepts_the_exact_076_v3_shape() -> None:
     assert info.max_run_event_budget_bytes == NEGOTIATED_EVENT_BUDGET
 
 
+def test_server_info_exposes_the_negotiated_concurrency_limit() -> None:
+    """The delegate coordinator's capacity comes from here and nowhere else.
+
+    A typed accessor rather than a raw mapping read, for the same reason the
+    event budget has one: the only admissible source of "how many Runs may be
+    live at once" is a validated live negotiation. There is deliberately no
+    mirrored default beside it to fall back to.
+    """
+
+    info = _validate_server_info(_server_info_payload(**_limits_override(max_concurrent_runs=10)))
+    assert info.max_concurrent_runs == 10
+    assert info.max_concurrent_runs == info.limits["max_concurrent_runs"]
+
+    other = _validate_server_info(_server_info_payload())
+    assert other.max_concurrent_runs == V3_LIMITS["max_concurrent_runs"] == 4
+
+
+def test_no_mirrored_concurrency_default_exists_to_fall_back_to() -> None:
+    """A constant beside the negotiated value is how a fallback gets born."""
+
+    import sachima_supervisor.runtime_spine.arsd_socket_contract as contract_mod
+
+    for name in dir(contract_mod):
+        value = getattr(contract_mod, name)
+        if "CONCURRENT" in name.upper() and isinstance(value, int):
+            raise AssertionError(f"mirrored concurrency constant: {name}")
+
+
 def test_server_info_top_level_key_set_is_still_exactly_five() -> None:
     """Δ-8 / A-22: only the nested ``limits`` block grew. The top-level key
     set is unchanged at five, and ``v2_only_operations`` is gone (A-3)."""
@@ -2524,7 +2575,7 @@ def test_session_view_accepts_every_closed_quarantine_reason(reason_code) -> Non
         _session_view(updated_at="2026-08-17T10:00:00"),
         _session_view(owner=None),
         _session_view(namespace=None),
-        _session_view(last_effective_model="model with spaces"),
+        _session_view(last_effective_model="model\nwith\nnewlines"),
         _session_view(quarantine={}),
         _session_view(quarantine={"reason_code": "UNTRUSTED_TERMINAL_EVIDENCE"}),
         _session_view(
@@ -3786,3 +3837,405 @@ def test_runtime_spine_package_exports_the_d1_contract_surface() -> None:
     ):
         assert hasattr(spine, name), name
         assert name in spine.__all__, name
+
+
+# --------------------------------------------------------------------------- #
+# Bounded terminal projection (Milestone A, task 7): the four fields ARS 0.7.6
+# already returns — status, final_message, truncated, truncate_reason — and
+# nothing else. No artifact browsing, no API change, no rehydrate.
+# --------------------------------------------------------------------------- #
+FINAL_MESSAGE_CANARY = "the delegated agent finished and reported this"
+RUN_DIR_CANARY = "/tmp/sachima-canary-terminal/private-run-dir"
+
+
+def _project_terminal(result, *, status="completed"):
+    from sachima_supervisor.runtime_spine.arsd_socket_contract import (
+        project_arsd_terminal_result,
+    )
+
+    return project_arsd_terminal_result(result, status=status)
+
+
+def _native_terminal_body(**overrides):
+    """A trusted 0.7.6 ``result.json`` body, as ``run_status`` returns it."""
+
+    body = {
+        "run_id": "RUN-canary-terminal",
+        "status": "completed",
+        "business_verdict": None,
+        "error_code": None,
+        "detail_code": None,
+        "origin": "acp",
+        "retryable": False,
+        "signal": None,
+        "stop_reason": "end_turn",
+        "usage": None,
+        "final_message": FINAL_MESSAGE_CANARY,
+        "truncated": False,
+        "truncate_reason": None,
+        "observed_effect": True,
+        "run_dir": RUN_DIR_CANARY,
+        "stderr_path": "stderr.log",
+        "raw_event_path": "raw.jsonl",
+        "redaction_report_path": "redaction-report.json",
+    }
+    body.update(overrides)
+    return body
+
+
+def test_terminal_projection_carries_the_bounded_final_message() -> None:
+    projected = _project_terminal(_native_terminal_body())
+    assert projected.status == "completed"
+    assert projected.final_message == FINAL_MESSAGE_CANARY
+    assert projected.truncated is False
+    assert projected.truncate_reason is None
+
+
+def test_terminal_projection_is_exactly_four_fields() -> None:
+    """A projection that grew a fifth field is one that started browsing."""
+
+    import dataclasses
+
+    from sachima_supervisor.runtime_spine.arsd_socket_contract import ArsdTerminalResult
+
+    names = [f.name for f in dataclasses.fields(ArsdTerminalResult)]
+    assert names == ["status", "final_message", "truncated", "truncate_reason"]
+
+
+def test_terminal_projection_never_carries_private_run_material() -> None:
+    projected = _project_terminal(_native_terminal_body())
+    rendered = repr(projected) + str(projected)
+    assert RUN_DIR_CANARY not in rendered
+    assert "RUN-canary-terminal" not in rendered
+    # The free-form message is the payload, not a repr surface.
+    assert FINAL_MESSAGE_CANARY not in repr(projected)
+
+
+def test_terminal_projection_preserves_the_truncation_marker() -> None:
+    projected = _project_terminal(
+        _native_terminal_body(
+            truncated=True, truncate_reason="max_final_message_bytes"
+        )
+    )
+    assert projected.truncated is True
+    assert projected.truncate_reason == "max_final_message_bytes"
+
+
+def test_terminal_projection_drops_a_reason_that_marks_no_truncation() -> None:
+    """A reason with ``truncated: false`` describes nothing that happened."""
+
+    projected = _project_terminal(
+        _native_terminal_body(truncated=False, truncate_reason="max_final_message_bytes")
+    )
+    assert projected.truncated is False
+    assert projected.truncate_reason is None
+
+
+@pytest.mark.parametrize("unreadable", [7, "", "Not A Token", "x" * 200, {"a": 1}])
+def test_terminal_projection_never_carries_an_unreadable_reason(unreadable) -> None:
+    """The marker is preserved; foreign free text beside it is not."""
+
+    projected = _project_terminal(
+        _native_terminal_body(truncated=True, truncate_reason=unreadable)
+    )
+    assert projected.truncated is True
+    assert projected.truncate_reason is None
+
+
+def test_terminal_projection_clips_an_oversized_final_message_and_says_so() -> None:
+    """ARS already bounds this; mirroring the bound is defence in depth.
+
+    A body that somehow arrives longer than the pinned ceiling is clipped here
+    rather than carried onto a chat surface unbounded — and the clip is
+    *declared*, because silently shortening an agent's answer is worse than a
+    long one.
+    """
+
+    from sachima_supervisor.runtime_spine.arsd_socket_contract import (
+        ARSD_FINAL_MESSAGE_TRUNCATE_REASON,
+        ARSD_MAX_FINAL_MESSAGE_BYTES,
+    )
+
+    oversized = "任务" * ARSD_MAX_FINAL_MESSAGE_BYTES
+    projected = _project_terminal(_native_terminal_body(final_message=oversized))
+    encoded = projected.final_message.encode("utf-8")
+    assert len(encoded) <= ARSD_MAX_FINAL_MESSAGE_BYTES
+    # Clipped on a character boundary, never mid-codepoint.
+    assert encoded.decode("utf-8") == projected.final_message
+    assert projected.truncated is True
+    assert projected.truncate_reason == ARSD_FINAL_MESSAGE_TRUNCATE_REASON
+
+
+def test_terminal_projection_mirror_matches_the_pinned_final_message_ceiling() -> None:
+    result_mod = pytest.importorskip("agent_run_supervisor.result")
+    from sachima_supervisor.runtime_spine.arsd_socket_contract import (
+        ARSD_FINAL_MESSAGE_TRUNCATE_REASON,
+        ARSD_MAX_FINAL_MESSAGE_BYTES,
+    )
+
+    assert ARSD_MAX_FINAL_MESSAGE_BYTES == result_mod.MAX_FINAL_MESSAGE_BYTES
+    run_task_src = Path(
+        importlib.import_module("agent_run_supervisor.native_acp.run_task").__file__
+    ).read_text(encoding="utf-8")
+    assert f'truncate_reason = "{ARSD_FINAL_MESSAGE_TRUNCATE_REASON}"' in run_task_src
+
+
+@pytest.mark.parametrize("missing", [None, 7, [], "not-a-mapping"])
+def test_terminal_projection_refuses_a_body_it_cannot_read(missing) -> None:
+    with pytest.raises(SpineError) as excinfo:
+        _project_terminal(missing)
+    assert excinfo.value.code == RUNTIME_ARSD_INTERNAL
+
+
+@pytest.mark.parametrize("bad_status", ["running", "accepted", "", None, "COMPLETED"])
+def test_terminal_projection_refuses_a_nonterminal_status(bad_status) -> None:
+    """A projection is a *terminal* answer; there is no partial one."""
+
+    with pytest.raises(SpineError) as excinfo:
+        _project_terminal(_native_terminal_body(), status=bad_status)
+    assert excinfo.value.code == RUNTIME_ARSD_INTERNAL
+
+
+@pytest.mark.parametrize("terminal", ["completed", "failed", "cancelled", "timed_out", "unknown"])
+def test_terminal_projection_admits_every_neutral_terminal(terminal) -> None:
+    projected = _project_terminal(_native_terminal_body(), status=terminal)
+    assert projected.status == terminal
+
+
+def test_terminal_projection_keeps_an_absent_final_message_empty() -> None:
+    body = _native_terminal_body()
+    del body["final_message"]
+    projected = _project_terminal(body)
+    assert projected.final_message == ""
+    assert projected.truncated is False
+
+
+# --------------------------------------------------------------------------- #
+# Deployed caller namespace + configured model selector (adapter expressiveness)
+#
+# Two config values the deployed 0.7.6 daemon is actually configured with were
+# unrepresentable here: the caller's registered namespace ``hermes/default``
+# and the Claude selector ``opus[1m]``. Both are admitted by the pinned wire
+# contract, which validates ``namespace``/``requested_model`` as bounded
+# printable *text*, not as identifier-like tokens. The tests below pin that
+# distinction in both directions: the pinned grammar is the source of truth,
+# and the identifier-like validators around it stay exactly as narrow as they
+# were.
+# --------------------------------------------------------------------------- #
+DEPLOYED_NAMESPACE = "hermes/default"
+DEPLOYED_MODEL = "opus[1m]"
+
+#: Values that are text-shaped but not printable/bounded, so neither the pinned
+#: request nor Sachima may admit them. ``\x00`` is included deliberately: a NUL
+#: is the classic path/wire smuggling byte and stays refused.
+UNSAFE_FIELD_TEXT = (
+    "",
+    "line\nbreak",
+    "tab\tseparated",
+    "nul\x00byte",
+    "carriage\rreturn",
+)
+
+
+def _real_agent_run_request(**overrides):
+    """One real pinned ``AgentRunRequest``, defaulted to the deployed values."""
+
+    spec = pytest.importorskip("agent_run_supervisor.native_acp.spec")
+
+    kwargs = {
+        "owner": "hermes",
+        "namespace": DEPLOYED_NAMESPACE,
+        "agent_id": "reader-agent",
+        "expected_binding_hash": None,
+        "input_refs": (),
+        "requested_model": DEPLOYED_MODEL,
+        "requested_effort": "xhigh",
+        "grant_ref": "grant_reader_v1",
+        "grant_hash": "sha256:" + "a" * 64,
+        "grant_role_hash": "sha256:" + "b" * 64,
+        "grant_capabilities": ("read", "search"),
+        "mcp_snapshot_hashes": ("sha256:" + "c" * 64,),
+        "credential_refs": ("cred_reader_github",),
+        "limits": spec.RunLimits(**_limits_with()),
+        "evidence_policy_hash": "sha256:" + "d" * 64,
+        "recovery_policy_hash": "sha256:" + "e" * 64,
+    }
+    kwargs.update(overrides)
+    return spec.AgentRunRequest(**kwargs)
+
+
+def test_deployed_namespace_and_model_selector_reach_the_built_request() -> None:
+    """The exact deployed pair survives config construction and submit build.
+
+    ``hermes/default`` is the ``(owner, namespace)`` half the daemon
+    exact-matches in ``_require_owner``; ``opus[1m]`` is the configured Claude
+    selector. Neither is expressible as a safe identifier, and both are
+    admitted by the pinned request, so the adapter must carry them verbatim.
+    """
+
+    config = _make_config(
+        enabled=True,
+        namespace=DEPLOYED_NAMESPACE,
+        model_by_policy_ref={"policy_reader": DEPLOYED_MODEL},
+    )
+    assert config.namespace == DEPLOYED_NAMESPACE
+    assert config.model_by_policy_ref["policy_reader"] == DEPLOYED_MODEL
+
+    request = _build_payload(config=config)["request"]
+    assert request["namespace"] == DEPLOYED_NAMESPACE
+    assert request["requested_model"] == DEPLOYED_MODEL
+    # The identifier-like neighbours are carried unchanged by the same build.
+    assert request["owner"] == "sachima_host"
+    assert request["agent_id"] == "reader-agent"
+    assert request["requested_effort"] == "medium"
+
+    # And the pinned request admits exactly this pair, so the adapter is not
+    # widening past the daemon: submission fails on nothing but the caller's
+    # registration.
+    real = _real_agent_run_request(
+        namespace=request["namespace"], requested_model=request["requested_model"]
+    )
+    assert real.namespace == DEPLOYED_NAMESPACE
+    assert real.requested_model == DEPLOYED_MODEL
+
+
+def test_config_text_bound_mirrors_the_pinned_field_contract_both_ways() -> None:
+    """Drift-lock: the local field bound/grammar equals the pinned one exactly.
+
+    Asserted through the distribution's *public* behaviour — constructing a
+    real ``AgentRunRequest`` — rather than by reading a private constant, so
+    the lock follows the daemon rather than a number written in by hand.
+    """
+
+    spec = pytest.importorskip("agent_run_supervisor.native_acp.spec")
+    from sachima_supervisor.runtime_spine.arsd_socket_contract import (
+        ARSD_MAX_FIELD_CHARS,
+    )
+
+    at_bound = "n" * ARSD_MAX_FIELD_CHARS
+    over_bound = "n" * (ARSD_MAX_FIELD_CHARS + 1)
+
+    # The real request accepts exactly at the bound and refuses one past it.
+    _real_agent_run_request(namespace=at_bound, requested_model=at_bound)
+    for field_name in ("namespace", "requested_model"):
+        with pytest.raises(spec.SpecValidationError):
+            _real_agent_run_request(**{field_name: over_bound})
+        for unsafe in UNSAFE_FIELD_TEXT:
+            with pytest.raises(spec.SpecValidationError):
+                _real_agent_run_request(**{field_name: unsafe})
+
+    # Sachima admits the same at-bound text...
+    config = _make_config(
+        namespace=at_bound, model_by_policy_ref={"policy_reader": at_bound}
+    )
+    assert config.namespace == at_bound
+
+    # ...and refuses exactly the same over-bound and non-printable text, with
+    # the existing stable config code and no echo of the rejected material.
+    for overrides in (
+        {"namespace": over_bound},
+        {"model_by_policy_ref": {"policy_reader": over_bound}},
+    ):
+        with pytest.raises(SpineError) as excinfo:
+            _make_config(**overrides)
+        assert excinfo.value.code == RUNTIME_INVALID_ARSD_CONFIG
+        assert str(excinfo.value) == RUNTIME_INVALID_ARSD_CONFIG
+
+
+@pytest.mark.parametrize("unsafe", UNSAFE_FIELD_TEXT)
+def test_unsafe_namespace_and_model_config_text_still_fails_closed(unsafe) -> None:
+    for overrides in (
+        {"namespace": unsafe},
+        {"model_by_policy_ref": {"policy_reader": unsafe}},
+    ):
+        with pytest.raises(SpineError) as excinfo:
+            _make_config(**overrides)
+        assert excinfo.value.code == RUNTIME_INVALID_ARSD_CONFIG
+        # Never echoes rejected material: the message IS the stable code.
+        assert str(excinfo.value) == RUNTIME_INVALID_ARSD_CONFIG
+        assert unsafe not in str(excinfo.value) or unsafe == ""
+
+
+@pytest.mark.parametrize("wrong_type", [None, 7, True, b"bytes", ["list"]])
+def test_non_string_namespace_and_model_config_still_fails_closed(wrong_type) -> None:
+    for overrides in (
+        {"namespace": wrong_type},
+        {"model_by_policy_ref": {"policy_reader": wrong_type}},
+    ):
+        with pytest.raises(SpineError) as excinfo:
+            _make_config(**overrides)
+        assert excinfo.value.code == RUNTIME_INVALID_ARSD_CONFIG
+
+
+def test_session_view_reads_back_the_deployed_namespace_and_model() -> None:
+    """The daemon echoes the deployed values, so the read side must admit them.
+
+    ``namespace`` is echoed on every session view and ``last_effective_model``
+    is the exact-readback-proven selector of the Session's last Run — for the
+    deployed route, literally ``opus[1m]``. A read validator narrower than the
+    daemon's own guarantee would fail closed on every healthy Session.
+    """
+
+    view = _validate_session_view(
+        _session_view(
+            namespace=DEPLOYED_NAMESPACE, last_effective_model=DEPLOYED_MODEL
+        )
+    )
+    assert view.namespace == DEPLOYED_NAMESPACE
+    assert view.last_effective_model == DEPLOYED_MODEL
+    # Still an observation only, and the narrow neighbours are unchanged.
+    assert view.owner == "sachima_host"
+    assert view.last_effective_effort == "medium"
+    assert view.is_reusable is True
+
+
+@pytest.mark.parametrize("unsafe", UNSAFE_FIELD_TEXT)
+def test_session_view_still_refuses_unsafe_namespace_and_model_text(unsafe) -> None:
+    for overrides in ({"namespace": unsafe}, {"last_effective_model": unsafe}):
+        with pytest.raises(SpineError) as excinfo:
+            _validate_session_view(_session_view(**overrides))
+        assert excinfo.value.code == RUNTIME_ARSD_PROTOCOL_VIOLATION
+
+
+def test_config_text_widening_does_not_reach_identifier_like_validators() -> None:
+    """The narrow validators stay narrow: this is a separation, not a widening.
+
+    Owner, agent id, effort, session id and the ref/digest families keep their
+    exact grammars — every one of them refuses the very characters the two
+    config-text fields now carry.
+    """
+
+    from sachima_supervisor.runtime_spine.arsd_socket_contract import (
+        _safe_config_ref,
+        _safe_wire_token,
+    )
+
+    for narrow in (DEPLOYED_NAMESPACE, DEPLOYED_MODEL):
+        with pytest.raises(SpineError):
+            _safe_config_ref(narrow)
+        with pytest.raises(SpineError):
+            _safe_wire_token(narrow)
+
+    # The same refusal, reached through real config/read surfaces.
+    for overrides in (
+        {"owner": DEPLOYED_NAMESPACE},
+        {"owner": DEPLOYED_MODEL},
+        {"agent_by_policy_ref": {"policy_reader": DEPLOYED_MODEL}},
+        {"effort_by_policy_ref": {"policy_reader": DEPLOYED_MODEL}},
+        {"grant_ref": DEPLOYED_NAMESPACE},
+        {"credential_refs": (DEPLOYED_NAMESPACE,)},
+    ):
+        with pytest.raises(SpineError) as excinfo:
+            _make_config(**overrides)
+        assert excinfo.value.code == RUNTIME_INVALID_ARSD_CONFIG
+
+    for overrides in (
+        {"owner": DEPLOYED_NAMESPACE},
+        {"agent_id": DEPLOYED_MODEL},
+        {"last_effective_effort": DEPLOYED_MODEL},
+        {"session_id": DEPLOYED_NAMESPACE},
+        {"profile_id": DEPLOYED_MODEL},
+    ):
+        with pytest.raises(SpineError) as excinfo:
+            _validate_session_view(_session_view(**overrides))
+        assert excinfo.value.code == RUNTIME_ARSD_PROTOCOL_VIOLATION
