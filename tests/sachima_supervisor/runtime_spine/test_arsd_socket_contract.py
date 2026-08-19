@@ -1517,7 +1517,7 @@ V2_LIMITS = {key: value for key, value in V3_LIMITS.items()
 
 def _server_info_payload(**overrides):
     payload = {
-        "version": "0.7.6",
+        "version": "0.7.7",
         "api_version": 3,
         "supported_api_versions": [3],
         "operations": list(V3_OPERATIONS),
@@ -1543,9 +1543,9 @@ def _limits_override(**changes):
     return {"limits": limits}
 
 
-def test_server_info_negotiation_accepts_the_exact_076_v3_shape() -> None:
+def test_server_info_negotiation_accepts_the_exact_077_v3_shape() -> None:
     info = _validate_server_info(_server_info_payload())
-    assert info.version == "0.7.6"
+    assert info.version == "0.7.7"
     assert info.api_version == 3
     assert info.supported_api_versions == (3,)
     assert info.operations == tuple(V3_OPERATIONS)
@@ -1553,6 +1553,24 @@ def test_server_info_negotiation_accepts_the_exact_076_v3_shape() -> None:
     # The negotiated budget is carried as a runtime observation, never
     # compared for equality against a mirrored default (Spec §5.3.1).
     assert info.max_run_event_budget_bytes == NEGOTIATED_EVENT_BUDGET
+
+
+def test_server_info_fixture_daemon_version_tracks_the_reviewed_pin() -> None:
+    """Drift-lock: the fake daemon speaks the version we actually negotiate.
+
+    ``validate_arsd_server_info`` refuses any ``server_info.version`` that is
+    not the reviewed pin exactly, so a fixture left behind on the previous
+    release would silently turn every acceptance test in this file into a
+    mismatch case. Bind the fixture literal to the one source of truth here so
+    a pin advance fails on this named assertion instead of scattering
+    ``runtime_arsd_version_mismatch`` across unrelated tests.
+    """
+
+    from sachima_supervisor.supervisor_library import (
+        EXPECTED_AGENT_RUN_SUPERVISOR_VERSION,
+    )
+
+    assert _server_info_payload()["version"] == EXPECTED_AGENT_RUN_SUPERVISOR_VERSION
 
 
 def test_server_info_exposes_the_negotiated_concurrency_limit() -> None:
@@ -3242,7 +3260,7 @@ def test_v3_negotiation_roundtrip_over_the_wire(fake_arsd_server) -> None:
     info = _validate_server_info(
         facade.server_info(), config=_make_config(enabled=True)
     )
-    assert info.version == "0.7.6"
+    assert info.version == "0.7.7"
     assert server.received[0]["op"] == "server_info"
     assert server.received[0]["api_version"] == 3
     assert server.received[0]["payload"] == {}

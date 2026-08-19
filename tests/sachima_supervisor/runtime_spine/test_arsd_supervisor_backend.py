@@ -310,7 +310,7 @@ class _FacadeDouble:
         if self.server_info_error is not None:
             raise self.server_info_error
         return {
-            "version": "0.7.6",
+            "version": "0.7.7",
             "api_version": 3,
             "supported_api_versions": [3],
             "operations": list(V3_OPERATIONS),

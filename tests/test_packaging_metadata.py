@@ -312,6 +312,58 @@ def test_locked_agent_run_supervisor_matches_expected_pin():
     )
 
 
+def test_agent_run_supervisor_exclude_newer_cutoff_admits_the_locked_release():
+    """The narrow date-policy override must actually admit the pinned release.
+
+    The repo keeps a global ``exclude-newer = "7 days"`` supply-chain window and
+    narrows it per package. Every agent-run-supervisor pin advance so far has
+    landed inside that window, so the pin is installable only while the
+    package-specific ``[tool.uv].exclude-newer-package`` cutoff is at or after
+    the release's own PyPI upload time. A pin bump that forgets the cutoff fails
+    here — with both timestamps named — instead of surfacing as an opaque
+    "distribution not found" during a later hash-verified ``uv sync``.
+
+    The override stays narrow by construction: only the agent-run-supervisor
+    cutoff is read, and the global window is asserted untouched.
+    """
+
+    from datetime import datetime
+
+    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    uv_config = data["tool"]["uv"]
+
+    assert uv_config["exclude-newer"] == "7 days", (
+        "the global supply-chain window must stay at 7 days — narrow the "
+        "per-package override instead of loosening it"
+    )
+    cutoff_raw = uv_config["exclude-newer-package"]["agent-run-supervisor"]
+    cutoff = datetime.fromisoformat(cutoff_raw.replace("Z", "+00:00"))
+
+    lock = (REPO_ROOT / "uv.lock").read_text(encoding="utf-8")
+    uploads = []
+    in_target = False
+    for line in lock.splitlines():
+        if line.startswith("[[package]]"):
+            in_target = False
+        elif line.strip() == 'name = "agent-run-supervisor"':
+            in_target = True
+        elif in_target:
+            uploads.extend(re.findall(r'upload-time = "([^"]+)"', line))
+
+    assert uploads, (
+        "uv.lock records no agent-run-supervisor artifact upload-time — "
+        "regenerate the lockfile with `uv lock`"
+    )
+    for stamp in uploads:
+        uploaded = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+        assert uploaded <= cutoff, (
+            f"[tool.uv].exclude-newer-package pins agent-run-supervisor to "
+            f"{cutoff_raw}, which predates the locked artifact uploaded at "
+            f"{stamp} — advance that one package cutoff (and only that one) "
+            "so the reviewed pin is installable"
+        )
+
+
 #: The only sanctioned way to reach agent-run-supervisor is the installed
 #: exact-pinned distribution. These tokens flag every historical source-path
 #: channel: the retired gateway sys.path shim envs, the retired test sibling
