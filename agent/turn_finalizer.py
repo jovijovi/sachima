@@ -42,11 +42,17 @@ def finalize_turn(
     original_user_message,
     _should_review_memory,
     _turn_exit_reason,
+    provider_dispatch_lease=None,
 ):
     """Run the post-loop finalization and return the turn ``result`` dict.
 
     Lifted verbatim from ``run_conversation`` (the region after the main agent
     loop). See module docstring.
+
+    ``provider_dispatch_lease`` is the running turn's provider-dispatch
+    ownership. The budget-exhaustion summary below is one more request made *by
+    that turn*, so it goes out under the same lease rather than under whatever
+    the cached agent has been rebound to since.
     """
     from agent.conversation_loop import logger
 
@@ -67,7 +73,15 @@ def finalize_turn(
                 f"\n⚠️  Iteration budget exhausted ({api_call_count}/{agent.max_iterations}) "
                 "— requesting summary..."
             )
-        final_response = agent._handle_max_iterations(messages, api_call_count)
+        from agent.chat_completion_helpers import provider_dispatch_lease_kwargs
+
+        final_response = agent._handle_max_iterations(
+            messages,
+            api_call_count,
+            **provider_dispatch_lease_kwargs(
+                agent._handle_max_iterations, provider_dispatch_lease
+            ),
+        )
 
         # If running as a kanban worker, signal the dispatcher that the
         # worker could not complete (rather than treating it as a

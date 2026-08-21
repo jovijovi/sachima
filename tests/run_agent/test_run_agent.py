@@ -4815,6 +4815,102 @@ class TestRunConversation:
         )
 
 
+class _BudgetDeniedAtAdmission:
+    """An iteration budget that admits nothing.
+
+    Mirrors the live race the conversation loop already handles: the ``while``
+    guard sees ``remaining`` above zero, but ``consume()`` — the actual
+    admission — denies. The loop has already incremented ``api_call_count`` by
+    then, so the returned ``api_calls`` describes a call that never happened.
+    """
+
+    def __init__(self, max_total: int):
+        self.max_total = max_total
+        self.used = 0
+        self.remaining = max_total
+
+    def consume(self) -> bool:
+        return False
+
+    def refund(self) -> None:
+        return None
+
+
+class TestProviderAttemptSignal:
+    """A turn reached a model, or it did not — ``api_calls`` cannot say which."""
+
+    def _setup_agent(self, agent):
+        agent._cached_system_prompt = "You are helpful."
+        agent._use_prompt_caching = False
+        agent.tool_delay = 0
+        agent.compression_enabled = False
+        agent.save_trajectories = False
+
+    def test_the_signal_fires_at_each_dispatched_provider_call(self, agent):
+        self._setup_agent(agent)
+        tc = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
+        resp1 = _mock_response(content="", finish_reason="tool_calls", tool_calls=[tc])
+        resp2 = _mock_response(content="Done searching", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [resp1, resp2]
+        attempts = []
+        agent.provider_attempt_callback = lambda: attempts.append(1)
+
+        with (
+            patch("run_agent.handle_function_call", return_value="search result"),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("search something")
+
+        assert result["api_calls"] == 2
+        assert len(attempts) == 2
+        assert agent._provider_attempts == 2
+
+    def test_a_pre_provider_budget_denial_reports_a_call_it_never_made(self, agent):
+        """The reproduction behind the handoff defect.
+
+        ``api_calls == 1`` here with zero requests sent — anything settled from
+        that number confirms consumption that did not occur.
+        """
+
+        self._setup_agent(agent)
+        attempts = []
+        agent.provider_attempt_callback = lambda: attempts.append(1)
+
+        with (
+            # The turn rebuilds its own budget, so the denial has to be
+            # installed where the turn builds it.
+            patch("agent.turn_context.IterationBudget", _BudgetDeniedAtAdmission),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result["api_calls"] == 1
+        assert agent.client.chat.completions.create.called is False
+        assert attempts == []
+        assert agent._provider_attempts == 0
+
+    def test_an_agent_nobody_wired_still_answers_the_question(self, agent):
+        """No callback, no wiring — the counter is still the truth."""
+
+        self._setup_agent(agent)
+        assert agent.provider_attempt_callback is None
+        assert agent._provider_attempts == 0
+        agent.client.chat.completions.create.return_value = _mock_response(
+            content="Final answer", finish_reason="stop"
+        )
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            agent.run_conversation("hello")
+        assert agent._provider_attempts == 1
+
+
 class TestHookPayloadSanitizesSimpleNamespace:
     """Regression: ``_hook_jsonable`` referenced ``SimpleNamespace`` without
     importing it, so sanitizing any hook payload that contained one raised

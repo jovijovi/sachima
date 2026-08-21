@@ -102,6 +102,13 @@ class AgentRunSupervisorExecutionBinding:
     dispatcher: AgentRunSupervisorTurnDispatcher
     query_service: LiveProgressQueryService
     display_service: LiveProgressDisplayService
+    #: The durable binding ledger this graph classifies against. Published on
+    #: the bundle so a coordinator reads the backend's **own** ledger object
+    #: rather than constructing a second one over the same path: two instances
+    #: agree about the bytes but not about the lock, and a classification that
+    #: races a finalize on a different lock is exactly the two-read window the
+    #: exact snapshot exists to close.
+    ledger: ArsdRunBindingLedger | None = None
 
     def __post_init__(self) -> None:
         try:
@@ -142,6 +149,14 @@ class AgentRunSupervisorExecutionBinding:
         )
         for actual, expected_object in identities:
             if actual is not expected_object:
+                raise SpineError(RUNTIME_INVALID_SESSION)
+
+        if self.ledger is not None:
+            if type(self.ledger) is not ArsdRunBindingLedger:
+                raise SpineError(RUNTIME_INVALID_SESSION)
+            # One ledger object for the whole graph, by identity — the same
+            # rule, and the same reason, as the task operation lock above.
+            if getattr(self.backend, "_ledger", None) is not self.ledger:
                 raise SpineError(RUNTIME_INVALID_SESSION)
 
 
@@ -248,6 +263,7 @@ def bind_arsd_execution(
         dispatcher=dispatcher,
         query_service=query_service,
         display_service=display_service,
+        ledger=bindings_ledger if type(bindings_ledger) is ArsdRunBindingLedger else None,
     )
 
 

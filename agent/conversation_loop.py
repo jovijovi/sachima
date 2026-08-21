@@ -475,6 +475,8 @@ def run_conversation(
     stream_callback: Optional[callable] = None,
     persist_user_message: Optional[str] = None,
     persist_user_timestamp: Optional[float] = None,
+    *,
+    _provider_dispatch_lease: Any = None,
 ) -> Dict[str, Any]:
     """
     Run a complete conversation with tool calling until completion.
@@ -493,10 +495,31 @@ def run_conversation(
         persist_user_timestamp: Optional platform event timestamp to store
             as metadata on that persisted user message.
                 or queuing follow-up prefetch work.
+        _provider_dispatch_lease: Private turn plumbing — this turn's
+            provider-dispatch ownership, captured by a caller that scheduled
+            the turn on a worker it may later abandon.  ``None`` means this
+            turn owns (and retires) its own.
 
     Returns:
         Dict: Complete conversation result with final response and message history
     """
+    # ── Turn ownership (before anything can dispatch) ──
+    # Which turn a provider request belongs to is decided once, here, and by
+    # value.  The gateway caches one AIAgent per session and rebinds
+    # ``provider_attempt_callback`` on it every turn, while a worker from a turn
+    # the main thread abandoned is still alive inside the same object — so a
+    # snapshot taken further down (below execution middleware, which may hold a
+    # request indefinitely) would routinely be the *next* turn's claim.
+    from agent.chat_completion_helpers import ProviderDispatchLease
+
+    _dispatch_lease = _provider_dispatch_lease
+    _owns_dispatch_lease = _dispatch_lease is None
+    if _dispatch_lease is None:
+        _dispatch_lease = ProviderDispatchLease(
+            getattr(agent, "provider_attempt_callback", None)
+        )
+    agent._activate_provider_dispatch_lease(_dispatch_lease)
+
     # ── Per-turn setup (the prologue) ──
     # All once-per-turn setup — stdio guarding, retry-counter resets, user
     # message sanitization, todo/nudge hydration, system-prompt restore-or-
@@ -1107,31 +1130,70 @@ def run_conversation(
                     if isinstance(getattr(agent, "client", None), Mock):
                         _use_streaming = False
 
+                # The real provider/model invocation boundary is *below* the
+                # helper called from ``_perform_api_call``, not at it: the
+                # helper can still stop at a pre-dispatch interrupt, at client
+                # construction, or in a worker the main thread abandons, and
+                # each provider family retries and falls back inside it.  So it
+                # is handed a gate that signals at the concrete SDK call
+                # expression instead — that (and not the returned ``api_calls``
+                # count) is the truth about whether the turn actually spoke to
+                # a model.
+                #
+                # The gate is built *here*, above execution middleware, and
+                # under this turn's lease.  Middleware may hold a request for
+                # as long as it likes, and while it holds one the gateway can
+                # already have abandoned this turn and rebound the cached agent
+                # to the next one's claim: a gate built below middleware would
+                # snapshot that later claim and consume a handoff this request
+                # never carried.
+                from agent.chat_completion_helpers import (
+                    ProviderDispatchGate,
+                    provider_dispatch_kwargs,
+                )
+                dispatch_gate = ProviderDispatchGate(agent, _dispatch_lease)
+
                 def _perform_api_call(next_api_kwargs):
                     if _use_streaming:
                         return agent._interruptible_streaming_api_call(
-                            next_api_kwargs, on_first_delta=_stop_spinner
+                            next_api_kwargs,
+                            on_first_delta=_stop_spinner,
+                            **provider_dispatch_kwargs(
+                                agent._interruptible_streaming_api_call, dispatch_gate
+                            ),
                         )
-                    return agent._interruptible_api_call(next_api_kwargs)
+                    return agent._interruptible_api_call(
+                        next_api_kwargs,
+                        **provider_dispatch_kwargs(
+                            agent._interruptible_api_call, dispatch_gate
+                        ),
+                    )
 
                 from hermes_cli.middleware import run_llm_execution_middleware
 
-                response = run_llm_execution_middleware(
-                    api_kwargs,
-                    _perform_api_call,
-                    original_request=_original_api_kwargs,
-                    task_id=effective_task_id,
-                    turn_id=turn_id,
-                    api_request_id=api_request_id,
-                    session_id=agent.session_id or "",
-                    platform=agent.platform or "",
-                    model=agent.model,
-                    provider=agent.provider,
-                    base_url=agent.base_url,
-                    api_mode=agent.api_mode,
-                    api_call_count=api_call_count,
-                    middleware_trace=list(_llm_middleware_trace),
-                )
+                try:
+                    response = run_llm_execution_middleware(
+                        api_kwargs,
+                        _perform_api_call,
+                        original_request=_original_api_kwargs,
+                        task_id=effective_task_id,
+                        turn_id=turn_id,
+                        api_request_id=api_request_id,
+                        session_id=agent.session_id or "",
+                        platform=agent.platform or "",
+                        model=agent.model,
+                        provider=agent.provider,
+                        base_url=agent.base_url,
+                        api_mode=agent.api_mode,
+                        api_call_count=api_call_count,
+                        middleware_trace=list(_llm_middleware_trace),
+                    )
+                finally:
+                    # This request is over the moment middleware returns —
+                    # however it returns: rejected, raised, or having bypassed
+                    # ``next_call`` entirely.  A worker still below the dispatch
+                    # point must not be able to get out afterwards.
+                    dispatch_gate.cancel()
                 
                 api_duration = time.time() - api_start_time
                 
@@ -4484,7 +4546,7 @@ def run_conversation(
     # (god-file decomposition Phase 1 step 4). Behavior-neutral: the assembled
     # result dict is returned exactly as before.
     from agent.turn_finalizer import finalize_turn
-    return finalize_turn(
+    _result = finalize_turn(
         agent,
         final_response=final_response,
         api_call_count=api_call_count,
@@ -4498,7 +4560,16 @@ def run_conversation(
         original_user_message=original_user_message,
         _should_review_memory=_should_review_memory,
         _turn_exit_reason=_turn_exit_reason,
+        provider_dispatch_lease=_dispatch_lease,
     )
+    # The turn is over, including its budget-exhaustion summary.  A lease this
+    # turn minted itself dies with it; one handed in belongs to the caller that
+    # captured it and is retired there.  Either way the slot is cleared only
+    # while it still holds *this* lease — a newer turn may already own it.
+    if _owns_dispatch_lease:
+        _dispatch_lease.cancel()
+    agent._retire_provider_dispatch_lease(_dispatch_lease)
+    return _result
 
 
 

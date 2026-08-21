@@ -445,6 +445,83 @@ class AIAgent:
         "have been dropped to keep the conversation alive. See issue #15236.]"
     )
 
+    # Whether this turn actually reached a model.  ``api_calls`` in the run
+    # result cannot answer that: the conversation loop counts the iteration
+    # before the iteration budget admits it, and a follow-up turn reports its
+    # own count rather than the interrupted attempt's.  These two are set at
+    # the real provider/model invocation boundary instead, so a caller that
+    # must know ("did the model see the context I handed it?") reads a signal
+    # nothing downstream can walk back.  Class-level defaults: every agent
+    # answers the question regardless of how it was constructed.
+    provider_attempt_callback: Optional[Callable[[], None]] = None
+    _provider_attempts: int = 0
+
+    # Which turn currently owns provider dispatch on this instance.  Class-level
+    # defaults for the same reason as the two above: an agent built by an older
+    # path still answers ownership questions.  ``agent_init`` replaces the lock
+    # with a per-instance one.
+    _active_provider_lease: Any = None
+    _active_provider_lease_lock = threading.Lock()
+
+    def _mark_provider_attempt(
+        self, callback: Optional[Callable[[], None]] = None
+    ) -> None:
+        """Record that a real provider/model call is being dispatched now.
+
+        ``callback`` is the value the request's
+        :class:`agent.chat_completion_helpers.ProviderDispatchLease` captured
+        before this turn started — deliberately not re-read from the instance,
+        which a later turn can rebind while a worker from this one is still
+        alive.
+        """
+        self._provider_attempts += 1
+        if callback is None:
+            return
+        try:
+            callback()
+        except Exception:
+            logger.debug("provider attempt callback failed", exc_info=True)
+
+    def _activate_provider_dispatch_lease(self, lease) -> bool:
+        """Install ``lease`` as this instance's current dispatch owner.
+
+        Returns ``False`` for a lease that was already revoked: a worker the
+        gateway abandoned before it even reached its own activation must not be
+        able to displace — or cancel — the turn that replaced it.  Validation
+        therefore happens before the slot is touched at all.
+        """
+        if lease is None:
+            return False
+        with self._active_provider_lease_lock:
+            if lease.revoked:
+                return False
+            previous = self._active_provider_lease
+            self._active_provider_lease = lease
+        if previous is not None and previous is not lease:
+            previous.cancel()
+        return True
+
+    def _cancel_active_provider_dispatch_lease(self) -> None:
+        """Retire whichever turn currently owns dispatch on this instance."""
+        with self._active_provider_lease_lock:
+            lease = self._active_provider_lease
+            self._active_provider_lease = None
+        if lease is not None:
+            lease.cancel()
+
+    def _retire_provider_dispatch_lease(self, lease) -> None:
+        """Clear the slot, but only while it still holds exactly ``lease``.
+
+        An old turn's finalizer runs long after a newer turn may have taken
+        ownership; unguarded cleanup would hand the live turn's requests back to
+        nobody.
+        """
+        if lease is None:
+            return
+        with self._active_provider_lease_lock:
+            if self._active_provider_lease is lease:
+                self._active_provider_lease = None
+
     @property
     def base_url(self) -> str:
         return self._base_url
@@ -3951,15 +4028,15 @@ class AIAgent:
                 exc,
             )
 
-    def _run_codex_stream(self, api_kwargs: dict, client: Any = None, on_first_delta: callable = None):
+    def _run_codex_stream(self, api_kwargs: dict, client: Any = None, on_first_delta: callable = None, *, provider_dispatch: Any = None):
         """Forwarder — see ``agent.codex_runtime.run_codex_stream``."""
         from agent.codex_runtime import run_codex_stream
-        return run_codex_stream(self, api_kwargs, client, on_first_delta)
+        return run_codex_stream(self, api_kwargs, client, on_first_delta, provider_dispatch=provider_dispatch)
 
-    def _run_codex_create_stream_fallback(self, api_kwargs: dict, client: Any = None):
+    def _run_codex_create_stream_fallback(self, api_kwargs: dict, client: Any = None, *, provider_dispatch: Any = None):
         """Forwarder — see ``agent.codex_runtime.run_codex_create_stream_fallback``."""
         from agent.codex_runtime import run_codex_create_stream_fallback
-        return run_codex_create_stream_fallback(self, api_kwargs, client)
+        return run_codex_create_stream_fallback(self, api_kwargs, client, provider_dispatch=provider_dispatch)
 
     def _try_refresh_codex_client_credentials(self, *, force: bool = True) -> bool:
         if self.api_mode != "codex_responses" or self.provider not in {"openai-codex", "xai-oauth"}:
@@ -4291,7 +4368,7 @@ class AIAgent:
             return False
         return pool.has_available()
 
-    def _anthropic_messages_create(self, api_kwargs: dict):
+    def _anthropic_messages_create(self, api_kwargs: dict, *, provider_dispatch: Any = None):
         if self.api_mode == "anthropic_messages":
             self._try_refresh_anthropic_client_credentials()
         # Defensive: strip Responses-only kwargs that can leak in under an
@@ -4303,6 +4380,7 @@ class AIAgent:
             api_kwargs,
             log_prefix=getattr(self, "log_prefix", ""),
             prefer_stream=not bool(getattr(self, "_disable_streaming", False)),
+            provider_dispatch=provider_dispatch,
         )
 
     def _rebuild_anthropic_client(self) -> None:
@@ -4331,10 +4409,10 @@ class AIAgent:
                 drop_context_1m_beta=_drop_1m,
             )
 
-    def _interruptible_api_call(self, api_kwargs: dict):
+    def _interruptible_api_call(self, api_kwargs: dict, *, provider_dispatch: Any = None):
         """Forwarder — see ``agent.chat_completion_helpers.interruptible_api_call``."""
         from agent.chat_completion_helpers import interruptible_api_call
-        return interruptible_api_call(self, api_kwargs)
+        return interruptible_api_call(self, api_kwargs, provider_dispatch=provider_dispatch)
 
     # ── Unified streaming API call ─────────────────────────────────────────
 
@@ -4503,11 +4581,13 @@ class AIAgent:
         )
 
     def _interruptible_streaming_api_call(
-        self, api_kwargs: dict, *, on_first_delta: callable = None
+        self, api_kwargs: dict, *, on_first_delta: callable = None, provider_dispatch: Any = None
     ):
         """Forwarder — see ``agent.chat_completion_helpers.interruptible_streaming_api_call``."""
         from agent.chat_completion_helpers import interruptible_streaming_api_call
-        return interruptible_streaming_api_call(self, api_kwargs, on_first_delta=on_first_delta)
+        return interruptible_streaming_api_call(
+            self, api_kwargs, on_first_delta=on_first_delta, provider_dispatch=provider_dispatch
+        )
 
     def _try_activate_fallback(self, reason: "FailoverReason | None" = None) -> bool:
         """Forwarder — see ``agent.chat_completion_helpers.try_activate_fallback``."""
@@ -5472,10 +5552,21 @@ class AIAgent:
         from agent.tool_executor import execute_tool_calls_sequential
         return execute_tool_calls_sequential(self, assistant_message, messages, effective_task_id, api_call_count)
 
-    def _handle_max_iterations(self, messages: list, api_call_count: int) -> str:
+    def _handle_max_iterations(
+        self,
+        messages: list,
+        api_call_count: int,
+        *,
+        _provider_dispatch_lease: Any = None,
+    ) -> str:
         """Forwarder — see ``agent.chat_completion_helpers.handle_max_iterations``."""
         from agent.chat_completion_helpers import handle_max_iterations
-        return handle_max_iterations(self, messages, api_call_count)
+        return handle_max_iterations(
+            self,
+            messages,
+            api_call_count,
+            provider_dispatch_lease=_provider_dispatch_lease,
+        )
 
     def run_conversation(
         self,
@@ -5486,8 +5577,16 @@ class AIAgent:
         stream_callback: Optional[callable] = None,
         persist_user_message: Optional[str] = None,
         persist_user_timestamp: Optional[float] = None,
+        *,
+        _provider_dispatch_lease: Any = None,
     ) -> Dict[str, Any]:
-        """Forwarder — see ``agent.conversation_loop.run_conversation``."""
+        """Forwarder — see ``agent.conversation_loop.run_conversation``.
+
+        ``_provider_dispatch_lease`` is private turn plumbing: a caller that
+        schedules this turn on a worker it may later abandon (the gateway)
+        captures ownership *before* scheduling and hands it in here.  Every
+        other caller lets the turn capture its own.
+        """
         from agent.conversation_loop import run_conversation
         return run_conversation(
             self,
@@ -5498,6 +5597,7 @@ class AIAgent:
             stream_callback,
             persist_user_message,
             persist_user_timestamp,
+            _provider_dispatch_lease=_provider_dispatch_lease,
         )
 
     def chat(self, message: str, stream_callback: Optional[callable] = None) -> str:

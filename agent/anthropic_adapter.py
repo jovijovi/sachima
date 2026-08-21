@@ -2555,6 +2555,7 @@ def create_anthropic_message(
     *,
     log_prefix: str = "",
     prefer_stream: bool = True,
+    provider_dispatch: Any = None,
 ) -> Any:
     """Create an Anthropic message, aggregating via stream when available.
 
@@ -2564,6 +2565,10 @@ def create_anthropic_message(
     crash on ``.content``.  Prefer ``messages.stream().get_final_message()`` to
     match the main turn path, falling back to ``create()`` only for providers
     that explicitly do not support streaming, such as restricted Bedrock roles.
+
+    ``provider_dispatch`` is the ordinary turn's dispatch gate.  It defaults to
+    ``None`` so auxiliary callers (compression, memory, model probes) stay
+    direct and cannot consume that turn's delegate handoff.
     """
     sanitize_anthropic_kwargs(api_kwargs, log_prefix=log_prefix)
 
@@ -2573,7 +2578,12 @@ def create_anthropic_message(
         stream_kwargs = dict(api_kwargs)
         stream_kwargs.pop("stream", None)
         try:
-            with stream_fn(**stream_kwargs) as stream:
+            # ``stream()`` only builds a lazy manager — the request begins when
+            # it is entered, so that is the boundary the gate signals from.
+            manager = stream_fn(**stream_kwargs)
+            if provider_dispatch is not None:
+                manager = provider_dispatch.wrap_context(manager)
+            with manager as stream:
                 return stream.get_final_message()
         except Exception as exc:
             if not _is_stream_unavailable_error(exc):
@@ -2587,4 +2597,6 @@ def create_anthropic_message(
 
     create_kwargs = dict(api_kwargs)
     create_kwargs.pop("stream", None)
-    return messages_api.create(**create_kwargs)
+    if provider_dispatch is None:
+        return messages_api.create(**create_kwargs)
+    return provider_dispatch.invoke(messages_api.create, **create_kwargs)

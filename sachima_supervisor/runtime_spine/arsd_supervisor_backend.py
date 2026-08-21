@@ -148,6 +148,7 @@ __all__ = [
     "ARSD_BACKEND_STABLE_CODES",
     "ARSD_TERMINAL_TO_NEUTRAL_STATUS",
     "ArsdLiveProgressReader",
+    "ArsdRunCancelOutcome",
     "ArsdRunEventPage",
     "ArsdRunEventRecord",
     "ArsdRunProgressSnapshot",
@@ -429,6 +430,22 @@ class _RunPolicy:
     run_limits_policy_ref: str
 
 
+@dataclass(frozen=True)
+class ArsdRunCancelOutcome:
+    """What one Run-scoped cancel actually proved.
+
+    ``settled`` is the whole predicate, and it means *trusted terminal
+    evidence*, not "the cancel call returned". An unsettled outcome carries no
+    status and no answer, because a cancel that could not be proven has ended
+    nothing — the Run may still be executing, and reporting it cancelled would
+    be a claim about the daemon nobody made.
+    """
+
+    settled: bool
+    run_status: str | None = None
+    result: ArsdTerminalResult | None = field(default=None, repr=False)
+
+
 @dataclass
 class _TaskEntry:
     """One attached task. The active ``run_id`` is private and repr-excluded.
@@ -564,29 +581,212 @@ class ArsdSupervisorBackend:
             # the task: reconcile whatever the durable ledger already holds.
             return self._register(safe_task, handle, policy)
 
-    def attach_existing(self, task_id: str) -> str:
+    def attach_existing(self, task_id: str, *, binding: Any = None) -> str:
         """Re-attach a task from its durable binding alone — never respawn.
 
         A task with no accepted binding has no Session to attach to, and this
         never creates one: it fails closed with the spine's no-session code.
+
+        ``binding`` names the **exact** accepted record to attach. A restoration
+        already knows which turn is current, so it passes that record and the
+        task's own latest is never consulted: with two accepted Runs, choosing
+        "the newest" would attach the wrong one whenever the current turn is not
+        the newest, and would do it silently. A record the ledger no longer
+        agrees with blocks rather than falling back.
+
+        Called with no ``binding`` — the port's own protocol call — the previous
+        latest-accepted behavior is unchanged.
         """
 
         safe_task = safe_task_id(task_id, code=RUNTIME_ARSD_INVALID_REQUEST)
+        record = (
+            self._require_accepted_binding(safe_task, binding)
+            if binding is not None
+            else None
+        )
         with self._lock:
             existing = self._by_task.get(safe_task)
             if existing is not None:
+                if record is not None and existing.active_run_id != record.run_id:
+                    _binding_conflict()
                 return existing.handle
-        latest = self._latest_accepted(safe_task)
-        if latest is None:
-            raise SpineError(RUNTIME_INVALID_SESSION)
-        policy = self._policy_from_refs(latest.resolver_refs)
+        if record is None:
+            record = self._latest_accepted(safe_task)
+            if record is None:
+                raise SpineError(RUNTIME_INVALID_SESSION)
+        policy = self._policy_from_refs(record.resolver_refs)
         with self._lock:
             existing = self._by_task.get(safe_task)
             if existing is not None:
+                if existing.active_run_id != record.run_id:
+                    _binding_conflict()
                 return existing.handle
             return self._register(
-                safe_task, derive_arsd_backend_handle(safe_task), policy
+                safe_task,
+                derive_arsd_backend_handle(safe_task),
+                policy,
+                active_binding=record,
             )
+
+    def rehydrate_pending_intent(self, task_id: str, dispatch_ref: str) -> str:
+        """Rebuild this task's entry from one **exact** pending intent. No I/O.
+
+        A fresh process holds the durable ledger and nothing else. This turns one
+        recorded intent back into an attachable task: the identity it was
+        admitted under is re-derived from the intent's own refs and reconciled
+        against the current config, and the entry is registered with **no**
+        active Run — a pending dispatch has none, and adopting the task's latest
+        accepted Run here would attach a Run this uncertain submission may
+        already have superseded.
+
+        It opens no socket, writes nothing to the ledger, and creates nothing:
+        the whole point of a pending record is that only an explicit recovery
+        may act on it, and restoration is not that decision.
+        """
+
+        safe_task = safe_task_id(task_id, code=RUNTIME_ARSD_INVALID_REQUEST)
+        dispatch = _safe_id(dispatch_ref, code=RUNTIME_ARSD_INVALID_REQUEST)
+        handle = derive_arsd_backend_handle(safe_task)
+        with self._lock:
+            existing = self._by_task.get(safe_task)
+            if existing is not None:
+                return existing.handle
+
+        record = self._ledger.snapshot_exact(safe_task, handle, dispatch)
+        if record is None or record.state == ARSD_BINDING_ACCEPTED:
+            # No intent, or an acceptance: neither is a pending dispatch, and an
+            # accepted record is never re-sent through this door.
+            _binding_conflict()
+        policy = self._policy_from_refs(record.resolver_refs)
+        self._reconcile_durable_identity(policy, (record,))
+        with self._lock:
+            existing = self._by_task.get(safe_task)
+            if existing is not None:
+                return existing.handle
+            entry = _TaskEntry(task_id=safe_task, handle=handle, policy=policy)
+            self._by_task[safe_task] = entry
+            self._by_handle[handle] = entry
+            return handle
+
+    def accepted_turn_for_binding(
+        self, task_id: str, binding: Any, *, session_ref: str
+    ) -> DispatchedSupervisorTurn:
+        """The durable handoff for **one named** accepted binding.
+
+        The exact-record variant of :meth:`latest_accepted_turn`. A restoration
+        already knows which turn is current — it read it from its own durable
+        record — so asking the ledger for "the latest" here would let a task with
+        two accepted Runs bind the wrong stream, silently, on the strength of an
+        ordering the coordinator never asked about.
+        """
+
+        entry = self._require_task(task_id)
+        session = _safe_id(session_ref, code=RUNTIME_ARSD_INVALID_REQUEST)
+        record = self._require_accepted_binding(entry.task_id, binding)
+        if dict(record.resolver_refs).get("session_ref") != session:
+            _binding_conflict()
+        return self._accepted_handoff(record)
+
+    def cancel_run(self, handle: str) -> "ArsdRunCancelOutcome":
+        """Cancel **this Run** — and nothing wider.
+
+        The narrow user-facing cancel seam. It reuses the same ``run_cancel``
+        validation and bounded re-query the task-lifecycle ``kill`` does, and
+        then stops: it never calls a Session operation, never sets the task
+        terminal, and never reaches :meth:`kill`. A cancelled Run leaves a live,
+        reusable Session behind, which is exactly what makes "cancel this piece
+        of work, then continue the conversation" possible at all.
+
+        Trusted terminal evidence — from the cancel reply or from one bounded
+        re-query — is fed through the same reconciliation an ordinary
+        observation uses, so the terminal that actually happened is the one that
+        gets reported. A completion that won the race stays a completion; it is
+        not rewritten as ``cancelled``.
+
+        Without trusted evidence the outcome is honestly unsettled. Nothing is
+        mutated, the Run stays this task's Run, and the caller keeps its permit
+        and its refusal to continue until a later observation settles it.
+
+        Runs under this task's admission lock, so a cancel cannot land between a
+        dispatch's acceptance and its publication.
+        """
+
+        entry = self._require_handle(handle)
+        with self._task_locks.hold(entry.task_id):
+            self._require_no_unresolved_intent(entry.task_id)
+            with self._lock:
+                run_id = entry.active_run_id
+                remembered = entry.last_run_status
+                remembered_result = entry.last_terminal_result
+            if run_id is None:
+                # Nothing live. A remembered verdict is a settled answer; no
+                # verdict at all is not, and neither is a reason to cancel.
+                if remembered is None:
+                    return ArsdRunCancelOutcome(settled=False)
+                return ArsdRunCancelOutcome(
+                    settled=True, run_status=remembered, result=remembered_result
+                )
+
+            try:
+                raw = self._facade.run_cancel(run_id)
+            except SpineError:
+                raise
+            except Exception:
+                _unavailable()
+            observation = validate_arsd_run_cancel_result(raw, run_id=run_id)
+            if observation.status is not None:
+                neutral = map_arsd_terminal_to_neutral(
+                    observation.status, reason=self._reason_of(observation.result)
+                )
+                return self._settle_cancelled_run(
+                    entry, run_id, neutral, observation.result
+                )
+
+            for _ in range(_CANCEL_REQUERIES):
+                requery = self._observe(run_id)
+                if requery.result is not None:
+                    neutral = _trusted_terminal(requery.result)
+                    if neutral is None:
+                        raise SpineError(RUNTIME_ARSD_INTERNAL) from None
+                    return self._settle_cancelled_run(
+                        entry, run_id, neutral, requery.result
+                    )
+            return ArsdRunCancelOutcome(settled=False)
+
+    def _settle_cancelled_run(
+        self,
+        entry: _TaskEntry,
+        run_id: str,
+        neutral: str,
+        result_body: Any,
+    ) -> "ArsdRunCancelOutcome":
+        """Record the terminal a cancel proved, without ending the task."""
+
+        projected = project_arsd_terminal_result(result_body, status=neutral)
+        with self._lock:
+            if entry.active_run_id == run_id:
+                entry.active_run_id = None
+                entry.last_run_status = neutral
+                entry.last_terminal_result = projected
+        return ArsdRunCancelOutcome(settled=True, run_status=neutral, result=projected)
+
+    def _require_accepted_binding(self, safe_task: str, binding: Any) -> ArsdRunBinding:
+        """Admit only a binding the ledger still agrees with, at its own key."""
+
+        if type(binding) is not ArsdRunBinding:
+            _binding_conflict()
+        if binding.state != ARSD_BINDING_ACCEPTED or binding.run_id is None:
+            _binding_conflict()
+        handle = derive_arsd_backend_handle(safe_task)
+        if binding.task_id != safe_task or binding.session_id != handle:
+            _binding_conflict()
+        record = self._ledger.snapshot_exact(safe_task, handle, binding.dispatch_ref)
+        if record is None or record != binding:
+            # A record that no longer matches is not the one this restoration
+            # was told about; substituting the ledger's version would silently
+            # rebind a different Run.
+            _binding_conflict()
+        return record
 
     def status(self, handle: str) -> str:
         """The **Session**-facing state of this task, honestly observed.
@@ -965,7 +1165,14 @@ class ArsdSupervisorBackend:
             _binding_conflict()
 
     # -- internals: identity and policy ------------------------------------- #
-    def _register(self, safe_task: str, handle: str, policy: _RunPolicy) -> str:
+    def _register(
+        self,
+        safe_task: str,
+        handle: str,
+        policy: _RunPolicy,
+        *,
+        active_binding: ArsdRunBinding | None = None,
+    ) -> str:
         """Reconcile against this task's durable records, then track it.
 
         Two things happen here that a fresh process cannot skip. Its stable
@@ -982,9 +1189,15 @@ class ArsdSupervisorBackend:
         bindings = self._ledger.resolve_for_task(safe_task)
         self._reconcile_durable_identity(policy, bindings)
         entry = _TaskEntry(task_id=safe_task, handle=handle, policy=policy)
-        latest = self._select_latest_accepted(bindings)
-        if latest is not None:
-            entry.active_run_id = latest.run_id
+        # A caller that named the record adopts THAT Run; only a caller that did
+        # not asks the ledger which one is newest.
+        adopted = (
+            active_binding
+            if active_binding is not None
+            else self._select_latest_accepted(bindings)
+        )
+        if adopted is not None:
+            entry.active_run_id = adopted.run_id
         self._by_task[safe_task] = entry
         self._by_handle[handle] = entry
         return handle

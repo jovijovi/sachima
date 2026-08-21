@@ -453,6 +453,89 @@ class AgentRunSupervisorPort(ExecutionPort):
             self._sync_backend_state_locked(safe_task, session, state)
             return ref
 
+    def restore_attached(
+        self, task_id: str, launch_spec: LaunchSpec, *, session_id: str
+    ) -> SessionRef:
+        """Re-attach a **sealed** session after a restart. Creates nothing.
+
+        ``create_or_attach`` is the admission door: it will mint a backend
+        session when it finds none, which is exactly right for a new task and
+        exactly wrong for a restart. A restored task already *has* a Session —
+        the durable record names it — so this door only reconnects to one:
+        it asks the backend to attach an existing task and fails closed if the
+        backend cannot, rather than starting a second Session beside a Run that
+        may still be executing.
+
+        The sealed ``session_id`` comes from the host's own durable record, not
+        from this port's counter. Minting a fresh ``sess_N`` here would give the
+        restored conversation a different identity from the one its accepted Run,
+        its result envelope, and its recovery record all name.
+
+        Idempotent: restoring twice attaches once and appends one
+        ``agent_attached`` event, so a repeated startup scan cannot make a task
+        look like it attached twice.
+        """
+
+        safe_task = safe_task_id(task_id)
+        self._validate_launch_for_supervisor(safe_task, launch_spec)
+        sealed = _safe_id(session_id, code=RUNTIME_INVALID_SESSION)
+        if not sealed.startswith("sess_"):
+            raise SpineError(RUNTIME_INVALID_SESSION)
+        launch_key = self._launch_key(launch_spec)
+        with self._lock:
+            existing = self._sessions.get(safe_task)
+            if existing is not None:
+                if existing.launch_key != launch_key or existing.ref.session_id != sealed:
+                    raise SpineError(RUNTIME_INVALID_SESSION)
+                return existing.ref
+
+            handle = self._attached_handle(safe_task)
+            if handle is None:
+                # No backend session to attach to. Restoration never creates
+                # one: that decision belongs to an admission, not a restart.
+                raise SpineError(RUNTIME_INVALID_SESSION)
+
+            record = self._registry.get_record(safe_task)
+            if record is None:
+                self._registry.create_task(
+                    safe_task,
+                    needs_agent=launch_spec.needs_agent,
+                    needs_durable=launch_spec.needs_durable,
+                    refs=tuple(launch_spec.refs),
+                )
+            else:
+                existing_refs = self._task_creation_refs(safe_task)
+                if (
+                    record.needs_agent is not launch_spec.needs_agent
+                    or record.needs_durable is not launch_spec.needs_durable
+                    or existing_refs != frozenset(launch_spec.refs)
+                ):
+                    raise SpineError(RUNTIME_INVALID_LAUNCH_SPEC)
+
+            attached = self._attached_session_id(safe_task)
+            if attached is None:
+                self._registry.append_event(
+                    safe_task,
+                    build_event_body(
+                        event_type="agent_attached",
+                        status="running",
+                        refs=(sealed,),
+                    ),
+                )
+            elif attached != sealed:
+                # The log already names a different session for this task; a
+                # restore may reconnect, never re-identify.
+                raise SpineError(RUNTIME_INVALID_SESSION)
+
+            ref = SessionRef(task_id=safe_task, session_id=sealed)
+            self._sessions[safe_task] = _PortSession(
+                ref=ref,
+                handle=handle,
+                launch_key=launch_key,
+                emitted_state=self._projected_session_state(safe_task),
+            )
+            return ref
+
     def stream(
         self, ref: str | SessionRef, *, since_seq: int | None = None
     ) -> tuple[dict[str, Any], ...]:

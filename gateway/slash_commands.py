@@ -2012,17 +2012,68 @@ class GatewaySlashCommandsMixin:
             )
         return t("gateway.rollback.restore_failed", error=result["error"])
 
+    def _delegate_delivery_for(self, source, event_message_id=None):
+        """Build the delegate delivery capability for one origin, or ``None``.
+
+        Two senders and the platform's own one-message bound. The receipt goes
+        out as an ordinary short message; the terminal result goes out through
+        the single-plain-text-message capability, already bounded, so a long
+        answer becomes one truncated body plus its durable ref rather than a
+        burst of chunks.
+        """
+
+        from gateway.sachima_delegate import DelegateDelivery
+
+        adapter = self.adapters.get(source.platform)
+        if adapter is None:
+            logger.warning(
+                "No adapter for platform %s; delegate delivery unavailable",
+                source.platform,
+            )
+            return None
+        metadata = self._thread_metadata_for_source(source, event_message_id)
+
+        async def _send_text(text: str):
+            return await adapter.send(source.chat_id, text, metadata=metadata)
+
+        async def _send_once(text: str):
+            return await adapter.send_plain_text_once(
+                source.chat_id, text, metadata=metadata
+            )
+
+        return DelegateDelivery(
+            send_text=_send_text,
+            send_plain_text_once=_send_once,
+            limit=adapter.single_message_text_limit(),
+            measure=adapter.measure_text,
+        )
+
     async def _handle_delegate_command(self, event: MessageEvent) -> str:
-        """Handle ``/delegate <task>`` — hand one task to the external AGENT.
+        """Handle ``/delegate [@AGENT] <task>`` — hand one task to an AGENT.
 
         The **one** entry point for delegation, reached identically from the
         cold slash path and from the running-agent fast path in
         ``gateway/run.py``. It starts no agent of its own and never touches the
         local conversation: the task goes to the composed Sachima ↔ ARS
-        execution bundle, and this returns the acceptance immediately.
+        execution bundle.
 
-        Empty text creates nothing at all — no task, no session, no held
-        payload, no background work — and answers with the usage line alone.
+        The order here is the product contract, not an implementation detail:
+
+        1. parse the platform-native selector. A selection-shaped ``@name`` with
+           no structured provenance is refused **before** anything exists — it
+           never falls through to automatic routing;
+        2. route. An unmapped or disabled AGENT refuses with the available
+           choices; a tie asks rather than guesses;
+        3. only then resolve or create the durable Hermes Session. Empty or
+           refused input therefore creates nothing at all — no Session, no task,
+           no held payload, no background work;
+        4. hand the whole thing to the coordinator, which owns every durable
+           write from that point on.
+
+        The accepted receipt is delivered through the adapter *here*, after the
+        coordinator's post-ack closure settles it, and the handler then returns
+        an empty response so the outer gateway command path does not send a
+        second copy of a message the user already has.
 
         With no ``arsd`` bundle composed there is no external AGENT path to
         delegate to, and this says so rather than quietly running the task
@@ -2031,15 +2082,28 @@ class GatewaySlashCommandsMixin:
         """
 
         from gateway.sachima_delegate import (
-            DELEGATE_ACCEPTED_TEMPLATE,
+            DELEGATE_AMBIGUOUS_TEMPLATE,
             DELEGATE_REFUSED,
             DELEGATE_UNAVAILABLE,
+            DELEGATE_UNKNOWN_SELECTOR_TEMPLATE,
+            DELEGATE_UNVERIFIED_SELECTOR,
             DELEGATE_USAGE,
-            DelegateTarget,
             bound_delegate_coordinator,
         )
+        from gateway.sachima_delegate_policy import (
+            SACHIMA_DELEGATE_AMBIGUOUS_ROUTE,
+            resolve_route,
+        )
+        from gateway.sachima_delegate_selector import parse_delegate_selection
+        from gateway.sachima_delegate_state import DelegateOrigin
 
-        task_text = (event.get_command_args() or "").strip()
+        source = event.source
+        selection = parse_delegate_selection(
+            event.text or "", getattr(event, "mention_occurrences", ()) or ()
+        )
+        if selection.refused:
+            return DELEGATE_UNVERIFIED_SELECTOR
+        task_text = selection.task_text
         if not task_text:
             return DELEGATE_USAGE
 
@@ -2047,33 +2111,49 @@ class GatewaySlashCommandsMixin:
         if coordinator is None:
             return DELEGATE_UNAVAILABLE
 
-        source = event.source
-        target = DelegateTarget(
-            platform=source.platform.value if source.platform else "",
-            chat_id=source.chat_id,
-            thread_id=source.thread_id,
+        platform = source.platform.value if source.platform else ""
+        decision = resolve_route(
+            coordinator.policy,
+            platform=platform,
+            selector_user_id=selection.platform_user_id,
+            task_text=task_text,
         )
-        event_message_id = self._reply_anchor_for_event(event)
-
-        async def _notify(notify_target: "DelegateTarget", text: str) -> None:
-            """Deliver one sparse update back to the chat that asked."""
-
-            adapter = self.adapters.get(source.platform)
-            if adapter is None:
-                logger.warning(
-                    "No adapter for platform %s; delegate update dropped",
-                    source.platform,
-                )
-                return
-            await adapter.send(
-                notify_target.chat_id,
-                text,
-                metadata=self._thread_metadata_for_source(source, event_message_id),
+        if not decision.routed:
+            choices = "\n".join(decision.choices) or "-"
+            template = (
+                DELEGATE_AMBIGUOUS_TEMPLATE
+                if decision.refusal == SACHIMA_DELEGATE_AMBIGUOUS_ROUTE
+                else DELEGATE_UNKNOWN_SELECTOR_TEMPLATE
             )
+            return template.format(choices=choices)
+
+        # Startup restoration is an admission barrier.  Wait before resolving
+        # the Hermes Session as well as before the coordinator can submit, so
+        # an inbound command racing adapter startup creates neither kind of
+        # lifecycle state while exact durable identity is still restoring.
+        await coordinator.restore()
+
+        # Valid, routed input: NOW the durable Hermes Session is resolved or
+        # created. This is a SessionStore operation only — it submits nothing
+        # and creates no ARS Session or Run.
+        session_entry = self.session_store.get_or_create_session(source)
+        event_message_id = self._reply_anchor_for_event(event)
+        origin = DelegateOrigin(
+            platform=platform,
+            chat_id=source.chat_id,
+            thread_id=str(source.thread_id) if source.thread_id else None,
+            session_key=session_entry.session_key,
+            session_id=session_entry.session_id,
+            reply_anchor=str(event_message_id) if event_message_id else None,
+        )
+        delivery = self._delegate_delivery_for(source, event_message_id)
 
         try:
-            submission = coordinator.submit_new(
-                task_text, target=target, notifier=_notify
+            outcome = await coordinator.create(
+                task_text=task_text,
+                profile=decision.profile,
+                origin=origin,
+                delivery=delivery,
             )
         except Exception:
             # One stable answer — never the rejected material or the raised
@@ -2081,7 +2161,11 @@ class GatewaySlashCommandsMixin:
             logger.warning("Sachima delegate submission refused")
             return DELEGATE_REFUSED
 
-        return DELEGATE_ACCEPTED_TEMPLATE.format(task_ref=submission.task_id)
+        if outcome.receipt in {"confirmed", "failed", "uncertain"}:
+            # The receipt attempt already happened on this adapter. Returning
+            # its text here would put a second copy in the chat.
+            return ""
+        return outcome.reply or DELEGATE_REFUSED
 
     async def _handle_background_command(self, event: MessageEvent) -> str:
         """Handle /background <prompt> — run a prompt in a separate background session.

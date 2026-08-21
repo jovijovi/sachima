@@ -1,28 +1,38 @@
-"""Sachima ``/delegate`` — host claim-check and the single delegate coordinator.
+"""Sachima ``/delegate`` — the one coordinator that owns a delegated task's life.
 
-This module is the Gateway-side seam for Milestone A of the Sachima delegate
-plan. It owns two things and deliberately nothing else:
+This module is the single writer of delegate turn lifecycle and cancellation
+state. Everything above it (the slash handler, the gated control tool) asks it
+questions; everything below it (the durable store, the binding ledger, the
+composed ``arsd`` bundle) answers them. There is deliberately no second
+coordinator, registry, backend, port, dispatcher, or bindings store beside the
+one the host already composed.
 
-1. **A process-local payload claim-check** (:class:`_PayloadStore`). The
-   delegated task text is private host material: it is held here, and every
-   surface that crosses into the Runtime Spine — the dispatch request, the
-   durable binding ledger, the canonical event log — carries only an opaque
-   ``dlg_<digest>`` ref. The store hands the exact text back to exactly one
-   caller (the bundle's injected payload resolver) and discards it the moment
-   the submission can no longer need it: on a pre-dispatch failure, or on the
-   Run's terminal.
+The four rules that shape every method here:
 
-2. **One :class:`SachimaDelegateCoordinator` per bound execution bundle.** It
-   is the single source of delegate submissions — the ``/delegate`` command
-   today, and the semantic controls a later milestone adds — so there is never
-   a second registry, backend, port, dispatcher, or bindings store beside the
-   one the host already composed. The coordinator *uses* the bound bundle; it
-   never builds one.
+**Evidence decides, not return codes.** Every dispatch or recovery outcome —
+success-shaped, failure-shaped, or an exception — is reduced to a stable
+diagnostic and then passed through *one* exact-key ledger snapshot. That
+snapshot picks the disposition. A success-shaped outcome with no ledger record
+is a failed admission; an exception with an accepted record is an accepted Run
+whose reply was lost. Reading the return value instead would clean up durable
+Runs and re-submit accepted ones.
 
-Capacity is not a number this module owns. The concurrency bound comes from the
-validated live ``server_info.limits.max_concurrent_runs`` the composed backend
-negotiated, and there is deliberately no fallback: a host whose daemon never
-told it how many Runs it will hold has no business admitting any.
+**One critical section per turn.** A keyed lock opens before the first
+reconciliation and closes after the observer is armed, covering the durable
+commit, the receipt, and everything between. The section runs in a
+coordinator-owned task that waiters join through cancellation shielding: an IM
+caller that gives up cannot cancel the spine work it started or release the
+exclusion that is supposed to cover it.
+
+**Identity before any possible submit.** Payload, task binding, turn record, and
+the exact ledger key are on disk before anything that could reach the daemon. A
+record with no submit is recoverable; a submit with no record is not.
+
+**Capacity is conservative.** One permit per turn that might still be consuming
+a Run — pending, accepted, or unreadable — released exactly once, and only when
+an exact snapshot proves there is no record or a trusted terminal has produced
+its durable result. Observation loss, delivery failure, an uncertain cancel, and
+a caller's timeout release nothing.
 
 Pure local/offline on import: no process, socket, daemon, Gateway, IM surface,
 or AGENT is started here, and no ``agent_run_supervisor`` import happens at any
@@ -40,34 +50,63 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
+from gateway.sachima_delegate_policy import (
+    SACHIMA_DELEGATE_INVALID_POLICY,
+    DelegatePolicy,
+    DelegateProfile,
+    requested_configuration,
+    synthesize_legacy_policy,
+)
+from gateway.sachima_delegate_result import (
+    UNCERTAIN_SETTLEMENT,
+    DelegateAcceptedReceipt,
+    SendSettlement,
+    build_hermes_context,
+    build_result_envelope,
+    perform_settled_send,
+    render_accepted_receipt,
+    render_result_body,
+)
+from gateway.sachima_delegate_state import (
+    DelegateCapacity,
+    DelegateOrigin,
+    DelegateResultEvent,
+    DelegateStateError,
+    DelegateStateStore,
+    DelegateTaskBinding,
+    DelegateTurnRecord,
+    delegate_state_root,
+)
+
 logger = logging.getLogger(__name__)
 
 __all__ = [
     "DELEGATE_ACCEPTED_TEMPLATE",
-    "DELEGATE_CANCELLED_TEMPLATE",
-    "DELEGATE_COMPLETED_TEMPLATE",
-    "DELEGATE_EMPTY_FINAL_MESSAGE",
-    "DELEGATE_FAILED_TEMPLATE",
-    "DELEGATE_LOST_TEMPLATE",
+    "DELEGATE_BLOCKED_TEMPLATE",
     "DELEGATE_REFUSED",
     "DELEGATE_SUBMIT_FAILED_TEMPLATE",
-    "DELEGATE_TRUNCATED_SUFFIX",
     "DELEGATE_UNAVAILABLE",
     "DELEGATE_USAGE",
     "DELEGATE_WAITING_TEMPLATE",
+    "SACHIMA_DELEGATE_BLOCKED",
+    "SACHIMA_DELEGATE_DISPATCH_FAILED",
     "SACHIMA_DELEGATE_INVALID_POLICY",
     "SACHIMA_DELEGATE_INVALID_TARGET",
     "SACHIMA_DELEGATE_INVALID_TASK_TEXT",
+    "SACHIMA_DELEGATE_NO_DELIVERY",
+    "SACHIMA_DELEGATE_NOT_CONTINUABLE",
+    "SACHIMA_DELEGATE_OBSERVATION_LOST",
+    "SACHIMA_DELEGATE_RECOVERY_REQUIRED",
     "SACHIMA_DELEGATE_STABLE_CODES",
     "SACHIMA_DELEGATE_UNBOUND",
     "SACHIMA_DELEGATE_UNKNOWN_PAYLOAD_REF",
-    "DelegateSubmission",
-    "DelegateTarget",
+    "SACHIMA_DELEGATE_UNKNOWN_TASK",
+    "DelegateDelivery",
+    "DelegateOutcome",
     "SachimaDelegateCoordinator",
     "bind_delegate_coordinator",
     "bound_delegate_coordinator",
     "delegate_payload_resolver",
-    "delegate_payload_store",
     "unbind_delegate_coordinator",
 ]
 
@@ -77,10 +116,15 @@ __all__ = [
 SACHIMA_DELEGATE_UNBOUND = "sachima_delegate_unbound"
 SACHIMA_DELEGATE_UNKNOWN_PAYLOAD_REF = "sachima_delegate_unknown_payload_ref"
 SACHIMA_DELEGATE_INVALID_TASK_TEXT = "sachima_delegate_invalid_task_text"
-SACHIMA_DELEGATE_INVALID_POLICY = "sachima_delegate_invalid_policy"
 SACHIMA_DELEGATE_INVALID_TARGET = "sachima_delegate_invalid_target"
 SACHIMA_DELEGATE_DISPATCH_FAILED = "sachima_delegate_dispatch_failed"
 SACHIMA_DELEGATE_OBSERVATION_LOST = "sachima_delegate_observation_lost"
+SACHIMA_DELEGATE_BLOCKED = "sachima_delegate_blocked"
+SACHIMA_DELEGATE_RECOVERY_REQUIRED = "sachima_delegate_recovery_required"
+SACHIMA_DELEGATE_UNKNOWN_TASK = "sachima_delegate_unknown_task"
+SACHIMA_DELEGATE_NOT_CONTINUABLE = "sachima_delegate_not_continuable"
+SACHIMA_DELEGATE_NO_DELIVERY = "sachima_delegate_no_delivery"
+SACHIMA_DELEGATE_INVARIANT = "sachima_delegate_invariant"
 
 SACHIMA_DELEGATE_STABLE_CODES = frozenset(
     {
@@ -91,339 +135,343 @@ SACHIMA_DELEGATE_STABLE_CODES = frozenset(
         SACHIMA_DELEGATE_INVALID_TARGET,
         SACHIMA_DELEGATE_DISPATCH_FAILED,
         SACHIMA_DELEGATE_OBSERVATION_LOST,
+        SACHIMA_DELEGATE_BLOCKED,
+        SACHIMA_DELEGATE_RECOVERY_REQUIRED,
+        SACHIMA_DELEGATE_UNKNOWN_TASK,
+        SACHIMA_DELEGATE_NOT_CONTINUABLE,
+        SACHIMA_DELEGATE_NO_DELIVERY,
+        SACHIMA_DELEGATE_INVARIANT,
     }
 )
 
 # --------------------------------------------------------------------------- #
 # The complete set of things Sachima ever says about a delegated task.
-#
-# A submission sends at most three: the acceptance the handler returns, one
-# capacity-wait notice *only* when a slot was genuinely unavailable, and
-# exactly one terminal. A fourth is possible but rare — one notice that
-# observation has gone blind, sent at most once per submission and only after
-# an unbroken run of faults. It is explicitly **not** a terminal: the Run is
-# still the daemon's to end, the slot is still held, and the real terminal is
-# still owed once Sachima can see again. There is deliberately no progress,
-# event, or heartbeat message — the observer polls in silence, because a chat
-# is not a log.
 # --------------------------------------------------------------------------- #
-DELEGATE_USAGE = "用法：/delegate <任务>"
+DELEGATE_USAGE = "用法：/delegate [@AGENT] <任务>"
 DELEGATE_UNAVAILABLE = "外部执行通道未启用，无法委派任务。"
 DELEGATE_REFUSED = "任务未能提交，请检查委派配置。"
+DELEGATE_UNVERIFIED_SELECTOR = "无法确认所指定的 AGENT，请使用聊天中的 @ 提及来选择。"
+DELEGATE_UNKNOWN_SELECTOR_TEMPLATE = "该 AGENT 不可用。可选：\n{choices}"
+DELEGATE_AMBIGUOUS_TEMPLATE = "有多个 AGENT 可以承接，请指定其中一个：\n{choices}"
 DELEGATE_ACCEPTED_TEMPLATE = "已接受任务 {task_ref}，完成后会在这里回复。"
 DELEGATE_WAITING_TEMPLATE = "任务 {task_ref} 正在等待执行席位…"
-DELEGATE_COMPLETED_TEMPLATE = "任务 {task_ref} 已完成：\n{final_message}"
-DELEGATE_FAILED_TEMPLATE = "任务 {task_ref} 执行失败（{status}）。"
-DELEGATE_CANCELLED_TEMPLATE = "任务 {task_ref} 已取消。"
 DELEGATE_SUBMIT_FAILED_TEMPLATE = "任务 {task_ref} 提交失败（{code}）。"
+DELEGATE_BLOCKED_TEMPLATE = "任务 {task_ref} 状态未确认（{code}），已保留，等待显式恢复。"
 DELEGATE_LOST_TEMPLATE = "任务 {task_ref} 暂时无法确认状态（{code}），仍在等待结果。"
-DELEGATE_TRUNCATED_SUFFIX = "\n（输出已截断：{truncate_reason}）"
-DELEGATE_EMPTY_FINAL_MESSAGE = "（无输出）"
 
 #: How often the background lifecycle asks whether the Run has ended. Socket
-#: API v3 has no push surface, so a bounded poll is the only honest way to
-#: learn a terminal — and it stays silent until it finds one.
+#: API v3 has no push surface, so a bounded poll is the only honest way to learn
+#: a terminal — and it stays silent until it finds one.
 _DEFAULT_OBSERVE_INTERVAL_SECONDS = 2.0
 
 #: Consecutive observation faults tolerated before Sachima *says* it has gone
 #: blind. A disconnect is not evidence a Run ended, so a single fault retries
-#: silently; an unbroken run of them is worth one notice. It bounds the
-#: speaking only — never the slot, which an accepted Run holds until the
-#: daemon says it ended.
+#: silently. It bounds the speaking only — never the permit.
 _MAX_CONSECUTIVE_OBSERVE_FAILURES = 5
 
-#: Milestone A dispatches plain prompt turns. Standing goals are a separate
-#: turn kind and a separate decision.
+#: Milestone A dispatches plain prompt turns. Standing goals are a separate turn
+#: kind and a separate decision.
 _DELEGATE_TURN_KIND = "prompt"
 
-#: The claim-check ref prefix. The rest is a random digest, so a ref is opaque
-#: by construction: there is no encoding of the task in it to decode, and the
-#: whole ref is ``_safe_id``-shaped so the spine accepts it as a payload ref
-#: without any further sanitizing on the way in.
-_PAYLOAD_REF_PREFIX = "dlg_"
-
 #: The spine roles/agent kind a delegated supervised session is admitted under.
-#: They are the port's own admission vocabulary, not the ARS grant: what the
-#: external AGENT may do comes from the frozen ``grant_capabilities`` in the
-#: host's private config, and nothing here widens it.
+#: They are the port's own admission vocabulary, not the ARS grant.
 _DELEGATE_AGENT_KIND = "local_agent"
 _DELEGATE_ROLES = ("read_only",)
 
+#: The §5.2 dispositions, as the classifier names them.
+_DISPOSITION_NO_RECORD = "admission_failed"
+_DISPOSITION_PENDING = "recovery_required"
+_DISPOSITION_ACCEPTED = "admitted"
+_DISPOSITION_BLOCKED = "blocked"
 
-class _PayloadStore:
-    """One process-local claim-check for delegated task text.
-
-    In-memory only, and deliberately so: the text is never written to the
-    binding ledger, the canonical event log, a summary, or a log line, so a
-    process that dies with a submission in flight loses the text rather than
-    leaving it on disk. What survives a restart is what ARS already recorded —
-    which is the durable Run, not Sachima's copy of the prompt.
-    """
-
-    def __init__(self) -> None:
-        self._lock = threading.RLock()
-        self._payloads: dict[str, str] = {}
-
-    def put(self, text: Any) -> str:
-        """Store one task text and return its opaque ref."""
-
-        if type(text) is not str or not text.strip():
-            raise ValueError(SACHIMA_DELEGATE_INVALID_TASK_TEXT)
-        ref = _PAYLOAD_REF_PREFIX + uuid.uuid4().hex
-        with self._lock:
-            self._payloads[ref] = text
-        return ref
-
-    def resolve(self, payload_ref: Any) -> str:
-        """The exact text for ``payload_ref``, or fail closed.
-
-        The failure carries the stable code and nothing else — not the ref that
-        was presented, and certainly not a stored payload. A caller with an
-        unknown ref learns only that it is unknown.
-        """
-
-        text: str | None = None
-        if type(payload_ref) is str:
-            with self._lock:
-                text = self._payloads.get(payload_ref)
-        if text is None:
-            raise ValueError(SACHIMA_DELEGATE_UNKNOWN_PAYLOAD_REF)
-        return text
-
-    def discard(self, payload_ref: Any) -> None:
-        """Forget one payload. Idempotent: both cleanup paths may reach it."""
-
-        if type(payload_ref) is not str:
-            return
-        with self._lock:
-            self._payloads.pop(payload_ref, None)
-
-    def clear(self) -> None:
-        with self._lock:
-            self._payloads.clear()
-
-    def count(self) -> int:
-        with self._lock:
-            return len(self._payloads)
-
-
-#: The one store per process. The resolver injected into the composed bundle
-#: and the coordinator that fills it are two views of *this* object; a second
-#: store would mean a dispatch resolving a ref nobody put there.
-_PAYLOAD_STORE = _PayloadStore()
-
-
-def delegate_payload_store() -> _PayloadStore:
-    """The process-local claim-check store."""
-
-    return _PAYLOAD_STORE
-
-
-def delegate_payload_resolver() -> Callable[[str], str]:
-    """The resolver a composed ``arsd`` bundle dispatches through.
-
-    Handing over the bound method rather than the store is the point: the
-    dispatcher gets exactly one capability — turn a ref it was given into the
-    text it names — and no way to enumerate, store, or discard anything.
-    """
-
-    return _PAYLOAD_STORE.resolve
-
-
-def _delegate_launch_refs(config: Any) -> tuple[str, ...]:
-    """The distinct policy refs a delegated session is admitted under.
-
-    Milestone A's command surface is exactly ``/delegate <task>`` — no agent,
-    model, effort, or workspace selector — so there is nothing that could
-    *choose* between two configured options. A config that offers a choice is
-    therefore not one this path can honor, and it fails closed rather than
-    picking for the operator: silently taking "the first" workspace or agent is
-    how a delegated Run lands somewhere nobody approved.
-
-    That rule is per mapping, and it is checked before anything else happens:
-    each of the five must have exactly one configured key. What the backend
-    then wants is the *set* of refs to resolve against, not one entry per
-    category — it matches the refs against each mapping and demands exactly one
-    match, so a ref repeated five times reads as five matches and is denied.
-    Nothing in the config contract says the categories use different refs, and
-    the canonical fixtures key agent, model, effort and run-limits with a
-    single ``policy_`` ref, so the repeat is the ordinary case rather than the
-    odd one. Refs are therefore collapsed to first-seen order.
-
-    Collapsing repeats is not the same as collapsing options: the
-    exactly-one-key check above has already run per mapping, so a category
-    offering two refs is refused before it can be deduplicated into one.
-    Workspace and policy refs cannot collide into each other either — the
-    config grammar prefixes them ``ws_`` and ``policy_``.
-    """
-
-    refs: list[str] = []
-    for mapping in (
-        getattr(config, "workspace_by_ref", None),
-        getattr(config, "agent_by_policy_ref", None),
-        getattr(config, "model_by_policy_ref", None),
-        getattr(config, "effort_by_policy_ref", None),
-        getattr(config, "run_limits_by_policy_ref", None),
-    ):
-        keys = list(mapping) if isinstance(mapping, dict) or hasattr(mapping, "keys") else []
-        if len(keys) != 1:
-            raise ValueError(SACHIMA_DELEGATE_INVALID_POLICY)
-        if keys[0] not in refs:
-            refs.append(keys[0])
-    return tuple(refs)
+#: ARS's five neutral terminals collapse to the three a result envelope carries.
+#: ``timed_out`` and ``unknown`` are failures — they are simply failures Sachima
+#: can say a little less about.
+_TERMINAL_TO_ENVELOPE = {
+    "completed": "completed",
+    "failed": "failed",
+    "cancelled": "cancelled",
+    "timed_out": "failed",
+    "unknown": "failed",
+}
 
 
 @dataclass(frozen=True)
-class DelegateTarget:
-    """Where one submission's sparse feedback goes back to.
+class DelegateDelivery:
+    """One origin's delivery capability, injected by the host.
 
-    Platform / chat / thread and nothing else. It is host routing material: it
-    is never handed to the spine, never persisted, and never carried on a
-    dispatch request — every notification about a task lands exactly where the
-    task was asked for.
+    Two senders, deliberately: the accepted receipt is an ordinary short
+    message, while the terminal result is a single bounded plain-text body that
+    must not be chunked or turned into a rich card. ``limit``/``measure`` are the
+    platform's own one-message text bound and its own length metric, so the body
+    is bounded by what the platform actually enforces rather than by a guess.
     """
 
-    platform: str
-    chat_id: str = field(repr=False)
-    thread_id: str | None = field(default=None, repr=False)
+    send_text: Callable[[str], Awaitable[Any]] = field(repr=False)
+    send_plain_text_once: Callable[[str], Awaitable[Any]] = field(repr=False)
+    limit: int = 4000
+    measure: Callable[[str], int] = field(default=len, repr=False)
 
 
 @dataclass(frozen=True)
-class DelegateSubmission:
-    """What the handler gets back the moment a submission is registered.
+class DelegateOutcome:
+    """What one coordinator entry answers with. Refs and codes only."""
 
-    It names the task and the canonical Session it was admitted under, so the
-    handler's acceptance can identify the work without waiting for it — which
-    is the whole point: this object exists *before* the capacity wait, the
-    dispatch, and the terminal.
-    """
+    task_ref: str | None = None
+    turn_key: str | None = None
+    lifecycle: str | None = None
+    receipt: str | None = None
+    cancellation: str | None = None
+    turn_ref: str | None = None
+    terminal: str | None = None
+    diagnostic: str | None = None
+    reply: str | None = None
 
-    task_id: str
-    session_id: str
-    payload_ref: str = field(repr=False)
-
-
-@dataclass
-class _DelegateState:
-    """One in-flight submission, host-side only."""
-
-    task_id: str
-    session_id: str
-    payload_ref: str = field(repr=False)
-    handle: str = field(repr=False)
-    target: DelegateTarget = field(repr=False)
-    notifier: Any = field(repr=False)
-    waiting_notified: bool = False
-    terminal_notified: bool = False
-    lifecycle: Any = field(default=None, repr=False)
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "task_ref": self.task_ref,
+            "turn_key": self.turn_key,
+            "lifecycle": self.lifecycle,
+            "receipt": self.receipt,
+            "cancellation": self.cancellation,
+            "turn_ref": self.turn_ref,
+            "terminal": self.terminal,
+            "diagnostic": self.diagnostic,
+        }
 
 
 def _new_task_id() -> str:
-    """One fresh spine task id per submission.
-
-    Fresh, deliberately: two ``/delegate`` calls are two independent tasks that
-    may run side by side, and the dispatcher's existing single-flight guard
-    stays exactly what it was — one in-flight turn *per task*.
-    """
+    """One fresh spine task id per delegated task."""
 
     return "delegate_" + uuid.uuid4().hex[:12]
 
 
 class SachimaDelegateCoordinator:
-    """The single source of Sachima delegate submissions for one bound bundle.
-
-    It holds the composed execution bundle, the host's claim-check store, and
-    the concurrency bound the bundle's backend negotiated — and it composes
-    nothing. Every submission runs through the bundle's own dispatcher, port,
-    registry, and source bindings, so a delegated Run and the live-progress
-    read chain are always looking at the same spine.
-
-    The division of labour is the design: :meth:`submit_new` does only what has
-    to happen before an answer can be given — mint the identities, hold the
-    text, register the state, start the background lifecycle — and everything
-    that can block (waiting for a slot, the synchronous dispatch, waiting for
-    the terminal) happens in that lifecycle, off the caller's path and off the
-    event loop.
-    """
+    """The single source of delegate submissions for one bound bundle."""
 
     def __init__(
         self,
         binding: Any,
         config: Any,
         *,
-        store: _PayloadStore | None = None,
+        policy: DelegatePolicy | None = None,
+        state: DelegateStateStore | None = None,
+        delivery_factory: Callable[[DelegateOrigin], DelegateDelivery | None] | None = None,
         observe_interval: float = _DEFAULT_OBSERVE_INTERVAL_SECONDS,
     ) -> None:
         self._binding = binding
         self._config = config
-        self._store = _PAYLOAD_STORE if store is None else store
-        self._launch_refs = _delegate_launch_refs(config)
+        self._policy = policy if policy is not None else synthesize_legacy_policy(config)
+        self._state = (
+            state
+            if state is not None
+            else DelegateStateStore(delegate_state_root(config.binding_ledger_path))
+        )
+        self._ledger = getattr(binding, "ledger", None)
+        if self._ledger is None:
+            raise ValueError(SACHIMA_DELEGATE_UNBOUND)
+        self._delivery_factory = delivery_factory
+        self._observe_interval = float(observe_interval)
         # The one admissible source of capacity: what the daemon said, as
         # validated by the negotiation the composed backend already passed.
-        self._capacity = int(binding.backend.negotiated_server_info.max_concurrent_runs)
-        self._observe_interval = float(observe_interval)
-        self._semaphore = asyncio.Semaphore(self._capacity)
-        self._lock = threading.RLock()
-        self._states: dict[str, _DelegateState] = {}
+        self._capacity = DelegateCapacity(
+            int(binding.backend.negotiated_server_info.max_concurrent_runs)
+        )
+        self._guard = threading.RLock()
+        self._turn_locks: dict[str, asyncio.Lock] = {}
+        self._task_gates: dict[str, asyncio.Lock] = {}
+        self._owned: set[asyncio.Task] = set()
+        self._observers: dict[str, asyncio.Task] = {}
+        # Only a genuinely fresh composition graph may reclassify a found
+        # ``in_flight`` to ``uncertain``, and only while it is restoring. The
+        # authority is internal to composition and cannot be requested.
+        self._fresh_graph = True
+        self._restored = False
+        self._restore_lock = asyncio.Lock()
+        self._lifecycle_loop: asyncio.AbstractEventLoop | None = None
 
     # -- read-only identity ------------------------------------------------- #
     @property
     def binding(self) -> Any:
-        """The composed execution bundle this coordinator drives."""
-
         return self._binding
 
     @property
-    def capacity(self) -> int:
-        """The negotiated ``max_concurrent_runs`` bound — never a default."""
+    def state(self) -> DelegateStateStore:
+        return self._state
 
+    @property
+    def policy(self) -> DelegatePolicy:
+        return self._policy
+
+    @property
+    def ledger(self) -> Any:
+        return self._ledger
+
+    @property
+    def capacity(self) -> DelegateCapacity:
         return self._capacity
 
     @property
-    def launch_refs(self) -> tuple[str, ...]:
-        """The policy refs every delegated session is admitted under."""
+    def lifecycle_loop(self) -> asyncio.AbstractEventLoop | None:
+        """The long-lived Gateway loop that owns coordinator lifecycle tasks."""
 
-        return self._launch_refs
+        with self._guard:
+            return self._lifecycle_loop
+
+    def bind_lifecycle_loop(self, loop: asyncio.AbstractEventLoop) -> None:
+        """Bind lifecycle work to the one loop owned by this Gateway graph."""
+
+        if not isinstance(loop, asyncio.AbstractEventLoop) or loop.is_closed():
+            raise RuntimeError(SACHIMA_DELEGATE_INVARIANT)
+        with self._guard:
+            existing = self._lifecycle_loop
+            if existing is not None and existing is not loop:
+                raise RuntimeError(SACHIMA_DELEGATE_INVARIANT)
+            self._lifecycle_loop = loop
+
+    def run_on_lifecycle_loop(self, factory: Callable[[], Awaitable[Any]]) -> Any:
+        """Run one synchronous control request on the Gateway-owned loop.
+
+        Model tools run in worker threads.  Submitting their coordinator work
+        here keeps any observer they arm on the Gateway loop after the sync
+        handler returns; a disposable or merely parked tool loop cannot own
+        lifecycle tasks.
+        """
+
+        with self._guard:
+            loop = self._lifecycle_loop
+        if loop is None or loop.is_closed() or not loop.is_running():
+            raise RuntimeError(SACHIMA_DELEGATE_UNBOUND)
+        try:
+            current = asyncio.get_running_loop()
+        except RuntimeError:
+            current = None
+        if current is loop:
+            # A synchronous handler cannot block the loop that must execute it.
+            raise RuntimeError(SACHIMA_DELEGATE_INVARIANT)
+        return asyncio.run_coroutine_threadsafe(factory(), loop).result()
+
+    def payload_resolver(self) -> Callable[[str], str]:
+        """The claim-check the composed bundle dispatches and recovers through."""
+
+        return self._state.read_payload
 
     def active_count(self) -> int:
-        """How many delegated submissions this coordinator is still tracking."""
+        with self._guard:
+            return len(self._observers)
 
-        with self._lock:
-            return len(self._states)
+    # -- locks -------------------------------------------------------------- #
+    def _turn_lock(self, turn_key: str) -> asyncio.Lock:
+        with self._guard:
+            lock = self._turn_locks.get(turn_key)
+            if lock is None:
+                lock = asyncio.Lock()
+                self._turn_locks[turn_key] = lock
+            return lock
 
-    # -- submission --------------------------------------------------------- #
-    def submit_new(
-        self,
-        task_text: str,
-        *,
-        target: DelegateTarget,
-        notifier: Callable[[DelegateTarget, str], Awaitable[None]],
-    ) -> DelegateSubmission:
-        """Register one delegated task and return **before** any waiting.
+    def _task_gate(self, task_ref: str) -> asyncio.Lock:
+        with self._guard:
+            gate = self._task_gates.get(task_ref)
+            if gate is None:
+                gate = asyncio.Lock()
+                self._task_gates[task_ref] = gate
+            return gate
 
-        What happens here is only what an acceptance needs to be truthful: the
-        text is claim-checked, a fresh task identity is minted, the supervised
-        session is created through the bundle's own port, and the background
-        lifecycle is started. Capacity, dispatch, and the terminal all belong to
-        that lifecycle — so a full daemon delays the *work*, never the answer.
+    async def _exclusive(self, turn_key: str, factory: Callable[[], Awaitable[Any]]) -> Any:
+        """Run one turn operation in a strongly held, shielded owner task.
 
-        A failure before the lifecycle starts discards the payload and raises:
-        nothing is registered, nothing is dispatched, and the caller is the one
-        that reports it, because at that point there is no background task to
-        report from.
+        The section is entered *inside* the task, so two callers serialize on
+        the same lock. The caller waits on a shield, so a cancelled or timed-out
+        waiter cannot cancel the owner mid-operation: the durable commit, the
+        receipt settlement, and the observer arm all still happen, which is the
+        whole reason the exclusion exists.
         """
+
+        owner_loop = self.lifecycle_loop
+        if owner_loop is not None and asyncio.get_running_loop() is not owner_loop:
+            raise RuntimeError(SACHIMA_DELEGATE_INVARIANT)
+        lock = self._turn_lock(turn_key)
+
+        async def _owner() -> Any:
+            async with lock:
+                return await factory()
+
+        task = asyncio.create_task(_owner())
+        with self._guard:
+            self._owned.add(task)
+        task.add_done_callback(self._forget_owner)
+        return await asyncio.shield(task)
+
+    def _forget_owner(self, task: asyncio.Task) -> None:
+        with self._guard:
+            self._owned.discard(task)
+
+    # -- classification (§5.2) ---------------------------------------------- #
+    def _classify(self, turn: DelegateTurnRecord) -> tuple[str, Any, str | None]:
+        """One atomic exact-key observation, and the disposition it implies.
+
+        This is the *only* exit from a dispatch or a recovery. It asks the
+        bundle's own ledger object — the same instance the backend writes
+        through — for the one record at this turn's exact key, in a single read.
+        It never classifies by calling ``resolve_pending()`` and then
+        ``resolve()``: that reads the file twice, and a finalize landing between
+        the two reports a state that never existed.
+
+        A stable ledger failure is caught here and becomes ``blocked``, the
+        conservative disposition. "I could not read the evidence" and "there is
+        no evidence" are different facts, and only one of them may clean up.
+        """
+
+        try:
+            record = self._ledger.snapshot_exact(
+                turn.task_id, turn.backend_handle, turn.dispatch_ref
+            )
+        except BaseException as exc:
+            code = getattr(exc, "code", None)
+            logger.warning(SACHIMA_DELEGATE_BLOCKED)
+            return (
+                _DISPOSITION_BLOCKED,
+                None,
+                code if isinstance(code, str) else SACHIMA_DELEGATE_BLOCKED,
+            )
+        if record is None:
+            return _DISPOSITION_NO_RECORD, None, None
+        if record.state != "accepted":
+            return _DISPOSITION_PENDING, record, None
+        if record.run_ref is None:  # pragma: no cover - the ledger enforces it
+            return _DISPOSITION_BLOCKED, None, SACHIMA_DELEGATE_BLOCKED
+        return _DISPOSITION_ACCEPTED, record, None
+
+    # -- creation (§5.3, I4) ------------------------------------------------ #
+    async def create(
+        self,
+        *,
+        task_text: str,
+        profile: DelegateProfile,
+        origin: DelegateOrigin,
+        delivery: DelegateDelivery | None = None,
+        linked_from: str | None = None,
+    ) -> DelegateOutcome:
+        """Register one delegated task and drive its first turn to a disposition.
+
+        The durable prefix runs first and in one order: exact task bytes, the
+        sealed spine Session, the turn record with its exact ledger key, and the
+        task binding. Only then can anything reach the daemon. A failure before
+        that point makes no ARS call at all, which is what makes the failure
+        recoverable rather than merely reported.
+        """
+
+        await self._ensure_restored()
+        if type(profile) is not DelegateProfile or type(origin) is not DelegateOrigin:
+            raise ValueError(SACHIMA_DELEGATE_INVALID_TARGET)
 
         from sachima_supervisor.runtime_spine.arsd_supervisor_backend import (
             derive_arsd_backend_handle,
         )
         from sachima_supervisor.runtime_spine.launch_spec import build_launch_spec
 
-        if type(target) is not DelegateTarget:
-            raise ValueError(SACHIMA_DELEGATE_INVALID_TARGET)
-        if not callable(notifier):
-            raise ValueError(SACHIMA_DELEGATE_INVALID_TARGET)
-
-        payload_ref = self._store.put(task_text)
+        requested = requested_configuration(self._config, profile)
+        payload_ref = self._state.put_payload(task_text)
         task_id = _new_task_id()
         try:
             spec = build_launch_spec(
@@ -431,228 +479,1100 @@ class SachimaDelegateCoordinator:
                 agent_kind=_DELEGATE_AGENT_KIND,
                 mode_flags={"needs_agent": True},
                 roles=_DELEGATE_ROLES,
-                refs=self._launch_refs,
+                refs=profile.launch_refs,
             )
             session = self._binding.port.create_or_attach(task_id, spec)
             handle = derive_arsd_backend_handle(task_id)
         except BaseException:
-            self._store.discard(payload_ref)
+            self._state.discard_payload(payload_ref)
             raise
 
-        state = _DelegateState(
-            task_id=task_id,
-            session_id=session.session_id,
-            payload_ref=payload_ref,
-            handle=handle,
-            target=target,
-            notifier=notifier,
+        task_ref = self._state.new_task_ref()
+        turn = self._state.put_turn(
+            DelegateTurnRecord(
+                turn_key=self._state.new_turn_key(),
+                task_ref=task_ref,
+                task_id=task_id,
+                backend_handle=handle,
+                dispatch_ref=payload_ref,
+                payload_ref=payload_ref,
+                spine_session_id=session.session_id,
+                profile_id=profile.profile_id,
+                launch_refs=profile.launch_refs,
+                requested_agent=requested[0],
+                requested_model=requested[1],
+                requested_effort=requested[2],
+                origin=origin,
+            )
         )
-        with self._lock:
-            self._states[task_id] = state
-        # Tracked in the state, so the task is strongly referenced for its
-        # whole life and cannot be collected mid-flight.
-        state.lifecycle = asyncio.create_task(self._run_lifecycle(state))
-        return DelegateSubmission(
-            task_id=task_id, session_id=state.session_id, payload_ref=payload_ref
+        self._state.put_task(
+            DelegateTaskBinding(
+                task_ref=task_ref,
+                task_id=task_id,
+                backend_handle=handle,
+                spine_session_id=session.session_id,
+                profile_id=profile.profile_id,
+                origin=origin,
+                turn_keys=(turn.turn_key,),
+                current_turn_key=turn.turn_key,
+                linked_from=linked_from,
+            )
+        )
+        return await self._exclusive(
+            turn.turn_key,
+            lambda: self._drive(turn.turn_key, mode="dispatch", delivery=delivery),
         )
 
-    # -- the background lifecycle ------------------------------------------- #
-    async def _run_lifecycle(self, state: _DelegateState) -> None:
-        """Wait for a slot, dispatch, wait for the terminal, report once.
+    async def continue_task(
+        self,
+        task_ref: str,
+        task_text: str,
+        *,
+        delivery: DelegateDelivery | None = None,
+        profile: DelegateProfile | None = None,
+        origin: DelegateOrigin | None = None,
+    ) -> DelegateOutcome:
+        """Continue the same task, in the same Sessions, under the same AGENT.
 
-        The slot is acquired **inside** here and released in ``finally`` — held
-        across the dispatch *and* the whole observation, because a Run that has
-        been accepted is a Run the daemon is still executing. Releasing on
-        acceptance would let Sachima admit far more concurrent Runs than the
-        daemon said it would hold.
+        A later Run under the original task, sealed spine Session, ARS Session,
+        profile, and AGENT — and only once the preceding Run has passed the
+        canonical terminal closure. A Run that is live, unresolved, or whose
+        cancellation is ``in_flight``/``uncertain`` refuses: continuing over an
+        unsettled Run would put two Runs on one Session and silently attribute
+        one's output to the other.
         """
 
-        try:
-            await self._acquire_capacity(state)
-            try:
-                dispatched = await self._dispatch(state)
-                if not dispatched:
-                    await self._notify_terminal(
-                        state,
-                        DELEGATE_SUBMIT_FAILED_TEMPLATE.format(
-                            task_ref=state.task_id,
-                            code=SACHIMA_DELEGATE_DISPATCH_FAILED,
-                        ),
+        await self._ensure_restored()
+        # The task gate makes the task read, "which turn is current", and the
+        # append/switch decision one operation. Reading before this gate lets
+        # two callers append from the same stale binding and lose one turn.
+        async with self._task_gate(task_ref):
+            binding = self._state.read_task(task_ref)
+            if binding is None:
+                return DelegateOutcome(diagnostic=SACHIMA_DELEGATE_UNKNOWN_TASK)
+            current = (
+                self._state.read_turn(binding.current_turn_key)
+                if binding.current_turn_key
+                else None
+            )
+            if current is None:
+                return DelegateOutcome(
+                    task_ref=binding.task_ref, diagnostic=SACHIMA_DELEGATE_UNKNOWN_TASK
+                )
+            if current.lifecycle == "blocked" or current.diagnostic == SACHIMA_DELEGATE_BLOCKED:
+                return self._outcome(current, diagnostic=SACHIMA_DELEGATE_BLOCKED)
+            if (
+                current.lifecycle != "terminal"
+                or current.cancellation in {"in_flight", "uncertain"}
+            ):
+                return DelegateOutcome(
+                    task_ref=binding.task_ref,
+                    turn_key=current.turn_key,
+                    lifecycle=current.lifecycle,
+                    cancellation=current.cancellation,
+                    diagnostic=SACHIMA_DELEGATE_NOT_CONTINUABLE,
+                )
+            if profile is not None and type(profile) is not DelegateProfile:
+                return DelegateOutcome(
+                    task_ref=binding.task_ref,
+                    diagnostic=SACHIMA_DELEGATE_INVALID_TARGET,
+                )
+            if profile is not None and profile.profile_id != binding.profile_id:
+                if type(origin) is not DelegateOrigin or (
+                    origin.session_id != binding.origin.session_id
+                ):
+                    return DelegateOutcome(
+                        task_ref=binding.task_ref,
+                        diagnostic=SACHIMA_DELEGATE_INVALID_TARGET,
                     )
-                    return
-                await self._await_terminal(state)
-            finally:
-                self._semaphore.release()
-        except asyncio.CancelledError:
-            raise
-        except BaseException:
-            # One stable code only — never the offending value or exception
-            # text, and never a silent disappearance.
-            logger.warning(SACHIMA_DELEGATE_DISPATCH_FAILED)
-            await self._notify_terminal(
-                state,
-                DELEGATE_SUBMIT_FAILED_TEMPLATE.format(
-                    task_ref=state.task_id, code=SACHIMA_DELEGATE_DISPATCH_FAILED
-                ),
+                try:
+                    event = self._state.result_for_turn(current.turn_key)
+                except DelegateStateError:
+                    event = None
+                if event is None:
+                    return DelegateOutcome(
+                        task_ref=binding.task_ref,
+                        turn_key=current.turn_key,
+                        diagnostic=SACHIMA_DELEGATE_NOT_CONTINUABLE,
+                    )
+                # An AGENT profile is sealed into a task. Switching therefore
+                # creates a new linked task; it never rewrites the old binding.
+                return await self.create(
+                    task_text=task_text,
+                    profile=profile,
+                    origin=origin,
+                    delivery=delivery,
+                    linked_from=event.event_id,
+                )
+            profile = self._policy.profile(binding.profile_id)
+            if profile is None:
+                return DelegateOutcome(
+                    task_ref=binding.task_ref, diagnostic=SACHIMA_DELEGATE_INVALID_POLICY
+                )
+            requested = requested_configuration(self._config, profile)
+            payload_ref = self._state.put_payload(task_text)
+            turn = self._state.put_turn(
+                DelegateTurnRecord(
+                    turn_key=self._state.new_turn_key(),
+                    task_ref=binding.task_ref,
+                    task_id=binding.task_id,
+                    backend_handle=binding.backend_handle,
+                    dispatch_ref=payload_ref,
+                    payload_ref=payload_ref,
+                    spine_session_id=binding.spine_session_id,
+                    profile_id=binding.profile_id,
+                    launch_refs=profile.launch_refs,
+                    requested_agent=requested[0],
+                    requested_model=requested[1],
+                    requested_effort=requested[2],
+                    origin=binding.origin,
+                )
             )
-        finally:
-            # Both cleanup paths meet here: the private text outlives neither a
-            # failure nor a terminal.
-            self._store.discard(state.payload_ref)
-            with self._lock:
-                self._states.pop(state.task_id, None)
+            self._state.update_task(
+                binding.task_ref,
+                turn_keys=binding.turn_keys + (turn.turn_key,),
+                current_turn_key=turn.turn_key,
+            )
 
-    async def _acquire_capacity(self, state: _DelegateState) -> None:
-        """Take one slot, saying so **only** if the wait is real."""
+        return await self._exclusive(
+            turn.turn_key,
+            lambda: self._drive(turn.turn_key, mode="dispatch", delivery=delivery),
+        )
 
-        if self._semaphore.locked():
+    # -- the turn operation ------------------------------------------------- #
+    async def _drive(
+        self,
+        turn_key: str,
+        *,
+        mode: str,
+        delivery: DelegateDelivery | None,
+    ) -> DelegateOutcome:
+        """One whole turn operation, inside the section the caller opened."""
+
+        turn = self._state.read_turn(turn_key)
+        if turn is None:
+            return DelegateOutcome(turn_key=turn_key, diagnostic=SACHIMA_DELEGATE_UNKNOWN_TASK)
+
+        disposition, record, code = self._classify(turn)
+
+        if mode == "dispatch":
+            if disposition != _DISPOSITION_NO_RECORD:
+                # Evidence already exists for this exact key: a second submit is
+                # exactly what must not happen, whatever the caller asked for.
+                return await self._apply(turn, disposition, record, code, delivery=delivery)
+            await self._acquire_capacity(turn, delivery)
+            await self._run_dispatch(turn)
+        elif mode == "recover":
+            if disposition == _DISPOSITION_PENDING:
+                self._capacity.reserve(turn.turn_key)
+                await self._run_recovery(turn)
+            else:
+                return await self._apply(turn, disposition, record, code, delivery=delivery)
+        elif mode == "reconcile":
+            return await self._apply(turn, disposition, record, code, delivery=delivery)
+        else:  # pragma: no cover - internal call guard
+            raise ValueError(SACHIMA_DELEGATE_INVARIANT)
+
+        # The post-operation exact snapshot is the only thing that decides.
+        turn = self._state.read_turn(turn_key)
+        disposition, record, code = self._classify(turn)
+        return await self._apply(turn, disposition, record, code, delivery=delivery)
+
+    async def _acquire_capacity(
+        self, turn: DelegateTurnRecord, delivery: DelegateDelivery | None
+    ) -> None:
+        """Take one permit, saying so **only** when the wait is real."""
+
+        if self._capacity.would_wait() and not self._capacity.holds(turn.turn_key):
             await self._notify(
-                state, DELEGATE_WAITING_TEMPLATE.format(task_ref=state.task_id)
+                turn,
+                DELEGATE_WAITING_TEMPLATE.format(task_ref=turn.task_ref),
+                delivery,
             )
-            state.waiting_notified = True
-        await self._semaphore.acquire()
+        await self._capacity.acquire(turn.turn_key)
 
-    async def _dispatch(self, state: _DelegateState) -> bool:
+    async def _run_dispatch(self, turn: DelegateTurnRecord) -> None:
         """Drive one turn through the bundle's dispatcher, off the event loop.
 
         The dispatcher is synchronous spine code that talks to a socket, so it
         runs on a worker thread: inline, it would freeze every other
-        conversation in the gateway for the length of an admission.
+        conversation in the gateway for the length of an admission. Its return
+        value is deliberately discarded — the snapshot that follows is what
+        decides — and a raise is a diagnostic, never a disposition.
         """
 
+        await self._spine_call(lambda: self._dispatch_request(turn))
+
+    async def _run_recovery(self, turn: DelegateTurnRecord) -> None:
+        await self._spine_call(lambda: self._recover_request(turn))
+
+    async def _spine_call(self, call: Callable[[], Any]) -> None:
+        try:
+            await asyncio.to_thread(call)
+        except asyncio.CancelledError:
+            raise
+        except BaseException:
+            # One stable code only — never the offending value or exception
+            # text, both of which can carry private config refs.
+            logger.warning(SACHIMA_DELEGATE_DISPATCH_FAILED)
+
+    def _dispatch_request(self, turn: DelegateTurnRecord) -> Any:
         from sachima_supervisor.runtime_spine.agent_run_supervisor_turn_dispatcher import (
             TurnDispatchRequest,
         )
 
-        try:
-            request = TurnDispatchRequest(
-                task_id=state.task_id,
-                session_id=state.session_id,
+        return self._binding.dispatcher.dispatch(
+            TurnDispatchRequest(
+                task_id=turn.task_id,
+                session_id=turn.spine_session_id,
                 turn_kind=_DELEGATE_TURN_KIND,
-                payload_ref=state.payload_ref,
+                payload_ref=turn.payload_ref,
             )
-            outcome = await asyncio.to_thread(
-                self._binding.dispatcher.dispatch, request
+        )
+
+    def _recover_request(self, turn: DelegateTurnRecord) -> Any:
+        from sachima_supervisor.runtime_spine.agent_run_supervisor_turn_dispatcher import (
+            TurnDispatchRequest,
+        )
+
+        return self._binding.dispatcher.recover_dispatch(
+            TurnDispatchRequest(
+                task_id=turn.task_id,
+                session_id=turn.spine_session_id,
+                turn_kind=_DELEGATE_TURN_KIND,
+                payload_ref=turn.payload_ref,
             )
-        except asyncio.CancelledError:
-            raise
-        except BaseException:
-            logger.warning(SACHIMA_DELEGATE_DISPATCH_FAILED)
-            return False
-        return getattr(outcome, "error_code", SACHIMA_DELEGATE_DISPATCH_FAILED) is None
+        )
 
-    async def _await_terminal(self, state: _DelegateState) -> None:
-        """Poll in silence until the Run *ends*, then report that exactly once.
+    # -- the §5.2 disposition table ----------------------------------------- #
+    async def _apply(
+        self,
+        turn: DelegateTurnRecord,
+        disposition: str,
+        record: Any,
+        code: str | None,
+        *,
+        delivery: DelegateDelivery | None,
+        restoring: bool = False,
+    ) -> DelegateOutcome:
+        """Execute exactly one row of the exact-key disposition table."""
 
-        The only thing that ends this loop is authoritative terminal evidence
-        from the daemon. Observation faults settle nothing: a socket that
-        dropped is not a Run that stopped, and an accepted Run stays the
-        daemon's to finish whether or not Sachima can currently see it. So a
-        run of faults never returns — returning would release the slot,
-        discard the payload and drop the state while the Run is still
-        executing, and at capacity 1 that admits a second Run beside a live
-        first one. Holding is the honest failure: Sachima under-uses the
-        daemon rather than over-admitting to it.
+        if disposition == _DISPOSITION_NO_RECORD:
+            return self._admission_failed(turn)
+        if disposition == _DISPOSITION_PENDING:
+            return self._recovery_required(turn, restoring=restoring)
+        if disposition == _DISPOSITION_BLOCKED:
+            return self._blocked(turn, code)
+        return await self._admitted(turn, record, delivery=delivery, restoring=restoring)
 
-        Going blind is still worth saying once, so after an unbroken run of
-        faults one advisory goes out — through :meth:`_notify`, deliberately
-        not :meth:`_notify_terminal`, so it neither claims to be a verdict nor
-        consumes the single terminal message the submission is still owed when
-        observation recovers. The latch makes it at most one per submission,
-        so a long outage stays silent instead of narrating every failed poll.
+    def _admission_failed(self, turn: DelegateTurnRecord) -> DelegateOutcome:
+        """No record: nothing was admitted, so nothing is retained.
+
+        This is the one row that cleans up, and it is safe *because* the
+        snapshot proved there is no durable record — not because a return value
+        looked like a failure.
         """
 
+        updated = self._state.update_turn(
+            turn.turn_key,
+            lifecycle="admission_failed",
+            diagnostic=SACHIMA_DELEGATE_DISPATCH_FAILED,
+        )
+        self._state.discard_payload(turn.payload_ref)
+        self._capacity.release(turn.turn_key)
+        binding = self._state.read_task(turn.task_ref)
+        if binding is not None and binding.turn_keys == (turn.turn_key,):
+            # An orphan task binding whose only turn never became work.
+            self._state.discard_task(turn.task_ref)
+        self._state.discard_turn(turn.turn_key)
+        return DelegateOutcome(
+            task_ref=turn.task_ref,
+            turn_key=turn.turn_key,
+            lifecycle=updated.lifecycle,
+            diagnostic=SACHIMA_DELEGATE_DISPATCH_FAILED,
+            reply=DELEGATE_SUBMIT_FAILED_TEMPLATE.format(
+                task_ref=turn.task_ref, code=SACHIMA_DELEGATE_DISPATCH_FAILED
+            ),
+        )
+
+    def _recovery_required(
+        self, turn: DelegateTurnRecord, *, restoring: bool
+    ) -> DelegateOutcome:
+        """A pending intent: retain everything, hold a permit, send nothing.
+
+        The submission may already be a Run the daemon holds. Nothing here
+        resends it, cleans it up, or reports it as finished — only the explicit
+        recovery entry point may act on a pending intent.
+        """
+
+        if restoring:
+            try:
+                self._restore_pending_identity(turn)
+            except BaseException:
+                logger.warning(SACHIMA_DELEGATE_BLOCKED)
+                return self._blocked(turn, SACHIMA_DELEGATE_BLOCKED)
+        updated = self._state.update_turn(
+            turn.turn_key,
+            lifecycle="recovery_required",
+            diagnostic=SACHIMA_DELEGATE_RECOVERY_REQUIRED,
+        )
+        self._capacity.reserve(turn.turn_key)
+        return DelegateOutcome(
+            task_ref=turn.task_ref,
+            turn_key=turn.turn_key,
+            lifecycle=updated.lifecycle,
+            receipt=updated.receipt,
+            cancellation=updated.cancellation,
+            diagnostic=SACHIMA_DELEGATE_RECOVERY_REQUIRED,
+            reply=DELEGATE_BLOCKED_TEMPLATE.format(
+                task_ref=turn.task_ref, code=SACHIMA_DELEGATE_RECOVERY_REQUIRED
+            ),
+        )
+
+    def _blocked(self, turn: DelegateTurnRecord, code: str | None) -> DelegateOutcome:
+        """The R4-equivalent conservative disposition: keep everything.
+
+        A ledger Sachima cannot read is not a ledger that says "nothing
+        happened". Evidence is retained unchanged, a permit is reserved, one
+        stable diagnostic is persisted, and no cleanup, observation, submit, or
+        create is performed.
+        """
+
+        updated = self._state.update_turn(
+            turn.turn_key, lifecycle="blocked", diagnostic=code or SACHIMA_DELEGATE_BLOCKED
+        )
+        self._capacity.reserve(turn.turn_key)
+        return DelegateOutcome(
+            task_ref=turn.task_ref,
+            turn_key=turn.turn_key,
+            lifecycle=updated.lifecycle,
+            receipt=updated.receipt,
+            cancellation=updated.cancellation,
+            diagnostic=updated.diagnostic,
+            reply=DELEGATE_BLOCKED_TEMPLATE.format(
+                task_ref=turn.task_ref, code=updated.diagnostic
+            ),
+        )
+
+    async def _admitted(
+        self,
+        turn: DelegateTurnRecord,
+        record: Any,
+        *,
+        delivery: DelegateDelivery | None,
+        restoring: bool,
+    ) -> DelegateOutcome:
+        """An accepted Run: commit, settle the receipt, then arm one observer.
+
+        The order is the contract. A receipt that goes out before the durable
+        commit can describe a Run nobody recorded; an observer armed before the
+        receipt settles can deliver a terminal ahead of the acceptance it
+        answers.
+        """
+
+        if restoring:
+            try:
+                self._restore_accepted_identity(turn, record)
+            except BaseException:
+                logger.warning(SACHIMA_DELEGATE_BLOCKED)
+                return self._blocked(turn, SACHIMA_DELEGATE_BLOCKED)
+        updated = self._state.update_turn(
+            turn.turn_key,
+            lifecycle="admitted",
+            turn_ref=record.run_ref,
+            diagnostic=None,
+        )
+        self._capacity.reserve(turn.turn_key)
+        updated = await self._settle_receipt(updated, delivery)
+        self._arm_observer(updated.turn_key)
+        return DelegateOutcome(
+            task_ref=updated.task_ref,
+            turn_key=updated.turn_key,
+            lifecycle=updated.lifecycle,
+            receipt=updated.receipt,
+            cancellation=updated.cancellation,
+            turn_ref=updated.turn_ref,
+            reply=DELEGATE_ACCEPTED_TEMPLATE.format(task_ref=updated.task_ref),
+        )
+
+    # -- receipts (I6, §5.4) ------------------------------------------------ #
+    async def _settle_receipt(
+        self, turn: DelegateTurnRecord, delivery: DelegateDelivery | None
+    ) -> DelegateTurnRecord:
+        """Attempt the one accepted receipt this turn is owed, and settle it.
+
+        A receipt is a moment-in-time message. ``pending`` may be attempted
+        once; anything already settled replays unchanged; an ``in_flight`` found
+        by a live graph is an invariant error rather than a licence to resend,
+        because the other attempt may be about to succeed.
+        """
+
+        if turn.receipt != "pending":
+            if turn.receipt == "in_flight" and not self._fresh_graph:
+                logger.warning(SACHIMA_DELEGATE_INVARIANT)
+            return turn
+
+        self._state.update_turn(turn.turn_key, receipt="in_flight")
+        settlement = UNCERTAIN_SETTLEMENT
+        try:
+            channel = self._delivery_for(turn.origin, delivery)
+            if channel is None:
+                settlement = SendSettlement(
+                    state="failed", diagnostic=SACHIMA_DELEGATE_NO_DELIVERY
+                )
+            else:
+                text = render_accepted_receipt(
+                    DelegateAcceptedReceipt(
+                        task_ref=turn.task_ref,
+                        requested_agent=turn.requested_agent,
+                        requested_model=turn.requested_model,
+                        requested_effort=turn.requested_effort,
+                    )
+                )
+                settlement = await perform_settled_send(lambda: channel.send_text(text))
+        finally:
+            # Seeded before the attempt and written in ``finally``: no valid
+            # branch, and no cancellation, leaves a receipt ``in_flight``.
+            turn = self._state.update_turn(
+                turn.turn_key,
+                receipt=settlement.state,
+                receipt_message_id=settlement.message_id,
+            )
+        return turn
+
+    # -- observation -------------------------------------------------------- #
+    def _arm_observer(self, turn_key: str) -> None:
+        """Arm exactly one observer for this turn. A second call does nothing."""
+
+        with self._guard:
+            if turn_key in self._observers:
+                return
+            self._state.update_turn(turn_key, observation="armed")
+            task = asyncio.create_task(self._observe_loop(turn_key))
+            self._observers[turn_key] = task
+        task.add_done_callback(lambda _t: self._forget_observer(turn_key))
+
+    def _forget_observer(self, turn_key: str) -> None:
+        with self._guard:
+            self._observers.pop(turn_key, None)
+
+    async def _observe_loop(self, turn_key: str) -> None:
+        """Poll in silence until the Run *ends*, then close it exactly once.
+
+        Observation faults settle nothing: a socket that dropped is not a Run
+        that stopped, and an accepted Run stays the daemon's to finish whether or
+        not Sachima can currently see it. So a run of faults never returns —
+        returning would release the permit while the Run is still executing.
+        """
+
+        turn = self._state.read_turn(turn_key)
+        if turn is None:
+            return
         failures = 0
         blindness_reported = False
         while True:
             try:
                 result = await asyncio.to_thread(
-                    self._binding.backend.observe_run_result, state.handle
+                    self._binding.backend.observe_run_result, turn.backend_handle
                 )
             except asyncio.CancelledError:
                 raise
             except BaseException:
                 failures += 1
-                if (
-                    failures >= _MAX_CONSECUTIVE_OBSERVE_FAILURES
-                    and not blindness_reported
-                ):
+                if failures >= _MAX_CONSECUTIVE_OBSERVE_FAILURES and not blindness_reported:
                     blindness_reported = True
                     logger.warning(SACHIMA_DELEGATE_OBSERVATION_LOST)
                     await self._notify(
-                        state,
+                        turn,
                         DELEGATE_LOST_TEMPLATE.format(
-                            task_ref=state.task_id,
+                            task_ref=turn.task_ref,
                             code=SACHIMA_DELEGATE_OBSERVATION_LOST,
                         ),
+                        None,
                     )
             else:
                 failures = 0
                 if result is not None:
-                    await self._notify_terminal(
-                        state, _terminal_text(state.task_id, result)
+                    await self._exclusive(
+                        turn_key, lambda: self._close_terminal(turn_key, result)
                     )
                     return
             await asyncio.sleep(self._observe_interval)
 
-    # -- notification ------------------------------------------------------- #
-    async def _notify_terminal(self, state: _DelegateState, text: str) -> None:
-        """Send the one terminal message this submission is owed — once.
+    # -- the canonical terminal closure (I8) -------------------------------- #
+    async def _close_terminal(self, turn_key: str, result: Any) -> DelegateOutcome:
+        """One terminal, one envelope, one release, two independent sinks.
 
-        The guard is not defensive tidiness: the failure path and the terminal
-        path can both be reached for one submission (a lifecycle that raises
-        after reporting a terminal, say), and a chat told twice that its task
-        finished has been told something false the second time.
+        The observed terminal is preserved exactly as it arrived: a completion
+        or failure that won a cancel race stays what it was. Nothing is rewritten
+        to ``cancelled`` because a cancel happened to be in flight.
         """
 
-        with self._lock:
-            if state.terminal_notified:
-                return
-            state.terminal_notified = True
-        await self._notify(state, text)
-
-    async def _notify(self, state: _DelegateState, text: str) -> None:
-        """Deliver one message, and never let delivery break the lifecycle.
-
-        A delivery surface that is down is not a reason to strand a slot or
-        leak the private text: the failure is logged as a stable code and the
-        lifecycle carries on to its cleanup.
-        """
-
+        turn = self._state.read_turn(turn_key)
+        if turn is None:
+            return DelegateOutcome(turn_key=turn_key, diagnostic=SACHIMA_DELEGATE_UNKNOWN_TASK)
         try:
-            await state.notifier(state.target, text)
+            existing = self._state.result_for_turn(turn_key)
+        except DelegateStateError:
+            return self._blocked(turn, SACHIMA_DELEGATE_BLOCKED)
+        if existing is not None:
+            return await self._finalize_terminal_event(turn, existing)
+
+        terminal = _TERMINAL_TO_ENVELOPE.get(getattr(result, "status", None))
+        if terminal is None:
+            # Not a terminal this adapter can read: contained, never fabricated.
+            return self._blocked(turn, SACHIMA_DELEGATE_BLOCKED)
+
+        full_ref, clipped = self._state.put_full_result(
+            getattr(result, "final_message", "") or ""
+        )
+        event = self._state.put_result(
+            DelegateResultEvent(
+                event_id=self._state.new_event_id(),
+                turn_key=turn.turn_key,
+                task_ref=turn.task_ref,
+                session_id=turn.origin.session_id,
+                terminal=terminal,
+                full_result_ref=full_ref,
+                truncated=bool(getattr(result, "truncated", False)) or clipped,
+                truncate_reason=getattr(result, "truncate_reason", None),
+            )
+        )
+        return await self._finalize_terminal_event(turn, event)
+
+    async def _finalize_terminal_event(
+        self, turn: DelegateTurnRecord, event: DelegateResultEvent
+    ) -> DelegateOutcome:
+        """Finish one already-durable result identity, idempotently.
+
+        The result record is the canonical crash boundary.  If a process dies
+        after that write, restart completes the turn and both sink obligations
+        from this same event id instead of minting another envelope.
+        """
+
+        if (
+            event.turn_key != turn.turn_key
+            or event.task_ref != turn.task_ref
+            or event.session_id != turn.origin.session_id
+            or event.terminal not in _TERMINAL_TO_ENVELOPE.values()
+        ):
+            return self._blocked(turn, SACHIMA_DELEGATE_BLOCKED)
+        turn = self._state.update_turn(
+            turn.turn_key,
+            lifecycle="terminal",
+            observation="terminal_seen",
+            terminal_status=event.terminal,
+            diagnostic=None,
+            cancellation=(
+                "settled" if turn.cancellation in {"in_flight", "uncertain"} else turn.cancellation
+            ),
+        )
+        # The result and both sink intents are durable, so the permit can go
+        # back: delivery can still be reconciled after the release.
+        self._capacity.release(turn.turn_key)
+        self._state.discard_payload(turn.payload_ref)
+        await self._reconcile_im_sink(event, turn)
+        return self._outcome(turn, terminal=event.terminal)
+
+    async def _reconcile_im_sink(
+        self, event: DelegateResultEvent, turn: DelegateTurnRecord
+    ) -> None:
+        """One bounded plain-text body per delivery attempt, fully settled.
+
+        A ``failed``/``uncertain`` sink may be retried under explicit
+        reconciliation with the *same* event id — each retry is another settled
+        attempt, never a claim of provider-visible exactly-once.
+        """
+
+        if event.im_sink not in {"pending", "failed", "uncertain"}:
+            return
+        channel = self._delivery_for(turn.origin, None)
+        if channel is None:
+            self._state.update_result(
+                event.event_id,
+                im_sink="failed",
+                im_diagnostic=SACHIMA_DELEGATE_NO_DELIVERY,
+            )
+            return
+
+        self._state.update_result(event.event_id, im_sink="in_flight")
+        settlement = UNCERTAIN_SETTLEMENT
+        try:
+            envelope = build_result_envelope(
+                event_id=event.event_id,
+                task_ref=event.task_ref,
+                turn_ref=turn.turn_ref,
+                session_id=event.session_id,
+                terminal=event.terminal,
+                full_result_ref=event.full_result_ref,
+                truncated=event.truncated,
+                truncate_reason=event.truncate_reason,
+            )
+            body = render_result_body(
+                envelope,
+                self._state.read_full_result(event.full_result_ref),
+                limit=channel.limit,
+                measure=channel.measure,
+            )
+            settlement = await perform_settled_send(
+                lambda: channel.send_plain_text_once(body)
+            )
+        finally:
+            self._state.update_result(
+                event.event_id,
+                im_sink=settlement.state,
+                im_message_id=settlement.message_id,
+                im_diagnostic=settlement.diagnostic,
+            )
+
+    # -- Hermes sink (next ordinary turn only) ------------------------------ #
+    def pending_hermes_context(self, session_id: str) -> tuple[str, ...]:
+        """The result projections this Session's next ordinary turn should see.
+
+        Marks each one ``in_flight`` and returns its bounded text. It never
+        mutates a running turn, never injects a synthetic user message, and never
+        touches the long-lived system-prompt prefix — the caller folds the text
+        into the *next* real user turn's own context.
+        """
+
+        lines: list[str] = []
+        for event in self._state.list_results():
+            if event.session_id != session_id or event.hermes_sink != "pending":
+                continue
+            self._state.update_result(event.event_id, hermes_sink="in_flight")
+            envelope = build_result_envelope(
+                event_id=event.event_id,
+                task_ref=event.task_ref,
+                turn_ref=None,
+                session_id=event.session_id,
+                terminal=event.terminal,
+                full_result_ref=event.full_result_ref,
+                truncated=event.truncated,
+                truncate_reason=event.truncate_reason,
+            )
+            try:
+                body = self._state.read_full_result(event.full_result_ref)
+            except DelegateStateError:
+                body = ""
+            lines.append(build_hermes_context(envelope, body))
+        return tuple(lines)
+
+    def confirm_hermes_context(self, session_id: str) -> int:
+        """Confirm the handoff **after** the next model turn consumed it."""
+
+        confirmed = 0
+        for event in self._state.list_results():
+            if event.session_id != session_id or event.hermes_sink != "in_flight":
+                continue
+            self._state.update_result(event.event_id, hermes_sink="confirmed")
+            confirmed += 1
+        return confirmed
+
+    def release_hermes_context(self, session_id: str) -> int:
+        """Return an interrupted handoff to ``pending`` for a later turn."""
+
+        released = 0
+        for event in self._state.list_results():
+            if event.session_id != session_id or event.hermes_sink != "in_flight":
+                continue
+            self._state.update_result(event.event_id, hermes_sink="pending")
+            released += 1
+        return released
+
+    # -- control operations (§5.3) ------------------------------------------ #
+    async def status(self, task_ref: str) -> DelegateOutcome:
+        """Reconcile the current turn's evidence and report the durable state."""
+
+        await self._ensure_restored()
+        turn = self._current_turn(task_ref)
+        if turn is None:
+            return DelegateOutcome(diagnostic=SACHIMA_DELEGATE_UNKNOWN_TASK)
+        return await self._exclusive(
+            turn.turn_key, lambda: self._reconcile(turn.turn_key)
+        )
+
+    async def cancel(self, task_ref: str) -> DelegateOutcome:
+        """Cancel this task's Run — never the task, never either Session."""
+
+        await self._ensure_restored()
+        turn = self._current_turn(task_ref)
+        if turn is None:
+            return DelegateOutcome(diagnostic=SACHIMA_DELEGATE_UNKNOWN_TASK)
+        return await self._exclusive(
+            turn.turn_key, lambda: self._cancel_turn(turn.turn_key)
+        )
+
+    async def recover(
+        self, task_ref: str, *, delivery: DelegateDelivery | None = None
+    ) -> DelegateOutcome:
+        """Explicitly resolve one uncertain submission. Never automatic."""
+
+        await self._ensure_restored()
+        turn = self._current_turn(task_ref)
+        if turn is None:
+            return DelegateOutcome(diagnostic=SACHIMA_DELEGATE_UNKNOWN_TASK)
+        if turn.lifecycle == "blocked" or turn.diagnostic == SACHIMA_DELEGATE_BLOCKED:
+            return self._outcome(turn, diagnostic=SACHIMA_DELEGATE_BLOCKED)
+        return await self._exclusive(
+            turn.turn_key,
+            lambda: self._drive(turn.turn_key, mode="recover", delivery=delivery),
+        )
+
+    def result(self, task_ref: str) -> dict[str, Any] | None:
+        """The durable result of this task's latest settled terminal."""
+
+        binding = self._state.read_task(task_ref)
+        if binding is None:
+            return None
+        if binding.current_turn_key is not None:
+            current = self._state.read_turn(binding.current_turn_key)
+            if current is not None and (
+                current.lifecycle == "blocked"
+                or current.diagnostic == SACHIMA_DELEGATE_BLOCKED
+            ):
+                return self._outcome(
+                    current, diagnostic=SACHIMA_DELEGATE_BLOCKED
+                ).as_dict()
+        for turn_key in reversed(binding.turn_keys):
+            event = self._state.result_for_turn(turn_key)
+            if event is None:
+                continue
+            payload = event.as_dict()
+            try:
+                payload["full_result"] = self._state.read_full_result(
+                    event.full_result_ref
+                )
+            except DelegateStateError:
+                payload["full_result"] = ""
+            return payload
+        return None
+
+    async def _reconcile(self, turn_key: str) -> DelegateOutcome:
+        """Reconcile one turn: trusted terminal evidence closes it, or nothing."""
+
+        turn = self._state.read_turn(turn_key)
+        if turn is None:
+            return DelegateOutcome(turn_key=turn_key, diagnostic=SACHIMA_DELEGATE_UNKNOWN_TASK)
+        if turn.lifecycle == "blocked" or turn.diagnostic == SACHIMA_DELEGATE_BLOCKED:
+            return self._outcome(turn, diagnostic=SACHIMA_DELEGATE_BLOCKED)
+        if turn.lifecycle == "terminal":
+            event = self._state.result_for_turn(turn_key)
+            if event is not None and event.im_sink in {"failed", "uncertain"}:
+                await self._reconcile_im_sink(event, turn)
+            return self._outcome(turn, terminal=event.terminal if event else None)
+        if turn.lifecycle in {"admitted"}:
+            result = await self._observe_once(turn)
+            if result is not None:
+                return await self._close_terminal(turn_key, result)
+            return self._outcome(turn)
+        return await self._drive(turn_key, mode="reconcile", delivery=None)
+
+    async def _observe_once(self, turn: DelegateTurnRecord) -> Any:
+        try:
+            return await asyncio.to_thread(
+                self._binding.backend.observe_run_result, turn.backend_handle
+            )
         except asyncio.CancelledError:
             raise
         except BaseException:
-            logger.warning(SACHIMA_DELEGATE_UNBOUND)
+            logger.warning(SACHIMA_DELEGATE_OBSERVATION_LOST)
+            return None
 
+    async def _cancel_turn(self, turn_key: str) -> DelegateOutcome:
+        """The user cancel path: reconcile, then one Run-scoped cancel at most."""
 
-def _terminal_text(task_ref: str, result: Any) -> str:
-    """The one terminal message, from the bounded projection and nothing else."""
+        turn = self._state.read_turn(turn_key)
+        if turn is None:
+            return DelegateOutcome(turn_key=turn_key, diagnostic=SACHIMA_DELEGATE_UNKNOWN_TASK)
+        if turn.lifecycle == "blocked" or turn.diagnostic == SACHIMA_DELEGATE_BLOCKED:
+            return self._outcome(turn, diagnostic=SACHIMA_DELEGATE_BLOCKED)
+        if turn.lifecycle == "terminal":
+            event = self._state.result_for_turn(turn_key)
+            return self._outcome(turn, terminal=event.terminal if event else None)
+        if turn.cancellation in {"in_flight", "uncertain"}:
+            # A repeated call joins the existing state: it reconciles, and it
+            # never issues a second cancel side effect.
+            result = await self._observe_once(turn)
+            if result is not None:
+                return await self._close_terminal(turn_key, result)
+            return self._outcome(turn)
+        if turn.lifecycle != "admitted":
+            return self._outcome(turn, diagnostic=SACHIMA_DELEGATE_NOT_CONTINUABLE)
 
-    status = result.status
-    if status == "completed":
-        body = DELEGATE_COMPLETED_TEMPLATE.format(
-            task_ref=task_ref,
-            final_message=result.final_message or DELEGATE_EMPTY_FINAL_MESSAGE,
+        turn = self._state.update_turn(turn_key, cancellation="in_flight")
+        try:
+            outcome = await asyncio.to_thread(
+                self._binding.backend.cancel_run, turn.backend_handle
+            )
+        except asyncio.CancelledError:
+            raise
+        except BaseException:
+            logger.warning(SACHIMA_DELEGATE_OBSERVATION_LOST)
+            outcome = None
+
+        if outcome is not None and getattr(outcome, "settled", False):
+            result = getattr(outcome, "result", None)
+            if result is not None:
+                return await self._close_terminal(turn_key, result)
+        turn = self._state.update_turn(turn_key, cancellation="uncertain")
+        return self._outcome(turn, diagnostic=SACHIMA_DELEGATE_BLOCKED)
+
+    # -- startup restoration (I7, §5.3) ------------------------------------- #
+    async def _ensure_restored(self) -> None:
+        async with self._restore_lock:
+            if self._restored:
+                return
+            await self._restore_locked()
+
+    async def restore(self) -> dict[str, Any]:
+        """Complete the startup barrier before any new admission is allowed."""
+
+        async with self._restore_lock:
+            if self._restored:
+                return {"restored": 0, "already": True}
+            return await self._restore_locked()
+
+    async def _restore_locked(self) -> dict[str, Any]:
+        execution = 0
+        identities = 0
+        sinks = 0
+        try:
+            turns = self._state.list_turns()
+        except DelegateStateError:
+            logger.warning(SACHIMA_DELEGATE_BLOCKED)
+            turns = ()
+
+        for turn in turns:
+            if turn.lifecycle in {"terminal", "admission_failed"}:
+                continue
+            execution += 1
+            await self._exclusive(
+                turn.turn_key, lambda key=turn.turn_key: self._restore_turn(key)
+            )
+
+        # Execution restoration can finish a crash-interrupted terminal write,
+        # so identities must be selected from a fresh task/turn snapshot.
+        for task in self._state.list_tasks():
+            if task.current_turn_key is None:
+                continue
+            turn = self._state.read_turn(task.current_turn_key)
+            if turn is None or turn.lifecycle != "terminal":
+                continue
+            try:
+                event = self._state.result_for_turn(turn.turn_key)
+            except DelegateStateError:
+                event = None
+            if event is None:
+                self._state.update_turn(
+                    turn.turn_key, diagnostic=SACHIMA_DELEGATE_BLOCKED
+                )
+                continue
+            if self._restore_terminal_identity(turn):
+                identities += 1
+
+        sinks = await self._restore_sinks()
+        self._restored = True
+        self._fresh_graph = False
+        return {"restored": execution, "identities": identities, "sinks": sinks}
+
+    async def _restore_turn(self, turn_key: str) -> DelegateOutcome:
+        """One nonterminal turn, restored under its own section.
+
+        A fresh graph is the only thing that may reclassify a found
+        ``in_flight`` to ``uncertain``, and this is where it does it: the process
+        that owned those attempts is gone, so nothing can settle them but a
+        later observation.
+        """
+
+        turn = self._state.read_turn(turn_key)
+        if turn is None:
+            return DelegateOutcome(turn_key=turn_key, diagnostic=SACHIMA_DELEGATE_UNKNOWN_TASK)
+        try:
+            event = self._state.result_for_turn(turn_key)
+        except DelegateStateError:
+            return self._blocked(turn, SACHIMA_DELEGATE_BLOCKED)
+        if event is not None:
+            return await self._finalize_terminal_event(turn, event)
+        if turn.cancellation == "in_flight":
+            turn = self._state.update_turn(turn_key, cancellation="uncertain")
+        if turn.receipt == "in_flight":
+            turn = self._state.update_turn(turn_key, receipt="uncertain")
+
+        disposition, record, code = self._classify(turn)
+        return await self._apply(
+            turn, disposition, record, code, delivery=None, restoring=True
         )
-    elif status == "cancelled":
-        body = DELEGATE_CANCELLED_TEMPLATE.format(task_ref=task_ref)
-    else:
-        body = DELEGATE_FAILED_TEMPLATE.format(task_ref=task_ref, status=status)
-        if result.final_message:
-            body = f"{body}\n{result.final_message}"
-    if result.truncated:
-        body += DELEGATE_TRUNCATED_SUFFIX.format(
-            truncate_reason=result.truncate_reason or "-"
+
+    def _restore_pending_identity(self, turn: DelegateTurnRecord) -> None:
+        """Rebuild only what a pending intent authorizes: intent + identity."""
+
+        self._binding.backend.rehydrate_pending_intent(turn.task_id, turn.dispatch_ref)
+        self._restore_port_session(turn)
+
+    def _restore_accepted_identity(self, turn: DelegateTurnRecord, record: Any) -> None:
+        """Reattach the accepted backend state and the read-model source.
+
+        Everything is keyed on the record the snapshot returned — never on the
+        task's latest — so a task with two accepted Runs rebinds the one this
+        turn is actually about.
+        """
+
+        self._binding.backend.attach_existing(turn.task_id, binding=record)
+        self._restore_port_session(turn)
+        self._binding.dispatcher.rehydrate_source_binding(
+            turn.task_id, turn.spine_session_id, binding=record
         )
-    return body
+
+    def _restore_port_session(self, turn: DelegateTurnRecord) -> None:
+        from sachima_supervisor.runtime_spine.launch_spec import build_launch_spec
+
+        spec = build_launch_spec(
+            task_id=turn.task_id,
+            agent_kind=_DELEGATE_AGENT_KIND,
+            mode_flags={"needs_agent": True},
+            roles=_DELEGATE_ROLES,
+            refs=turn.launch_refs,
+        )
+        self._binding.port.restore_attached(
+            turn.task_id, spec, session_id=turn.spine_session_id
+        )
+
+    def _restore_terminal_identity(self, turn: DelegateTurnRecord) -> bool:
+        """Restore a settled task's sealed identity — no permit, no observer.
+
+        A terminal task is not consuming ARS capacity, but it is still
+        continuable, and continuation needs the backend and port to know the
+        task. Its own last accepted snapshot is required: missing, pending, or
+        unreadable evidence leaves control and continuation blocked, with the
+        durable binding and result retained.
+        """
+
+        try:
+            record = self._ledger.snapshot_exact(
+                turn.task_id, turn.backend_handle, turn.dispatch_ref
+            )
+        except BaseException:
+            logger.warning(SACHIMA_DELEGATE_BLOCKED)
+            self._state.update_turn(turn.turn_key, diagnostic=SACHIMA_DELEGATE_BLOCKED)
+            return False
+        if record is None or record.state != "accepted":
+            self._state.update_turn(turn.turn_key, diagnostic=SACHIMA_DELEGATE_BLOCKED)
+            return False
+        try:
+            self._binding.backend.attach_existing(turn.task_id, binding=record)
+            self._restore_port_session(turn)
+        except BaseException:
+            logger.warning(SACHIMA_DELEGATE_BLOCKED)
+            self._state.update_turn(turn.turn_key, diagnostic=SACHIMA_DELEGATE_BLOCKED)
+            return False
+        if turn.diagnostic == SACHIMA_DELEGATE_BLOCKED:
+            self._state.update_turn(turn.turn_key, diagnostic=None)
+        return True
+
+    async def _restore_sinks(self) -> int:
+        """Retry unattempted sinks; reclassify interrupted attempts safely."""
+
+        moved = 0
+        try:
+            events = self._state.list_results()
+        except DelegateStateError:
+            logger.warning(SACHIMA_DELEGATE_BLOCKED)
+            return 0
+        for event in events:
+            if event.im_sink == "in_flight":
+                event = self._state.update_result(event.event_id, im_sink="uncertain")
+                moved += 1
+            if event.hermes_sink == "in_flight":
+                event = self._state.update_result(event.event_id, hermes_sink="pending")
+                moved += 1
+            if event.im_sink == "pending":
+                turn = self._state.read_turn(event.turn_key)
+                if turn is None or turn.lifecycle != "terminal":
+                    logger.warning(SACHIMA_DELEGATE_BLOCKED)
+                    continue
+                await self._exclusive(
+                    turn.turn_key,
+                    lambda event=event, turn=turn: self._reconcile_im_sink(event, turn),
+                )
+                moved += 1
+        return moved
+
+    # -- helpers ------------------------------------------------------------ #
+    def _current_turn(self, task_ref: Any) -> DelegateTurnRecord | None:
+        try:
+            binding = self._state.read_task(task_ref)
+        except DelegateStateError:
+            return None
+        if binding is None or binding.current_turn_key is None:
+            return None
+        return self._state.read_turn(binding.current_turn_key)
+
+    def _delivery_for(
+        self, origin: DelegateOrigin, delivery: DelegateDelivery | None
+    ) -> DelegateDelivery | None:
+        if delivery is not None:
+            return delivery
+        if self._delivery_factory is None:
+            return None
+        try:
+            return self._delivery_factory(origin)
+        except BaseException:
+            logger.warning(SACHIMA_DELEGATE_NO_DELIVERY)
+            return None
+
+    async def _notify(
+        self,
+        turn: DelegateTurnRecord,
+        text: str,
+        delivery: DelegateDelivery | None,
+    ) -> None:
+        """Deliver one sparse notice, and never let delivery break a lifecycle."""
+
+        channel = self._delivery_for(turn.origin, delivery)
+        if channel is None:
+            return
+        await perform_settled_send(lambda: channel.send_text(text))
+
+    @staticmethod
+    def _outcome(
+        turn: DelegateTurnRecord,
+        *,
+        terminal: str | None = None,
+        diagnostic: str | None = None,
+    ) -> DelegateOutcome:
+        return DelegateOutcome(
+            task_ref=turn.task_ref,
+            turn_key=turn.turn_key,
+            lifecycle=turn.lifecycle,
+            receipt=turn.receipt,
+            cancellation=turn.cancellation,
+            turn_ref=turn.turn_ref,
+            terminal=terminal or turn.terminal_status,
+            diagnostic=diagnostic or turn.diagnostic,
+        )
 
 
 # --------------------------------------------------------------------------- #
 # Host-held binding (cleared on every unbind path the composition takes)
 # --------------------------------------------------------------------------- #
 _coordinator: SachimaDelegateCoordinator | None = None
+#: The host's adapter-backed delivery factory. Composition happens from env at
+#: startup, which is *before* the Gateway's adapters exist, so the factory is
+#: registered separately rather than threaded through the composition root —
+#: and a coordinator bound without one still works: it simply records deliveries
+#: as failed rather than pretending to have sent them.
+_delivery_factory_hook: Callable[[DelegateOrigin], DelegateDelivery | None] | None = None
+
+
+def set_delegate_delivery_factory(
+    factory: Callable[[DelegateOrigin], DelegateDelivery | None] | None,
+) -> None:
+    """Register the host delivery factory, and give it to a bound coordinator."""
+
+    global _delivery_factory_hook
+    _delivery_factory_hook = factory
+    if _coordinator is not None:
+        _coordinator._delivery_factory = factory
 
 
 def bound_delegate_coordinator() -> SachimaDelegateCoordinator | None:
@@ -661,24 +1581,47 @@ def bound_delegate_coordinator() -> SachimaDelegateCoordinator | None:
     return _coordinator
 
 
+def delegate_payload_resolver() -> Callable[[str], str]:
+    """The resolver a composed ``arsd`` bundle dispatches and recovers through.
+
+    Late-bound on purpose: composition needs the resolver *before* the
+    coordinator that owns the durable store exists, so this hands over a stable
+    callable that finds the store when it is actually called. One store, one
+    claim-check, no second copy of the task text anywhere.
+    """
+
+    def _resolve(payload_ref: str) -> str:
+        coordinator = _coordinator
+        if coordinator is None:
+            raise ValueError(SACHIMA_DELEGATE_UNBOUND)
+        return coordinator.state.read_payload(payload_ref)
+
+    return _resolve
+
+
 def bind_delegate_coordinator(
-    binding: Any, config: Any
+    binding: Any,
+    config: Any,
+    *,
+    policy: DelegatePolicy | None = None,
+    delivery_factory: Callable[[DelegateOrigin], DelegateDelivery | None] | None = None,
 ) -> SachimaDelegateCoordinator:
     """Bind one coordinator over an already-composed execution bundle."""
 
     global _coordinator
-    _coordinator = SachimaDelegateCoordinator(binding, config)
+    _coordinator = SachimaDelegateCoordinator(
+        binding,
+        config,
+        policy=policy,
+        delivery_factory=(
+            delivery_factory if delivery_factory is not None else _delivery_factory_hook
+        ),
+    )
     return _coordinator
 
 
 def unbind_delegate_coordinator() -> None:
-    """Drop the coordinator and every payload it was still holding.
-
-    A stale coordinator would keep dispatching into a bundle the host has
-    retired, so unbinding is total: the tracked submissions go, and so does
-    their private text.
-    """
+    """Drop the coordinator so a retired bundle stops being dispatched into."""
 
     global _coordinator
     _coordinator = None
-    _PAYLOAD_STORE.clear()

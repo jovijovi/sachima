@@ -1453,6 +1453,39 @@ class ProcessingOutcome(Enum):
     CANCELLED = "cancelled"
 
 
+@dataclass(frozen=True)
+class MentionOccurrence:
+    """One platform-native mention, positioned in the final ``MessageEvent.text``.
+
+    This is the neutral ingress contract for structured selection: it carries
+    the adapter's own *stable platform user id* plus half-open ``[start, end)``
+    Python string indices into the final text, where ``text[start:end]`` is
+    exactly ``rendered``.  Display names are presentation only — never identity
+    — so a consumer that needs to know *who* was mentioned reads
+    ``platform_user_id`` and nothing else.
+
+    Adapters that cannot supply occurrence coordinates simply leave
+    ``MessageEvent.mention_occurrences`` at its default empty tuple: ordinary
+    messages still work everywhere, and only *explicit* structured selection
+    (which needs provenance to be verifiable at all) fails closed.
+    """
+
+    platform_user_id: str
+    start: int
+    end: int
+    rendered: str
+    is_self: bool = False
+    is_all: bool = False
+
+    def matches_text(self, text: str) -> bool:
+        """True when this occurrence still addresses the text it was cut for."""
+
+        return (
+            0 <= self.start <= self.end <= len(text)
+            and text[self.start : self.end] == self.rendered
+        )
+
+
 @dataclass
 class MessageEvent:
     """
@@ -1506,6 +1539,13 @@ class MessageEvent:
     # Internal flag — set for synthetic events (e.g. background process
     # completion notifications) that must bypass user authorization checks.
     internal: bool = False
+
+    # Platform-native mention occurrences positioned in ``text`` (see
+    # ``MentionOccurrence``).  The default is empty on purpose: an adapter that
+    # cannot supply stable identity + final-text coordinates simply supplies
+    # nothing, and every consumer that needs verified structured selection
+    # fails closed rather than guessing from the rendered ``@name``.
+    mention_occurrences: tuple = ()
 
     # Timestamps
     timestamp: datetime = field(default_factory=datetime.now)
@@ -2372,6 +2412,50 @@ class BasePlatformAdapter(ABC):
     # such as DingTalk AI Cards) override this to True (class attribute or
     # property) so the stream consumer knows not to short-circuit.
     REQUIRES_EDIT_FINALIZE: bool = False
+
+    # ------------------------------------------------------------------
+    # Single-message plain-text capability
+    #
+    # A narrow surface for callers that must deliver exactly ONE visible
+    # message and have already bounded the body themselves — the Sachima
+    # delegate terminal result is the concrete consumer.  ``send()`` is the
+    # wrong tool there: it formats, it may chunk an oversized payload into
+    # several platform messages, and on some adapters it may promote the
+    # body to a rich format.  All three turn one terminal into something
+    # other than one plain message.
+    # ------------------------------------------------------------------
+    def single_message_text_limit(self) -> int:
+        """The platform's own one-message text bound, in ``measure_text`` units."""
+        return int(getattr(self, "MAX_MESSAGE_LENGTH", 4000) or 4000)
+
+    def measure_text(self, text: str) -> int:
+        """The platform's own length metric for a text body.
+
+        Separate from ``len`` so an adapter whose bound is counted in bytes,
+        code points, or some platform-specific unit can say so, and the caller
+        can bound the body by what the platform actually enforces.  It reads
+        the same ``message_len_fn`` the adapter already splits by, so the unit
+        a caller bounds in is the unit the platform counts (Telegram: UTF-16
+        code units, where one emoji costs two).
+        """
+        return self.message_len_fn(text or "")
+
+    async def send_plain_text_once(
+        self,
+        chat_id: str,
+        text: str,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Deliver one already-bounded plain-text body as a single message.
+
+        The default is an ordinary ``send()`` — correct for adapters whose send
+        is already a single plain-text message and whose formatting is a no-op
+        for plain bodies.  Adapters with a chunking or rich-format path override
+        this to bypass it.  Callers must bound ``text`` to
+        ``single_message_text_limit()`` first: this method never splits.
+        """
+        return await self.send(chat_id, text, reply_to=reply_to, metadata=metadata)
 
     async def create_handoff_thread(
         self,
