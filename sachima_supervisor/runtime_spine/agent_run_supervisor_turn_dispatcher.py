@@ -350,7 +350,9 @@ class AgentRunSupervisorTurnDispatcher:
         with self._reserved(request.task_id):
             return self._run_operation(request, self._recovery_operation)
 
-    def rehydrate_source_binding(self, task_id: str, session_id: str) -> str | None:
+    def rehydrate_source_binding(
+        self, task_id: str, session_id: str, *, binding: Any = None
+    ) -> str | None:
         """Rebind the durable Run's read-model source after a restart.
 
         A recomposed host holds the same durable ledger and the same task, but
@@ -358,6 +360,13 @@ class AgentRunSupervisorTurnDispatcher:
         into a usable read-model source — refs-only derivation plus the private
         locator, straight from the accepted binding — and returns the safe turn
         ref it bound, or ``None`` when the task has nothing accepted.
+
+        ``binding`` names the exact accepted record to rebind. A restoration
+        that already read its own durable current turn passes it, and the
+        task-wide "latest" is never consulted — binding a task's newest Run when
+        its current turn is an older one would attach the caller's stream to
+        work it is not waiting for. Without a ``binding`` the previous
+        latest-accepted behavior is unchanged.
 
         It submits nothing, opens nothing, and appends **no** canonical event:
         rebinding is Sachima catching up with what already happened, not a new
@@ -372,10 +381,30 @@ class AgentRunSupervisorTurnDispatcher:
             # turn that lands in between makes this publish the Run it
             # superseded, so the "latest" it binds is always the latest as of
             # the moment it binds.
-            handoff = self._latest_accepted(safe_task, safe_session)
+            if binding is None:
+                handoff = self._latest_accepted(safe_task, safe_session)
+            else:
+                handoff = self._accepted_for_binding(safe_task, safe_session, binding)
             if handoff is None:
                 return None
             return self._bind_source(safe_task, safe_session, handoff)
+
+    def _accepted_for_binding(
+        self, task_id: str, session_id: str, binding: Any
+    ) -> DispatchedSupervisorTurn | None:
+        """The handoff for one named accepted record, or a precondition failure."""
+
+        try:
+            handoff = self._backend.accepted_turn_for_binding(
+                task_id, binding, session_ref=session_id
+            )
+        except SpineError:
+            _invalid()
+        if handoff is None:
+            return None
+        if type(handoff) is not DispatchedSupervisorTurn:
+            _invalid()
+        return handoff
 
     # -- internals ------------------------------------------------------------
 

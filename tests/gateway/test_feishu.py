@@ -1353,7 +1353,9 @@ class TestAdapterBehavior(unittest.TestCase):
             message_id="om_post",
         )
 
-        text, msg_type, media_urls, media_types, _mentions = asyncio.run(adapter._extract_message_content(message))
+        text, msg_type, media_urls, media_types, _mentions, _occurrences = asyncio.run(
+            adapter._extract_message_content(message)
+        )
 
         self.assertEqual(text, "Title\nhello\n[doc](https://example.com)")
         self.assertEqual(msg_type.value, "text")
@@ -1372,7 +1374,9 @@ class TestAdapterBehavior(unittest.TestCase):
             message_id="om_post_fr",
         )
 
-        text, msg_type, media_urls, media_types, _mentions = asyncio.run(adapter._extract_message_content(message))
+        text, msg_type, media_urls, media_types, _mentions, _occurrences = asyncio.run(
+            adapter._extract_message_content(message)
+        )
 
         self.assertEqual(text, "Subject\nbonjour")
         self.assertEqual(msg_type.value, "text")
@@ -1398,7 +1402,9 @@ class TestAdapterBehavior(unittest.TestCase):
             message_id="om_post_rich",
         )
 
-        text, msg_type, media_urls, media_types, _mentions = asyncio.run(adapter._extract_message_content(message))
+        text, msg_type, media_urls, media_types, _mentions, _occurrences = asyncio.run(
+            adapter._extract_message_content(message)
+        )
 
         self.assertEqual(text, "Rich message\n[Image: diagram]\n@Alice please check the attachment\n[Attachment: spec.pdf]\n:smile:")
         self.assertEqual(msg_type.value, "text")
@@ -1424,7 +1430,9 @@ class TestAdapterBehavior(unittest.TestCase):
             message_id="om_post_media",
         )
 
-        text, msg_type, media_urls, media_types, _mentions = asyncio.run(adapter._extract_message_content(message))
+        text, msg_type, media_urls, media_types, _mentions, _occurrences = asyncio.run(
+            adapter._extract_message_content(message)
+        )
 
         self.assertEqual(text, "Rich message\n[Image: diagram]\n[Attachment: spec.pdf]")
         self.assertEqual(msg_type.value, "text")
@@ -1461,7 +1469,9 @@ class TestAdapterBehavior(unittest.TestCase):
             message_id="om_merge_forward",
         )
 
-        text, msg_type, media_urls, media_types, _mentions = asyncio.run(adapter._extract_message_content(message))
+        text, msg_type, media_urls, media_types, _mentions, _occurrences = asyncio.run(
+            adapter._extract_message_content(message)
+        )
 
         self.assertEqual(
             text,
@@ -1483,7 +1493,9 @@ class TestAdapterBehavior(unittest.TestCase):
             message_id="om_share_chat",
         )
 
-        text, msg_type, media_urls, media_types, _mentions = asyncio.run(adapter._extract_message_content(message))
+        text, msg_type, media_urls, media_types, _mentions, _occurrences = asyncio.run(
+            adapter._extract_message_content(message)
+        )
 
         self.assertEqual(text, "Shared chat: Platform Ops\nChat ID: oc_shared")
         self.assertEqual(msg_type.value, "text")
@@ -1517,7 +1529,9 @@ class TestAdapterBehavior(unittest.TestCase):
             message_id="om_interactive",
         )
 
-        text, msg_type, media_urls, media_types, _mentions = asyncio.run(adapter._extract_message_content(message))
+        text, msg_type, media_urls, media_types, _mentions, _occurrences = asyncio.run(
+            adapter._extract_message_content(message)
+        )
 
         self.assertEqual(text, "Approval Request\nRequester: Alice\nApprove\nActions: Approve")
         self.assertEqual(msg_type.value, "text")
@@ -1537,7 +1551,9 @@ class TestAdapterBehavior(unittest.TestCase):
             message_id="om_image",
         )
 
-        text, msg_type, media_urls, media_types, _mentions = asyncio.run(adapter._extract_message_content(message))
+        text, msg_type, media_urls, media_types, _mentions, _occurrences = asyncio.run(
+            adapter._extract_message_content(message)
+        )
 
         self.assertEqual(text, "")
         self.assertEqual(msg_type.value, "photo")
@@ -1563,7 +1579,9 @@ class TestAdapterBehavior(unittest.TestCase):
             message_id="om_audio",
         )
 
-        text, msg_type, media_urls, media_types, _mentions = asyncio.run(adapter._extract_message_content(message))
+        text, msg_type, media_urls, media_types, _mentions, _occurrences = asyncio.run(
+            adapter._extract_message_content(message)
+        )
 
         self.assertEqual(text, "")
         self.assertEqual(msg_type.value, "audio")
@@ -1585,7 +1603,9 @@ class TestAdapterBehavior(unittest.TestCase):
             message_id="om_file",
         )
 
-        text, msg_type, media_urls, media_types, _mentions = asyncio.run(adapter._extract_message_content(message))
+        text, msg_type, media_urls, media_types, _mentions, _occurrences = asyncio.run(
+            adapter._extract_message_content(message)
+        )
 
         self.assertEqual(text, "")
         self.assertEqual(msg_type.value, "document")
@@ -1607,7 +1627,9 @@ class TestAdapterBehavior(unittest.TestCase):
             message_id="om_media",
         )
 
-        text, msg_type, media_urls, media_types, _mentions = asyncio.run(adapter._extract_message_content(message))
+        text, msg_type, media_urls, media_types, _mentions, _occurrences = asyncio.run(
+            adapter._extract_message_content(message)
+        )
 
         self.assertEqual(text, "")
         self.assertEqual(msg_type.value, "photo")
@@ -1629,7 +1651,9 @@ class TestAdapterBehavior(unittest.TestCase):
             message_id="om_video",
         )
 
-        text, msg_type, media_urls, media_types, _mentions = asyncio.run(adapter._extract_message_content(message))
+        text, msg_type, media_urls, media_types, _mentions, _occurrences = asyncio.run(
+            adapter._extract_message_content(message)
+        )
 
         self.assertEqual(text, "")
         self.assertEqual(msg_type.value, "video")
@@ -4662,7 +4686,7 @@ class TestFeishuExtractMessageContent(unittest.TestCase):
         adapter._download_feishu_message_resources = AsyncMock(return_value=([], []))
         return adapter
 
-    def test_returns_five_tuple_with_mentions(self):
+    def test_returns_the_content_tuple_with_mentions_and_occurrences(self):
         adapter = self._build_adapter()
         message = SimpleNamespace(
             content=json.dumps({"text": "@_user_1 hello"}),
@@ -4677,12 +4701,23 @@ class TestFeishuExtractMessageContent(unittest.TestCase):
             ],
         )
 
-        text, inbound_type, media_urls, media_types, mentions = asyncio.run(
-            adapter._extract_message_content(message)
-        )
+        (
+            text,
+            inbound_type,
+            media_urls,
+            media_types,
+            mentions,
+            occurrences,
+        ) = asyncio.run(adapter._extract_message_content(message))
         self.assertEqual(text, "@Alice hello")
         self.assertEqual(len(mentions), 1)
         self.assertEqual(mentions[0].open_id, "ou_alice")
+        # The neutral occurrence carries the stable id and its position in the
+        # FINAL text, so an explicit selector can be verified without guessing
+        # from the rendered display name.
+        self.assertEqual(len(occurrences), 1)
+        self.assertEqual(occurrences[0].platform_user_id, "ou_alice")
+        self.assertTrue(occurrences[0].matches_text(text))
 
     def test_returns_empty_mentions_when_missing(self):
         adapter = self._build_adapter()
@@ -4693,7 +4728,7 @@ class TestFeishuExtractMessageContent(unittest.TestCase):
             mentions=None,
         )
 
-        text, _, _, _, mentions = asyncio.run(adapter._extract_message_content(message))
+        text, _, _, _, mentions, _occurrences = asyncio.run(adapter._extract_message_content(message))
         self.assertEqual(text, "plain hello")
         self.assertEqual(mentions, [])
 
@@ -5311,3 +5346,327 @@ class TestFeishuLazyRebindPatchClasses(unittest.TestCase):
             # request.token_types before anything else.
             self.assertTrue(getattr(request, "token_types", None))
             self.assertEqual(request.body.content, '{"key": "v"}')
+
+
+class TestFeishuStructuralEdgeSelfMentionStrip(unittest.TestCase):
+    """Edge self mentions are removed by span, never by rendered display text.
+
+    A post ``<at>`` is Markdown-escaped when it is rendered, so a bot whose
+    display name contains ``_``, ``*`` or a bracket arrives in the final text as
+    ``@Hermes\\_Bot`` while the identity behind it is still the same open_id.
+    Comparing the escaped presentation against a raw ``@name`` leaves the prefix
+    in place and a leading ``/delegate`` is never classified as a command.
+    So removal is authorized by a complete, valid ``is_self`` occurrence span.
+    """
+
+    BOT_OPEN_ID = "ou_bot"
+
+    def _bot(self, name):
+        from gateway.platforms.feishu import _FeishuBotIdentity
+
+        return _FeishuBotIdentity(open_id=self.BOT_OPEN_ID, user_id="u_bot", name=name)
+
+    def _mention(self, key, *, open_id, name):
+        return SimpleNamespace(
+            key=key, name=name, id=SimpleNamespace(open_id=open_id, user_id="")
+        )
+
+    def _post(self, payload, mentions, *, bot_name):
+        from gateway.platforms.feishu import normalize_feishu_message
+
+        return normalize_feishu_message(
+            message_type="post",
+            raw_content=json.dumps(payload),
+            mentions=mentions,
+            bot=self._bot(bot_name),
+        )
+
+    def _strip(self, normalized):
+        from gateway.platforms.feishu import strip_edge_self_mentions_with_occurrences
+
+        return strip_edge_self_mentions_with_occurrences(
+            normalized.text_content,
+            normalized.mentions,
+            normalized.mention_occurrences,
+        )
+
+    @staticmethod
+    def _rows(*elements):
+        return {"zh_cn": {"title": "", "content": [list(elements)]}}
+
+    def _assert_coordinates(self, text, occurrences):
+        for occurrence in occurrences:
+            self.assertTrue(occurrence.matches_text(text))
+
+    # -- the escaped display names ------------------------------------- #
+    def test_escaped_self_names_are_rendered_escaped(self):
+        """The presentation really is escaped — this is what identity is not."""
+
+        cases = {
+            "Hermes_Bot": "@Hermes\\_Bot",
+            "Hermes*Bot": "@Hermes\\*Bot",
+            "Hermes\\Ops[Bot]!": "@Hermes\\\\Ops\\[Bot\\]\\!",
+        }
+        for name, rendered in cases.items():
+            with self.subTest(name=name):
+                normalized = self._post(
+                    self._rows(
+                        {"tag": "at", "user_id": "@_user_9", "user_name": name},
+                        {"tag": "text", "text": " /delegate do the task"},
+                    ),
+                    [self._mention("@_user_9", open_id=self.BOT_OPEN_ID, name=name)],
+                    bot_name=name,
+                )
+                self.assertEqual(
+                    normalized.text_content, f"{rendered} /delegate do the task"
+                )
+                (occurrence,) = normalized.mention_occurrences
+                self.assertEqual(occurrence.rendered, rendered)
+                self.assertTrue(occurrence.is_self)
+
+    def test_leading_self_mention_with_markdown_punctuation_is_stripped(self):
+        for name in ("Hermes_Bot", "Hermes*Bot", "Hermes\\Ops[Bot]!"):
+            with self.subTest(name=name):
+                normalized = self._post(
+                    self._rows(
+                        {"tag": "at", "user_id": "@_user_9", "user_name": name},
+                        {"tag": "text", "text": " /delegate do the task"},
+                    ),
+                    [self._mention("@_user_9", open_id=self.BOT_OPEN_ID, name=name)],
+                    bot_name=name,
+                )
+                text, occurrences = self._strip(normalized)
+                self.assertEqual(text, "/delegate do the task")
+                self.assertEqual(occurrences, ())
+                self.assertTrue(text.startswith("/"))
+
+    def test_the_stripped_post_command_classifies_as_a_command(self):
+        from gateway.platforms.base import MessageType
+
+        name = "Hermes_Bot"
+        normalized = self._post(
+            self._rows(
+                {"tag": "at", "user_id": "@_user_9", "user_name": name},
+                {"tag": "text", "text": " /delegate do the task"},
+            ),
+            [self._mention("@_user_9", open_id=self.BOT_OPEN_ID, name=name)],
+            bot_name=name,
+        )
+        text, _occurrences = self._strip(normalized)
+        inbound_type = MessageType.COMMAND if text.startswith("/") else MessageType.TEXT
+        self.assertEqual(inbound_type, MessageType.COMMAND)
+
+    # -- what must survive --------------------------------------------- #
+    def test_a_leading_non_self_mention_with_the_same_text_survives(self):
+        name = "Hermes_Bot"
+        normalized = self._post(
+            self._rows(
+                {"tag": "at", "user_id": "@_user_1", "user_name": name},
+                {"tag": "text", "text": " /delegate do the task"},
+            ),
+            [self._mention("@_user_1", open_id="ou_someone_else", name=name)],
+            bot_name=name,
+        )
+        text, occurrences = self._strip(normalized)
+        self.assertEqual(text, "@Hermes\\_Bot /delegate do the task")
+        self.assertEqual([o.platform_user_id for o in occurrences], ["ou_someone_else"])
+        self._assert_coordinates(text, occurrences)
+        self.assertFalse(text.startswith("/"))
+
+    def test_a_mid_text_self_mention_survives_byte_for_byte(self):
+        name = "Hermes_Bot"
+        normalized = self._post(
+            self._rows(
+                {"tag": "text", "text": "check what "},
+                {"tag": "at", "user_id": "@_user_9", "user_name": name},
+                {"tag": "text", "text": " said yesterday"},
+            ),
+            [self._mention("@_user_9", open_id=self.BOT_OPEN_ID, name=name)],
+            bot_name=name,
+        )
+        text, occurrences = self._strip(normalized)
+        self.assertEqual(text, "check what @Hermes\\_Bot said yesterday")
+        (occurrence,) = occurrences
+        self.assertTrue(occurrence.is_self)
+        self._assert_coordinates(text, occurrences)
+
+    def test_a_leading_self_mention_repositions_the_selector_after_it(self):
+        name = "Hermes_Bot"
+        normalized = self._post(
+            self._rows(
+                {"tag": "at", "user_id": "@_user_9", "user_name": name},
+                {"tag": "text", "text": " /delegate "},
+                {"tag": "at", "user_id": "@_user_1", "user_name": "Alice"},
+                {"tag": "text", "text": " ship it"},
+            ),
+            [
+                self._mention("@_user_9", open_id=self.BOT_OPEN_ID, name=name),
+                self._mention("@_user_1", open_id="ou_alice", name="Alice"),
+            ],
+            bot_name=name,
+        )
+        text, occurrences = self._strip(normalized)
+        self.assertEqual(text, "/delegate @Alice ship it")
+        (occurrence,) = occurrences
+        self.assertEqual(occurrence.platform_user_id, "ou_alice")
+        self.assertEqual(text[occurrence.start : occurrence.end], "@Alice")
+        self._assert_coordinates(text, occurrences)
+
+    def test_a_trailing_self_mention_keeps_its_own_escaped_punctuation(self):
+        """``!`` inside the render belongs to the mention, not to the sentence."""
+
+        name = "Hermes\\Ops[Bot]!"
+        normalized = self._post(
+            self._rows(
+                {"tag": "text", "text": "ping the bot "},
+                {"tag": "at", "user_id": "@_user_9", "user_name": name},
+                {"tag": "text", "text": "."},
+            ),
+            [self._mention("@_user_9", open_id=self.BOT_OPEN_ID, name=name)],
+            bot_name=name,
+        )
+        self.assertEqual(
+            normalized.text_content, "ping the bot @Hermes\\\\Ops\\[Bot\\]\\!."
+        )
+        text, occurrences = self._strip(normalized)
+        self.assertEqual(text, "ping the bot.")
+        self.assertEqual(occurrences, ())
+
+    def test_a_trailing_non_self_mention_ending_in_punctuation_survives(self):
+        name = "Hermes_Bot"
+        normalized = self._post(
+            self._rows(
+                {"tag": "text", "text": "ping "},
+                {"tag": "at", "user_id": "@_user_1", "user_name": "Ops[Team]!"},
+                {"tag": "text", "text": "."},
+            ),
+            [self._mention("@_user_1", open_id="ou_team", name="Ops[Team]!")],
+            bot_name=name,
+        )
+        text, occurrences = self._strip(normalized)
+        self.assertEqual(text, normalized.text_content)
+        (occurrence,) = occurrences
+        self.assertEqual(occurrence.platform_user_id, "ou_team")
+        self._assert_coordinates(text, occurrences)
+
+    # -- controls ------------------------------------------------------- #
+    def test_structured_text_placeholders_keep_their_unescaped_rendering(self):
+        name = "Hermes_Bot"
+        from gateway.platforms.feishu import normalize_feishu_message
+
+        normalized = normalize_feishu_message(
+            message_type="text",
+            raw_content=json.dumps({"text": "@_user_9 /delegate do the task"}),
+            mentions=[
+                self._mention("@_user_9", open_id=self.BOT_OPEN_ID, name=name)
+            ],
+            bot=self._bot(name),
+        )
+        self.assertEqual(
+            normalized.text_content, "@Hermes_Bot /delegate do the task"
+        )
+        text, occurrences = self._strip(normalized)
+        self.assertEqual(text, "/delegate do the task")
+        self.assertEqual(occurrences, ())
+
+    def test_occurrence_free_plain_text_stripping_is_unchanged(self):
+        from gateway.platforms.feishu import (
+            FeishuMentionRef,
+            _strip_edge_self_mentions,
+        )
+
+        refs = [FeishuMentionRef(name="Hermes", open_id="ou_bot", is_self=True)]
+        self.assertEqual(_strip_edge_self_mentions("@Hermes /help", refs), "/help")
+        self.assertEqual(
+            _strip_edge_self_mentions("check @Hermes said", refs),
+            "check @Hermes said",
+        )
+
+    def test_an_occurrence_that_no_longer_describes_the_text_never_authorizes_removal(
+        self,
+    ):
+        """A stale span must fail closed rather than delete by display name."""
+
+        from gateway.platforms.base import MentionOccurrence
+        from gateway.platforms.feishu import (
+            FeishuMentionRef,
+            strip_edge_self_mentions_with_occurrences,
+        )
+
+        text = "@Hermes\\_Bot /delegate do the task"
+        refs = [
+            FeishuMentionRef(name="Hermes_Bot", open_id="ou_bot", is_self=True)
+        ]
+        stale = MentionOccurrence(
+            platform_user_id="ou_bot",
+            start=5,
+            end=17,
+            rendered="@Hermes\\_Bot",
+            is_self=True,
+        )
+        stripped, occurrences = strip_edge_self_mentions_with_occurrences(
+            text, refs, (stale,)
+        )
+        self.assertEqual(stripped, text)
+        self.assertEqual(occurrences, ())
+
+    def test_overlapping_self_and_non_self_spans_never_authorize_removal(self):
+        """Two mentions cannot own one span, so neither may delete it.
+
+        A later ``is_self`` occurrence laid over an earlier stranger's span
+        would otherwise claim every character of it and strip a prefix whose
+        provenance is not proven, handing an unverified ``/delegate`` to the
+        command classifier. Ambiguity fails closed: the text is left alone.
+        """
+
+        from gateway.platforms.base import MentionOccurrence, MessageType
+        from gateway.platforms.feishu import (
+            FeishuMentionRef,
+            strip_edge_self_mentions_with_occurrences,
+        )
+
+        text = "@Hermes\\_Bot /delegate ship it"
+        refs = [
+            FeishuMentionRef(name="Hermes_Bot", open_id="ou_someone_else"),
+            FeishuMentionRef(name="Hermes_Bot", open_id="ou_bot", is_self=True),
+        ]
+        overlapping = (
+            MentionOccurrence(
+                platform_user_id="ou_someone_else",
+                start=0,
+                end=12,
+                rendered="@Hermes\\_Bot",
+            ),
+            MentionOccurrence(
+                platform_user_id="ou_bot",
+                start=0,
+                end=12,
+                rendered="@Hermes\\_Bot",
+                is_self=True,
+            ),
+        )
+        stripped, occurrences = strip_edge_self_mentions_with_occurrences(
+            text, refs, overlapping
+        )
+        self.assertEqual(stripped, text)
+        self.assertFalse(stripped.startswith("/"))
+        inbound_type = (
+            MessageType.COMMAND if stripped.startswith("/") else MessageType.TEXT
+        )
+        self.assertEqual(inbound_type, MessageType.TEXT)
+        self._assert_coordinates(stripped, occurrences)
+
+    def test_group_policy_still_sees_the_self_mention(self):
+        from gateway.platforms.feishu import FeishuAdapter, FeishuMentionRef
+
+        adapter = FeishuAdapter.__new__(FeishuAdapter)
+        self.assertTrue(
+            adapter._post_mentions_bot(
+                [FeishuMentionRef(name="Hermes_Bot", open_id="ou_bot", is_self=True)]
+            )
+        )
+        self.assertFalse(
+            adapter._post_mentions_bot(
+                [FeishuMentionRef(name="Hermes_Bot", open_id="ou_other")]
+            )
+        )

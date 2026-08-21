@@ -1898,6 +1898,49 @@ def _dequeue_pending_event(adapter, session_key: str) -> MessageEvent | None:
     return adapter.get_pending_message(session_key)
 
 
+class _DelegateResultHandoff:
+    """One claimed delegate result, owned by the ordinary turn carrying it.
+
+    ``session_id`` is the trusted Session the claim was made against, and it is
+    what settlement targets — compression can rotate the live session entry
+    mid-turn, but the event is bound to the ID that claimed it.
+
+    ``mark_provider_attempt`` is handed to the agent and fires at the real
+    provider/model invocation boundary.  It is a one-way latch: once the model
+    has seen the handoff, a later interruption, a zero-call recursive follow-up,
+    or a compression split cannot walk the consumption back.
+
+    Both transitions are thread-safe.  Real attempts are signalled from the
+    agent's worker threads and a turn may make several of them (stream retries,
+    provider fallbacks), so consumption is a one-way event and settlement is
+    taken under a lock — repeated attempts are fine, a second settlement is not.
+    """
+
+    __slots__ = ("session_id", "_consumed", "_settled", "_settle_lock")
+
+    def __init__(self, session_id: str) -> None:
+        self.session_id = session_id
+        self._consumed = threading.Event()
+        self._settled = False
+        self._settle_lock = threading.Lock()
+
+    def mark_provider_attempt(self) -> None:
+        """Called from the agent's worker thread as the request goes out."""
+        self._consumed.set()
+
+    @property
+    def consumed(self) -> bool:
+        return self._consumed.is_set()
+
+    def take_for_settlement(self) -> bool:
+        """True on the first call only — one claim settles exactly once."""
+        with self._settle_lock:
+            if self._settled:
+                return False
+            self._settled = True
+            return True
+
+
 _INTERRUPT_REASON_STOP = "Stop requested"
 _INTERRUPT_REASON_RESET = "Session reset requested"
 _INTERRUPT_REASON_TIMEOUT = "Execution timed out (inactivity)"
@@ -2705,12 +2748,131 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # and stays unbound); this guard keeps even an import failure from
         # touching gateway startup.
         try:
+            from gateway.sachima_delegate import set_delegate_delivery_factory
             from gateway.sachima_live_progress_binding import (
                 bind_live_progress_display_from_env,
             )
+            # Register the adapter-backed delivery factory BEFORE composing, so
+            # a coordinator restored at startup can settle the sends its
+            # durable records still owe. Composition reads env only; delivery
+            # needs the adapter registry, which is why the two are separate.
+            set_delegate_delivery_factory(self._delegate_delivery_from_origin)
+            # The control tool resolves a caller's Session from trusted Gateway
+            # context; the key→id fallback needs the host's own store.
+            from tools.sachima_delegate_control_tool import (
+                bind_delegate_control_session_store,
+            )
+            bind_delegate_control_session_store(self.session_store)
             bind_live_progress_display_from_env()
         except Exception:
             logger.debug("sachima live-progress host binding skipped", exc_info=True)
+
+    def _delegate_delivery_from_origin(self, origin):
+        """Rebuild a delegate delivery capability from a durable origin.
+
+        Used by restoration and by the observer's terminal delivery, where the
+        original event is long gone: only the origin survived. Returns ``None``
+        when the platform has no live adapter, and the coordinator records the
+        delivery as failed rather than claiming it happened.
+        """
+
+        try:
+            from gateway.config import Platform
+            from gateway.sachima_delegate import DelegateDelivery
+
+            platform = Platform(origin.platform)
+            adapter = self.adapters.get(platform)
+            if adapter is None:
+                return None
+            metadata = {}
+            if origin.thread_id:
+                metadata["thread_id"] = origin.thread_id
+            if origin.reply_anchor:
+                metadata["reply_to_message_id"] = origin.reply_anchor
+
+            # A Telegram private chat reads the anchor in shapes of its own,
+            # and the generic key is not one of them: an ordinary DM needs the
+            # explicit ``reply_to`` argument, and a durable private topic needs
+            # DM-topic metadata — without a recognized anchor that path refuses
+            # to send at all rather than land the result outside the topic it
+            # was asked for.  A positive numeric chat id is what makes a
+            # Telegram chat private, so nothing new is persisted for this.
+            # Every other platform keeps the generic metadata it already had
+            # and gains no new argument.
+            reply_to = None
+            if platform == Platform.TELEGRAM and self._is_telegram_private_chat_id(
+                origin.chat_id
+            ):
+                reply_to = origin.reply_anchor
+                if origin.thread_id:
+                    topic_metadata = self._thread_metadata_for_target(
+                        platform,
+                        origin.chat_id,
+                        origin.thread_id,
+                        chat_type="dm",
+                        reply_to_message_id=origin.reply_anchor,
+                    )
+                    if topic_metadata:
+                        metadata.update(topic_metadata)
+            anchor_kwargs = {"reply_to": reply_to} if reply_to else {}
+
+            async def _send_text(text: str):
+                return await adapter.send(
+                    origin.chat_id, text, metadata=metadata, **anchor_kwargs
+                )
+
+            async def _send_once(text: str):
+                return await adapter.send_plain_text_once(
+                    origin.chat_id, text, metadata=metadata, **anchor_kwargs
+                )
+
+            return DelegateDelivery(
+                send_text=_send_text,
+                send_plain_text_once=_send_once,
+                limit=adapter.single_message_text_limit(),
+                measure=adapter.measure_text,
+            )
+        except Exception:
+            logger.debug("delegate delivery unavailable", exc_info=True)
+            return None
+
+    def _consume_delegate_result_context(self, session_id: str) -> str:
+        """External AGENT results owed to this Session's **next** ordinary turn.
+
+        Returns the bounded projection text (or ``""``), marking each result's
+        Hermes sink ``in_flight``. It never mutates a running turn, never injects
+        a synthetic user message, and never touches the long-lived
+        system-prompt prefix — the caller folds this into the user turn that is
+        about to be sent, exactly like history backfill context.
+        """
+
+        try:
+            from gateway.sachima_delegate import bound_delegate_coordinator
+
+            coordinator = bound_delegate_coordinator()
+            if coordinator is None or not session_id:
+                return ""
+            lines = coordinator.pending_hermes_context(session_id)
+            return "\n\n".join(lines) if lines else ""
+        except Exception:
+            logger.debug("delegate result context skipped", exc_info=True)
+            return ""
+
+    def _settle_delegate_result_context(self, session_id: str, *, consumed: bool) -> None:
+        """Confirm a consumed handoff, or return an interrupted one to pending."""
+
+        try:
+            from gateway.sachima_delegate import bound_delegate_coordinator
+
+            coordinator = bound_delegate_coordinator()
+            if coordinator is None or not session_id:
+                return
+            if consumed:
+                coordinator.confirm_hermes_context(session_id)
+            else:
+                coordinator.release_hermes_context(session_id)
+        except Exception:
+            logger.debug("delegate result context settlement skipped", exc_info=True)
 
 
     def _wire_teams_pipeline_runtime(self) -> None:
@@ -5660,6 +5822,30 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Update delivery router with adapters
         self.delivery_router.adapters = self.adapters
         self._wire_teams_pipeline_runtime()
+
+        # Delegate restoration is a real startup barrier, not lazy work left
+        # for the first unrelated slash command or model tool.  Bind the
+        # coordinator to this long-lived Gateway loop before restoring so every
+        # observer armed by restoration or a later sync tool remains runnable.
+        try:
+            from gateway.sachima_delegate import bound_delegate_coordinator
+
+            _delegate_coordinator = bound_delegate_coordinator()
+            if _delegate_coordinator is not None:
+                _delegate_coordinator.bind_lifecycle_loop(
+                    asyncio.get_running_loop()
+                )
+                await _delegate_coordinator.restore()
+        except Exception:
+            # Optional composition still cannot crash Gateway startup, but a
+            # graph that did not finish restoration must admit no new work.
+            logger.warning("Sachima delegate startup restoration failed")
+            try:
+                from gateway.sachima_delegate import unbind_delegate_coordinator
+
+                unbind_delegate_coordinator()
+            except Exception:
+                pass
 
         self._running = True
         self._update_runtime_status("running")
@@ -8986,6 +9172,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         
         # Set session context variables for tools (task-local, concurrency-safe)
         _session_env_tokens = self._set_session_env(context)
+        # Declared before the try so the finally can settle it on every exit
+        # path, including the early returns above the fold-in site.
+        _delegate_handoff: Optional[_DelegateResultHandoff] = None
         
         # Read privacy.redact_pii from config (re-read per message)
         _redact_pii = False
@@ -9515,6 +9704,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if message_text is None:
             return
 
+        # Sachima delegate: a finished external AGENT task becomes visible at
+        # the NEXT ordinary turn — this one. It rides on the user turn that is
+        # about to be sent (like history-backfill context), so no running turn
+        # is mutated, no synthetic user message is injected, and the long-lived
+        # system-prompt prefix is untouched.
+        _delegate_result_context = self._consume_delegate_result_context(
+            session_entry.session_id
+        )
+        if _delegate_result_context:
+            message_text = (
+                f"{_delegate_result_context}\n\n[New message]\n{message_text}"
+            )
+            # Settlement targets the Session the claim was made against, not
+            # whatever the entry holds when the turn ends.
+            _delegate_handoff = _DelegateResultHandoff(session_entry.session_id)
+
         # Capture the platform event time as message metadata and keep the
         # persisted transcript clean (strip any leading timestamp prefix).
         # This runs regardless of the toggle so storage stays clean and the
@@ -9586,6 +9791,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 channel_prompt=event.channel_prompt,
                 persist_user_message=persist_user_message,
                 persist_user_timestamp=persist_user_timestamp,
+                delegate_handoff=_delegate_handoff,
             )
 
             # Stop persistent typing indicator now that the agent is done
@@ -10176,6 +10382,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "Try again or use /reset to start a fresh session."
             )
         finally:
+            # The delegate handoff is confirmed only if a real provider attempt
+            # started for the turn that carried it. A setup/hook/budget failure
+            # before that boundary returns it to ``pending`` so a later ordinary
+            # turn still sees the result rather than losing it to a crash.
+            if _delegate_handoff is not None and _delegate_handoff.take_for_settlement():
+                self._settle_delegate_result_context(
+                    _delegate_handoff.session_id,
+                    consumed=_delegate_handoff.consumed,
+                )
             # Restore session context variables to their pre-handler state
             self._clear_session_env(_session_env_tokens)
 
@@ -12239,6 +12454,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         return False
 
     @staticmethod
+    def _is_telegram_private_chat_id(chat_id: Optional[str]) -> bool:
+        """Return True for a Telegram private chat's durable numeric chat id.
+
+        Telegram private chats carry a positive user id; groups, supergroups
+        and channels are negative.  Mirrors the adapter's own test so a durable
+        origin can be classified without persisting a chat type.
+        """
+        try:
+            return int(str(chat_id)) > 0
+        except (TypeError, ValueError):
+            return False
+
+    @staticmethod
     def _reply_anchor_for_event(event: MessageEvent) -> Optional[str]:
         """Return the platform-specific reply anchor for GatewayRunner sends."""
         return _reply_anchor_for_event(event)
@@ -12791,6 +13019,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         Returns a list of reset tokens; pass them to ``_clear_session_env``
         in a ``finally`` block.
+
+        Both ``session_key`` and ``session_id`` are forwarded. A tool that must
+        act on *this* conversation — the delegate control surface is the
+        concrete case — needs the id, and deriving it from a model-supplied
+        argument would let a model act on somebody else's session. The key stays
+        the fallback for callers that only ever had one.
         """
         from gateway.session_context import set_session_vars
         return set_session_vars(
@@ -12801,6 +13035,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             user_id=str(context.source.user_id) if context.source.user_id else "",
             user_name=str(context.source.user_name) if context.source.user_name else "",
             session_key=context.session_key,
+            session_id=context.session_id,
             message_id=str(context.source.message_id) if context.source.message_id else "",
         )
 
@@ -13933,6 +14168,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         idle for 29 min would otherwise trip the watchdog before the new
         turn makes its first API call (#9051).
         """
+        # A worker from the turn this agent last ran can still be alive inside
+        # this same object — an abandoned executor is not awaited.  Retire its
+        # provider-dispatch ownership *before* the new turn rebinds the
+        # per-message callbacks below: otherwise that stale request, released
+        # by execution middleware after the rebind, would dispatch under and
+        # consume the claim this turn is about to install.
+        _retire_lease = getattr(
+            agent, "_cancel_active_provider_dispatch_lease", None
+        )
+        if callable(_retire_lease):
+            _retire_lease()
         if interrupt_depth == 0:
             agent._last_activity_ts = time.time()
             agent._last_activity_desc = "starting new turn (cached)"
@@ -14417,6 +14663,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         persist_user_message: Optional[str] = None,
         persist_user_timestamp: Optional[float] = None,
         _progress_transaction: Optional[Dict[str, Any]] = None,
+        delegate_handoff: Optional[_DelegateResultHandoff] = None,
     ) -> Dict[str, Any]:
         """Profile-scoping wrapper around the agent run.
 
@@ -14435,6 +14682,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 channel_prompt=channel_prompt, persist_user_message=persist_user_message,
                 persist_user_timestamp=persist_user_timestamp,
                 _progress_transaction=_progress_transaction,
+                delegate_handoff=delegate_handoff,
             )
 
         profile_home = self._resolve_profile_home_for_source(source)
@@ -14446,6 +14694,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 channel_prompt=channel_prompt, persist_user_message=persist_user_message,
                 persist_user_timestamp=persist_user_timestamp,
                 _progress_transaction=_progress_transaction,
+                delegate_handoff=delegate_handoff,
             )
 
     def _resolve_profile_home_for_source(self, source: SessionSource) -> "Path":
@@ -14478,6 +14727,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         persist_user_message: Optional[str] = None,
         persist_user_timestamp: Optional[float] = None,
         _progress_transaction: Optional[Dict[str, Any]] = None,
+        delegate_handoff: Optional[_DelegateResultHandoff] = None,
     ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
@@ -14492,6 +14742,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         Supports interruption via new messages.
         """
         # ---- Proxy mode: delegate to remote API server ----
+        # No local agent runs here, so ``delegate_handoff`` is never marked and
+        # a claimed result settles back to ``pending`` — it reappears on the
+        # next ordinary turn rather than being lost.
         if self._get_proxy_url():
             return await self._run_agent_via_proxy(
                 message=message,
@@ -15704,6 +15957,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     logger.error("Progress message error: %s", e)
                     await asyncio.sleep(1)
         
+        # Provider-dispatch ownership for this turn, captured *before* the
+        # executor is scheduled and holding the claim by value.  The worker
+        # below is a daemon this coroutine may abandon (interrupt, inactivity
+        # timeout, shutdown) without awaiting it, on an agent the next turn
+        # reuses and rebinds — so the answer to "whose request is this?" cannot
+        # be read off the agent later.  Cancelled first in the ``finally``.
+        from agent.chat_completion_helpers import (
+            ProviderDispatchLease,
+            provider_dispatch_lease_kwargs,
+        )
+
+        _dispatch_lease = ProviderDispatchLease(
+            delegate_handoff.mark_provider_attempt
+            if delegate_handoff is not None
+            else None
+        )
+
         # We need to share the agent instance for interrupt support
         agent_holder = [None]  # Mutable container for the agent instance
         result_holder = [None]  # Mutable container for the result
@@ -16079,6 +16349,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 voice_ack_callback if _voice_ack_guild[0] is not None else None
             )
             agent.step_callback = _step_callback_sync if _hooks_ref.loaded_hooks else None
+            # A claimed delegate handoff is consumed the moment this turn's
+            # request actually leaves for the provider — not when the run
+            # returns a result shape that looks like work happened. Assigned
+            # every turn (None included) so a cached agent never carries a
+            # previous turn's handoff.
+            agent.provider_attempt_callback = (
+                delegate_handoff.mark_provider_attempt
+                if delegate_handoff is not None
+                else None
+            )
             agent.stream_delta_callback = _stream_delta_cb
             agent.interim_assistant_callback = _interim_assistant_cb if _want_interim_messages else None
             agent.status_callback = _status_callback_sync
@@ -16546,6 +16826,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _conversation_kwargs["persist_user_message"] = message
                 if _persist_user_timestamp_override is not None:
                     _conversation_kwargs["persist_user_timestamp"] = _persist_user_timestamp_override
+                # Only a real agent takes the private lease; suite doubles and
+                # older shims take the request and nothing else, and dispatch
+                # no provider call to own.
+                _conversation_kwargs.update(
+                    provider_dispatch_lease_kwargs(
+                        agent.run_conversation, _dispatch_lease
+                    )
+                )
                 result = agent.run_conversation(_api_run_message, **_conversation_kwargs)
             finally:
                 unregister_gateway_notify(_approval_session_key)
@@ -17445,10 +17733,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     event_message_id=next_message_id,
                     channel_prompt=next_channel_prompt,
                     _progress_transaction=progress_transaction,
+                    # Still the same claimed turn: if the interrupted attempt
+                    # never reached a provider, the follow-up that does must
+                    # still be able to mark the handoff consumed.
+                    delegate_handoff=delegate_handoff,
                 )
                 response = _preserve_queued_followup_history_offset(result, followup_result)
                 return response
         finally:
+            # First, before any awaited cleanup, the running-state release, or
+            # the return that lets settlement run: this turn is over, so retire
+            # its provider-dispatch ownership.  The executor worker is a daemon
+            # that is never awaited — an interrupt, an inactivity timeout or a
+            # shutdown leaves it running below the dispatch point — and from
+            # here on it must be unable to dispatch or to consume the claim.
+            # Cancellation waits for a commit that already won, so settlement
+            # below reads a stable answer either way.
+            _dispatch_lease.cancel()
             # Stop progress sender, interrupt monitor, and notification task
             if progress_tracker is not None and progress_transaction_owner:
                 try:

@@ -1012,3 +1012,107 @@ class TestTelegramGuestMentionGating:
         message.caption_entities = [_guest_mention_entity(text)]
 
         assert adapter._should_process_message(message) is True
+
+
+# =========================================================================
+# send_plain_text_once — one already-bounded plain body, one API call
+# =========================================================================
+def _one_call_adapter(adapter):
+    """Record every low-level ``sendMessage`` this adapter dispatches."""
+    calls = []
+
+    async def _send_message(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(message_id=len(calls))
+
+    adapter._bot = MagicMock()
+    adapter._bot.send_message = _send_message
+    adapter.send_typing = AsyncMock()
+    return calls
+
+
+class TestTelegramSinglePlainTextMessage:
+    """The Sachima delegate terminal result is one visible message or nothing.
+
+    ``send()`` is the wrong tool for it: MarkdownV2 escaping can double the
+    body's UTF-16 length, the Bot API rich path can re-render it, and whatever
+    is left over is split across several messages.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_body_at_the_advertised_bound_is_one_unescaped_send(self, adapter):
+        calls = _one_call_adapter(adapter)
+        rich_attempts = []
+        adapter._try_send_rich = lambda *args, **kwargs: rich_attempts.append(args)
+        # Every "-" escapes to "\-" on the ordinary path: 4096 in, 8192 out.
+        body = "-" * adapter.single_message_text_limit()
+
+        result = await adapter.send_plain_text_once("12345", body)
+
+        assert result.success is True
+        assert len(calls) == 1
+        assert calls[0]["text"] == body
+        assert calls[0]["parse_mode"] is None
+        assert "(1/" not in calls[0]["text"]
+        assert rich_attempts == []
+
+    @pytest.mark.asyncio
+    async def test_emoji_are_measured_and_sent_in_the_platforms_own_unit(self, adapter):
+        """Telegram counts UTF-16 code units, so an emoji costs two."""
+        assert adapter.measure_text("🙂") == 2
+        assert adapter.single_message_text_limit() == adapter.MAX_MESSAGE_LENGTH
+
+        calls = _one_call_adapter(adapter)
+        body = "🙂" * (adapter.single_message_text_limit() // 2)
+        assert adapter.measure_text(body) == adapter.single_message_text_limit()
+
+        result = await adapter.send_plain_text_once("12345", body)
+
+        assert result.success is True
+        assert len(calls) == 1
+        assert calls[0]["text"] == body
+
+    @pytest.mark.asyncio
+    async def test_markdown_in_the_body_reaches_the_user_verbatim(self, adapter):
+        calls = _one_call_adapter(adapter)
+        body = "任务 dtask_x 已完成:\n\n**not bold** `not code` _not italic_\n\n完整结果: dres_abc"
+
+        await adapter.send_plain_text_once("12345", body)
+
+        assert len(calls) == 1
+        assert calls[0]["text"] == body
+        assert "\\" not in calls[0]["text"]
+
+    @pytest.mark.asyncio
+    async def test_thread_routing_survives_the_bypass(self, adapter):
+        calls = _one_call_adapter(adapter)
+
+        await adapter.send_plain_text_once(
+            "-1001234567890", "done", metadata={"thread_id": "42"}
+        )
+
+        assert len(calls) == 1
+        assert calls[0]["message_thread_id"] == 42
+
+    @pytest.mark.asyncio
+    async def test_an_explicit_reply_anchor_survives_the_bypass(self, adapter):
+        calls = _one_call_adapter(adapter)
+
+        await adapter.send_plain_text_once("12345", "done", reply_to="777")
+
+        assert len(calls) == 1
+        assert calls[0]["reply_to_message_id"] == 777
+
+    @pytest.mark.asyncio
+    async def test_ordinary_send_still_formats_and_splits(self, adapter):
+        """The bypass is additive — the ordinary path is untouched."""
+        calls = _one_call_adapter(adapter)
+        adapter._should_attempt_rich = lambda *_args, **_kwargs: False
+        body = "-" * adapter.MAX_MESSAGE_LENGTH
+
+        result = await adapter.send("12345", body)
+
+        assert result.success is True
+        assert len(calls) == 3
+        assert calls[0]["parse_mode"] is not None
+        assert calls[0]["text"].startswith("\\-")

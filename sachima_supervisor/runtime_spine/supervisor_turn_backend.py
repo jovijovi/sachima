@@ -312,6 +312,14 @@ class SupervisorTurnBackend(Protocol):
     prove a later recovery is a recovery *of this dispatch* without the third.
     :meth:`recover_uncertain_submission` is handed the same identity back and
     refuses anything that does not match it.
+
+    Three surfaces exist for the *restart* case, and each of them names what it
+    acts on rather than letting the backend choose:
+    :meth:`rehydrate_pending_intent` rebuilds one exact pending dispatch without
+    any I/O, :meth:`accepted_turn_for_binding` returns the handoff for one exact
+    accepted record (never the task's latest), and :meth:`cancel_run` is the
+    Run-scoped cancel — the one that leaves the Session reusable, as distinct
+    from :meth:`kill`, which ends the task.
     """
 
     def create_or_attach(self, task_id: str, refs: tuple[str, ...]) -> str: ...
@@ -336,6 +344,14 @@ class SupervisorTurnBackend(Protocol):
     def latest_accepted_turn(
         self, task_id: str, *, session_ref: str
     ) -> DispatchedSupervisorTurn | None: ...
+
+    def accepted_turn_for_binding(
+        self, task_id: str, binding: Any, *, session_ref: str
+    ) -> DispatchedSupervisorTurn: ...
+
+    def rehydrate_pending_intent(self, task_id: str, dispatch_ref: str) -> str: ...
+
+    def cancel_run(self, handle: str) -> Any: ...
 
     @property
     def task_locks(self) -> TaskOperationLocks:

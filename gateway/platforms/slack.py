@@ -1205,6 +1205,49 @@ class SlackAdapter(BasePlatformAdapter):
             logger.error("[Slack] Send error: %s", e, exc_info=True)
             return SendResult(success=False, error=str(e))
 
+    async def send_plain_text_once(
+        self,
+        chat_id: str,
+        text: str,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Post one already-bounded body as exactly one plain ``chat_postMessage``.
+
+        Deliberately not ``send()``. That path rewrites the body as mrkdwn, can
+        divert it into an ephemeral slash-command reply that no one else in the
+        channel sees, and splits anything long across several posts — and every
+        one of those turns "one terminal, one message" into something else. The
+        body is posted as given with ``mrkdwn`` off and no chunking.
+
+        Thread placement is resolved exactly as ``send()`` resolves it: where a
+        message lands is not formatting.
+        """
+        if not self._app:
+            return SendResult(success=False, error="Not connected")
+
+        try:
+            kwargs: Dict[str, Any] = {
+                "channel": chat_id,
+                "text": text or "",
+                "mrkdwn": False,
+            }
+            thread_ts = self._resolve_thread_ts(reply_to, metadata)
+            if thread_ts:
+                kwargs["thread_ts"] = thread_ts
+                if self.config.extra.get("reply_broadcast", False):
+                    kwargs["reply_broadcast"] = True
+
+            result = await self._get_client(chat_id).chat_postMessage(**kwargs)
+            return SendResult(
+                success=True,
+                message_id=result.get("ts") if result else None,
+                raw_response=result,
+            )
+        except Exception as e:
+            logger.error("[Slack] Plain-text send error: %s", e, exc_info=True)
+            return SendResult(success=False, error=str(e))
+
     async def send_private_notice(
         self,
         chat_id: str,

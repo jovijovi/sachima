@@ -100,7 +100,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("background", "Run a prompt in the background", "Session",
                aliases=("bg", "btw"), args_hint="<prompt>"),
     CommandDef("delegate", "Delegate a task to the external supervised agent", "Session",
-               gateway_only=True, args_hint="<task>"),
+               gateway_only=True, args_hint="[@AGENT] <task>"),
     CommandDef("agents", "Show active agents and running tasks", "Session",
                aliases=("tasks",)),
     CommandDef("queue", "Queue a prompt for the next turn (doesn't interrupt)", "Session",

@@ -640,6 +640,36 @@ class ArsdRunBindingLedger:
             return None
         return existing
 
+    def snapshot_exact(
+        self, task_id: Any, backend_handle: Any, dispatch_ref: Any
+    ) -> ArsdRunBinding | None:
+        """The one record at this exact key, in whichever state it holds.
+
+        This is the classification read, and it is deliberately *one* read: the
+        whole ledger is validated and the exact record returned under a single
+        ``_lock`` acquisition, so a caller can never observe a combination that
+        never existed on disk. Asking :meth:`resolve_pending` and then
+        :meth:`resolve` reads the file twice, and a ``finalize_accepted`` that
+        lands between them answers "no intent" to the first and "no acceptance"
+        to the second — a fabricated third state in which a durable Run appears
+        to have been neither submitted nor accepted, which is exactly the
+        evidence a coordinator would clean up on.
+
+        ``backend_handle`` is the ledger key's second component. The stored
+        field is still named ``session_id`` for record compatibility; it has
+        never been the ARS Session id, and naming it honestly here keeps a
+        caller from passing one.
+
+        A stable ledger failure (torn, unparseable, or self-contradictory
+        bytes) propagates as it does everywhere else: the damaged file is left
+        exactly as it is, and the caller treats "I could not read it" as its own
+        conservative disposition rather than as an absence.
+        """
+
+        key = derive_arsd_binding_key(task_id, backend_handle, dispatch_ref)
+        with self._lock:
+            return self._read().get(key)
+
     def resolve_for_task(self, task_id: Any) -> tuple[ArsdRunBinding, ...]:
         """Every record of one task, both states, in stable key order."""
 

@@ -445,6 +445,15 @@ def init_agent(
     agent._interrupt_thread_signal_pending = False
     agent._client_lock = threading.RLock()
 
+    # Provider-dispatch turn ownership.  The gateway caches this instance and
+    # rebinds its per-turn callbacks in place, so "which turn does this request
+    # belong to?" is answered by the lease installed here rather than by
+    # reading the agent.  Its own lock, taken only around slot swaps — never
+    # around a provider call — so an abandoned worker activating late can be
+    # rejected without touching the turn that replaced it.
+    agent._active_provider_lease = None
+    agent._active_provider_lease_lock = threading.Lock()
+
     # /steer mechanism — inject a user note into the next tool result
     # without interrupting the agent. Unlike interrupt(), steer() does
     # NOT set _interrupt_requested; it waits for the current tool batch

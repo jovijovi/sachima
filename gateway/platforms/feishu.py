@@ -135,6 +135,7 @@ FEISHU_WEBHOOK_AVAILABLE = aiohttp is not None
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
     BasePlatformAdapter,
+    MentionOccurrence,
     MessageEvent,
     MessageType,
     ProcessingOutcome,
@@ -501,6 +502,7 @@ FALLBACK_ATTACHMENT_TEXT = "[Attachment]"
 _PREFERRED_LOCALES = ("zh_cn", "en_us")
 _MARKDOWN_SPECIAL_CHARS_RE = re.compile(r"([\\`*_{}\[\]()#+\-!|>~])")
 _MENTION_PLACEHOLDER_RE = re.compile(r"@_user_\d+")
+_AT_ALL_LITERAL_RE = re.compile(r"@_all")
 _MENTION_BOUNDARY_CHARS = frozenset(" \t\n\r.,;:!?、，。；：！？()[]{}<>\"'`")
 _TRAILING_TERMINAL_PUNCT = frozenset(" \t\n\r.!?。！？")
 _WHITESPACE_RE = re.compile(r"\s+")
@@ -571,6 +573,90 @@ class _FeishuBotIdentity:
         return bool(self.name) and name == self.name
 
 
+def _mention_render(display_name: str, *, escape: bool) -> str:
+    """The visible ``@name`` for one mention, in normalization-invariant form.
+
+    Whitespace is collapsed here rather than later because a mention render has
+    to survive the normalizer unchanged: it is re-inserted *after* normalization
+    when occurrence coordinates are resolved, so anything the normalizer would
+    still have rewritten would leave the recorded offsets describing a string
+    that no longer exists.
+    """
+
+    collapsed = _WHITESPACE_RE.sub(" ", display_name or "").strip() or "user"
+    return "@" + (_escape_markdown_text(collapsed) if escape else collapsed)
+
+
+class _MentionOccurrenceCollector:
+    """Carries mention identity through normalization, then hands back offsets.
+
+    Normalization exists to make text readable — it collapses whitespace, drops
+    empty lines, and joins rows — and every one of those steps moves characters.
+    Rendering ``@name`` first and trying to find it afterwards cannot work:
+    two people legitimately share a display name, so the search is ambiguous
+    exactly where identity matters most.
+
+    So each mention is rendered as a unique placeholder token first. The token
+    is lowercase-alphanumeric, which makes it invariant under every
+    normalization step *and* under markdown escaping, so it arrives in the final
+    text intact and in the right place. :meth:`resolve` then swaps each token for
+    its real render and records the half-open ``[start, end)`` span that swap
+    occupied — coordinates into the finished string, by construction rather than
+    by search. The token never reaches a user-visible surface: the text a caller
+    receives is the resolved one.
+    """
+
+    def __init__(self) -> None:
+        # Per-message, so a token can never be typed by a user or survive from
+        # one message into the next.
+        self._nonce = uuid.uuid4().hex[:12]
+        self._slots: List[tuple[str, str, bool, bool]] = []
+
+    def token(
+        self,
+        render: str,
+        *,
+        open_id: str = "",
+        is_self: bool = False,
+        is_all: bool = False,
+    ) -> str:
+        index = len(self._slots)
+        self._slots.append((render, open_id, is_self, is_all))
+        return f"zzat{self._nonce}x{index}zz"
+
+    def resolve(self, text: str) -> tuple[str, tuple[MentionOccurrence, ...]]:
+        """Swap tokens back for renders and return the positioned occurrences."""
+
+        if not self._slots:
+            return text, ()
+        pattern = re.compile(rf"zzat{self._nonce}x(\d+)zz")
+        parts: List[str] = []
+        occurrences: List[MentionOccurrence] = []
+        cursor = 0
+        length = 0
+        for match in pattern.finditer(text):
+            slot = self._slots[int(match.group(1))]
+            render, open_id, is_self, is_all = slot
+            chunk = text[cursor : match.start()]
+            parts.append(chunk)
+            length += len(chunk)
+            occurrences.append(
+                MentionOccurrence(
+                    platform_user_id=open_id,
+                    start=length,
+                    end=length + len(render),
+                    rendered=render,
+                    is_self=is_self,
+                    is_all=is_all,
+                )
+            )
+            parts.append(render)
+            length += len(render)
+            cursor = match.end()
+        parts.append(text[cursor:])
+        return "".join(parts), tuple(occurrences)
+
+
 @dataclass(frozen=True)
 class FeishuPostParseResult:
     text_content: str
@@ -588,6 +674,10 @@ class FeishuNormalizedMessage:
     mentions: List[FeishuMentionRef] = field(default_factory=list)
     relation_kind: str = "plain"
     metadata: Dict[str, Any] = field(default_factory=dict)
+    #: Neutral, positioned mention occurrences into ``text_content`` — the
+    #: provenance an explicit AGENT selector is verified against. Empty for
+    #: message kinds that carry no addressable command text.
+    mention_occurrences: tuple = ()
 
 
 @dataclass(frozen=True)
@@ -843,7 +933,15 @@ def parse_feishu_post_payload(
     payload: Any,
     *,
     mentions_map: Optional[Dict[str, FeishuMentionRef]] = None,
+    collector: Optional[_MentionOccurrenceCollector] = None,
 ) -> FeishuPostParseResult:
+    """Render one post payload, optionally preserving ``<at>`` provenance.
+
+    The ``collector`` rides all the way down to the ``<at>`` elements, so title
+    composition, per-row normalization, and the newline join all move mention
+    *tokens* rather than rendering identity away first.
+    """
+
     resolved = _resolve_post_payload(payload)
     if not resolved:
         return FeishuPostParseResult(text_content=FALLBACK_POST_TEXT)
@@ -852,7 +950,9 @@ def parse_feishu_post_payload(
     media_refs: List[FeishuPostMediaRef] = []
     parts: List[str] = []
 
-    title = _normalize_feishu_text(str(resolved.get("title", "")).strip())
+    title = _normalize_feishu_text(
+        str(resolved.get("title", "")).strip(), None, collector
+    )
     if title:
         parts.append(title)
 
@@ -861,9 +961,13 @@ def parse_feishu_post_payload(
             continue
         row_text = _normalize_feishu_text(
             "".join(
-                _render_post_element(item, image_keys, media_refs, mentions_map)
+                _render_post_element(
+                    item, image_keys, media_refs, mentions_map, collector
+                )
                 for item in row
-            )
+            ),
+            None,
+            collector,
         )
         if row_text:
             parts.append(row_text)
@@ -924,6 +1028,7 @@ def _render_post_element(
     image_keys: List[str],
     media_refs: List[FeishuPostMediaRef],
     mentions_map: Optional[Dict[str, FeishuMentionRef]] = None,
+    collector: Optional[_MentionOccurrenceCollector] = None,
 ) -> str:
     if isinstance(element, str):
         return element
@@ -942,20 +1047,34 @@ def _render_post_element(
         return f"[{escaped_label}]({href})" if href else escaped_label
     if tag == "at":
         # Post <at>.user_id is a placeholder ("@_user_N" or "@_all"); look up
-        # the real ref in mentions_map for the display name.
+        # the real ref in mentions_map for the display name AND the stable
+        # open_id, which is the only thing an AGENT selector may be resolved
+        # from. An element whose placeholder maps to nothing has a rendered
+        # name and no identity, so it is emitted as an occurrence carrying no
+        # platform id — visible, and structurally unable to select.
         placeholder = str(element.get("user_id", "")).strip()
         if placeholder == "@_all":
             # Feishu SDK sometimes omits @_all from the top-level mentions
             # payload; record it here so the caller's mention list stays complete.
             if mentions_map is not None and "@_all" not in mentions_map:
                 mentions_map["@_all"] = FeishuMentionRef(is_all=True)
-            return "@all"
+            if collector is None:
+                return "@all"
+            return collector.token("@all", is_all=True)
         ref = (mentions_map or {}).get(placeholder)
         if ref is not None:
             display_name = ref.name or ref.open_id or "user"
         else:
             display_name = str(element.get("user_name", "")).strip() or "user"
-        return f"@{_escape_markdown_text(display_name)}"
+        render = _mention_render(display_name, escape=True)
+        if collector is None:
+            return render
+        return collector.token(
+            render,
+            open_id="" if ref is None else ref.open_id,
+            is_self=bool(ref is not None and ref.is_self),
+            is_all=bool(ref is not None and ref.is_all),
+        )
     if tag in {"img", "image"}:
         image_key = str(element.get("image_key", "")).strip()
         if image_key and image_key not in image_keys:
@@ -993,7 +1112,9 @@ def _render_post_element(
 
     nested_parts: List[str] = []
     for key in ("text", "title", "content", "children", "elements"):
-        extracted = _render_nested_post(element.get(key), image_keys, media_refs, mentions_map)
+        extracted = _render_nested_post(
+            element.get(key), image_keys, media_refs, mentions_map, collector
+        )
         if extracted:
             nested_parts.append(extracted)
     return " ".join(part for part in nested_parts if part)
@@ -1004,6 +1125,7 @@ def _render_nested_post(
     image_keys: List[str],
     media_refs: List[FeishuPostMediaRef],
     mentions_map: Optional[Dict[str, FeishuMentionRef]] = None,
+    collector: Optional[_MentionOccurrenceCollector] = None,
 ) -> str:
     if isinstance(value, str):
         return _escape_markdown_text(value)
@@ -1011,17 +1133,27 @@ def _render_nested_post(
         return " ".join(
             part
             for item in value
-            for part in [_render_nested_post(item, image_keys, media_refs, mentions_map)]
+            for part in [
+                _render_nested_post(
+                    item, image_keys, media_refs, mentions_map, collector
+                )
+            ]
             if part
         )
     if isinstance(value, dict):
-        direct = _render_post_element(value, image_keys, media_refs, mentions_map)
+        direct = _render_post_element(
+            value, image_keys, media_refs, mentions_map, collector
+        )
         if direct:
             return direct
         return " ".join(
             part
             for item in value.values()
-            for part in [_render_nested_post(item, image_keys, media_refs, mentions_map)]
+            for part in [
+                _render_nested_post(
+                    item, image_keys, media_refs, mentions_map, collector
+                )
+            ]
             if part
         )
     return ""
@@ -1049,22 +1181,32 @@ def normalize_feishu_message(
         # the text literal contains it (confirmed via im.v1.message.get).
         if "@_all" in text and "@_all" not in mentions_map:
             mentions_map["@_all"] = FeishuMentionRef(is_all=True)
+        collector = _MentionOccurrenceCollector()
+        content, occurrences = collector.resolve(
+            _normalize_feishu_text(text, mentions_map, collector)
+        )
         return FeishuNormalizedMessage(
             raw_type=normalized_type,
-            text_content=_normalize_feishu_text(text, mentions_map),
+            text_content=content,
             mentions=list(mentions_map.values()),
+            mention_occurrences=occurrences,
         )
     if normalized_type == "post":
         # The walker writes back to mentions_map if it encounters
         # <at user_id="@_all">, so reading .values() after parsing is enough.
-        parsed_post = parse_feishu_post_payload(payload, mentions_map=mentions_map)
+        collector = _MentionOccurrenceCollector()
+        parsed_post = parse_feishu_post_payload(
+            payload, mentions_map=mentions_map, collector=collector
+        )
+        content, occurrences = collector.resolve(parsed_post.text_content)
         return FeishuNormalizedMessage(
             raw_type=normalized_type,
-            text_content=parsed_post.text_content,
+            text_content=content,
             image_keys=list(parsed_post.image_keys),
             media_refs=list(parsed_post.media_refs),
             mentions=list(mentions_map.values()),
             relation_kind="post",
+            mention_occurrences=occurrences,
         )
     mention_refs = list(mentions_map.values())
     if normalized_type == "image":
@@ -1371,17 +1513,34 @@ def _first_non_empty_text(*values: Any) -> str:
 def _normalize_feishu_text(
     text: str,
     mentions_map: Optional[Dict[str, FeishuMentionRef]] = None,
+    collector: Optional[_MentionOccurrenceCollector] = None,
 ) -> str:
+    """Normalize one Feishu text body, optionally preserving mention provenance.
+
+    With a ``collector`` every mention is emitted as its placeholder token
+    instead of its render, so the caller can resolve final-text coordinates
+    afterwards. Without one the behavior is exactly what it always was.
+    """
+
     def _sub(match: "re.Match[str]") -> str:
         key = match.group(0)
         ref = (mentions_map or {}).get(key)
         if ref is None:
             return " "
-        name = ref.name or ref.open_id or "user"
-        return f"@{name}"
+        render = _mention_render(ref.name or ref.open_id, escape=False)
+        if collector is None:
+            return render
+        return collector.token(
+            render, open_id=ref.open_id, is_self=ref.is_self, is_all=ref.is_all
+        )
+
+    def _sub_all(match: "re.Match[str]") -> str:
+        if collector is None:
+            return "@all"
+        return collector.token("@all", is_all=True)
 
     cleaned = _MENTION_PLACEHOLDER_RE.sub(_sub, text or "")
-    cleaned = cleaned.replace("@_all", "@all")
+    cleaned = _AT_ALL_LITERAL_RE.sub(_sub_all, cleaned)
     cleaned = cleaned.replace("\r\n", "\n").replace("\r", "\n")
     cleaned = "\n".join(_WHITESPACE_RE.sub(" ", line).strip() for line in cleaned.split("\n"))
     cleaned = "\n".join(line for line in cleaned.split("\n") if line)
@@ -1466,49 +1625,249 @@ def _build_mention_hint(mentions: Sequence[FeishuMentionRef]) -> str:
     return f"[Mentioned: {', '.join(parts)}]" if parts else ""
 
 
+def _self_mention_names(mentions: Sequence[FeishuMentionRef]) -> List[str]:
+    return [
+        f"@{ref.name or ref.open_id or 'user'}" for ref in mentions if ref.is_self
+    ]
+
+
+def _strip_edge_self_mention_cells(
+    cells: List[tuple[str, Any]], self_names: List[str]
+) -> List[tuple[str, Any]]:
+    """The edge self-mention strip, over ``(char, tag)`` cells.
+
+    One implementation serves both callers: the plain string strip passes
+    ``None`` tags and joins the characters back, and the occurrence-aware strip
+    tags each character with its mention so the survivors can be re-positioned
+    against the shortened text. Written as deletions over cells rather than
+    string slicing precisely so nothing has to re-derive where the characters
+    ended up.
+
+    Leading: strip consecutive self-mentions unconditionally.
+    Trailing: strip only when followed by whitespace/terminal punct, so
+    mid-sentence references ("don't @Bot again") stay intact.
+    The leading boundary check prevents @Al from eating @Alice.
+    """
+
+    def _text(seq: List[tuple[str, Any]]) -> str:
+        return "".join(char for char, _tag in seq)
+
+    def _lstrip(seq: List[tuple[str, Any]]) -> List[tuple[str, Any]]:
+        index = 0
+        while index < len(seq) and seq[index][0].isspace():
+            index += 1
+        return seq[index:]
+
+    def _rstrip(seq: List[tuple[str, Any]]) -> List[tuple[str, Any]]:
+        end = len(seq)
+        while end > 0 and seq[end - 1][0].isspace():
+            end -= 1
+        return seq[:end]
+
+    remaining = _lstrip(cells)
+    while True:
+        rendered = _text(remaining)
+        for name in self_names:
+            if not rendered.startswith(name):
+                continue
+            after = remaining[len(name) :]
+            if after and after[0][0] not in _MENTION_BOUNDARY_CHARS:
+                continue
+            remaining = _lstrip(after)
+            break
+        else:
+            break
+
+    while True:
+        index = len(remaining)
+        while index > 0 and remaining[index - 1][0] in _TRAILING_TERMINAL_PUNCT:
+            index -= 1
+        body = remaining[:index]
+        tail = remaining[index:]
+        rendered_body = _text(body)
+        for name in self_names:
+            if rendered_body.endswith(name):
+                remaining = _rstrip(body[: len(body) - len(name)]) + tail
+                break
+        else:
+            return remaining
+
+
+def _strip_edge_self_mention_occurrence_cells(
+    cells: List[tuple[str, Any]], self_tags: frozenset
+) -> List[tuple[str, Any]]:
+    """The edge self-mention strip, by mention *span* rather than display text.
+
+    A rendered mention is presentation, not identity. A post ``<at>`` arrives
+    Markdown-escaped — a bot named ``Hermes_Bot`` renders as ``@Hermes\\_Bot`` —
+    so comparing a raw ``@name`` misses exactly the names that carry
+    punctuation, leaves the prefix in place, and costs the user the command
+    behind it. The occurrence already records where the mention sits and whose
+    it is, so removal is authorized by its span and nothing has to be
+    re-derived from the characters.
+
+    Leading: drop consecutive self spans unconditionally. No boundary check is
+    needed or wanted here — a span is exact, so the ``@Al`` / ``@Alice``
+    collision the string form has to guard against cannot arise.
+    Trailing: drop a self span only when what follows it is whitespace or
+    terminal punctuation *that belongs to no mention* — a display name may
+    legitimately end in ``!``, and that character is part of its span.
+    """
+
+    def _lstrip(seq: List[tuple[str, Any]]) -> List[tuple[str, Any]]:
+        index = 0
+        while index < len(seq) and seq[index][0].isspace():
+            index += 1
+        return seq[index:]
+
+    def _rstrip(seq: List[tuple[str, Any]]) -> List[tuple[str, Any]]:
+        end = len(seq)
+        while end > 0 and seq[end - 1][0].isspace():
+            end -= 1
+        return seq[:end]
+
+    remaining = _lstrip(cells)
+    while remaining and remaining[0][1] in self_tags:
+        tag = remaining[0][1]
+        width = 0
+        while width < len(remaining) and remaining[width][1] == tag:
+            width += 1
+        remaining = _lstrip(remaining[width:])
+
+    while True:
+        index = len(remaining)
+        while (
+            index > 0
+            and remaining[index - 1][1] is None
+            and remaining[index - 1][0] in _TRAILING_TERMINAL_PUNCT
+        ):
+            index -= 1
+        body = remaining[:index]
+        tail = remaining[index:]
+        if not body or body[-1][1] not in self_tags:
+            return remaining
+        tag = body[-1][1]
+        start = len(body)
+        while start > 0 and body[start - 1][1] == tag:
+            start -= 1
+        remaining = _rstrip(body[:start]) + tail
+
+
 def _strip_edge_self_mentions(
     text: str,
     mentions: Sequence[FeishuMentionRef],
 ) -> str:
-    # Leading: strip consecutive self-mentions unconditionally.
-    # Trailing: strip only when followed by whitespace/terminal punct, so
-    # mid-sentence references ("don't @Bot again") stay intact.
-    # Leading word-boundary prevents @Al from eating @Alice.
     if not text:
         return text
-    self_names = [
-        f"@{ref.name or ref.open_id or 'user'}"
-        for ref in mentions
-        if ref.is_self
-    ]
+    self_names = _self_mention_names(mentions)
     if not self_names:
         return text
+    cells = [(char, None) for char in text]
+    return "".join(
+        char for char, _tag in _strip_edge_self_mention_cells(cells, self_names)
+    )
 
-    remaining = text.lstrip()
-    while True:
-        for nm in self_names:
-            if not remaining.startswith(nm):
-                continue
-            after = remaining[len(nm):]
-            if after and after[0] not in _MENTION_BOUNDARY_CHARS:
-                continue
-            remaining = after.lstrip()
-            break
-        else:
-            break
 
-    while True:
-        i = len(remaining)
-        while i > 0 and remaining[i - 1] in _TRAILING_TERMINAL_PUNCT:
-            i -= 1
-        body = remaining[:i]
-        tail = remaining[i:]
-        for nm in self_names:
-            if body.endswith(nm):
-                remaining = body[: -len(nm)].rstrip() + tail
-                break
-        else:
-            return remaining
+def strip_edge_self_mentions_with_occurrences(
+    text: str,
+    mentions: Sequence[FeishuMentionRef],
+    occurrences: Sequence[MentionOccurrence],
+) -> tuple[str, tuple[MentionOccurrence, ...]]:
+    """Strip the bot's own edge mentions and re-position the survivors.
+
+    Removal is authorized by a complete, text-valid ``is_self`` occurrence span
+    — never by display text, which is escaped for presentation and shared by
+    strangers. A stale, overlapping or otherwise unverifiable occurrence
+    authorizes nothing and the text is left alone.
+
+    Stripping moves every character after it, so occurrences that are dropped
+    here rather than remapped would be worse than useless: they would point at
+    someone else's text. An occurrence survives only when all of its characters
+    survive contiguously; a partially eaten one is discarded, never repaired.
+    """
+
+    if not text or not occurrences:
+        return _strip_edge_self_mentions(text, mentions), tuple(occurrences)
+    if not any(getattr(ref, "is_self", False) for ref in mentions):
+        return text, tuple(occurrences)
+
+    tags: List[Any] = [None] * len(text)
+    claimed: List[Any] = [None] * len(text)
+    overlapping: set = set()
+    valid: Dict[int, MentionOccurrence] = {}
+    for index, occurrence in enumerate(occurrences):
+        if not occurrence.matches_text(text):
+            continue
+        valid[index] = occurrence
+        for position in range(occurrence.start, occurrence.end):
+            first = claimed[position]
+            if first is None:
+                claimed[position] = index
+            else:
+                overlapping.add(first)
+                overlapping.add(index)
+            tags[position] = index
+
+    # Overlapping spans can only mean at least one set of coordinates is wrong,
+    # and which mention a shared character belongs to is then unknowable — the
+    # later writer merely lands on top of the tags. Whoever shares a character
+    # authorizes nothing, in either direction: an occurrence removes its own
+    # text only when no other valid span ever touched it.
+    self_tags = frozenset(
+        index
+        for index, occurrence in valid.items()
+        if occurrence.is_self and index not in overlapping
+    )
+
+    survivors = _strip_edge_self_mention_occurrence_cells(
+        [(char, tags[position]) for position, char in enumerate(text)], self_tags
+    )
+    stripped = "".join(char for char, _tag in survivors)
+
+    spans: Dict[int, tuple[int, int]] = {}
+    for position, (_char, tag) in enumerate(survivors):
+        if tag is None:
+            continue
+        start, end = spans.get(tag, (position, position))
+        spans[tag] = (min(start, position), max(end, position))
+
+    kept: List[MentionOccurrence] = []
+    for index, (start, end) in sorted(spans.items()):
+        occurrence = occurrences[index]
+        width = end - start + 1
+        if width != len(occurrence.rendered):
+            continue
+        moved = MentionOccurrence(
+            platform_user_id=occurrence.platform_user_id,
+            start=start,
+            end=start + width,
+            rendered=occurrence.rendered,
+            is_self=occurrence.is_self,
+            is_all=occurrence.is_all,
+        )
+        if moved.matches_text(stripped):
+            kept.append(moved)
+    return stripped, tuple(kept)
+
+
+def shift_mention_occurrences(
+    occurrences: Sequence[MentionOccurrence], offset: int
+) -> tuple[MentionOccurrence, ...]:
+    """Move every occurrence by ``offset`` after a prefix was prepended."""
+
+    if not occurrences or not offset:
+        return tuple(occurrences)
+    return tuple(
+        MentionOccurrence(
+            platform_user_id=occurrence.platform_user_id,
+            start=occurrence.start + offset,
+            end=occurrence.end + offset,
+            rendered=occurrence.rendered,
+            is_self=occurrence.is_self,
+            is_all=occurrence.is_all,
+        )
+        for occurrence in occurrences
+    )
 
 
 def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
@@ -2074,6 +2433,39 @@ class FeishuAdapter(BasePlatformAdapter):
             return self._finalize_send_result(last_response, "send failed")
         except Exception as exc:
             logger.error("[Feishu] Send error: %s", exc, exc_info=True)
+            return SendResult(success=False, error=str(exc))
+
+    async def send_plain_text_once(
+        self,
+        chat_id: str,
+        text: str,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send one already-bounded body as exactly one ``msg_type="text"``.
+
+        Deliberately not ``send()``. That path formats the body, splits an
+        oversized one across several platform messages, and can select a ``post``
+        payload — and every one of those turns "one terminal, one message" into
+        something else. Here the body is taken as given, sent once at the low
+        level, and its result is settled by the caller. No chunking, no post
+        selection, no markdown promotion, and no retry loop of its own beyond the
+        adapter's existing transport retry for a single frame.
+        """
+
+        if not self._client:
+            return SendResult(success=False, error="Not connected")
+        try:
+            response = await self._feishu_send_with_retry(
+                chat_id=chat_id,
+                msg_type="text",
+                payload=json.dumps({"text": text or ""}, ensure_ascii=False),
+                reply_to=reply_to,
+                metadata=metadata,
+            )
+            return self._finalize_send_result(response, "send failed")
+        except Exception as exc:
+            logger.error("[Feishu] Plain-text send error: %s", exc, exc_info=True)
             return SendResult(success=False, error=str(exc))
 
     async def edit_message(
@@ -4176,10 +4568,19 @@ class FeishuAdapter(BasePlatformAdapter):
         message_id: str,
         is_bot: bool = False,
     ) -> None:
-        text, inbound_type, media_urls, media_types, mentions = await self._extract_message_content(message)
+        (
+            text,
+            inbound_type,
+            media_urls,
+            media_types,
+            mentions,
+            occurrences,
+        ) = await self._extract_message_content(message)
 
         if inbound_type == MessageType.TEXT:
-            text = _strip_edge_self_mentions(text, mentions)
+            text, occurrences = strip_edge_self_mentions_with_occurrences(
+                text, mentions, occurrences
+            )
             if text.startswith("/"):
                 inbound_type = MessageType.COMMAND
 
@@ -4191,7 +4592,12 @@ class FeishuAdapter(BasePlatformAdapter):
         if inbound_type != MessageType.COMMAND:
             hint = _build_mention_hint(mentions)
             if hint:
-                text = f"{hint}\n\n{text}" if text else hint
+                # The hint is a prefix, so the occurrences behind it move too —
+                # coordinates that stop describing the final text are worse than
+                # no coordinates at all.
+                prefix = f"{hint}\n\n" if text else hint
+                occurrences = shift_mention_occurrences(occurrences, len(prefix))
+                text = f"{prefix}{text}" if text else hint
 
         thread_id = getattr(message, "thread_id", None) or getattr(message, "root_id", None) or None
         reply_to_message_id = (
@@ -4244,6 +4650,7 @@ class FeishuAdapter(BasePlatformAdapter):
             reply_to_message_id=reply_to_message_id,
             reply_to_text=reply_to_text,
             timestamp=datetime.now(),
+            mention_occurrences=occurrences,
         )
         await self._dispatch_inbound_event(normalized)
 
@@ -4672,7 +5079,14 @@ class FeishuAdapter(BasePlatformAdapter):
 
     async def _extract_message_content(
         self, message: Any
-    ) -> tuple[str, MessageType, List[str], List[str], List[FeishuMentionRef]]:
+    ) -> tuple[
+        str,
+        MessageType,
+        List[str],
+        List[str],
+        List[FeishuMentionRef],
+        tuple,
+    ]:
         raw_content = getattr(message, "content", "") or ""
         raw_type = getattr(message, "message_type", "") or ""
         message_id = str(getattr(message, "message_id", "") or "")
@@ -4690,6 +5104,7 @@ class FeishuAdapter(BasePlatformAdapter):
         )
         inbound_type = self._resolve_normalized_message_type(normalized, media_types)
         text = normalized.text_content
+        occurrences = tuple(normalized.mention_occurrences)
 
         if (
             inbound_type in {MessageType.DOCUMENT, MessageType.AUDIO, MessageType.VIDEO, MessageType.PHOTO}
@@ -4699,8 +5114,17 @@ class FeishuAdapter(BasePlatformAdapter):
             injected = await self._maybe_extract_text_document(media_urls[0], media_types[0])
             if injected:
                 text = injected
+                # The text was replaced wholesale; nothing is positioned in it.
+                occurrences = ()
 
-        return text, inbound_type, media_urls, media_types, list(normalized.mentions)
+        return (
+            text,
+            inbound_type,
+            media_urls,
+            media_types,
+            list(normalized.mentions),
+            occurrences,
+        )
 
     async def _download_feishu_message_resources(
         self,

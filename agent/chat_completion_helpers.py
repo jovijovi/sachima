@@ -15,6 +15,7 @@ sites unchanged.  Symbols that tests patch on ``run_agent`` (e.g.
 
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 import os
@@ -122,7 +123,206 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
-def interruptible_api_call(agent, api_kwargs: dict):
+class ProviderDispatchLease:
+    """One turn's ownership of the provider-attempt signal.
+
+    The gate below proves *where* a request commits.  It cannot, on its own,
+    prove *whose* request it is, and reading the agent cannot answer that
+    either: the gateway caches one ``AIAgent`` per session and rebinds
+    ``provider_attempt_callback`` on it every turn, while a daemon worker from
+    a turn the main thread already abandoned is still alive inside that same
+    object.  Execution middleware can hold a request arbitrarily long, so a
+    snapshot taken below it would routinely be the *next* turn's claim.
+
+    So the callback is captured once, by value, before the turn is handed to an
+    executor, and every request the turn makes is a child gate of that capture.
+
+    ``cancel()`` retires the whole turn.  It takes the same lock every commit
+    takes, so cancellation and dispatch linearize: cancel-first permits neither
+    a signal nor an SDK call, and commit-first finishes signalling before
+    cancellation can return — settlement can never observe an unconsumed claim
+    for a request that is already irrevocable.
+    """
+
+    __slots__ = ("_callback", "_lock", "_revoked")
+
+    def __init__(self, callback=None) -> None:
+        self._callback = callback
+        self._lock = threading.Lock()
+        self._revoked = False
+
+    @property
+    def callback(self):
+        """The callback this turn owns — captured by value, never re-read."""
+        return self._callback
+
+    @property
+    def revoked(self) -> bool:
+        with self._lock:
+            return self._revoked
+
+    def cancel(self) -> None:
+        """Retire the turn: nothing under it may dispatch or signal again."""
+        with self._lock:
+            self._revoked = True
+
+    def gate(self, agent) -> "ProviderDispatchGate":
+        """One request, under this turn's ownership."""
+        return ProviderDispatchGate(agent, self)
+
+
+class ProviderDispatchGate:
+    """The last reliable local point before one concrete provider SDK call.
+
+    The conversation loop cannot mark the attempt where it starts an
+    interruptible helper: below that point the request can still stop at a
+    pre-dispatch interrupt, at client construction / credential refresh, or at
+    a worker the main thread already abandoned — and every provider family
+    retries or falls back *inside* the helper, so one outer mark can neither
+    prove nor count the real attempts.  ``invoke()`` signals and immediately
+    performs the SDK call, with nothing in between that can decide otherwise.
+
+    The gate is one request inside a :class:`ProviderDispatchLease`, which owns
+    the callback and the lock.  Constructed without a lease it mints a private
+    one from the agent's current callback, so a caller that has no turn to
+    speak of still gets a by-value snapshot rather than a live attribute read.
+
+    ``cancel()`` closes this one request; ``lease.cancel()`` closes the turn.
+    Both race deterministically with ``invoke()`` under the lease's lock, so a
+    stale worker that wakes after the main thread gave up can neither dispatch
+    nor signal — including after the agent's interrupt flag has been reset for
+    a new turn.
+    """
+
+    __slots__ = ("_agent", "_lease", "_lock", "_cancelled")
+
+    def __init__(self, agent, lease: Optional[ProviderDispatchLease] = None) -> None:
+        self._agent = agent
+        if lease is None:
+            lease = ProviderDispatchLease(
+                getattr(agent, "provider_attempt_callback", None)
+            )
+        self._lease = lease
+        # Shared with the lease on purpose: commit, request cancellation and
+        # turn cancellation must all linearize against each other.
+        self._lock = lease._lock
+        self._cancelled = False
+
+    @property
+    def lease(self) -> ProviderDispatchLease:
+        return self._lease
+
+    @property
+    def cancelled(self) -> bool:
+        with self._lock:
+            return self._cancelled or self._lease._revoked
+
+    def cancel(self) -> None:
+        """Abandon this request: no later dispatch may go out or signal."""
+        with self._lock:
+            self._cancelled = True
+
+    def invoke(self, call, /, *args, **kwargs):
+        """Signal, then immediately perform the concrete provider SDK call."""
+        self._commit()
+        return call(*args, **kwargs)
+
+    def wrap_context(self, manager, /):
+        """Route a lazy SDK manager's ``__enter__`` through :meth:`invoke`.
+
+        ``messages.stream(...)`` only builds a manager — the request starts
+        when it is entered, and that is the boundary worth signalling.
+        """
+        return _GatedProviderContext(self, manager)
+
+    def _commit(self) -> None:
+        with self._lock:
+            if self._lease._revoked:
+                raise InterruptedError(
+                    "Provider dispatch cancelled: this turn no longer owns the request"
+                )
+            if self._cancelled:
+                raise InterruptedError(
+                    "Provider dispatch cancelled before the request left"
+                )
+            if getattr(self._agent, "_interrupt_requested", False):
+                raise InterruptedError(
+                    "Agent interrupted before the provider request left"
+                )
+            self._agent._mark_provider_attempt(self._lease._callback)
+
+
+class _GatedProviderContext:
+    """A wrapped SDK context manager: gate the enter, delegate the exit."""
+
+    __slots__ = ("_gate", "_manager")
+
+    def __init__(self, gate: ProviderDispatchGate, manager) -> None:
+        self._gate = gate
+        self._manager = manager
+
+    def __enter__(self):
+        return self._gate.invoke(self._manager.__enter__)
+
+    def __exit__(self, exc_type, exc, tb):
+        return self._manager.__exit__(exc_type, exc, tb)
+
+
+def _dispatch(provider_dispatch, call, /, *args, **kwargs):
+    """Perform one provider SDK call, through the gate when there is one."""
+    if provider_dispatch is None:
+        return call(*args, **kwargs)
+    return provider_dispatch.invoke(call, *args, **kwargs)
+
+
+def provider_dispatch_kwargs(callee, provider_dispatch) -> dict:
+    """The gate keyword, for a callee that declares it.
+
+    ``_interruptible_api_call``, ``_run_codex_stream`` and their siblings are
+    long-standing replaceable seams — suites and shims swap in doubles that
+    take the request and nothing else.  Handing one an unexpected keyword would
+    turn a healthy turn into a ``TypeError``, and a replaced seam dispatches no
+    provider call to gate in the first place.  So the gate travels only to a
+    callee that declares the parameter, which every real implementation does.
+    """
+    if provider_dispatch is None:
+        return {}
+    try:
+        parameters = inspect.signature(callee).parameters
+    except (TypeError, ValueError):
+        return {}
+    if "provider_dispatch" not in parameters:
+        return {}
+    return {"provider_dispatch": provider_dispatch}
+
+
+def provider_dispatch_lease_kwargs(callee, provider_dispatch_lease) -> dict:
+    """The turn-ownership keyword, for a callee that declares it.
+
+    ``run_conversation`` and ``_handle_max_iterations`` are replaceable seams
+    too: gateway suites and older shims install doubles that take the request
+    and nothing else, and a double dispatches no provider call to own.  So the
+    lease travels only to a callee that declares the private parameter, which
+    every real implementation does.
+    """
+    if provider_dispatch_lease is None:
+        return {}
+    try:
+        parameters = inspect.signature(callee).parameters
+    except (TypeError, ValueError):
+        return {}
+    if "_provider_dispatch_lease" not in parameters:
+        return {}
+    return {"_provider_dispatch_lease": provider_dispatch_lease}
+
+
+def _cancel_dispatch(provider_dispatch) -> None:
+    """Close the gate for a request the caller is about to abandon."""
+    if provider_dispatch is not None:
+        provider_dispatch.cancel()
+
+
+def interruptible_api_call(agent, api_kwargs: dict, *, provider_dispatch=None):
     """
     Run the API call in a background thread so the main conversation loop
     can detect interrupts without waiting for the full HTTP round-trip.
@@ -203,9 +403,17 @@ def interruptible_api_call(agent, api_kwargs: dict):
                     api_kwargs,
                     client=request_client,
                     on_first_delta=getattr(agent, "_codex_on_first_delta", None),
+                    **provider_dispatch_kwargs(
+                        agent._run_codex_stream, provider_dispatch
+                    ),
                 )
             elif agent.api_mode == "anthropic_messages":
-                result["response"] = agent._anthropic_messages_create(api_kwargs)
+                result["response"] = agent._anthropic_messages_create(
+                    api_kwargs,
+                    **provider_dispatch_kwargs(
+                        agent._anthropic_messages_create, provider_dispatch
+                    ),
+                )
             elif agent.api_mode == "bedrock_converse":
                 # Bedrock uses boto3 directly — no OpenAI client needed.
                 # normalize_converse_response produces an OpenAI-compatible
@@ -221,7 +429,9 @@ def interruptible_api_call(agent, api_kwargs: dict):
                 api_kwargs.pop("__bedrock_converse__", None)
                 client = _get_bedrock_runtime_client(region)
                 try:
-                    raw_response = client.converse(**api_kwargs)
+                    raw_response = _dispatch(
+                        provider_dispatch, client.converse, **api_kwargs
+                    )
                 except Exception as _bedrock_exc:
                     # Evict the cached client on stale-connection failures
                     # so the outer retry loop builds a fresh client/pool.
@@ -236,7 +446,11 @@ def interruptible_api_call(agent, api_kwargs: dict):
                         api_kwargs=api_kwargs,
                     )
                 )
-                result["response"] = request_client.chat.completions.create(**api_kwargs)
+                result["response"] = _dispatch(
+                    provider_dispatch,
+                    request_client.chat.completions.create,
+                    **api_kwargs,
+                )
         except Exception as e:
             # If the request was cancelled by the main thread's interrupt
             # handler, the transport error is the expected consequence of our
@@ -408,6 +622,9 @@ def interruptible_api_call(agent, api_kwargs: dict):
                     f"(codex stream, model: {api_kwargs.get('model', 'unknown')}). "
                     f"Reconnecting."
                 )
+            # The worker may still be alive and below the dispatch point; this
+            # request is over, so close its gate before we return.
+            _cancel_dispatch(provider_dispatch)
             try:
                 _close_request_client_once("codex_ttfb_kill")
             except Exception:
@@ -454,6 +671,7 @@ def interruptible_api_call(agent, api_kwargs: dict):
                 f"after first byte (model: {api_kwargs.get('model', 'unknown')}). "
                 f"Reconnecting."
             )
+            _cancel_dispatch(provider_dispatch)
             try:
                 _close_request_client_once("codex_stream_idle_kill")
             except Exception:
@@ -498,6 +716,7 @@ def interruptible_api_call(agent, api_kwargs: dict):
                     f"(non-streaming, model: {api_kwargs.get('model', 'unknown')}). "
                     f"Aborting call."
                 )
+            _cancel_dispatch(provider_dispatch)
             try:
                 if agent.api_mode == "anthropic_messages":
                     agent._anthropic_client.close()
@@ -531,6 +750,7 @@ def interruptible_api_call(agent, api_kwargs: dict):
             # cancel and exits cleanly instead of surfacing a network error or
             # (in the streaming path) burning full retry cycles. (#6600)
             _request_cancelled["value"] = True
+            _cancel_dispatch(provider_dispatch)
             logger.debug(
                 "Force-closing httpx client due to interrupt (not a network error)."
             )
@@ -1302,7 +1522,13 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
 
 
 
-def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
+def handle_max_iterations(
+    agent,
+    messages: list,
+    api_call_count: int,
+    *,
+    provider_dispatch_lease: Optional[ProviderDispatchLease] = None,
+) -> str:
     """Request a summary when max iterations are reached. Returns the final response text."""
     print(f"⚠️  Reached maximum iterations ({agent.max_iterations}). Requesting summary...")
 
@@ -1312,6 +1538,13 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
         "without calling any more tools."
     )
     messages.append({"role": "user", "content": summary_request})
+
+    # The summary is reached by the ordinary turn and calls the provider
+    # directly (no transport, no interruptible helper), so it carries the same
+    # dispatch contract as the loop's own calls — and the same ownership: it is
+    # still that turn's claim it may consume, not whatever the cached agent has
+    # been rebound to by the time the budget runs out.
+    _summary_dispatch = ProviderDispatchGate(agent, provider_dispatch_lease)
 
     try:
         # Build API messages, stripping internal-only fields
@@ -1401,7 +1634,12 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
         if agent.api_mode == "codex_responses":
             codex_kwargs = agent._build_api_kwargs(api_messages)
             codex_kwargs.pop("tools", None)
-            summary_response = agent._run_codex_stream(codex_kwargs)
+            summary_response = agent._run_codex_stream(
+                codex_kwargs,
+                **provider_dispatch_kwargs(
+                    agent._run_codex_stream, _summary_dispatch
+                ),
+            )
             _ct_sum = agent._get_transport()
             _cnr_sum = _ct_sum.normalize_response(summary_response)
             final_response = (_cnr_sum.content or "").strip()
@@ -1463,11 +1701,22 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                                max_tokens=agent.max_tokens, reasoning_config=agent.reasoning_config,
                                is_oauth=agent._is_anthropic_oauth,
                                preserve_dots=agent._anthropic_preserve_dots())
-                summary_response = agent._anthropic_messages_create(_ant_kw)
+                summary_response = agent._anthropic_messages_create(
+                    _ant_kw,
+                    **provider_dispatch_kwargs(
+                        agent._anthropic_messages_create, _summary_dispatch
+                    ),
+                )
                 _summary_result = _tsum.normalize_response(summary_response, strip_tool_prefix=agent._is_anthropic_oauth)
                 final_response = (_summary_result.content or "").strip()
             else:
-                summary_response = agent._ensure_primary_openai_client(reason="iteration_limit_summary").chat.completions.create(**summary_kwargs)
+                summary_response = _dispatch(
+                    _summary_dispatch,
+                    agent._ensure_primary_openai_client(
+                        reason="iteration_limit_summary"
+                    ).chat.completions.create,
+                    **summary_kwargs,
+                )
                 _summary_result = agent._get_transport().normalize_response(summary_response)
                 final_response = (_summary_result.content or "").strip()
 
@@ -1483,7 +1732,12 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
             if agent.api_mode == "codex_responses":
                 codex_kwargs = agent._build_api_kwargs(api_messages)
                 codex_kwargs.pop("tools", None)
-                retry_response = agent._run_codex_stream(codex_kwargs)
+                retry_response = agent._run_codex_stream(
+                    codex_kwargs,
+                    **provider_dispatch_kwargs(
+                        agent._run_codex_stream, _summary_dispatch
+                    ),
+                )
                 _ct_retry = agent._get_transport()
                 _cnr_retry = _ct_retry.normalize_response(retry_response)
                 final_response = (_cnr_retry.content or "").strip()
@@ -1493,7 +1747,12 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                                 is_oauth=agent._is_anthropic_oauth,
                                 max_tokens=agent.max_tokens, reasoning_config=agent.reasoning_config,
                                 preserve_dots=agent._anthropic_preserve_dots())
-                retry_response = agent._anthropic_messages_create(_ant_kw2)
+                retry_response = agent._anthropic_messages_create(
+                    _ant_kw2,
+                    **provider_dispatch_kwargs(
+                        agent._anthropic_messages_create, _summary_dispatch
+                    ),
+                )
                 _retry_result = _tretry.normalize_response(retry_response, strip_tool_prefix=agent._is_anthropic_oauth)
                 final_response = (_retry_result.content or "").strip()
             else:
@@ -1510,7 +1769,13 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                 if summary_extra_body:
                     summary_kwargs["extra_body"] = summary_extra_body
 
-                summary_response = agent._ensure_primary_openai_client(reason="iteration_limit_summary_retry").chat.completions.create(**summary_kwargs)
+                summary_response = _dispatch(
+                    _summary_dispatch,
+                    agent._ensure_primary_openai_client(
+                        reason="iteration_limit_summary_retry"
+                    ).chat.completions.create,
+                    **summary_kwargs,
+                )
                 _retry_result = agent._get_transport().normalize_response(summary_response)
                 final_response = (_retry_result.content or "").strip()
 
@@ -1564,7 +1829,9 @@ def cleanup_task_resources(agent, task_id: str) -> None:
 
 
 
-def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=None):
+def interruptible_streaming_api_call(
+    agent, api_kwargs: dict, *, on_first_delta=None, provider_dispatch=None
+):
     """Streaming variant of _interruptible_api_call for real-time token delivery.
 
     Handles all three api_modes:
@@ -1581,6 +1848,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
     streaming is not supported.
     """
     if agent._interrupt_requested:
+        _cancel_dispatch(provider_dispatch)
         raise InterruptedError("Agent interrupted before streaming API call")
 
     if agent.api_mode == "codex_responses":
@@ -1590,7 +1858,12 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         # temporarily so _run_codex_stream can pick it up.
         agent._codex_on_first_delta = on_first_delta
         try:
-            return agent._interruptible_api_call(api_kwargs)
+            return agent._interruptible_api_call(
+                api_kwargs,
+                **provider_dispatch_kwargs(
+                    agent._interruptible_api_call, provider_dispatch
+                ),
+            )
         finally:
             agent._codex_on_first_delta = None
 
@@ -1623,7 +1896,9 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 api_kwargs.pop("__bedrock_converse__", None)
                 client = _get_bedrock_runtime_client(region)
                 try:
-                    raw_response = client.converse_stream(**api_kwargs)
+                    raw_response = _dispatch(
+                        provider_dispatch, client.converse_stream, **api_kwargs
+                    )
                 except Exception as _bedrock_exc:
                     # IAM policies scoped to bedrock:InvokeModel only (no
                     # InvokeModelWithResponseStream) reject converse_stream()
@@ -1645,7 +1920,9 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                             type(_bedrock_exc).__name__,
                         )
                         result["response"] = normalize_converse_response(
-                            client.converse(**api_kwargs)
+                            _dispatch(
+                                provider_dispatch, client.converse, **api_kwargs
+                            )
                         )
                         return
                     # Evict the cached client on stale-connection failures
@@ -1682,6 +1959,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         while t.is_alive():
             t.join(timeout=0.3)
             if agent._interrupt_requested:
+                _cancel_dispatch(provider_dispatch)
                 raise InterruptedError("Agent interrupted during Bedrock API call")
         if result["error"] is not None:
             raise result["error"]
@@ -1828,7 +2106,11 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         # ``request_client_holder["diag"]`` for closure access.
         _diag = agent._stream_diag_init()
         request_client_holder["diag"] = _diag
-        stream = request_client.chat.completions.create(**stream_kwargs)
+        stream = _dispatch(
+            provider_dispatch,
+            request_client.chat.completions.create,
+            **stream_kwargs,
+        )
 
         # Capture rate limit headers from the initial HTTP response.
         # The OpenAI SDK Stream object exposes the underlying httpx
@@ -2149,8 +2431,13 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         sanitize_anthropic_kwargs(
             api_kwargs, log_prefix=getattr(agent, "log_prefix", "")
         )
-        # Use the Anthropic SDK's streaming context manager
-        with agent._anthropic_client.messages.stream(**api_kwargs) as stream:
+        # Use the Anthropic SDK's streaming context manager.  Building it does
+        # not start the request — entering it does, which is where the gate
+        # signals from.
+        _stream_manager = agent._anthropic_client.messages.stream(**api_kwargs)
+        if provider_dispatch is not None:
+            _stream_manager = provider_dispatch.wrap_context(_stream_manager)
+        with _stream_manager as stream:
             # The Anthropic SDK exposes the raw httpx response on
             # ``stream.response``.  Snapshot diagnostic headers
             # immediately so they survive a stream that dies before the
@@ -2593,6 +2880,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             # cancel and exits without retrying or surfacing a network error.
             # (#6600)
             _request_cancelled["value"] = True
+            _cancel_dispatch(provider_dispatch)
             logger.debug(
                 "Force-closing streaming httpx client due to interrupt "
                 "(not a network error)."
@@ -2672,6 +2960,9 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
 
 
 __all__ = [
+    "ProviderDispatchGate",
+    "ProviderDispatchLease",
+    "provider_dispatch_lease_kwargs",
     "interruptible_api_call",
     "build_api_kwargs",
     "build_assistant_message",

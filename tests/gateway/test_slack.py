@@ -3820,3 +3820,74 @@ class TestSlashEphemeralAck:
         # the normal single-user case; the ContextVar path is the precise one.
         # The key invariant is: when the ContextVar IS set, it matches exactly.
         assert ctx is not None  # fallback path finds the entry
+
+
+# ---------------------------------------------------------------------------
+# send_plain_text_once — one already-bounded plain body, one API call
+# ---------------------------------------------------------------------------
+
+
+class TestSlackSinglePlainTextMessage:
+    """The Sachima delegate terminal result is one visible message or nothing.
+
+    ``send()`` is the wrong tool for it: it rewrites the body as mrkdwn, can
+    divert it into an ephemeral slash-command reply, and splits anything long
+    across several posts.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_body_at_the_advertised_bound_is_one_plain_post(self, adapter):
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "ts1"})
+        body = "*not bold* _not italic_ " * 100
+        body = body[: adapter.single_message_text_limit()]
+
+        result = await adapter.send_plain_text_once("C123", body)
+
+        assert result.success is True
+        assert result.message_id == "ts1"
+        assert adapter._app.client.chat_postMessage.call_count == 1
+        kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
+        assert kwargs["text"] == body
+        assert kwargs["mrkdwn"] is False
+        assert "blocks" not in kwargs
+        assert "attachments" not in kwargs
+
+    @pytest.mark.asyncio
+    async def test_a_stashed_slash_context_does_not_divert_the_terminal(self, adapter):
+        """An ephemeral slash reply is not a visible message to the channel."""
+        import time
+
+        adapter._slash_command_contexts[("C123", "U1")] = {
+            "response_url": "https://hooks.slack.com/test",
+            "ts": time.monotonic(),
+        }
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "ts1"})
+
+        await adapter.send_plain_text_once("C123", "task done")
+
+        assert adapter._app.client.chat_postMessage.call_count == 1
+        assert adapter._app.client.chat_postMessage.call_args.kwargs["text"] == "task done"
+
+    @pytest.mark.asyncio
+    async def test_thread_placement_survives_the_bypass(self, adapter):
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "ts2"})
+
+        await adapter.send_plain_text_once(
+            "C123", "task done", metadata={"thread_id": "1700000000.000100"}
+        )
+
+        kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
+        assert kwargs["thread_ts"] == "1700000000.000100"
+
+    @pytest.mark.asyncio
+    async def test_ordinary_send_still_formats_and_splits(self, adapter):
+        """The bypass is additive — the ordinary path is untouched."""
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "ts1"})
+
+        await adapter.send("C123", "***important*** update")
+        assert adapter._app.client.chat_postMessage.call_args.kwargs["mrkdwn"] is True
+        assert "*_important_*" in adapter._app.client.chat_postMessage.call_args.kwargs["text"]
+
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "ts1"})
+        await adapter.send("C123", "x" * 45000)
+        assert adapter._app.client.chat_postMessage.call_count >= 2

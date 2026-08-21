@@ -2691,6 +2691,79 @@ class TelegramAdapter(BasePlatformAdapter):
             is_pool_timeout = self._looks_like_pool_timeout(e)
             return SendResult(success=False, error=str(e), retryable=(is_connect_timeout or is_pool_timeout or not is_timeout))
 
+    async def send_plain_text_once(
+        self,
+        chat_id: str,
+        text: str,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send one already-bounded body as exactly one plain ``sendMessage``.
+
+        Deliberately not ``send()``. That path escapes the body to MarkdownV2 —
+        which can double its UTF-16 length, so a body bounded to the advertised
+        4,096 arrives as three messages — may promote it to a Bot API rich
+        message, and splits whatever is left. Every one of those turns "one
+        terminal, one message" into something else. The body is sent as given,
+        unescaped, in a single frame, with no chunk suffix and no retry loop.
+
+        Routing is *not* formatting, so thread and reply placement is resolved
+        exactly as ``send()`` resolves it for a first chunk — including the
+        private DM-topic refusal, where sending without the anchor would land
+        the message outside the topic the caller asked for.
+        """
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+
+        thread_id = self._metadata_thread_id(metadata)
+        private_dm_topic_send = self._is_private_dm_topic_send(chat_id, thread_id, metadata)
+        metadata_reply_to = self._metadata_reply_to_message_id(metadata)
+        reply_to_source = reply_to or (
+            str(metadata_reply_to)
+            if private_dm_topic_send and metadata_reply_to is not None
+            else None
+        )
+        if private_dm_topic_send:
+            should_thread = reply_to_source is not None and self._reply_to_mode != "off"
+        else:
+            should_thread = self._should_thread_reply(reply_to_source, 0)
+        reply_to_id = int(reply_to_source) if should_thread and reply_to_source else None
+        dm_topic_reply_to_off = (
+            private_dm_topic_send
+            and self._reply_to_mode == "off"
+            and bool(metadata and metadata.get("telegram_dm_topic_reply_fallback"))
+        )
+        if private_dm_topic_send and reply_to_id is None and not dm_topic_reply_to_off:
+            return SendResult(
+                success=False,
+                error=self._dm_topic_missing_anchor_error(),
+                retryable=False,
+            )
+        thread_kwargs = self._thread_kwargs_for_send(
+            chat_id,
+            thread_id,
+            metadata,
+            reply_to_message_id=reply_to_id,
+            reply_to_mode=self._reply_to_mode,
+        )
+
+        try:
+            msg = await self._bot.send_message(
+                chat_id=int(chat_id),
+                text=text,
+                parse_mode=None,
+                reply_to_message_id=reply_to_id,
+                **thread_kwargs,
+                **self._link_preview_kwargs(),
+                **self._notification_kwargs(metadata),
+            )
+            return SendResult(success=True, message_id=str(msg.message_id))
+        except Exception as exc:
+            logger.error(
+                "[%s] Plain-text send error: %s", self.name, exc, exc_info=True
+            )
+            return SendResult(success=False, error=str(exc))
+
     async def send_or_update_status(
         self,
         chat_id: str,

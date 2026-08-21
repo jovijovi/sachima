@@ -571,7 +571,14 @@ def _consume_codex_event_stream(
     return final
 
 
-def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta=None):
+def run_codex_stream(
+    agent,
+    api_kwargs: dict,
+    client: Any = None,
+    on_first_delta=None,
+    *,
+    provider_dispatch: Any = None,
+):
     """Execute one streaming Responses API request and return the final response.
 
     Uses ``responses.create(stream=True)`` (low-level raw event iteration)
@@ -579,6 +586,9 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
     us structurally immune to backend drift in the ``response.completed``
     payload shape — we never let the SDK reconstruct a typed object from
     the terminal event's ``output`` field.
+
+    ``provider_dispatch`` is the ordinary turn's dispatch gate: every connect
+    retry below is a real attempt and signals on its own.
     """
     import httpx as _httpx
 
@@ -610,7 +620,12 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
         stream_kwargs["stream"] = True
 
         try:
-            event_stream = active_client.responses.create(**stream_kwargs)
+            if provider_dispatch is None:
+                event_stream = active_client.responses.create(**stream_kwargs)
+            else:
+                event_stream = provider_dispatch.invoke(
+                    active_client.responses.create, **stream_kwargs
+                )
         except (_httpx.RemoteProtocolError, _httpx.ReadTimeout, _httpx.ConnectError, ConnectionError) as exc:
             if attempt < max_stream_retries:
                 logger.debug(
@@ -667,7 +682,9 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                     pass
 
 
-def run_codex_create_stream_fallback(agent, api_kwargs: dict, client: Any = None):
+def run_codex_create_stream_fallback(
+    agent, api_kwargs: dict, client: Any = None, *, provider_dispatch: Any = None
+):
     """Backward-compatible alias for the unified event-driven path.
 
     Historically this was the fallback when the SDK's high-level
@@ -676,7 +693,9 @@ def run_codex_create_stream_fallback(agent, api_kwargs: dict, client: Any = None
     Kept as a public symbol because tests and a small number of call sites
     still reference it by name.
     """
-    return run_codex_stream(agent, api_kwargs, client=client)
+    return run_codex_stream(
+        agent, api_kwargs, client=client, provider_dispatch=provider_dispatch
+    )
 
 
 __all__ = [

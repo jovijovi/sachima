@@ -658,19 +658,25 @@ def _compose_arsd(monkeypatch, tmp_path, *, facade=None):
 
 def test_arsd_binding_injects_the_delegate_payload_resolver(monkeypatch, tmp_path):
     """A-1: the composed bundle's dispatcher resolves through the host's own
-    claim-check store, so the exact task text never rides on a request."""
+    claim-check store, so the exact task text never rides on a request.
+
+    The store is the coordinator's durable state, and the injected resolver is
+    late-bound on purpose: composition hands the bundle a callable *before* the
+    coordinator that owns the store exists, and it still finds that one store
+    when it is actually called.
+    """
 
     import gateway.sachima_delegate as delegate_mod
 
-    delegate_mod.delegate_payload_store().clear()
     summary, captured, _ = _compose_arsd(monkeypatch, tmp_path)
     assert summary["code"] == _BOUND and summary["backend"] == "arsd"
 
     resolver = captured["payload_resolver"]
     assert resolver is not None
-    ref = delegate_mod.delegate_payload_store().put("private delegate task text")
+    coordinator = delegate_mod.bound_delegate_coordinator()
+    ref = coordinator.state.put_payload("private delegate task text")
     assert resolver(ref) == "private delegate task text"
-    delegate_mod.delegate_payload_store().clear()
+    coordinator.state.discard_payload(ref)
 
 
 def test_delegate_and_live_progress_share_exactly_one_bundle(monkeypatch, tmp_path):
@@ -701,14 +707,22 @@ def test_delegate_and_live_progress_share_exactly_one_bundle(monkeypatch, tmp_pa
 def test_the_bound_coordinator_capacity_comes_from_the_live_negotiation(
     monkeypatch, tmp_path
 ):
-    """A-1: ``server_info.limits.max_concurrent_runs`` and nothing else."""
+    """A-1: ``server_info.limits.max_concurrent_runs`` and nothing else.
+
+    The negotiated number is no longer carried as a bare int: it is the bound
+    of a :class:`DelegateCapacity` permit ledger, which is what actually keeps
+    admission from exceeding what the daemon said it will hold.
+    """
 
     import gateway.sachima_delegate as delegate_mod
+    from gateway.sachima_delegate_state import DelegateCapacity
 
     summary, _, facade = _compose_arsd(monkeypatch, tmp_path)
     assert summary["code"] == _BOUND
     coordinator = delegate_mod.bound_delegate_coordinator()
-    assert coordinator.capacity == 10
+    assert isinstance(coordinator.capacity, DelegateCapacity)
+    assert coordinator.capacity.capacity == 10
+    assert coordinator.capacity.held() == 0
     assert facade.calls == ["server_info"]
 
 
@@ -787,16 +801,28 @@ def test_composing_the_bundle_still_submits_nothing(monkeypatch, tmp_path):
     assert facade.calls == ["server_info"]
     coordinator = delegate_mod.bound_delegate_coordinator()
     assert coordinator.active_count() == 0
-    assert delegate_mod.delegate_payload_store().count() == 0
+    # Nothing was claim-checked, bound, or admitted into the durable state
+    # either: composing wrote no delegate work of any kind.
+    assert coordinator.state.list_turns() == ()
+    assert coordinator.state.list_tasks() == ()
 
 
-def test_the_binding_never_calls_rehydrate_source_binding():
-    """Milestone A composes; it does not recover a prior process's Runs."""
+def test_the_binding_composes_and_the_coordinator_owns_restoration():
+    """Composing is not recovering — but Revision 9 does recover.
+
+    Milestone A read this as "no ``rehydrate_source_binding`` anywhere", which
+    is now obsolete: restart restoration and dispatch recovery are required, and
+    they live behind the coordinator's explicit restore barrier. What survives
+    is the split the old test was really protecting — the host binding composes
+    a bundle, it does not reattach a prior process's Runs.
+    """
 
     src = Path(binding_mod.__file__).read_text(encoding="utf-8")
     assert "rehydrate_source_binding" not in src
-    delegate_src = Path(
-        importlib.import_module("gateway.sachima_delegate").__file__
-    ).read_text(encoding="utf-8")
-    assert "rehydrate_source_binding" not in delegate_src
-    assert "recover_dispatch" not in delegate_src
+    assert "recover_dispatch" not in src
+
+    delegate_mod = importlib.import_module("gateway.sachima_delegate")
+    delegate_src = Path(delegate_mod.__file__).read_text(encoding="utf-8")
+    assert "rehydrate_source_binding" in delegate_src
+    assert "recover_dispatch" in delegate_src
+    assert hasattr(delegate_mod.SachimaDelegateCoordinator, "restore")

@@ -92,6 +92,13 @@ SACHIMA_LIVE_PROGRESS_BACKEND_ENV = "SACHIMA_LIVE_PROGRESS_BACKEND"
 #: the old name.
 SACHIMA_ARSD_CONFIG_FILE_ENV = "SACHIMA_ARSD_CONFIG_FILE"
 
+#: Private JSON file carrying the ``/delegate`` AGENT profiles. Absent → the
+#: legacy single-profile synthesis, which reproduces today's behavior and is
+#: available only when each ARS ref map offers exactly one choice. A malformed
+#: policy fails the whole ``arsd`` binding closed rather than silently falling
+#: back to the legacy profile: an operator who wrote a policy meant it.
+SACHIMA_DELEGATE_POLICY_FILE_ENV = "SACHIMA_DELEGATE_POLICY_FILE"
+
 _BACKEND_FAKE = "fake"
 _BACKEND_ARSD = "arsd"
 #: The complete backend vocabulary. ``library`` is deliberately absent: it is
@@ -255,6 +262,27 @@ def _build_arsd_execution_binding(config_file: str) -> tuple[Any, Any]:
         payload_resolver=delegate_payload_resolver(),
     )
     return bundle, config
+
+
+def _delegate_policy(config: Any) -> Any:
+    """The ``/delegate`` routing policy for this composition.
+
+    With ``SACHIMA_DELEGATE_POLICY_FILE`` set, the private policy is read and
+    validated against the ARS config; without it, the legacy single profile is
+    synthesized, which is exactly today's behavior. Neither path is a fallback
+    for the other: a configured policy that does not validate fails the binding
+    closed rather than quietly reverting to the legacy profile.
+    """
+
+    from gateway.sachima_delegate_policy import (
+        load_delegate_policy,
+        synthesize_legacy_policy,
+    )
+
+    raw = os.environ.get(SACHIMA_DELEGATE_POLICY_FILE_ENV)
+    if type(raw) is str and raw.strip():
+        return load_delegate_policy(raw.strip(), config)
+    return synthesize_legacy_policy(config)
 
 
 def _load_binding_entries(bindings_file: str) -> list[dict[str, Any]]:
@@ -451,8 +479,10 @@ def _bind_arsd_backend(tool_mod: Any) -> dict[str, Any]:
         tool_mod.bind_live_progress_display_service(bundle.display_service)
         # The delegate coordinator is bound over the bundle that was just
         # composed, never beside it: one registry, backend, port, dispatcher,
-        # and bindings store serve both the display chain and `/delegate`.
-        bind_delegate_coordinator(bundle, config)
+        # ledger, and bindings store serve both the display chain and
+        # `/delegate`. Binding arms the startup barrier: the coordinator
+        # completes its restoration scans before it admits anything new.
+        bind_delegate_coordinator(bundle, config, policy=_delegate_policy(config))
     except _RetiredBackendSelected:
         return _retired(tool_mod)
     except Exception:
@@ -469,6 +499,7 @@ def _bind_arsd_backend(tool_mod: Any) -> dict[str, Any]:
 
 __all__ = [
     "SACHIMA_ARSD_CONFIG_FILE_ENV",
+    "SACHIMA_DELEGATE_POLICY_FILE_ENV",
     "SACHIMA_LIVE_PROGRESS_BACKEND_ENV",
     "SACHIMA_LIVE_PROGRESS_BINDINGS_FILE_ENV",
     "SACHIMA_LIVE_PROGRESS_HOST_BINDING_ABSENT",

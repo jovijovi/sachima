@@ -1337,6 +1337,21 @@ class SessionStore:
 
         return entries
 
+    def lookup_by_session_key(self, session_key: str) -> Optional[SessionEntry]:
+        """Return the session entry for a session *key*, without creating one.
+
+        The read-only half of ``get_or_create_session``: a caller that already
+        holds trusted Gateway context (a session key from the handler's own
+        contextvars, say) can resolve the owning session without the reset
+        policy, the SQLite writes, or the risk of minting a session as a side
+        effect of asking a question about one.
+        """
+        if not session_key:
+            return None
+        with self._lock:
+            self._ensure_loaded_locked()
+            return self._entries.get(session_key)
+
     def lookup_by_session_id(self, session_id: str) -> Optional[SessionEntry]:
         """Return the active session entry for a persisted session ID, if any."""
         if not session_id:
