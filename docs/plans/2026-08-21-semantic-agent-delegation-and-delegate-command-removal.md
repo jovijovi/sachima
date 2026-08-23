@@ -72,6 +72,40 @@ ARS 拥有注册 roster 与执行事实；Sachima 拥有 preset、task binding �
 
 ## 实施阶段
 
+阶段 0 是阶段 1–4 的前置条件：开发型 AGENT 的基础权限未闭环前，不开始语义委派实施。
+
+### 阶段 0：开发型 AGENT 基础权限闭环（阶段 1 前置条件）
+
+先证明“被委派的开发型 AGENT 真的能干活”。权限不闭环时，后续 `live roster ∩ preset` 校验只会把不可用的执行路径包装得更精致。
+
+工程基线（engineering baseline）：
+
+- 基础授权面为 **read + search + execute**：读取工作区文件、检索代码、执行常规开发命令（构建、测试、静态检查、只读 git 查询）属于基线能力，不按逐次例外处理。
+- **实施型 preset 在基线之上追加 write**（编辑与新建工作区文件）。
+- **delete / move 与特权副作用**（越出工作区的路径、网络投递、凭据访问、服务生命周期）不进入基线，按 task 单独定义与批准。
+- **`execute` 是协作型能力（cooperative capability），不是 OS 级隔离**：shell 命令在 execute 之下仍可写入、删除、移动文件，发起网络请求，读取凭据或操作服务生命周期。因此“不单列 write / delete / move 等能力标签”只表示未授予对应语义授权，不构成 OS 级阻止。收敛由 **task 契约 + 前后副作用 guard** 落实——它们检测并强制被限定的契约；面向敌意行为的强阻止需独立 UID、容器、VM、只读挂载或等效隔离。特权副作用无论如何仍须单独批准。
+
+只读评审（read-only review）的定义：
+
+- 只读指**不留下持久变更**（no retained mutation），由 task 前后的工作区 guard 比对证明；
+- **不等于禁止执行命令**：评审型路由仍可运行测试、构建与检索命令；临时产物须在 task 内清理或落在被忽略的临时目录，post-guard 必须与 pre-guard 相等。
+
+ARS 与调用方的职责边界：
+
+- 仅当出现**可复现的映射/中介缺陷**（调用方已发出的授权在 ARS 侧被错误翻译、丢失或过度收窄）时，才要求改动 ARS core；此类改动需独立证据与独立批准。
+- 其余情况由**调用方与 preset 拥有 grant 本身**：授权内容、粒度与密封形式由 preset 定义；**能力集合变化即须重新生成其身份**（preset/grant identity 及其 sealed 摘要），不得在旧身份下静默扩权或静默收窄。
+
+退出条件：
+
+- 已注册的工程型路由能完成真实的 read / search / benign execute；
+- **每条配置为实施型（write-capable）的路由，还须在 read + search + execute + write 之下完成一次真实的 benign 写入/新建**：事前声明精确的期望工作区 delta，实测 delta 与之逐项相等，全程无 permission violation，并留下清理/回滚证据（task 结束后工作区回到基线）。**评审型（只读）路由不要求该写入证明。**
+- 生效授权（effective grant）与 preset 声明的 sealed grant 精确一致，无隐式加宽、无静默降级；
+- 全程无 permission violation；
+- 子进程被正确回收（process reap），无残留进程或孤儿句柄；
+- 评审型 task 结束后工作区与基线一致（pre/post guard 相等）。
+
+本阶段同属 docs-only 候选：此处只定义基线内容与退出条件，其验证执行、源码实施、真实 ARS/IM/provider 调用、配置写入与默认开启仍未授权。
+
 ### 阶段 1：锁定 ARS live roster 依赖
 
 依赖外部 ARS 先交付并发布版本化、只读、可契约测试的 live roster API。发布后再按官方协议更新精确依赖与现有 Socket facade/contract；不猜测操作名或响应结构，不提供共享文件回退。
@@ -101,6 +135,9 @@ ARS 拥有注册 roster 与执行事实；Sachima 拥有 preset、task binding �
 - create 与需要判断/切换 AGENT 的 continue 使用 exact canonical `agent_id`。
 - 执行资格为 `live roster ∩ valid execution preset`；任一侧缺失都不提交 Run。
 - 新注册但无 preset 的 AGENT 可报告为 registered，但执行状态为 unavailable，绝不继承 Claude/default 配置。
+- preset 的 permissions/agent-policy 直接采用阶段 0 基线：工程型 preset 至少含 read + search + execute，实施型再加 write；delete/move 与特权副作用不由 preset 默认授予，须 task 级定义并单独批准。preset 未列出的能力标签只表示未授予语义授权，其实际收敛依赖 task 契约与 pre/post 副作用 guard，不得当作 OS 级阻止。
+- 评审型 preset 以“无持久变更 + pre/post guard”表达只读，不以“禁止执行命令”表达。
+- preset 能力集合变化视为新身份：重新生成并密封 grant identity，旧 identity 不得继续复用；ARS core 改动只在证实映射/中介缺陷时提出。
 - 功能候选不唯一时由 Hermes 澄清，控制面不得以 priority 或模糊匹配代选。
 - 同 AGENT continuation 与换 AGENT 后建立 linked task 的既有语义保持不变。
 - “Tom 不是 AGENT”的纠正只依赖当前 Hermes Session 对话状态，不写全局 alias、memory 或配置。
@@ -136,6 +173,8 @@ ARS 拥有注册 roster 与执行事实；Sachima 拥有 preset、task binding �
 ### 阶段 4：回归闭环与文档对账
 
 将命令测试拆为语义控制/执行 preset 测试；保留并继续运行 coordinator、state、result、restoration、delivery 和 result-context 测试。实现完成后检查维护中的用户文档/help；历史日期计划保留为历史证据，不反向改写。
+
+验收还须复核阶段 0 基线：工程型路由的 sealed grant 与生效授权逐项相等、无 permission violation、子进程回收、评审型 task 的 pre/post 工作区 guard 相等；实施型路由另须复核那次 benign 写入证明（期望工作区 delta 逐项相等、清理/回滚证据），只读路由不要求写入证明。以注入式 fixture 与本地 harness 断言，不因此引入 live 或 default-on 路径，也不额外新增产品阶段。
 
 仅当实际源码真相改变路线图状态时，才在后续实施中更新 `docs/roadmap/current-status.md`；仅当产品目标确实改变时更新 `GOAL.md`。同时检查 `docs/sachima-channel.md`、网站/help/catalog 等维护面。本 docs-only 任务不修改它们。
 
@@ -191,7 +230,7 @@ git status --short
 | 边界 | 当前状态 | 单独批准后才允许 |
 |---|---|---|
 | 本计划验收 | 本次可审阅 | 仅确认计划内容 |
-| Sachima 源码与测试实施 | 未授权 | 阶段 1–4 的本地代码、测试与实施期文档变更 |
+| Sachima 源码与测试实施 | 未授权 | 阶段 0–4 的本地代码、测试与实施期文档变更 |
 | 外部 ARS roster prerequisite | 未交付/未授权 | ARS API 设计、发布、版本 pin 与契约接入 |
 | commit / push / PR / merge | 未授权 | 任一仓库历史或远端变更 |
 | 运行时配置与功能激活 | 未授权 | preset 配置、toolset/surface 开启或生产写入 |
