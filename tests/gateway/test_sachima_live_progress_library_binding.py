@@ -589,6 +589,7 @@ class _MinimalFacade:
             "api_version": 3,
             "supported_api_versions": [3],
             "operations": [
+                "agent_list",
                 "run_cancel",
                 "run_events",
                 "run_status",
@@ -624,6 +625,9 @@ class _MinimalFacade:
 
     def session_list(self):
         raise AssertionError("no session_list may run here")
+
+    def agent_list(self):
+        raise AssertionError("no agent_list may run here")
 
 
 def _compose_arsd(monkeypatch, tmp_path, *, facade=None):
@@ -731,7 +735,7 @@ def test_the_fake_backend_binds_no_delegate_coordinator(
     monkeypatch, tmp_path, backend_value
 ):
     """Default-off is unchanged: the fake path composes no execution bundle,
-    so there is nothing for ``/delegate`` to drive."""
+    so there is nothing for delegation to drive."""
 
     import gateway.sachima_delegate as delegate_mod
 

@@ -226,10 +226,11 @@ def _arsd_backend(tmp_path):
     class _Facade:
         def server_info(self):
             return {
-                "version": "0.7.7",
+                "version": "0.7.8",
                 "api_version": 3,
                 "supported_api_versions": [3],
                 "operations": [
+                    "agent_list",
                     "run_cancel",
                     "run_events",
                     "run_status",
@@ -265,6 +266,9 @@ def _arsd_backend(tmp_path):
 
         def session_list(self):  # pragma: no cover - unused
             raise AssertionError("no session read in an allowlist test")
+
+        def agent_list(self):  # pragma: no cover - unused
+            raise AssertionError("no roster read in an allowlist test")
 
     config = ArsdSupervisorConfig(
         type=ARSD_SUPERVISOR_CONFIG_TYPE,

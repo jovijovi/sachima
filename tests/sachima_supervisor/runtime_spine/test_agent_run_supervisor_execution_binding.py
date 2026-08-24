@@ -76,7 +76,12 @@ _RUN_ID_CANARY = "RUN-binding-canary-7c1e"
 _ARS_SESSION_CANARY = "SESSBINDINGCANARY7c1e"
 _ACCEPTED_AT = "2026-08-17T04:05:06+00:00"
 
+#: The canonical roster the fake daemon reports, in the daemon's own
+#: ``tuple(sorted(entries))`` order.
+REGISTERED_AGENT_IDS = ("claude", "codex", "cursor", "oh-my-pi", "opencode")
+
 V3_OPERATIONS = [
+    "agent_list",
     "run_cancel",
     "run_events",
     "run_status",
@@ -150,7 +155,7 @@ class _FacadeDouble:
     def server_info(self) -> dict[str, Any]:
         self._log("server_info")
         return {
-            "version": "0.7.7",
+            "version": "0.7.8",
             "api_version": 3,
             "supported_api_versions": [3],
             "operations": list(V3_OPERATIONS),
@@ -228,6 +233,10 @@ class _FacadeDouble:
     def session_list(self) -> dict[str, Any]:
         self._log("session_list")
         return {"sessions": []}
+
+    def agent_list(self) -> dict[str, Any]:
+        self._log("agent_list")
+        return {"agent_ids": list(REGISTERED_AGENT_IDS)}
 
 
 def _bundle(tmp_path: Path, *, gate=None, payload_resolver=None, reader=None):

@@ -1,10 +1,10 @@
-"""Sachima ``/delegate`` — accepted receipts, result envelopes, delivery settlement.
+"""Sachima delegation — accepted receipts, result envelopes, delivery settlement.
 
 Three primitives, all pure, all usable before any coordinator exists:
 
 1. **The accepted receipt.** Its three value fields are named exactly
    ``requested_agent`` / ``requested_model`` / ``requested_effort`` and are
-   sourced from the resolved selected-profile request. They state what Sachima
+   sourced from the admitted execution preset's request. They state what Sachima
    asked for. They are never an effective-runtime readback and are never
    rendered as one — ARS's per-Run effective configuration is a separate,
    unproven evidence gate, and a receipt that quietly claimed it would be

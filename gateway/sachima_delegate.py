@@ -1,11 +1,17 @@
-"""Sachima ``/delegate`` — the one coordinator that owns a delegated task's life.
+"""Sachima delegation — the one coordinator that owns a delegated task's life.
 
 This module is the single writer of delegate turn lifecycle and cancellation
-state. Everything above it (the slash handler, the gated control tool) asks it
-questions; everything below it (the durable store, the binding ledger, the
+state. Everything above it (the gated control tool Hermes reaches through) asks
+it questions; everything below it (the durable store, the binding ledger, the
 composed ``arsd`` bundle) answers them. There is deliberately no second
 coordinator, registry, backend, port, dispatcher, or bindings store beside the
 one the host already composed.
+
+Which AGENT a task runs under is settled before any of that, by
+:meth:`SachimaDelegateCoordinator.admit_agent`: the live ARS roster intersected
+with this host's execution presets, and nothing else. There is no fallback
+AGENT, no candidate ranking, and no name matching here — Hermes chose the
+canonical ``agent_id`` upstream, and this layer only says yes or no to it.
 
 The four rules that shape every method here:
 
@@ -50,12 +56,22 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
-from gateway.sachima_delegate_policy import (
-    SACHIMA_DELEGATE_INVALID_POLICY,
-    DelegatePolicy,
-    DelegateProfile,
+from gateway.sachima_agent_role_policy import (
+    AgentRolePolicy,
+    AgentRoleSelection,
+    build_agent_eligibility_view,
+    empty_agent_role_policy,
+    select_agent_by_role,
+)
+from gateway.sachima_agent_execution_presets import (
+    SACHIMA_AGENT_NO_PRESET,
+    SACHIMA_AGENT_ROSTER_UNAVAILABLE,
+    AgentAdmission,
+    AgentExecutionPreset,
+    AgentExecutionPresets,
+    admit_agent_execution,
+    empty_agent_execution_presets,
     requested_configuration,
-    synthesize_legacy_policy,
 )
 from gateway.sachima_delegate_result import (
     UNCERTAIN_SETTLEMENT,
@@ -83,14 +99,11 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "DELEGATE_ACCEPTED_TEMPLATE",
     "DELEGATE_BLOCKED_TEMPLATE",
-    "DELEGATE_REFUSED",
     "DELEGATE_SUBMIT_FAILED_TEMPLATE",
-    "DELEGATE_UNAVAILABLE",
-    "DELEGATE_USAGE",
     "DELEGATE_WAITING_TEMPLATE",
+    "SACHIMA_AGENT_NO_PRESET",
     "SACHIMA_DELEGATE_BLOCKED",
     "SACHIMA_DELEGATE_DISPATCH_FAILED",
-    "SACHIMA_DELEGATE_INVALID_POLICY",
     "SACHIMA_DELEGATE_INVALID_TARGET",
     "SACHIMA_DELEGATE_INVALID_TASK_TEXT",
     "SACHIMA_DELEGATE_NO_DELIVERY",
@@ -131,8 +144,11 @@ SACHIMA_DELEGATE_STABLE_CODES = frozenset(
         SACHIMA_DELEGATE_UNBOUND,
         SACHIMA_DELEGATE_UNKNOWN_PAYLOAD_REF,
         SACHIMA_DELEGATE_INVALID_TASK_TEXT,
-        SACHIMA_DELEGATE_INVALID_POLICY,
         SACHIMA_DELEGATE_INVALID_TARGET,
+        # Owned by the execution-preset module, but reachable from here: a
+        # continuation whose sealed AGENT has no preset any more says so with
+        # the same code admission would have used.
+        SACHIMA_AGENT_NO_PRESET,
         SACHIMA_DELEGATE_DISPATCH_FAILED,
         SACHIMA_DELEGATE_OBSERVATION_LOST,
         SACHIMA_DELEGATE_BLOCKED,
@@ -146,13 +162,12 @@ SACHIMA_DELEGATE_STABLE_CODES = frozenset(
 
 # --------------------------------------------------------------------------- #
 # The complete set of things Sachima ever says about a delegated task.
+#
+# Every line here is about a task that already exists. Refusals — an
+# ineligible AGENT, an unreadable roster — are stable codes answered to Hermes
+# through the control tool, which puts them into the conversation in the
+# user's own language rather than in a fixed string.
 # --------------------------------------------------------------------------- #
-DELEGATE_USAGE = "用法：/delegate [@AGENT] <任务>"
-DELEGATE_UNAVAILABLE = "外部执行通道未启用，无法委派任务。"
-DELEGATE_REFUSED = "任务未能提交，请检查委派配置。"
-DELEGATE_UNVERIFIED_SELECTOR = "无法确认所指定的 AGENT，请使用聊天中的 @ 提及来选择。"
-DELEGATE_UNKNOWN_SELECTOR_TEMPLATE = "该 AGENT 不可用。可选：\n{choices}"
-DELEGATE_AMBIGUOUS_TEMPLATE = "有多个 AGENT 可以承接，请指定其中一个：\n{choices}"
 DELEGATE_ACCEPTED_TEMPLATE = "已接受任务 {task_ref}，完成后会在这里回复。"
 DELEGATE_WAITING_TEMPLATE = "任务 {task_ref} 正在等待执行席位…"
 DELEGATE_SUBMIT_FAILED_TEMPLATE = "任务 {task_ref} 提交失败（{code}）。"
@@ -254,14 +269,20 @@ class SachimaDelegateCoordinator:
         binding: Any,
         config: Any,
         *,
-        policy: DelegatePolicy | None = None,
+        presets: AgentExecutionPresets | None = None,
+        role_policy: AgentRolePolicy | None = None,
         state: DelegateStateStore | None = None,
         delivery_factory: Callable[[DelegateOrigin], DelegateDelivery | None] | None = None,
         observe_interval: float = _DEFAULT_OBSERVE_INTERVAL_SECONDS,
     ) -> None:
         self._binding = binding
         self._config = config
-        self._policy = policy if policy is not None else synthesize_legacy_policy(config)
+        self._presets = (
+            presets if presets is not None else empty_agent_execution_presets()
+        )
+        self._role_policy = (
+            role_policy if role_policy is not None else empty_agent_role_policy()
+        )
         self._state = (
             state
             if state is not None
@@ -300,8 +321,12 @@ class SachimaDelegateCoordinator:
         return self._state
 
     @property
-    def policy(self) -> DelegatePolicy:
-        return self._policy
+    def presets(self) -> AgentExecutionPresets:
+        return self._presets
+
+    @property
+    def role_policy(self) -> AgentRolePolicy:
+        return self._role_policy
 
     @property
     def ledger(self) -> Any:
@@ -442,12 +467,80 @@ class SachimaDelegateCoordinator:
             return _DISPOSITION_BLOCKED, None, SACHIMA_DELEGATE_BLOCKED
         return _DISPOSITION_ACCEPTED, record, None
 
+    # -- eligibility: live roster ∩ valid execution preset ------------------ #
+    def registered_agent_ids(self) -> tuple[str, ...]:
+        """The connected daemon's live roster of canonical agent ids.
+
+        One bounded read-only daemon operation, delegated to the composed
+        backend, which validates the reply before it becomes an answer.
+        """
+
+        return self._binding.backend.list_registered_agents()
+
+    def admit_agent(self, agent_id: Any, *, task_text: str = "") -> AgentAdmission:
+        """Decide whether one canonical ``agent_id`` may execute here.
+
+        The whole of eligibility, in one place: the live roster read plus the
+        execution-preset intersection. It is synchronous and side-effect free
+        — no Session, no task, no payload, no submit — so a refusal costs
+        nothing durable and a caller can ask before it commits to anything.
+
+        A roster this host cannot read is ``roster_unavailable``, never an
+        empty roster: "the daemon registered nothing" and "we could not ask"
+        are different answers, and only one of them means the AGENT is gone.
+        """
+
+        try:
+            roster = self.registered_agent_ids()
+        except Exception:
+            # One stable code only — never the raised text, which can carry
+            # private socket paths or remote error bodies.
+            logger.debug("delegate roster read failed", exc_info=True)
+            return AgentAdmission(refusal=SACHIMA_AGENT_ROSTER_UNAVAILABLE)
+        return admit_agent_execution(
+            self._presets,
+            agent_id=agent_id,
+            registered_agent_ids=roster,
+            task_text=task_text,
+        )
+
+    def agent_eligibility(
+        self, *, role: Any = None, division: Any = None
+    ) -> tuple[tuple[Any, ...], AgentRoleSelection | None]:
+        """The live eligibility view, and the selection an exact role names.
+
+        One read-only daemon operation and two pure joins: the roster
+        annotated with execution presets and role assignments, plus — when a
+        role or division was asked for — the single candidate or the stable
+        clarification code. Nothing here writes a task, a Session, or a Run,
+        which is what makes a zero-or-several answer free to ask about.
+
+        Raises whatever the roster read raises; the caller decides what an
+        unreadable roster means for the answer it is composing.
+        """
+
+        roster = self.registered_agent_ids()
+        view = build_agent_eligibility_view(
+            registered_agent_ids=roster,
+            presets=self._presets,
+            role_policy=self._role_policy,
+        )
+        if role is None and division is None:
+            return view, None
+        return view, select_agent_by_role(
+            registered_agent_ids=roster,
+            presets=self._presets,
+            role_policy=self._role_policy,
+            role=role,
+            division=division,
+        )
+
     # -- creation (§5.3, I4) ------------------------------------------------ #
     async def create(
         self,
         *,
         task_text: str,
-        profile: DelegateProfile,
+        preset: AgentExecutionPreset,
         origin: DelegateOrigin,
         delivery: DelegateDelivery | None = None,
         linked_from: str | None = None,
@@ -462,7 +555,10 @@ class SachimaDelegateCoordinator:
         """
 
         await self._ensure_restored()
-        if type(profile) is not DelegateProfile or type(origin) is not DelegateOrigin:
+        if (
+            type(preset) is not AgentExecutionPreset
+            or type(origin) is not DelegateOrigin
+        ):
             raise ValueError(SACHIMA_DELEGATE_INVALID_TARGET)
 
         from sachima_supervisor.runtime_spine.arsd_supervisor_backend import (
@@ -470,7 +566,7 @@ class SachimaDelegateCoordinator:
         )
         from sachima_supervisor.runtime_spine.launch_spec import build_launch_spec
 
-        requested = requested_configuration(self._config, profile)
+        requested = requested_configuration(self._config, preset)
         payload_ref = self._state.put_payload(task_text)
         task_id = _new_task_id()
         try:
@@ -479,7 +575,7 @@ class SachimaDelegateCoordinator:
                 agent_kind=_DELEGATE_AGENT_KIND,
                 mode_flags={"needs_agent": True},
                 roles=_DELEGATE_ROLES,
-                refs=profile.launch_refs,
+                refs=preset.launch_refs,
             )
             session = self._binding.port.create_or_attach(task_id, spec)
             handle = derive_arsd_backend_handle(task_id)
@@ -497,8 +593,8 @@ class SachimaDelegateCoordinator:
                 dispatch_ref=payload_ref,
                 payload_ref=payload_ref,
                 spine_session_id=session.session_id,
-                profile_id=profile.profile_id,
-                launch_refs=profile.launch_refs,
+                agent_id=preset.agent_id,
+                launch_refs=preset.launch_refs,
                 requested_agent=requested[0],
                 requested_model=requested[1],
                 requested_effort=requested[2],
@@ -511,7 +607,7 @@ class SachimaDelegateCoordinator:
                 task_id=task_id,
                 backend_handle=handle,
                 spine_session_id=session.session_id,
-                profile_id=profile.profile_id,
+                agent_id=preset.agent_id,
                 origin=origin,
                 turn_keys=(turn.turn_key,),
                 current_turn_key=turn.turn_key,
@@ -529,17 +625,23 @@ class SachimaDelegateCoordinator:
         task_text: str,
         *,
         delivery: DelegateDelivery | None = None,
-        profile: DelegateProfile | None = None,
+        preset: AgentExecutionPreset | None = None,
         origin: DelegateOrigin | None = None,
     ) -> DelegateOutcome:
         """Continue the same task, in the same Sessions, under the same AGENT.
 
         A later Run under the original task, sealed spine Session, ARS Session,
-        profile, and AGENT — and only once the preceding Run has passed the
-        canonical terminal closure. A Run that is live, unresolved, or whose
-        cancellation is ``in_flight``/``uncertain`` refuses: continuing over an
-        unsettled Run would put two Runs on one Session and silently attribute
-        one's output to the other.
+        execution preset, and AGENT — and only once the preceding Run has
+        passed the canonical terminal closure. A Run that is live, unresolved,
+        or whose cancellation is ``in_flight``/``uncertain`` refuses:
+        continuing over an unsettled Run would put two Runs on one Session and
+        silently attribute one's output to the other.
+
+        ``preset`` is the already-admitted execution preset. Passing the one
+        this task is already sealed under continues it; passing a different
+        AGENT's creates a linked new task; omitting it resolves the task's own
+        AGENT from the catalog, which is the path a caller that has already
+        proven eligibility elsewhere takes.
         """
 
         await self._ensure_restored()
@@ -572,12 +674,12 @@ class SachimaDelegateCoordinator:
                     cancellation=current.cancellation,
                     diagnostic=SACHIMA_DELEGATE_NOT_CONTINUABLE,
                 )
-            if profile is not None and type(profile) is not DelegateProfile:
+            if preset is not None and type(preset) is not AgentExecutionPreset:
                 return DelegateOutcome(
                     task_ref=binding.task_ref,
                     diagnostic=SACHIMA_DELEGATE_INVALID_TARGET,
                 )
-            if profile is not None and profile.profile_id != binding.profile_id:
+            if preset is not None and preset.agent_id != binding.agent_id:
                 if type(origin) is not DelegateOrigin or (
                     origin.session_id != binding.origin.session_id
                 ):
@@ -595,21 +697,25 @@ class SachimaDelegateCoordinator:
                         turn_key=current.turn_key,
                         diagnostic=SACHIMA_DELEGATE_NOT_CONTINUABLE,
                     )
-                # An AGENT profile is sealed into a task. Switching therefore
+                # The AGENT is sealed into a task. Switching therefore
                 # creates a new linked task; it never rewrites the old binding.
                 return await self.create(
                     task_text=task_text,
-                    profile=profile,
+                    preset=preset,
                     origin=origin,
                     delivery=delivery,
                     linked_from=event.event_id,
                 )
-            profile = self._policy.profile(binding.profile_id)
-            if profile is None:
+            if preset is None:
+                preset = self._presets.preset(binding.agent_id)
+            if preset is None:
+                # The task's own AGENT has no execution preset here any more.
+                # A later Run under it would have to invent a configuration,
+                # so the task stays readable and simply does not continue.
                 return DelegateOutcome(
-                    task_ref=binding.task_ref, diagnostic=SACHIMA_DELEGATE_INVALID_POLICY
+                    task_ref=binding.task_ref, diagnostic=SACHIMA_AGENT_NO_PRESET
                 )
-            requested = requested_configuration(self._config, profile)
+            requested = requested_configuration(self._config, preset)
             payload_ref = self._state.put_payload(task_text)
             turn = self._state.put_turn(
                 DelegateTurnRecord(
@@ -620,8 +726,8 @@ class SachimaDelegateCoordinator:
                     dispatch_ref=payload_ref,
                     payload_ref=payload_ref,
                     spine_session_id=binding.spine_session_id,
-                    profile_id=binding.profile_id,
-                    launch_refs=profile.launch_refs,
+                    agent_id=binding.agent_id,
+                    launch_refs=preset.launch_refs,
                     requested_agent=requested[0],
                     requested_model=requested[1],
                     requested_effort=requested[2],
@@ -1603,7 +1709,8 @@ def bind_delegate_coordinator(
     binding: Any,
     config: Any,
     *,
-    policy: DelegatePolicy | None = None,
+    presets: AgentExecutionPresets | None = None,
+    role_policy: AgentRolePolicy | None = None,
     delivery_factory: Callable[[DelegateOrigin], DelegateDelivery | None] | None = None,
 ) -> SachimaDelegateCoordinator:
     """Bind one coordinator over an already-composed execution bundle."""
@@ -1612,7 +1719,8 @@ def bind_delegate_coordinator(
     _coordinator = SachimaDelegateCoordinator(
         binding,
         config,
-        policy=policy,
+        presets=presets,
+        role_policy=role_policy,
         delivery_factory=(
             delivery_factory if delivery_factory is not None else _delivery_factory_hook
         ),

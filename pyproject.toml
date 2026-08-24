@@ -162,12 +162,12 @@ hindsight = ["hindsight-client==0.6.1"]
 # per the no-ranges policy above; bump together with
 # EXPECTED_AGENT_RUN_SUPERVISOR_VERSION in
 # sachima_supervisor/supervisor_library.py and regenerate uv.lock.
-agent-run-supervisor = ["agent-run-supervisor==0.7.7"]
+agent-run-supervisor = ["agent-run-supervisor==0.7.8"]
 # dev carries agent-run-supervisor so CI's `--extra dev` sync installs the
 # distribution and the offline Socket contract drift locks run for real
 # against it instead of skipping (the source-path fallback is retired; the
 # package is the only way those tests reach the real protocol/spec modules).
-dev = ["debugpy==1.8.20", "pytest==9.0.2", "pytest-asyncio==1.3.0", "mcp==1.26.0", "starlette==1.0.1", "ty==0.0.21", "ruff==0.15.10", "setuptools==81.0.0", "agent-run-supervisor==0.7.7"]  # starlette: CVE-2026-48710; setuptools: latest <82 (torch >=2.11 caps setuptools<82)
+dev = ["debugpy==1.8.20", "pytest==9.0.2", "pytest-asyncio==1.3.0", "mcp==1.26.0", "starlette==1.0.1", "ty==0.0.21", "ruff==0.15.10", "setuptools==81.0.0", "agent-run-supervisor==0.7.8"]  # starlette: CVE-2026-48710; setuptools: latest <82 (torch >=2.11 caps setuptools<82)
 messaging = ["python-telegram-bot[webhooks]==22.6", "discord.py[voice]==2.7.1", "aiohttp==3.13.4", "brotlicffi==1.2.0.1", "slack-bolt==1.27.0", "slack-sdk==3.40.1", "qrcode==7.4.2"]  # aiohttp: CVE-2026-34513/34518/34519/34520/34525
 cron = []  # croniter is now a core dependency; this extra kept for back-compat
 slack = ["slack-bolt==1.27.0", "slack-sdk==3.40.1", "aiohttp==3.13.4"]
@@ -414,8 +414,10 @@ select = ["PLW1514"]
 
 [tool.uv]
 exclude-newer = "7 days"
-# agent-run-supervisor 0.7.7 was released inside the global 7-day window
-# (PyPI upload 2026-08-19T10:55:41Z); keep the global safety window and
-# override only this reviewed package (0.7.7 calibration of the ARS 0.7.6
-# Socket API v3 plan P1 pin — Socket API v3 itself is unchanged).
-exclude-newer-package = { temporalio = "2026-05-01T00:00:00Z", agent-run-supervisor = "2026-08-19T11:00:00Z" }
+# agent-run-supervisor 0.7.8 was released inside the global 7-day window
+# (PyPI upload 2026-08-22T05:41:08Z); keep the global safety window and
+# override only this reviewed package. 0.7.8 adds the read-only
+# ``agent_list`` roster operation to Socket API v3; the other seven
+# operations, the wire, the limits block and the error codes are
+# byte-identical to 0.7.7, so the API version stays 3.
+exclude-newer-package = { temporalio = "2026-05-01T00:00:00Z", agent-run-supervisor = "2026-08-22T06:00:00Z" }

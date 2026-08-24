@@ -47,7 +47,12 @@ from sachima_supervisor.runtime_spine.events import SpineError
 from sachima_supervisor.runtime_spine.execution_port import RUNTIME_INVALID_SESSION
 
 TASK_ID = "delegate_restore_one"
+#: The canonical roster the fake daemon reports, in the daemon's own
+#: ``tuple(sorted(entries))`` order.
+REGISTERED_AGENT_IDS = ("claude", "codex", "cursor", "oh-my-pi", "opencode")
+
 V3_OPERATIONS = [
+    "agent_list",
     "run_cancel",
     "run_events",
     "run_status",
@@ -135,6 +140,10 @@ class _Facade:
     def session_list(self) -> dict[str, Any]:
         self.calls.append("session_list")
         return {"sessions": []}
+
+    def agent_list(self) -> dict[str, Any]:
+        self.calls.append("agent_list")
+        return {"agent_ids": list(REGISTERED_AGENT_IDS)}
 
     def counts(self) -> dict[str, int]:
         return {name: self.calls.count(name) for name in set(self.calls)}

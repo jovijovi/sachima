@@ -1,4 +1,4 @@
-"""Sachima ``/delegate`` — the durable host state a submission is built on.
+"""Sachima delegation — the durable host state a submission is built on.
 
 Everything a delegated task needs in order to survive one Gateway restart lives
 here, and nothing else does. The layer owns five kinds of record:
@@ -7,8 +7,8 @@ here, and nothing else does. The layer owns five kinds of record:
   The bytes are durable because a recovery has to rebuild the *identical* frozen
   request, and a process that died holding the only copy in memory could not;
 * **task bindings** — one per delegated task: its sealed spine Session, its
-  backend handle, the profile it was routed to, its ordered turns, and the link
-  to a prior task when the operator switched AGENT;
+  backend handle, the canonical ``agent_id`` it was admitted under, its ordered
+  turns, and the link to a prior task when the user switched AGENT;
 * **turn records** — one per Run attempt, carrying the immutable identity that
   derives the exact ledger key plus the four orthogonal mutable dimensions
   (lifecycle, cancellation, receipt, observation);
@@ -114,6 +114,8 @@ _EVENT_ID_PREFIX = "devt_"
 _RESULT_REF_PREFIX = "dres_"
 
 _SAFE_REF_RE = re.compile(r"^[a-z][a-z0-9_]{0,127}$")
+#: The canonical ARS ``agent_id`` grammar (see :func:`_safe_agent_id`).
+_SAFE_AGENT_ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 _DIR_MODE = 0o700
 _FILE_MODE = 0o600
 #: A bound on one durable task text. It is the same order as the ARS prompt
@@ -151,6 +153,36 @@ def _optional_ref(value: Any) -> str | None:
     if value is None:
         return None
     return _safe_ref(value)
+
+
+def _safe_agent_id(value: Any) -> str:
+    """The canonical ARS ``agent_id`` sealed into a task.
+
+    Its own grammar rather than :func:`_safe_ref`, because a canonical agent
+    id may carry ``.`` and ``-`` (the deployed roster includes ``oh-my-pi``)
+    which the internal ref grammar never allowed. It is a strict superset of
+    every value the retired ``profile_id`` field could have held, so a record
+    written before the rename still validates on read.
+    """
+
+    if type(value) is not str or _SAFE_AGENT_ID_RE.fullmatch(value) is None:
+        raise _invalid()
+    return value
+
+
+def _recorded_agent_id(document: Mapping) -> Any:
+    """The record's sealed AGENT, reading the pre-rename key when that is all
+    there is.
+
+    Records written before the execution-preset change carry the AGENT under
+    ``profile_id``. They are read, not migrated: an old task must stay
+    queryable, cancellable, recoverable, and readable for its result. Whether
+    its AGENT is still eligible is a separate question, asked by admission at
+    the moment a *new* Run would be submitted.
+    """
+
+    value = document.get("agent_id")
+    return document.get("profile_id") if value is None else value
 
 
 def _safe_text(value: Any, *, maximum: int = 512) -> str:
@@ -254,7 +286,7 @@ class DelegateTurnRecord:
     dispatch_ref: str
     payload_ref: str
     spine_session_id: str
-    profile_id: str
+    agent_id: str
     launch_refs: tuple[str, ...]
     requested_agent: str
     requested_model: str
@@ -277,7 +309,7 @@ class DelegateTurnRecord:
         _safe_ref(self.dispatch_ref)
         _safe_ref(self.payload_ref)
         _safe_ref(self.spine_session_id)
-        _safe_ref(self.profile_id)
+        _safe_agent_id(self.agent_id)
         if type(self.launch_refs) is not tuple or not self.launch_refs:
             raise _invalid()
         for ref in self.launch_refs:
@@ -311,7 +343,7 @@ class DelegateTurnRecord:
             "dispatch_ref": self.dispatch_ref,
             "payload_ref": self.payload_ref,
             "spine_session_id": self.spine_session_id,
-            "profile_id": self.profile_id,
+            "agent_id": self.agent_id,
             "launch_refs": list(self.launch_refs),
             "requested_agent": self.requested_agent,
             "requested_model": self.requested_model,
@@ -342,7 +374,7 @@ class DelegateTurnRecord:
             dispatch_ref=document.get("dispatch_ref"),
             payload_ref=document.get("payload_ref"),
             spine_session_id=document.get("spine_session_id"),
-            profile_id=document.get("profile_id"),
+            agent_id=_recorded_agent_id(document),
             launch_refs=tuple(refs),
             requested_agent=document.get("requested_agent", ""),
             requested_model=document.get("requested_model", ""),
@@ -367,7 +399,7 @@ class DelegateTaskBinding:
     task_id: str
     backend_handle: str
     spine_session_id: str
-    profile_id: str
+    agent_id: str
     origin: DelegateOrigin
     turn_keys: tuple[str, ...] = ()
     current_turn_key: str | None = None
@@ -379,7 +411,7 @@ class DelegateTaskBinding:
         _safe_ref(self.task_id)
         _safe_ref(self.backend_handle)
         _safe_ref(self.spine_session_id)
-        _safe_ref(self.profile_id)
+        _safe_agent_id(self.agent_id)
         if type(self.origin) is not DelegateOrigin:
             raise _invalid()
         if type(self.turn_keys) is not tuple:
@@ -397,7 +429,7 @@ class DelegateTaskBinding:
             "task_id": self.task_id,
             "backend_handle": self.backend_handle,
             "spine_session_id": self.spine_session_id,
-            "profile_id": self.profile_id,
+            "agent_id": self.agent_id,
             "origin": self.origin.as_dict(),
             "turn_keys": list(self.turn_keys),
             "current_turn_key": self.current_turn_key,
@@ -417,7 +449,7 @@ class DelegateTaskBinding:
             task_id=document.get("task_id"),
             backend_handle=document.get("backend_handle"),
             spine_session_id=document.get("spine_session_id"),
-            profile_id=document.get("profile_id"),
+            agent_id=_recorded_agent_id(document),
             origin=DelegateOrigin.from_dict(document.get("origin")),
             turn_keys=tuple(keys),
             current_turn_key=document.get("current_turn_key"),

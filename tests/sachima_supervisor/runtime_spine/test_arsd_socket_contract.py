@@ -6,8 +6,9 @@ default-off :class:`ArsdSupervisorConfig`, the injected
 :class:`ArsdClientFacade` boundary with its lazy short-lived production
 facade, stable request identity, exact request construction, the exact
 ``server_info`` / ``submit`` / ``run_status`` / ``run_events`` /
-``run_cancel`` / ``session_status`` / ``session_list`` validators, the
-admission-product pre-check, and the Sachima-owned stable error mapping.
+``run_cancel`` / ``session_status`` / ``session_list`` / ``agent_list``
+validators, the admission-product pre-check, and the Sachima-owned stable
+error mapping.
 
 Every mirror in the contract module is drift-locked here against the
 installed exact-pinned distribution: a mirror and the distribution that
@@ -21,6 +22,7 @@ Runtime Spine / Gateway wiring, no external AGENT execution.
 from __future__ import annotations
 
 import importlib
+import re
 import sys
 import traceback
 from pathlib import Path
@@ -435,7 +437,7 @@ def test_run_limits_mirror_matches_the_installed_distribution() -> None:
 # --------------------------------------------------------------------------- #
 #: The exact capability vocabulary the configured author role requires. The
 #: obsolete read/search-only projection could not express it, so a configured
-#: author grant failed closed at construction and no ``/delegate`` Run could
+#: author grant failed closed at construction and no delegated Run could
 #: ever be admitted.
 AUTHOR_GRANT_CAPABILITIES = frozenset({"read", "search", "write", "execute"})
 
@@ -1284,6 +1286,9 @@ class _ExplodingFacade:
     def session_list(self):
         self._forbidden("session_list")
 
+    def agent_list(self):
+        self._forbidden("agent_list")
+
 
 def _build_then_submit(facade, config=None, **overrides):
     """Build a payload and hand it straight to the facade.
@@ -1484,9 +1489,11 @@ def test_no_code_path_reads_last_effective_values_back_into_request_construction
 # --------------------------------------------------------------------------- #
 # server_info negotiation validator (plan §5.4): exact preflight contract.
 # --------------------------------------------------------------------------- #
-#: The seven-operation closed set exactly as the daemon emits it
-#: (``sorted(protocol.OPERATIONS)``); drift-locked below.
+#: The eight-operation closed set exactly as the daemon emits it
+#: (``sorted(protocol.OPERATIONS)``); drift-locked below. ``agent_list`` is
+#: 0.7.8's purely additive read-only roster operation — the wire stays v3.
 V3_OPERATIONS = [
+    "agent_list",
     "run_cancel",
     "run_events",
     "run_status",
@@ -1517,7 +1524,7 @@ V2_LIMITS = {key: value for key, value in V3_LIMITS.items()
 
 def _server_info_payload(**overrides):
     payload = {
-        "version": "0.7.7",
+        "version": "0.7.8",
         "api_version": 3,
         "supported_api_versions": [3],
         "operations": list(V3_OPERATIONS),
@@ -1543,9 +1550,9 @@ def _limits_override(**changes):
     return {"limits": limits}
 
 
-def test_server_info_negotiation_accepts_the_exact_077_v3_shape() -> None:
+def test_server_info_negotiation_accepts_the_exact_078_v3_shape() -> None:
     info = _validate_server_info(_server_info_payload())
-    assert info.version == "0.7.7"
+    assert info.version == "0.7.8"
     assert info.api_version == 3
     assert info.supported_api_versions == (3,)
     assert info.operations == tuple(V3_OPERATIONS)
@@ -1697,6 +1704,7 @@ def test_server_info_out_of_range_event_budget_is_a_mismatch(bad_budget) -> None
         {"version": "0.1.7"},
         {"version": "0.6.3"},
         {"version": "0.7.5"},
+        {"version": "0.7.7"},
         {"api_version": 2},
         {"api_version": 4},
         {"supported_api_versions": [2, 3]},
@@ -1704,6 +1712,9 @@ def test_server_info_out_of_range_event_budget_is_a_mismatch(bad_budget) -> None
         {"operations": []},
         {"operations": sorted(V3_OPERATIONS + ["session_close"])},
         {"operations": sorted(set(V3_OPERATIONS) - {"run_cancel"})},
+        # A roster-less daemon is refused outright: there is no degraded
+        # admission path that tolerates a peer without ``agent_list``.
+        {"operations": sorted(set(V3_OPERATIONS) - {"agent_list"})},
         {"operations": list(reversed(V3_OPERATIONS))},
         _limits_override(max_concurrent_runs=0),
         _limits_override(max_frame_bytes=999),
@@ -1884,7 +1895,8 @@ def test_server_info_mirror_constants_match_the_pinned_protocol() -> None:
     # pinned daemon (``list(...)`` / ``sorted(...)`` in its server_info).
     assert _ARSD_SUPPORTED_API_VERSIONS == tuple(protocol.SUPPORTED_API_VERSIONS) == (3,)
     assert ARSD_OPERATIONS == frozenset(protocol.OPERATIONS)
-    assert len(ARSD_OPERATIONS) == 7
+    assert len(ARSD_OPERATIONS) == 8
+    assert "agent_list" in ARSD_OPERATIONS
     assert "session_close" not in ARSD_OPERATIONS
     assert V3_OPERATIONS == sorted(protocol.OPERATIONS)
 
@@ -2663,6 +2675,141 @@ def test_malformed_session_list_is_a_protocol_violation(payload) -> None:
     assert excinfo.value.code == RUNTIME_ARSD_PROTOCOL_VIOLATION
 
 
+# --------------------------------------------------------------------------- #
+# agent_list validator (0.7.8): the live roster of canonical agent ids.
+#
+# The daemon answers ``{"agent_ids": list(snapshot.ids())}`` and its snapshot
+# accessor is ``tuple(sorted(entries))`` — so the wire order is ascending and
+# the entries are unique by construction. Both are asserted as *contract*
+# here, not as convenience: a reply that is unsorted or repeats an id did not
+# come from the accessor this operation is defined by.
+# --------------------------------------------------------------------------- #
+#: What the deployed daemon actually answered in production.
+PRODUCTION_ROSTER = ("claude", "codex", "cursor", "oh-my-pi", "opencode")
+
+
+def _validate_agent_list(payload):
+    from sachima_supervisor.runtime_spine.arsd_socket_contract import (
+        validate_arsd_agent_list,
+    )
+
+    return validate_arsd_agent_list(payload)
+
+
+def test_agent_list_accepts_the_observed_production_roster() -> None:
+    assert _validate_agent_list({"agent_ids": list(PRODUCTION_ROSTER)}) == (
+        PRODUCTION_ROSTER
+    )
+
+
+def test_agent_list_accepts_an_empty_roster() -> None:
+    """A daemon that loaded no agent is registered-nothing, not unavailable."""
+
+    assert _validate_agent_list({"agent_ids": []}) == ()
+
+
+def test_agent_list_ids_match_the_pinned_canonical_grammar() -> None:
+    """Drift-lock: the mirrored grammar is the distribution's own."""
+
+    from sachima_supervisor.runtime_spine.arsd_socket_contract import (
+        ARSD_AGENT_ID_PATTERN,
+    )
+
+    registration = pytest.importorskip(
+        "agent_run_supervisor.native_acp.agent_registration"
+    )
+    assert ARSD_AGENT_ID_PATTERN == registration.AGENT_ID_RE.pattern
+    for agent_id in PRODUCTION_ROSTER:
+        assert registration.validate_agent_id(agent_id) == agent_id
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"agent_ids": ["codex", "claude"]},
+        {"agent_ids": ["claude", "claude"]},
+        {"agent_ids": ["Codex"]},
+        {"agent_ids": ["codex "]},
+        {"agent_ids": [" codex"]},
+        {"agent_ids": ["-codex"]},
+        {"agent_ids": ["codex\n"]},
+        {"agent_ids": ["a" * 65]},
+        {"agent_ids": [""]},
+        {"agent_ids": [None]},
+        {"agent_ids": [123]},
+        {"agent_ids": [["codex"]]},
+        {"agent_ids": ["codex"], "count": 1},
+        {"agent_ids": "codex"},
+        {"agent_ids": ("codex",)},
+        {"agent_ids": None},
+        {"agents": ["codex"]},
+        {},
+        ["codex"],
+        None,
+        "codex",
+    ],
+    ids=[
+        "unsorted",
+        "duplicate",
+        "uppercase",
+        "trailing_space",
+        "leading_space",
+        "leading_hyphen",
+        "newline",
+        "too_long",
+        "empty_id",
+        "none_id",
+        "int_id",
+        "nested_list_id",
+        "extra_top_level_key",
+        "ids_is_a_string",
+        "ids_is_a_tuple",
+        "ids_is_none",
+        "wrong_top_level_key",
+        "empty_mapping",
+        "bare_list",
+        "none",
+        "bare_string",
+    ],
+)
+def test_hostile_or_forged_agent_list_is_a_protocol_violation(payload) -> None:
+    """Every deviation is the one stable code, and never echoes the input."""
+
+    with pytest.raises(SpineError) as excinfo:
+        _validate_agent_list(payload)
+    _assert_stable_code_only(excinfo, RUNTIME_ARSD_PROTOCOL_VIOLATION)
+
+
+def test_agent_list_never_echoes_a_forged_id() -> None:
+    forged = "../../etc/passwd codex"
+    with pytest.raises(SpineError) as excinfo:
+        _validate_agent_list({"agent_ids": [forged]})
+    rendered = _rendered_chain(excinfo)
+    assert "passwd" not in rendered
+    assert forged not in rendered
+
+
+def test_agent_list_bound_refuses_an_implausible_roster() -> None:
+    """A page is bounded: an unbounded roster is a protocol violation.
+
+    The daemon's roster is a startup snapshot of a reviewed registry file, so
+    a reply carrying thousands of ids is not a big deployment — it is a reply
+    this integration declines to iterate.
+    """
+
+    from sachima_supervisor.runtime_spine.arsd_socket_contract import (
+        ARSD_MAX_REGISTERED_AGENTS,
+    )
+
+    ok = [f"agent{index:04d}" for index in range(ARSD_MAX_REGISTERED_AGENTS)]
+    assert _validate_agent_list({"agent_ids": ok}) == tuple(ok)
+
+    too_many = ok + [f"agent{ARSD_MAX_REGISTERED_AGENTS:04d}"]
+    with pytest.raises(SpineError) as excinfo:
+        _validate_agent_list({"agent_ids": too_many})
+    _assert_stable_code_only(excinfo, RUNTIME_ARSD_PROTOCOL_VIOLATION)
+
+
 def test_last_effective_values_are_never_read_back_into_request_construction() -> None:
     """R-5 / §5.5.4: the observations exist on the view and reach nothing.
 
@@ -3188,10 +3335,10 @@ def test_default_facade_satisfies_the_injected_boundary() -> None:
     assert issubclass(DefaultArsdClientFacade, ArsdClientFacade)
 
 
-def test_facade_surface_is_the_six_operations_this_integration_uses() -> None:
-    """P1-e: the facade gains ``run_status``/``run_cancel``/``session_status``/
-    ``session_list``. There is no ``session_close`` — the operation does not
-    exist in v3 — and no ``follow`` path."""
+def test_facade_surface_is_every_operation_this_integration_uses() -> None:
+    """The facade gains ``run_status``/``run_cancel``/``session_status``/
+    ``session_list``/``agent_list``. There is no ``session_close`` — the
+    operation does not exist in v3 — and no ``follow`` path."""
 
     from sachima_supervisor.runtime_spine.arsd_socket_contract import (
         ARSD_OPERATIONS,
@@ -3219,6 +3366,7 @@ def test_every_added_operation_uses_one_short_lived_connection(
         "run_cancel": {"run_id": "run4abc"},
         "session_status": _session_view(),
         "session_list": {"sessions": []},
+        "agent_list": {"agent_ids": list(PRODUCTION_ROSTER)},
     }
     server = fake_arsd_server(
         lambda envelope: _result_frame(
@@ -3231,15 +3379,20 @@ def test_every_added_operation_uses_one_short_lived_connection(
     assert facade.run_cancel("run4abc")["run_id"] == "run4abc"
     assert facade.session_status(REUSE_SESSION_ID)["session_id"] == REUSE_SESSION_ID
     assert facade.session_list() == {"sessions": []}
+    assert facade.agent_list() == {"agent_ids": list(PRODUCTION_ROSTER)}
 
-    assert server.connections == 4
+    assert server.connections == 5
     assert [env["op"] for env in server.received] == [
         "run_status",
         "run_cancel",
         "session_status",
         "session_list",
+        "agent_list",
     ]
     assert all(env["api_version"] == 3 for env in server.received)
+    # A roster read carries no arguments: an empty payload, like the daemon's
+    # own ``_PAYLOAD_FIELDS["agent_list"] == frozenset()``.
+    assert server.received[-1]["payload"] == {}
 
 
 def test_facade_construction_never_connects(fake_arsd_server) -> None:
@@ -3260,7 +3413,7 @@ def test_v3_negotiation_roundtrip_over_the_wire(fake_arsd_server) -> None:
     info = _validate_server_info(
         facade.server_info(), config=_make_config(enabled=True)
     )
-    assert info.version == "0.7.7"
+    assert info.version == "0.7.8"
     assert server.received[0]["op"] == "server_info"
     assert server.received[0]["api_version"] == 3
     assert server.received[0]["payload"] == {}
@@ -4257,3 +4410,237 @@ def test_config_text_widening_does_not_reach_identifier_like_validators() -> Non
         with pytest.raises(SpineError) as excinfo:
             _validate_session_view(_session_view(**overrides))
         assert excinfo.value.code == RUNTIME_ARSD_PROTOCOL_VIOLATION
+
+
+# --------------------------------------------------------------------------- #
+# Per-policy sealed grants
+#
+# ``grant_capabilities`` is the set the daemon's permission bridge freezes for
+# the Run, so it is the only thing that decides whether a Run can write. A
+# host that runs a review AGENT and an implementation AGENT under one global
+# grant gives both the union — the review Run receives ``write`` it was never
+# meant to have. The per-policy map closes that: the exact capability set is
+# resolved from the config, and the identity that names it is derived from it,
+# so a narrowed grant can never travel under the identity of the wide one.
+# --------------------------------------------------------------------------- #
+REVIEW_CAPABILITIES = ("execute", "read", "search")
+IMPLEMENTATION_CAPABILITIES = ("execute", "read", "search", "write")
+
+
+def _author_config(**overrides):
+    """A config whose global grant is the widest the operator approved."""
+
+    kwargs = {
+        "agent_by_policy_ref": {
+            "policy_review": "reader-agent",
+            "policy_author": "author-agent",
+        },
+        "model_by_policy_ref": {
+            "policy_review": "claude-sonnet-5",
+            "policy_author": "claude-sonnet-5",
+        },
+        "effort_by_policy_ref": {"policy_review": "medium", "policy_author": "medium"},
+        "run_limits_by_policy_ref": {
+            "policy_review": _valid_config_kwargs()["run_limits_by_policy_ref"][
+                "policy_reader"
+            ],
+            "policy_author": _valid_config_kwargs()["run_limits_by_policy_ref"][
+                "policy_reader"
+            ],
+        },
+        "grant_capabilities": IMPLEMENTATION_CAPABILITIES,
+        "enabled": True,
+    }
+    kwargs.update(overrides)
+    return _make_config(**kwargs)
+
+
+def _derive(config, capabilities):
+    from sachima_supervisor.runtime_spine.arsd_socket_contract import (
+        derive_arsd_sealed_grant,
+    )
+
+    return derive_arsd_sealed_grant(config, capabilities)
+
+
+def test_a_grant_equal_to_the_configured_one_keeps_the_operators_identity() -> None:
+    """Nothing is invented when nothing narrowed: the operator already sealed
+    this exact set, and re-labelling it would lose their provenance."""
+
+    config = _author_config()
+    sealed = _derive(config, IMPLEMENTATION_CAPABILITIES)
+
+    assert sealed.capabilities == IMPLEMENTATION_CAPABILITIES
+    assert sealed.grant_ref == config.grant_ref
+    assert sealed.grant_hash == config.grant_hash
+    assert sealed.grant_role_hash == config.grant_role_hash
+
+
+def test_a_narrowed_grant_gets_its_own_identity() -> None:
+    config = _author_config()
+    wide = _derive(config, IMPLEMENTATION_CAPABILITIES)
+    narrow = _derive(config, REVIEW_CAPABILITIES)
+
+    assert narrow.capabilities == REVIEW_CAPABILITIES
+    assert narrow.grant_ref != wide.grant_ref
+    assert narrow.grant_hash != wide.grant_hash
+    assert narrow.grant_role_hash != wide.grant_role_hash
+    # The derived identity still satisfies the shapes the daemon accepts.
+    assert narrow.grant_ref.startswith(config.grant_ref)
+    assert re.fullmatch(r"sha256:[0-9a-f]{64}", narrow.grant_hash)
+    assert re.fullmatch(r"sha256:[0-9a-f]{64}", narrow.grant_role_hash)
+    assert re.fullmatch(r"[a-z][a-z0-9_]{0,127}", narrow.grant_ref)
+
+
+def test_the_derivation_is_deterministic_so_a_recovery_resends_the_same_bytes() -> None:
+    config = _author_config()
+    first = _derive(config, REVIEW_CAPABILITIES)
+    second = _derive(config, ("search", "read", "execute"))
+    assert first == second
+
+
+def test_two_different_narrowings_never_share_an_identity() -> None:
+    config = _author_config()
+    seen = {
+        _derive(config, caps).grant_ref
+        for caps in (
+            ("read", "search"),
+            ("execute", "read", "search"),
+            ("read", "search", "write"),
+            ("execute", "read", "search", "write"),
+        )
+    }
+    assert len(seen) == 4
+
+
+@pytest.mark.parametrize(
+    "capabilities",
+    [
+        ("execute", "read", "search", "write", "delete"),
+        ("delete",),
+        (),
+        ("read", "read"),
+        "read",
+        None,
+        ("Read",),
+        (7,),
+    ],
+    ids=[
+        "widens_past_the_operator_grant",
+        "outside_the_operator_grant",
+        "empty",
+        "duplicate",
+        "bare_string",
+        "none",
+        "wrong_case",
+        "not_a_string",
+    ],
+)
+def test_a_grant_that_is_not_a_narrowing_fails_closed(capabilities) -> None:
+    """A preset chooses among what the operator approved; never above it."""
+
+    config = _author_config(grant_capabilities=IMPLEMENTATION_CAPABILITIES)
+    with pytest.raises(SpineError) as excinfo:
+        _derive(config, capabilities)
+    assert excinfo.value.code == RUNTIME_INVALID_ARSD_CONFIG
+
+
+def test_the_payload_seals_the_per_policy_grant_rather_than_the_global_one() -> None:
+    config = _author_config(
+        grant_by_policy_ref={
+            "policy_review": list(REVIEW_CAPABILITIES),
+            "policy_author": list(IMPLEMENTATION_CAPABILITIES),
+        }
+    )
+
+    review = _build_payload(
+        config=config,
+        agent_policy_ref="policy_review",
+        model_policy_ref="policy_review",
+        effort_policy_ref="policy_review",
+        run_limits_policy_ref="policy_review",
+    )["request"]
+    author = _build_payload(
+        config=config,
+        agent_policy_ref="policy_author",
+        model_policy_ref="policy_author",
+        effort_policy_ref="policy_author",
+        run_limits_policy_ref="policy_author",
+    )["request"]
+
+    assert review["grant_capabilities"] == list(REVIEW_CAPABILITIES)
+    assert "write" not in review["grant_capabilities"]
+    assert author["grant_capabilities"] == list(IMPLEMENTATION_CAPABILITIES)
+
+    # Distinct capability sets never travel under one identity.
+    assert review["grant_ref"] != author["grant_ref"]
+    assert review["grant_hash"] != author["grant_hash"]
+    assert review["grant_role_hash"] != author["grant_role_hash"]
+    # The unnarrowed one keeps the operator's own identity.
+    assert author["grant_ref"] == config.grant_ref
+    assert author["grant_hash"] == config.grant_hash
+
+
+def test_a_policy_with_no_per_policy_grant_keeps_the_configured_one() -> None:
+    """Callers that never opted in are byte-identical to before."""
+
+    config = _author_config(
+        grant_by_policy_ref={"policy_review": list(REVIEW_CAPABILITIES)}
+    )
+    request = _build_payload(
+        config=config,
+        agent_policy_ref="policy_author",
+        model_policy_ref="policy_author",
+        effort_policy_ref="policy_author",
+        run_limits_policy_ref="policy_author",
+    )["request"]
+
+    assert request["grant_capabilities"] == list(config.grant_capabilities)
+    assert request["grant_ref"] == config.grant_ref
+
+
+def test_a_per_policy_grant_that_widens_fails_the_config_closed() -> None:
+    with pytest.raises(SpineError) as excinfo:
+        _author_config(
+            grant_capabilities=("read", "search"),
+            grant_by_policy_ref={"policy_author": ["read", "search", "write"]},
+        )
+    assert excinfo.value.code == RUNTIME_INVALID_ARSD_CONFIG
+
+
+@pytest.mark.parametrize(
+    "mapping",
+    [
+        {"policy_author": []},
+        {"policy_author": ["delete"]},
+        {"policy_author": "read"},
+        {"policy_author": None},
+        {"POLICY_AUTHOR": ["read"]},
+        {7: ["read"]},
+        ["policy_author"],
+        "policy_author",
+    ],
+)
+def test_a_malformed_per_policy_grant_map_fails_the_config_closed(mapping) -> None:
+    with pytest.raises(SpineError) as excinfo:
+        _author_config(grant_by_policy_ref=mapping)
+    assert excinfo.value.code == RUNTIME_INVALID_ARSD_CONFIG
+
+
+def test_the_sealed_payload_still_parses_under_the_real_pinned_protocol() -> None:
+    """A derived identity is text the daemon accepts, not a shape it refuses."""
+
+    protocol = pytest.importorskip("agent_run_supervisor.arsd.protocol")
+    config = _author_config(
+        grant_by_policy_ref={"policy_review": list(REVIEW_CAPABILITIES)}
+    )
+    payload = _build_payload(
+        config=config,
+        agent_policy_ref="policy_review",
+        model_policy_ref="policy_review",
+        effort_policy_ref="policy_review",
+        run_limits_policy_ref="policy_review",
+    )
+    command = protocol.parse_submit(payload)
+    assert command.request.grant_capabilities == REVIEW_CAPABILITIES
+    assert command.request.grant_ref == payload["request"]["grant_ref"]

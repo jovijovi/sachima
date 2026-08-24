@@ -49,7 +49,11 @@ from gateway.sachima_delegate import (
     DelegateDelivery,
     SachimaDelegateCoordinator,
 )
-from gateway.sachima_delegate_policy import synthesize_legacy_policy
+from gateway.sachima_agent_execution_presets import (
+    AGENT_EXECUTION_PRESETS_TYPE,
+    ENGINEERING_BASELINE_PERMISSIONS,
+    build_agent_execution_presets,
+)
 from gateway.sachima_delegate_state import (
     DelegateOrigin,
     DelegateStateStore,
@@ -71,7 +75,12 @@ from sachima_supervisor.runtime_spine.arsd_socket_contract import (
 FINAL_MESSAGE_CANARY = "the delegated agent finished and reported this"
 TASK_TEXT_CANARY = "audit the sachima delegate canary payload body"
 
+#: The canonical roster the fake daemon reports, in the daemon's own
+#: ``tuple(sorted(entries))`` order.
+REGISTERED_AGENT_IDS = ("claude", "codex", "cursor", "oh-my-pi", "opencode")
+
 V3_OPERATIONS = [
+    "agent_list",
     "run_cancel",
     "run_events",
     "run_status",
@@ -193,7 +202,7 @@ class _Facade:
             "session_id": session_id,
             "owner": "sachima_host",
             "namespace": "sachima_tasks",
-            "agent_id": "author-agent",
+            "agent_id": "codex",
             "profile_id": None,
             "created_at": "2026-08-19T04:05:06+00:00",
             "updated_at": "2026-08-19T04:05:06+00:00",
@@ -205,6 +214,10 @@ class _Facade:
     def session_list(self) -> dict[str, Any]:
         self.calls.append("session_list")
         return {"sessions": []}
+
+    def agent_list(self) -> dict[str, Any]:
+        self.calls.append("agent_list")
+        return {"agent_ids": list(REGISTERED_AGENT_IDS)}
 
 
 class _Delivery:
@@ -252,7 +265,7 @@ def _config(tmp_path: Path, **overrides: Any) -> ArsdSupervisorConfig:
         "namespace": "sachima_tasks",
         "socket_path": str(private / "arsd.sock"),
         "binding_ledger_path": str(private / "arsd-run-bindings.json"),
-        "agent_by_policy_ref": {"policy_author": "author-agent"},
+        "agent_by_policy_ref": {"policy_codex": "codex"},
         "model_by_policy_ref": {"policy_model": "claude-opus-5"},
         "effort_by_policy_ref": {"policy_effort": "xhigh"},
         "workspace_by_ref": {"ws_delegate": str(private / "workspace")},
@@ -269,7 +282,11 @@ def _config(tmp_path: Path, **overrides: Any) -> ArsdSupervisorConfig:
         "grant_ref": "grant_author_v1",
         "grant_hash": "sha256:" + "a" * 64,
         "grant_role_hash": "sha256:" + "b" * 64,
-        "grant_capabilities": ("read", "search"),
+        "grant_capabilities": ("execute", "read", "search"),
+        "grant_by_policy_ref": {
+            "policy_codex": ENGINEERING_BASELINE_PERMISSIONS,
+            "policy_cursor": ENGINEERING_BASELINE_PERMISSIONS,
+        },
         "mcp_snapshot_hashes": ("sha256:" + "c" * 64,),
         "credential_refs": ("cred_author",),
         "evidence_policy_hash": "sha256:" + "d" * 64,
@@ -290,6 +307,30 @@ def _origin(session_id: str = "20260819_000000_abcd1234") -> DelegateOrigin:
     )
 
 
+#: One preset per canonical AGENT this offline host may run. It carries the
+#: engineering baseline (read + search + execute) and nothing that could pick
+#: an AGENT — the tests name the one they mean.
+def _catalog(config, *agent_ids: str):
+    return build_agent_execution_presets(
+        {
+            "type": AGENT_EXECUTION_PRESETS_TYPE,
+            "presets": [
+                {
+                    "agent_id": agent_id,
+                    "workspace_ref": "ws_delegate",
+                    "agent_policy_ref": f"policy_{agent_id}",
+                    "model_policy_ref": "policy_model",
+                    "effort_policy_ref": "policy_effort",
+                    "run_limits_policy_ref": "policy_limits",
+                    "permissions": list(ENGINEERING_BASELINE_PERMISSIONS),
+                }
+                for agent_id in (agent_ids or ("codex",))
+            ],
+        },
+        config,
+    )
+
+
 def _coordinator(tmp_path: Path, *, facade=None, delivery=None, **config_overrides):
     facade = _Facade() if facade is None else facade
     config = _config(tmp_path, **config_overrides)
@@ -303,7 +344,7 @@ def _coordinator(tmp_path: Path, *, facade=None, delivery=None, **config_overrid
     coordinator = SachimaDelegateCoordinator(
         bundle,
         config,
-        policy=synthesize_legacy_policy(config),
+        presets=_catalog(config),
         state=DelegateStateStore(delegate_state_root(config.binding_ledger_path)),
         delivery_factory=(lambda _origin: delivery.channel()) if delivery else None,
         observe_interval=0.01,
@@ -319,9 +360,9 @@ def _unbind():
     delegate_mod.unbind_delegate_coordinator()
 
 
-def _profile(coordinator):
-    (profile,) = coordinator.policy.profiles
-    return profile
+def _preset(coordinator):
+    (preset,) = coordinator.presets.presets
+    return preset
 
 
 async def _until(predicate, *, timeout=10.0):
@@ -352,7 +393,7 @@ async def test_a_created_task_is_durable_before_anything_could_submit(tmp_path):
     created = asyncio.create_task(
         coordinator.create(
             task_text=TASK_TEXT_CANARY,
-            profile=_profile(coordinator),
+            preset=_preset(coordinator),
             origin=_origin(),
             delivery=delivery.channel(),
         )
@@ -383,14 +424,14 @@ async def test_the_accepted_receipt_carries_the_requested_triple_and_settles_onc
     coordinator, facade = _coordinator(tmp_path, delivery=delivery)
     outcome = await coordinator.create(
         task_text=TASK_TEXT_CANARY,
-        profile=_profile(coordinator),
+        preset=_preset(coordinator),
         origin=_origin(),
         delivery=delivery.channel(),
     )
     assert outcome.receipt == "confirmed"
     assert len(delivery.receipts) == 1
     receipt = delivery.receipts[0]
-    assert "author-agent" in receipt
+    assert "codex" in receipt
     assert "claude-opus-5" in receipt
     assert "xhigh" in receipt
     assert TASK_TEXT_CANARY not in receipt
@@ -426,7 +467,7 @@ async def test_the_receipt_settles_before_the_observer_is_armed(tmp_path):
     )
     await coordinator.create(
         task_text=TASK_TEXT_CANARY,
-        profile=_profile(coordinator),
+        preset=_preset(coordinator),
         origin=_origin(),
         delivery=channel,
     )
@@ -452,7 +493,7 @@ async def test_every_send_branch_settles_the_receipt_through_the_real_closure(
     coordinator, facade = _coordinator(tmp_path, delivery=delivery)
     outcome = await coordinator.create(
         task_text=TASK_TEXT_CANARY,
-        profile=_profile(coordinator),
+        preset=_preset(coordinator),
         origin=_origin(),
         delivery=delivery.channel(),
     )
@@ -470,7 +511,7 @@ async def test_a_raising_receipt_send_is_uncertain_and_does_not_block_the_run(tm
     coordinator, facade = _coordinator(tmp_path, delivery=delivery)
     outcome = await coordinator.create(
         task_text=TASK_TEXT_CANARY,
-        profile=_profile(coordinator),
+        preset=_preset(coordinator),
         origin=_origin(),
         delivery=delivery.channel(),
     )
@@ -515,7 +556,7 @@ async def test_the_coordinator_classifies_through_the_bundles_own_ledger(tmp_pat
 
     await coordinator.create(
         task_text=TASK_TEXT_CANARY,
-        profile=_profile(coordinator),
+        preset=_preset(coordinator),
         origin=_origin(),
         delivery=delivery.channel(),
     )
@@ -550,7 +591,7 @@ async def test_a_success_shaped_dispatch_with_no_record_is_a_failed_admission(tm
     coordinator.binding.dispatcher.dispatch = _lying_dispatch  # type: ignore[method-assign]
     outcome = await coordinator.create(
         task_text=TASK_TEXT_CANARY,
-        profile=_profile(coordinator),
+        preset=_preset(coordinator),
         origin=_origin(),
         delivery=delivery.channel(),
     )
@@ -571,7 +612,7 @@ async def test_a_lost_ack_leaves_a_pending_intent_that_holds_its_permit(tmp_path
 
     outcome = await coordinator.create(
         task_text=TASK_TEXT_CANARY,
-        profile=_profile(coordinator),
+        preset=_preset(coordinator),
         origin=_origin(),
         delivery=delivery.channel(),
     )
@@ -598,7 +639,7 @@ async def test_an_unreadable_ledger_blocks_and_keeps_everything(tmp_path):
     coordinator.binding.dispatcher.dispatch = _damage_then_dispatch  # type: ignore[method-assign]
     outcome = await coordinator.create(
         task_text=TASK_TEXT_CANARY,
-        profile=_profile(coordinator),
+        preset=_preset(coordinator),
         origin=_origin(),
         delivery=delivery.channel(),
     )
@@ -623,7 +664,7 @@ async def test_a_second_create_entry_over_existing_evidence_never_submits_twice(
     coordinator, facade = _coordinator(tmp_path, delivery=delivery)
     outcome = await coordinator.create(
         task_text=TASK_TEXT_CANARY,
-        profile=_profile(coordinator),
+        preset=_preset(coordinator),
         origin=_origin(),
         delivery=delivery.channel(),
     )
@@ -650,7 +691,7 @@ async def test_one_terminal_makes_one_envelope_one_release_and_two_sinks(tmp_pat
     coordinator, facade = _coordinator(tmp_path, delivery=delivery)
     outcome = await coordinator.create(
         task_text=TASK_TEXT_CANARY,
-        profile=_profile(coordinator),
+        preset=_preset(coordinator),
         origin=_origin(),
         delivery=delivery.channel(),
     )
@@ -686,7 +727,7 @@ async def test_an_im_delivery_failure_never_erases_the_hermes_projection(tmp_pat
     coordinator, facade = _coordinator(tmp_path, delivery=delivery)
     outcome = await coordinator.create(
         task_text=TASK_TEXT_CANARY,
-        profile=_profile(coordinator),
+        preset=_preset(coordinator),
         origin=_origin(),
         delivery=delivery.channel(),
     )
@@ -719,7 +760,7 @@ async def test_every_ars_terminal_reaches_one_of_the_three_envelope_terminals(
     coordinator, facade = _coordinator(tmp_path, delivery=delivery)
     outcome = await coordinator.create(
         task_text=TASK_TEXT_CANARY,
-        profile=_profile(coordinator),
+        preset=_preset(coordinator),
         origin=_origin(),
         delivery=delivery.channel(),
     )
@@ -734,7 +775,7 @@ async def test_observation_failure_does_not_release_the_permit(tmp_path):
     coordinator, facade = _coordinator(tmp_path, delivery=delivery)
     outcome = await coordinator.create(
         task_text=TASK_TEXT_CANARY,
-        profile=_profile(coordinator),
+        preset=_preset(coordinator),
         origin=_origin(),
         delivery=delivery.channel(),
     )
@@ -758,7 +799,7 @@ async def test_a_proven_cancel_settles_once_and_leaves_the_task_continuable(tmp_
     coordinator, facade = _coordinator(tmp_path, delivery=delivery)
     outcome = await coordinator.create(
         task_text=TASK_TEXT_CANARY,
-        profile=_profile(coordinator),
+        preset=_preset(coordinator),
         origin=_origin(),
         delivery=delivery.channel(),
     )
@@ -797,7 +838,7 @@ async def test_an_unproven_cancel_is_uncertain_and_blocks_continuation(tmp_path)
     coordinator, facade = _coordinator(tmp_path, delivery=delivery)
     outcome = await coordinator.create(
         task_text=TASK_TEXT_CANARY,
-        profile=_profile(coordinator),
+        preset=_preset(coordinator),
         origin=_origin(),
         delivery=delivery.channel(),
     )
@@ -829,7 +870,7 @@ async def test_a_completion_that_won_the_cancel_race_is_not_rewritten(tmp_path):
     coordinator, facade = _coordinator(tmp_path, delivery=delivery)
     outcome = await coordinator.create(
         task_text=TASK_TEXT_CANARY,
-        profile=_profile(coordinator),
+        preset=_preset(coordinator),
         origin=_origin(),
         delivery=delivery.channel(),
     )
@@ -850,7 +891,7 @@ async def test_continuation_is_refused_while_the_run_is_still_live(tmp_path):
     coordinator, facade = _coordinator(tmp_path, delivery=delivery)
     outcome = await coordinator.create(
         task_text=TASK_TEXT_CANARY,
-        profile=_profile(coordinator),
+        preset=_preset(coordinator),
         origin=_origin(),
         delivery=delivery.channel(),
     )
@@ -871,7 +912,7 @@ async def test_explicit_recovery_resends_the_identical_request_exactly_once(tmp_
     coordinator, _ = _coordinator(tmp_path, facade=facade, delivery=delivery)
     outcome = await coordinator.create(
         task_text=TASK_TEXT_CANARY,
-        profile=_profile(coordinator),
+        preset=_preset(coordinator),
         origin=_origin(),
         delivery=delivery.channel(),
     )
@@ -894,7 +935,7 @@ async def test_recovery_over_accepted_evidence_closes_without_submitting(tmp_pat
     coordinator, facade = _coordinator(tmp_path, delivery=delivery)
     outcome = await coordinator.create(
         task_text=TASK_TEXT_CANARY,
-        profile=_profile(coordinator),
+        preset=_preset(coordinator),
         origin=_origin(),
         delivery=delivery.channel(),
     )
@@ -913,7 +954,7 @@ async def test_two_concurrent_recover_calls_serialize_into_one_closure(tmp_path)
     coordinator, _ = _coordinator(tmp_path, facade=facade, delivery=delivery)
     outcome = await coordinator.create(
         task_text=TASK_TEXT_CANARY,
-        profile=_profile(coordinator),
+        preset=_preset(coordinator),
         origin=_origin(),
         delivery=delivery.channel(),
     )
@@ -943,7 +984,7 @@ async def test_cancelling_a_waiter_cannot_release_the_section_early(tmp_path):
     waiter = asyncio.create_task(
         coordinator.create(
             task_text=TASK_TEXT_CANARY,
-            profile=_profile(coordinator),
+            preset=_preset(coordinator),
             origin=_origin(),
             delivery=delivery.channel(),
         )
@@ -980,7 +1021,7 @@ def _recompose(tmp_path: Path, *, facade, delivery):
     coordinator = SachimaDelegateCoordinator(
         bundle,
         config,
-        policy=synthesize_legacy_policy(config),
+        presets=_catalog(config),
         state=DelegateStateStore(delegate_state_root(config.binding_ledger_path)),
         delivery_factory=lambda _origin: delivery.channel(),
         observe_interval=0.01,
@@ -995,7 +1036,7 @@ async def test_a_restart_restores_an_accepted_turn_without_submitting_again(tmp_
     coordinator, facade = _coordinator(tmp_path, delivery=delivery)
     outcome = await coordinator.create(
         task_text=TASK_TEXT_CANARY,
-        profile=_profile(coordinator),
+        preset=_preset(coordinator),
         origin=_origin(),
         delivery=delivery.channel(),
     )
@@ -1037,7 +1078,7 @@ async def test_restart_finishes_a_result_event_left_before_turn_terminalization(
     outcome = await _await_composed(
         coordinator.create(
             task_text=TASK_TEXT_CANARY,
-            profile=_profile(coordinator),
+            preset=_preset(coordinator),
             origin=_origin(),
             delivery=delivery.channel(),
         )
@@ -1088,7 +1129,7 @@ async def test_accepted_identity_restore_failure_stays_blocked_without_observer(
     outcome = await _await_composed(
         coordinator.create(
             task_text=TASK_TEXT_CANARY,
-            profile=_profile(coordinator),
+            preset=_preset(coordinator),
             origin=_origin(),
             delivery=delivery.channel(),
         )
@@ -1125,7 +1166,7 @@ async def test_pending_identity_restore_failure_blocks_recovery(tmp_path):
     outcome = await _await_composed(
         coordinator.create(
             task_text=TASK_TEXT_CANARY,
-            profile=_profile(coordinator),
+            preset=_preset(coordinator),
             origin=_origin(),
             delivery=delivery.channel(),
         )
@@ -1154,7 +1195,7 @@ async def test_terminal_identity_restore_failure_blocks_continuation(tmp_path):
     outcome = await _await_composed(
         coordinator.create(
             task_text=TASK_TEXT_CANARY,
-            profile=_profile(coordinator),
+            preset=_preset(coordinator),
             origin=_origin(),
             delivery=delivery.channel(),
         )
@@ -1188,7 +1229,7 @@ async def test_a_restart_turns_an_in_flight_receipt_into_uncertain_without_resen
     coordinator, facade = _coordinator(tmp_path, delivery=delivery)
     outcome = await coordinator.create(
         task_text=TASK_TEXT_CANARY,
-        profile=_profile(coordinator),
+        preset=_preset(coordinator),
         origin=_origin(),
         delivery=delivery.channel(),
     )
@@ -1210,7 +1251,7 @@ async def test_a_restart_restores_a_pending_intent_and_reserves_its_permit(tmp_p
     coordinator, _ = _coordinator(tmp_path, facade=facade, delivery=delivery)
     outcome = await coordinator.create(
         task_text=TASK_TEXT_CANARY,
-        profile=_profile(coordinator),
+        preset=_preset(coordinator),
         origin=_origin(),
         delivery=delivery.channel(),
     )
@@ -1239,7 +1280,7 @@ async def test_a_restart_restores_a_crashed_cancel_as_uncertain(tmp_path):
     coordinator, facade = _coordinator(tmp_path, delivery=delivery)
     outcome = await coordinator.create(
         task_text=TASK_TEXT_CANARY,
-        profile=_profile(coordinator),
+        preset=_preset(coordinator),
         origin=_origin(),
         delivery=delivery.channel(),
     )
@@ -1264,7 +1305,7 @@ async def test_a_restart_retries_a_pending_sink_once_with_the_same_event_id(tmp_
     outcome = await _await_composed(
         coordinator.create(
             task_text=TASK_TEXT_CANARY,
-            profile=_profile(coordinator),
+            preset=_preset(coordinator),
             origin=_origin(),
             delivery=delivery.channel(),
         )
@@ -1312,7 +1353,7 @@ async def test_a_restart_marks_an_in_flight_sink_uncertain_without_resending(tmp
     outcome = await _await_composed(
         coordinator.create(
             task_text=TASK_TEXT_CANARY,
-            profile=_profile(coordinator),
+            preset=_preset(coordinator),
             origin=_origin(),
             delivery=delivery.channel(),
         )
@@ -1345,7 +1386,7 @@ async def test_a_restart_does_not_retry_failed_or_uncertain_sinks(tmp_path, sink
     outcome = await _await_composed(
         coordinator.create(
             task_text=TASK_TEXT_CANARY,
-            profile=_profile(coordinator),
+            preset=_preset(coordinator),
             origin=_origin(),
             delivery=delivery.channel(),
         )
@@ -1375,7 +1416,7 @@ async def test_status_explicitly_retries_failed_or_uncertain_sink_with_same_even
     outcome = await _await_composed(
         coordinator.create(
             task_text=TASK_TEXT_CANARY,
-            profile=_profile(coordinator),
+            preset=_preset(coordinator),
             origin=_origin(),
             delivery=delivery.channel(),
         )
@@ -1406,7 +1447,7 @@ async def test_only_a_fresh_graph_reclassifies_a_found_in_flight(tmp_path):
     coordinator, facade = _coordinator(tmp_path, delivery=delivery)
     outcome = await coordinator.create(
         task_text=TASK_TEXT_CANARY,
-        profile=_profile(coordinator),
+        preset=_preset(coordinator),
         origin=_origin(),
         delivery=delivery.channel(),
     )
@@ -1432,7 +1473,7 @@ async def test_capacity_bounds_admissions_and_says_so_only_when_it_waits(tmp_pat
     coordinator, _ = _coordinator(tmp_path, facade=facade, delivery=delivery)
     first = await coordinator.create(
         task_text="first task",
-        profile=_profile(coordinator),
+        preset=_preset(coordinator),
         origin=_origin(),
         delivery=delivery.channel(),
     )
@@ -1442,7 +1483,7 @@ async def test_capacity_bounds_admissions_and_says_so_only_when_it_waits(tmp_pat
     waiting = asyncio.create_task(
         coordinator.create(
             task_text="second task",
-            profile=_profile(coordinator),
+            preset=_preset(coordinator),
             origin=_origin(),
             delivery=delivery.channel(),
         )

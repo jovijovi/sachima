@@ -46,7 +46,7 @@ def _counting_version(calls: list[str], value: Any, *, raises: Exception | None 
 
 
 def test_expected_pin_matches_packaged_distribution_pin() -> None:
-    assert EXPECTED_AGENT_RUN_SUPERVISOR_VERSION == "0.7.7"
+    assert EXPECTED_AGENT_RUN_SUPERVISOR_VERSION == "0.7.8"
     assert AGENT_RUN_SUPERVISOR_IMPORT_NAME == "agent_run_supervisor"
     assert AGENT_RUN_SUPERVISOR_DISTRIBUTION == "agent-run-supervisor"
 
