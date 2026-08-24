@@ -252,12 +252,11 @@ class TestCommandBypassActiveSession:
         )
 
     @pytest.mark.asyncio
-    async def test_delegate_bypasses_guard(self):
-        """/delegate must bypass so it starts parallel supervised work
-        instead of interrupting the conversation the user is having.
+    async def test_a_retired_command_word_is_queued_like_any_other_text(self):
+        """Delegation is not a command any more, so its old word is text.
 
-        Queued, it would be discarded by the slash-command safety net and the
-        delegated task would silently never exist.
+        There is no bypass, no handler, and no explanation for it — an
+        unknown word takes exactly the ordinary path an unknown word takes.
         """
         adapter = _make_adapter()
         sk = _session_key()
@@ -265,12 +264,8 @@ class TestCommandBypassActiveSession:
 
         await adapter.handle_message(_make_event("/delegate audit the changelog"))
 
-        assert sk not in adapter._pending_messages, (
-            "/delegate was queued as a pending message instead of being dispatched"
-        )
-        assert any("handled:delegate" in r for r in adapter.sent_responses), (
-            "/delegate response was not sent back to the user"
-        )
+        assert not any("handled:delegate" in r for r in adapter.sent_responses)
+        assert not any("delegate" in r.lower() for r in adapter.sent_responses)
 
     @pytest.mark.asyncio
     async def test_queue_bypasses_guard(self):
@@ -347,7 +342,7 @@ class TestAllResolvableCommandsBypassGuard:
         for cmd in (
             "model", "reasoning", "personality", "voice", "insights", "title",
             "resume", "retry", "undo", "compress", "usage",
-            "reload-mcp", "sethome", "reset", "delegate",
+            "reload-mcp", "sethome", "reset",
         ):
             assert should_bypass_active_session(cmd) is True, (
                 f"/{cmd} must bypass the active-session guard"

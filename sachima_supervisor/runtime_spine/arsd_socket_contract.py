@@ -8,8 +8,8 @@ Runtime Spine backend. It contains the default-off
 with its lazy short-lived :class:`DefaultArsdClientFacade`, stable request
 identity, exact submit request construction, the exact ``server_info`` /
 ``submit`` / ``run_status`` / ``run_events`` / ``run_cancel`` /
-``session_status`` / ``session_list`` response validators, the admission-
-product pre-check, and a small Sachima-owned stable error mapping.
+``session_status`` / ``session_list`` / ``agent_list`` response validators, the
+admission-product pre-check, and a small Sachima-owned stable error mapping.
 
 Every protocol constant here is a **mirror** of the installed exact-pinned
 distribution, drift-locked by the contract tests: if a mirror and the
@@ -68,6 +68,7 @@ __all__ = [
     "RUNTIME_INVALID_ARSD_CONFIG",
     "ARSD_SUPERVISOR_CONFIG_TYPE",
     "ARSD_REQUIRED_API_VERSION",
+    "ARSD_AGENT_ID_PATTERN",
     "ARSD_FINAL_MESSAGE_TRUNCATE_REASON",
     "ARSD_MAX_ERROR_MESSAGE_CHARS",
     "ARSD_MAX_FIELD_CHARS",
@@ -75,6 +76,7 @@ __all__ = [
     "ARSD_MAX_FRAME_BYTES",
     "ARSD_MAX_JSON_NESTING_DEPTH",
     "ARSD_MAX_PROMPT_BYTES",
+    "ARSD_MAX_REGISTERED_AGENTS",
     "ARSD_MAX_SESSION_ID_CHARS",
     "ARSD_OPERATIONS",
     "ARSD_PERMISSION_VIOLATION_REASON",
@@ -88,6 +90,7 @@ __all__ = [
     "ArsdRunStatusObservation",
     "ArsdServerInfo",
     "ArsdSessionView",
+    "ArsdSealedGrant",
     "ArsdSubmitAccepted",
     "ArsdTerminalResult",
     "DefaultArsdClientFacade",
@@ -96,9 +99,11 @@ __all__ = [
     "build_arsd_submit_payload",
     "check_arsd_admission_event_budget",
     "derive_arsd_request_id",
+    "derive_arsd_sealed_grant",
     "map_arsd_client_error_code",
     "project_arsd_terminal_result",
     "require_enabled_arsd_supervisor_config",
+    "validate_arsd_agent_list",
     "validate_arsd_run_cancel_result",
     "validate_arsd_run_events_page",
     "validate_arsd_run_status",
@@ -199,9 +204,15 @@ ARSD_SUPERVISOR_CONFIG_TYPE = "sachima.runtime_spine.arsd_supervisor_config.v1"
 #: taken on the envelope (Spec §5.2).
 ARSD_REQUIRED_API_VERSION = 3
 
-#: The closed seven-operation set of Socket API v3. There is no
+#: The closed eight-operation set of Socket API v3. There is no
 #: ``session_close`` — Runs terminate, Sessions do not close (Spec §5.1/§6.1).
 #: Drift-locked against ``protocol.OPERATIONS``.
+#:
+#: ``agent_list`` arrived in 0.7.8 as a purely additive read-only roster
+#: operation: the other seven kept their names and payload contracts, so the
+#: wire stayed v3. It is required rather than optional here — a daemon whose
+#: ``server_info`` omits it is refused at negotiation, because there is no
+#: roster-less admission path to degrade into.
 ARSD_OPERATIONS = frozenset(
     {
         "server_info",
@@ -211,6 +222,7 @@ ARSD_OPERATIONS = frozenset(
         "run_cancel",
         "session_status",
         "session_list",
+        "agent_list",
     }
 )
 
@@ -234,6 +246,23 @@ _VERSION_RE = re.compile(r"^[0-9][0-9A-Za-z._+-]{0,31}$")
 #: and the configured Claude selector ``opus[1m]`` is unspellable here. See
 #: :func:`_safe_config_text`.
 _WIRE_TOKEN_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+
+#: The **canonical** ``agent_id`` grammar, mirrored verbatim from the pinned
+#: distribution's ``native_acp.agent_registration.AGENT_ID_RE`` — the one
+#: grammar the daemon shares between its registry parse and its admission. It
+#: is narrower than :data:`_WIRE_TOKEN_RE` on purpose: an agent id is
+#: lowercase-only and bounded at 64 characters, so ``Codex`` is not a spelling
+#: of ``codex``, it is simply not an agent id. Drift-locked by the contract
+#: tests against the imported real module.
+ARSD_AGENT_ID_PATTERN = r"[a-z0-9][a-z0-9._-]{0,63}"
+_AGENT_ID_RE = re.compile(ARSD_AGENT_ID_PATTERN)
+
+#: The bound on one roster reply. The daemon's roster is a startup snapshot of
+#: a reviewed registry file, so a reply carrying thousands of ids is not a
+#: large deployment — it is a reply this integration declines to iterate.
+#: Sachima-owned (the protocol states no bound), which is why it is generous
+#: enough that no real registry meets it.
+ARSD_MAX_REGISTERED_AGENTS = 256
 
 #: The bound the pinned 0.7.6 ``AgentRunRequest`` applies to a plain text
 #: field (``native_acp.spec._require_text``'s default). Mirrored, not
@@ -479,6 +508,30 @@ def _owned_token_tuple(value: Any, item: Any) -> tuple[str, ...]:
     return tuple(item(entry) for entry in value)
 
 
+def _owned_capability_set(value: Any) -> tuple[str, ...]:
+    """One non-empty, duplicate-free capability set in canonical order.
+
+    Sorted rather than as-written: the set *is* the identity a sealed grant is
+    derived from, so two operators who typed the same capabilities in a
+    different order must get the same grant, not two.
+    """
+
+    tokens = _owned_token_tuple(value, _grant_capability)
+    if not tokens or len(set(tokens)) != len(tokens):
+        _invalid_config()
+    return tuple(sorted(tokens))
+
+
+def _owned_grant_map(value: Any) -> Mapping[str, tuple[str, ...]]:
+    """The optional per-policy grant map; an empty map is a real answer."""
+
+    if isinstance(value, Mapping) and not value:
+        return MappingProxyType({})
+    return _owned_ref_map(
+        value, key_prefix=_POLICY_REF_PREFIX, item=_owned_capability_set
+    )
+
+
 def _check_arsd_config_fields(config: Any, *, normalize: bool = False) -> None:
     """Exact fail-closed validation of every config field.
 
@@ -504,6 +557,7 @@ def _check_arsd_config_fields(config: Any, *, normalize: bool = False) -> None:
         grant_hash = config.grant_hash
         grant_role_hash = config.grant_role_hash
         grant_capabilities = config.grant_capabilities
+        grant_by_policy_ref = config.grant_by_policy_ref
         mcp_snapshot_hashes = config.mcp_snapshot_hashes
         credential_refs = config.credential_refs
         evidence_policy_hash = config.evidence_policy_hash
@@ -559,6 +613,14 @@ def _check_arsd_config_fields(config: Any, *, normalize: bool = False) -> None:
     _safe_config_digest(grant_hash)
     _safe_config_digest(grant_role_hash)
     owned_capabilities = _owned_token_tuple(grant_capabilities, _grant_capability)
+    owned_grants = _owned_grant_map(grant_by_policy_ref)
+    # A per-policy grant chooses among what the operator already approved
+    # config-wide. It may narrow; it may never widen, and a set that tries is
+    # a config error rather than a request the daemon gets to refuse.
+    approved = set(owned_capabilities)
+    for capabilities in owned_grants.values():
+        if not set(capabilities).issubset(approved):
+            _invalid_config()
     owned_mcp_hashes = _owned_token_tuple(mcp_snapshot_hashes, _safe_config_digest)
     owned_credential_refs = _owned_token_tuple(credential_refs, _safe_config_ref)
     _safe_config_digest(evidence_policy_hash)
@@ -571,6 +633,7 @@ def _check_arsd_config_fields(config: Any, *, normalize: bool = False) -> None:
         object.__setattr__(config, "workspace_by_ref", owned_workspaces)
         object.__setattr__(config, "run_limits_by_policy_ref", owned_limits)
         object.__setattr__(config, "grant_capabilities", owned_capabilities)
+        object.__setattr__(config, "grant_by_policy_ref", owned_grants)
         object.__setattr__(config, "mcp_snapshot_hashes", owned_mcp_hashes)
         object.__setattr__(config, "credential_refs", owned_credential_refs)
 
@@ -615,6 +678,14 @@ class ArsdSupervisorConfig:
     credential_refs: tuple[str, ...]
     evidence_policy_hash: str
     recovery_policy_hash: str
+    #: Optional per-``agent_policy_ref`` narrowings of ``grant_capabilities``.
+    #: The capability set is what the daemon's permission bridge freezes for a
+    #: Run, so one global grant would hand a review AGENT the same authority
+    #: as an implementing one. An entry here is the exact set that policy's
+    #: Runs are sealed under; a policy with no entry keeps the global grant.
+    grant_by_policy_ref: Mapping[str, tuple[str, ...]] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
     expected_package_version: str = EXPECTED_AGENT_RUN_SUPERVISOR_VERSION
     required_api_version: int = ARSD_REQUIRED_API_VERSION
     enabled: bool = False
@@ -810,6 +881,109 @@ def _contained_cwd(cwd: Any, workspace_root: str) -> str:
     return value
 
 
+# --------------------------------------------------------------------------- #
+# Sealed grants: one capability set, one identity that names it
+# --------------------------------------------------------------------------- #
+#: Domain separator for the derived identity. It is part of the digest input
+#: so a Sachima-derived grant hash can never collide with a digest computed
+#: for anything else, here or elsewhere.
+_SEALED_GRANT_DOMAIN = "sachima.arsd.sealed_grant.v1"
+
+
+@dataclass(frozen=True)
+class ArsdSealedGrant:
+    """One exact capability set, and the identity under which it travels.
+
+    ``grant_capabilities`` is the only field the daemon acts on: its
+    permission bridge freezes that set for the Run and gates every write-,
+    execute- and read-family tool off it. The three identity fields are
+    provenance — opaque text to the daemon, carried into the Run spec — and
+    they exist so an audit can tell *which* grant a Run executed under.
+
+    That is precisely why a narrowed set may not reuse the wide identity: two
+    Runs with different authority that name the same grant are
+    indistinguishable after the fact.
+    """
+
+    grant_ref: str
+    grant_hash: str
+    grant_role_hash: str
+    capabilities: tuple[str, ...]
+
+
+def _sealed_digest(payload: str, domain: str) -> str:
+    return "sha256:" + hashlib.sha256(
+        f"{payload}\n{domain}".encode("utf-8")
+    ).hexdigest()
+
+
+def derive_arsd_sealed_grant(config: Any, capabilities: Any) -> ArsdSealedGrant:
+    """The sealed grant one exact capability set runs under.
+
+    A set equal to the operator's own ``grant_capabilities`` keeps the
+    operator's own identity verbatim: they already sealed exactly this, and
+    re-labelling it would throw their provenance away.
+
+    Any **narrowing** gets its own identity, derived deterministically from
+    the operator's identity and the exact set. Deterministic matters twice
+    over: a recovery rebuilds a byte-identical payload from durable refs, and
+    an auditor can recompute the identity from the two inputs rather than
+    trusting it.
+
+    Widening is not a derivation, it is a refusal — a capability outside the
+    operator's approved set fails closed with the stable config code, and so
+    does an empty set, a duplicate, or a token off the closed allowlist.
+    """
+
+    validated = require_enabled_arsd_supervisor_config(config)
+    owned = _owned_capability_set(capabilities)
+    if not set(owned).issubset(set(validated.grant_capabilities)):
+        _invalid_config()
+
+    if owned == tuple(sorted(validated.grant_capabilities)):
+        return ArsdSealedGrant(
+            grant_ref=validated.grant_ref,
+            grant_hash=validated.grant_hash,
+            grant_role_hash=validated.grant_role_hash,
+            capabilities=owned,
+        )
+
+    material = "\n".join(
+        (
+            _SEALED_GRANT_DOMAIN,
+            validated.grant_ref,
+            validated.grant_hash,
+            validated.grant_role_hash,
+            ",".join(owned),
+        )
+    )
+    suffix = hashlib.sha256(material.encode("utf-8")).hexdigest()[:12]
+    return ArsdSealedGrant(
+        grant_ref=_safe_config_ref(f"{validated.grant_ref}_{suffix}"),
+        grant_hash=_sealed_digest(material, "grant_hash"),
+        grant_role_hash=_sealed_digest(material, "grant_role_hash"),
+        capabilities=owned,
+    )
+
+
+def _grant_for_policy(config: ArsdSupervisorConfig, agent_policy_ref: str) -> ArsdSealedGrant:
+    """The sealed grant this ``agent_policy_ref`` submits under.
+
+    A policy with no per-policy entry keeps the config-wide grant unchanged,
+    so every caller that predates the map is byte-identical to before.
+    """
+
+    capabilities = config.grant_by_policy_ref.get(agent_policy_ref)
+    if capabilities is None:
+        return ArsdSealedGrant(
+            grant_ref=config.grant_ref,
+            grant_hash=config.grant_hash,
+            grant_role_hash=config.grant_role_hash,
+            capabilities=tuple(config.grant_capabilities),
+        )
+    return derive_arsd_sealed_grant(config, capabilities)
+
+
 def build_arsd_submit_payload(
     config: ArsdSupervisorConfig,
     *,
@@ -867,11 +1041,17 @@ def build_arsd_submit_payload(
     )
     workspace_root = _resolve_ref(validated.workspace_by_ref, workspace_ref)
     cwd_path = None if cwd is None else _contained_cwd(cwd, workspace_root)
+    # The grant is resolved from the same closed config the rest of the
+    # request is: the caller names a policy ref, never a capability. Resolving
+    # the agent first also means an unknown ref fails closed before anything
+    # is derived from it.
+    agent_id = _resolve_ref(validated.agent_by_policy_ref, agent_policy_ref)
+    grant = _grant_for_policy(validated, agent_policy_ref)
 
     request: dict[str, Any] = {
         "owner": validated.owner,
         "namespace": validated.namespace,
-        "agent_id": _resolve_ref(validated.agent_by_policy_ref, agent_policy_ref),
+        "agent_id": agent_id,
         "expected_binding_hash": binding_hash,
         "input_refs": _wire_input_refs(input_refs),
         "requested_model": _resolve_ref(
@@ -880,10 +1060,10 @@ def build_arsd_submit_payload(
         "requested_effort": _resolve_ref(
             validated.effort_by_policy_ref, effort_policy_ref
         ),
-        "grant_ref": validated.grant_ref,
-        "grant_hash": validated.grant_hash,
-        "grant_role_hash": validated.grant_role_hash,
-        "grant_capabilities": list(validated.grant_capabilities),
+        "grant_ref": grant.grant_ref,
+        "grant_hash": grant.grant_hash,
+        "grant_role_hash": grant.grant_role_hash,
+        "grant_capabilities": list(grant.capabilities),
         "mcp_snapshot_hashes": list(validated.mcp_snapshot_hashes),
         "credential_refs": list(validated.credential_refs),
         "limits": dict(
@@ -1032,6 +1212,7 @@ _SESSION_VIEW_KEYS = frozenset(
     }
 )
 _SESSION_LIST_KEYS = frozenset({"sessions"})
+_AGENT_LIST_KEYS = frozenset({"agent_ids"})
 _RUN_EVENTS_PAGE_KEYS = frozenset({"run_id", "events", "next_from_seq", "exhausted"})
 _TRUNCATION_MARKER_KEYS = frozenset({"seq", "type", "truncated", "truncate_reason"})
 _TRUNCATION_MARKER_REASON = "response_budget"
@@ -1563,6 +1744,48 @@ def validate_arsd_session_list(payload: Any) -> tuple[ArsdSessionView, ...]:
     return tuple(validate_arsd_session_view(item) for item in sessions_raw)
 
 
+def validate_arsd_agent_list(payload: Any) -> tuple[str, ...]:
+    """Exact ``agent_list`` reply: ``{"agent_ids": [<canonical id>, ...]}``.
+
+    The live roster of canonical agent ids the connected daemon loaded at
+    startup. Registration is all it is: not health, not readiness, not
+    authorization, not execution eligibility — ``submit`` remains the
+    admission boundary, and Sachima's own execution preset remains the other
+    half of eligibility.
+
+    Three properties are checked as **contract**, not as convenience, because
+    the daemon derives them from one accessor
+    (``tuple(sorted(snapshot.entries))``) and a reply that lacks them did not
+    come from it:
+
+    * the top-level key set is exactly ``{"agent_ids"}`` and the value is a
+      list — a bare list, an extra key, or a tuple is a violation, not a
+      tolerated shape;
+    * every id matches the canonical grammar exactly. There is no case
+      folding, no trimming, and no normalization: this is a validator, and
+      repairing a malformed id here would be inventing a registration;
+    * the ids are strictly ascending and therefore unique. A repeated or
+      out-of-order id is a forged or off-contract reply.
+
+    The reply is never echoed on failure — every deviation is the one stable
+    ``runtime_arsd_protocol_violation`` code.
+    """
+
+    if not isinstance(payload, Mapping) or set(payload) != _AGENT_LIST_KEYS:
+        _protocol_violation()
+    raw = payload["agent_ids"]
+    if type(raw) is not list or len(raw) > ARSD_MAX_REGISTERED_AGENTS:
+        _protocol_violation()
+    previous: str | None = None
+    for item in raw:
+        if type(item) is not str or _AGENT_ID_RE.fullmatch(item) is None:
+            _protocol_violation()
+        if previous is not None and item <= previous:
+            _protocol_violation()
+        previous = item
+    return tuple(raw)
+
+
 def _is_truncation_marker(event: Mapping[str, Any]) -> bool:
     return (
         set(event) == _TRUNCATION_MARKER_KEYS
@@ -1692,7 +1915,7 @@ class ArsdClientFacade(Protocol):
     ``validate_arsd_*`` functions. Tests inject doubles; production uses
     :class:`DefaultArsdClientFacade`.
 
-    Six of the seven v3 operations appear here — every one this integration
+    Seven of the eight v3 operations appear here — every one this integration
     uses. There is no ``session_close`` (the operation does not exist) and no
     ``follow`` path.
     """
@@ -1714,6 +1937,8 @@ class ArsdClientFacade(Protocol):
     def session_status(self, session_id: str) -> Mapping[str, Any]: ...
 
     def session_list(self) -> Mapping[str, Any]: ...
+
+    def agent_list(self) -> Mapping[str, Any]: ...
 
 
 class DefaultArsdClientFacade:
@@ -1845,3 +2070,6 @@ class DefaultArsdClientFacade:
 
     def session_list(self) -> Mapping[str, Any]:
         return self._operate(lambda client: client.session_list())
+
+    def agent_list(self) -> Mapping[str, Any]:
+        return self._operate(lambda client: client.agent_list())

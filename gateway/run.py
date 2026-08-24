@@ -7904,14 +7904,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if _cmd_def_inner and _cmd_def_inner.name == "background":
                 return await self._handle_background_command(event)
 
-            # /delegate hands work to the EXTERNAL supervised agent, so a busy
-            # local agent is not in its way at all: it must neither interrupt
-            # the running turn nor be queued as text for the next one. Same
-            # handler as the cold path below — one delegation seam, two call
-            # sites.
-            if _cmd_def_inner and _cmd_def_inner.name == "delegate":
-                return await self._handle_delegate_command(event)
-
             # /kanban must bypass the guard. It writes to a profile-agnostic
             # DB (kanban.db), not to the running agent's state. In fact
             # /kanban unblock is often the only way to free a worker that
@@ -8388,13 +8380,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         if canonical == "background":
             return await self._handle_background_command(event)
-
-        # /delegate — the cold path to the same single delegation handler the
-        # running-agent fast path above reaches. It never falls through to
-        # _handle_message_with_agent: a delegated task is the external agent's
-        # work, not a prompt for the local one.
-        if canonical == "delegate":
-            return await self._handle_delegate_command(event)
 
         if canonical == "steer":
             # No active agent — /steer has no tool call to inject into.

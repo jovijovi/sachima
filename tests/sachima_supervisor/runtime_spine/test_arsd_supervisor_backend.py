@@ -72,6 +72,7 @@ from sachima_supervisor.runtime_spine.arsd_socket_contract import (
     RUNTIME_ARSD_INTERNAL,
     RUNTIME_ARSD_INVALID_REQUEST,
     RUNTIME_ARSD_POLICY_DENIED,
+    RUNTIME_ARSD_PROTOCOL_VIOLATION,
     RUNTIME_ARSD_SUBMISSION_INDETERMINATE,
     RUNTIME_ARSD_UNAVAILABLE,
     ArsdSupervisorConfig,
@@ -167,7 +168,12 @@ REFS_SECOND_PAIR = (
     "policy_limits",
 )
 
+#: The canonical roster the fake daemon reports, in the daemon's own
+#: ``tuple(sorted(entries))`` order.
+REGISTERED_AGENT_IDS = ("claude", "codex", "cursor", "oh-my-pi", "opencode")
+
 V3_OPERATIONS = [
+    "agent_list",
     "run_cancel",
     "run_events",
     "run_status",
@@ -270,6 +276,10 @@ class _FacadeDouble:
         self.run_cancel_payload: dict[str, Any] | None = None
         self.run_events_payload: dict[str, Any] | None = None
         self.session_view_overrides: dict[str, Any] = {}
+        #: The daemon's startup roster snapshot, and a way to make the
+        #: roster read fail the way a real one can.
+        self.registered_agent_ids: tuple[str, ...] = REGISTERED_AGENT_IDS
+        self.agent_list_error: BaseException | None = None
         self.ars_session_id = ARS_SESSION_CANARY
         self.accepted_at = ACCEPTED_AT
         #: Every Run-scoped operation and the raw id it targeted.
@@ -310,7 +320,7 @@ class _FacadeDouble:
         if self.server_info_error is not None:
             raise self.server_info_error
         return {
-            "version": "0.7.7",
+            "version": "0.7.8",
             "api_version": 3,
             "supported_api_versions": [3],
             "operations": list(V3_OPERATIONS),
@@ -390,6 +400,12 @@ class _FacadeDouble:
     def session_list(self) -> dict[str, Any]:
         self._log("session_list")
         return {"sessions": [self.session_view(self.ars_session_id)]}
+
+    def agent_list(self) -> dict[str, Any]:
+        self._log("agent_list")
+        if self.agent_list_error is not None:
+            raise self.agent_list_error
+        return {"agent_ids": list(self.registered_agent_ids)}
 
 
 class _PromptResolver:
@@ -2909,3 +2925,128 @@ def test_the_terminal_projection_reads_no_artifact_and_adds_no_operation(
     backend.observe_run_result(handle)
     assert set(facade.calls) <= {"server_info", "submit", "run_status", "session_status"}
     assert "run_events" not in facade.calls
+
+
+# --------------------------------------------------------------------------- #
+# The live roster read (0.7.8 ``agent_list``)
+#
+# Registration is a fact about the daemon this backend already negotiated
+# with. The backend is the only place that fact enters Sachima, it enters
+# validated, and it enters without changing what admission means: reading the
+# roster submits nothing and creates no Session.
+# --------------------------------------------------------------------------- #
+def test_the_backend_reads_the_live_roster_through_one_bounded_operation(
+    tmp_path: Path,
+) -> None:
+    backend, facade, _ = _backend(tmp_path)
+    calls_before = list(facade.calls)
+
+    assert backend.list_registered_agents() == REGISTERED_AGENT_IDS
+
+    assert facade.calls == calls_before + ["agent_list"]
+    assert "submit" not in facade.calls
+    assert "session_status" not in facade.calls
+
+
+def test_the_roster_read_is_live_rather_than_negotiated_once(
+    tmp_path: Path,
+) -> None:
+    """Two reads ask the daemon twice: a roster is not a composition constant.
+
+    A daemon that was restarted onto a different registry must be able to
+    answer differently, so nothing caches the first answer.
+    """
+
+    backend, facade, _ = _backend(tmp_path)
+    assert backend.list_registered_agents() == REGISTERED_AGENT_IDS
+
+    facade.registered_agent_ids = ("claude", "codex")
+    assert backend.list_registered_agents() == ("claude", "codex")
+    assert facade.calls.count("agent_list") == 2
+
+
+def test_an_empty_roster_is_an_answer_rather_than_a_failure(tmp_path: Path) -> None:
+    backend, facade, _ = _backend(tmp_path)
+    facade.registered_agent_ids = ()
+    assert backend.list_registered_agents() == ()
+
+
+def test_a_forged_roster_reply_is_a_protocol_violation(tmp_path: Path) -> None:
+    """Validation is the backend's, not the caller's: an off-contract reply
+    never reaches a decision."""
+
+    backend, facade, _ = _backend(tmp_path)
+    facade.registered_agent_ids = ("Codex", "codex")
+    with pytest.raises(SpineError) as excinfo:
+        backend.list_registered_agents()
+    assert excinfo.value.code == RUNTIME_ARSD_PROTOCOL_VIOLATION
+
+
+def test_an_unreachable_daemon_makes_the_roster_unavailable(tmp_path: Path) -> None:
+    """A transport failure is ``unavailable`` — never an empty roster.
+
+    An empty tuple would read as "nothing is registered", which is a
+    statement about the daemon's registry, not about our inability to ask.
+    """
+
+    backend, facade, _ = _backend(tmp_path)
+    facade.agent_list_error = ConnectionError("socket gone")
+    with pytest.raises(SpineError) as excinfo:
+        backend.list_registered_agents()
+    assert excinfo.value.code == RUNTIME_ARSD_UNAVAILABLE
+
+
+def test_a_daemon_that_does_not_know_the_operation_stays_a_stable_code(
+    tmp_path: Path,
+) -> None:
+    """A roster-less peer refuses through the ordinary ``UNKNOWN_OP`` mapping
+    — there is no feature-specific code and no degraded answer."""
+
+    backend, facade, _ = _backend(tmp_path)
+    facade.agent_list_error = SpineError(RUNTIME_ARSD_PROTOCOL_VIOLATION)
+    with pytest.raises(SpineError) as excinfo:
+        backend.list_registered_agents()
+    assert excinfo.value.code == RUNTIME_ARSD_PROTOCOL_VIOLATION
+
+
+# --------------------------------------------------------------------------- #
+# The sealed grant survives dispatch and recovery
+#
+# The capability set is resolved from the config through the same
+# ``agent_policy_ref`` a recovery already rebuilds from, so a resend is
+# byte-identical without the grant being carried anywhere durable of its own.
+# --------------------------------------------------------------------------- #
+def test_a_dispatch_submits_the_policys_narrowed_grant(tmp_path: Path) -> None:
+    backend, facade, _ = _backend(
+        tmp_path,
+        grant_capabilities=("execute", "read", "search", "write"),
+        grant_by_policy_ref={"policy_agent": ["read", "search"]},
+    )
+    _attach(backend)
+    _dispatch(backend)
+
+    request = facade.submitted[0][1]["request"]
+    assert request["grant_capabilities"] == ["read", "search"]
+    assert request["grant_ref"] != "grant_reader_v1"
+
+
+def test_a_recovery_resends_the_identical_sealed_grant(tmp_path: Path) -> None:
+    """Byte-identity holds with a derived identity, because it is derived."""
+
+    backend, facade, _ = _backend(
+        tmp_path,
+        grant_capabilities=("execute", "read", "search", "write"),
+        grant_by_policy_ref={"policy_agent": ["read", "search"]},
+    )
+    _attach(backend)
+    facade.submit_error = _TransportLoss("reply never read")
+    with pytest.raises(SpineError):
+        _dispatch(backend)
+    facade.submit_error = None
+
+    recovered = backend.recover_uncertain_submission(
+        TASK_ID, DISPATCH_ONE, session_ref=SESSION_REF, turn_kind="prompt"
+    )
+    assert recovered.result.supervisor_status == "accepted"
+    assert facade.submitted[0] == facade.submitted[1]
+    assert facade.submitted[1][1]["request"]["grant_capabilities"] == ["read", "search"]

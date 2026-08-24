@@ -5355,7 +5355,7 @@ class TestFeishuStructuralEdgeSelfMentionStrip(unittest.TestCase):
     display name contains ``_``, ``*`` or a bracket arrives in the final text as
     ``@Hermes\\_Bot`` while the identity behind it is still the same open_id.
     Comparing the escaped presentation against a raw ``@name`` leaves the prefix
-    in place and a leading ``/delegate`` is never classified as a command.
+    in place and a leading ``/background`` is never classified as a command.
     So removal is authorized by a complete, valid ``is_self`` occurrence span.
     """
 
@@ -5412,13 +5412,13 @@ class TestFeishuStructuralEdgeSelfMentionStrip(unittest.TestCase):
                 normalized = self._post(
                     self._rows(
                         {"tag": "at", "user_id": "@_user_9", "user_name": name},
-                        {"tag": "text", "text": " /delegate do the task"},
+                        {"tag": "text", "text": " /background do the task"},
                     ),
                     [self._mention("@_user_9", open_id=self.BOT_OPEN_ID, name=name)],
                     bot_name=name,
                 )
                 self.assertEqual(
-                    normalized.text_content, f"{rendered} /delegate do the task"
+                    normalized.text_content, f"{rendered} /background do the task"
                 )
                 (occurrence,) = normalized.mention_occurrences
                 self.assertEqual(occurrence.rendered, rendered)
@@ -5430,13 +5430,13 @@ class TestFeishuStructuralEdgeSelfMentionStrip(unittest.TestCase):
                 normalized = self._post(
                     self._rows(
                         {"tag": "at", "user_id": "@_user_9", "user_name": name},
-                        {"tag": "text", "text": " /delegate do the task"},
+                        {"tag": "text", "text": " /background do the task"},
                     ),
                     [self._mention("@_user_9", open_id=self.BOT_OPEN_ID, name=name)],
                     bot_name=name,
                 )
                 text, occurrences = self._strip(normalized)
-                self.assertEqual(text, "/delegate do the task")
+                self.assertEqual(text, "/background do the task")
                 self.assertEqual(occurrences, ())
                 self.assertTrue(text.startswith("/"))
 
@@ -5447,7 +5447,7 @@ class TestFeishuStructuralEdgeSelfMentionStrip(unittest.TestCase):
         normalized = self._post(
             self._rows(
                 {"tag": "at", "user_id": "@_user_9", "user_name": name},
-                {"tag": "text", "text": " /delegate do the task"},
+                {"tag": "text", "text": " /background do the task"},
             ),
             [self._mention("@_user_9", open_id=self.BOT_OPEN_ID, name=name)],
             bot_name=name,
@@ -5462,13 +5462,13 @@ class TestFeishuStructuralEdgeSelfMentionStrip(unittest.TestCase):
         normalized = self._post(
             self._rows(
                 {"tag": "at", "user_id": "@_user_1", "user_name": name},
-                {"tag": "text", "text": " /delegate do the task"},
+                {"tag": "text", "text": " /background do the task"},
             ),
             [self._mention("@_user_1", open_id="ou_someone_else", name=name)],
             bot_name=name,
         )
         text, occurrences = self._strip(normalized)
-        self.assertEqual(text, "@Hermes\\_Bot /delegate do the task")
+        self.assertEqual(text, "@Hermes\\_Bot /background do the task")
         self.assertEqual([o.platform_user_id for o in occurrences], ["ou_someone_else"])
         self._assert_coordinates(text, occurrences)
         self.assertFalse(text.startswith("/"))
@@ -5490,12 +5490,12 @@ class TestFeishuStructuralEdgeSelfMentionStrip(unittest.TestCase):
         self.assertTrue(occurrence.is_self)
         self._assert_coordinates(text, occurrences)
 
-    def test_a_leading_self_mention_repositions_the_selector_after_it(self):
+    def test_a_leading_self_mention_repositions_the_following_mention(self):
         name = "Hermes_Bot"
         normalized = self._post(
             self._rows(
                 {"tag": "at", "user_id": "@_user_9", "user_name": name},
-                {"tag": "text", "text": " /delegate "},
+                {"tag": "text", "text": " /background "},
                 {"tag": "at", "user_id": "@_user_1", "user_name": "Alice"},
                 {"tag": "text", "text": " ship it"},
             ),
@@ -5506,7 +5506,7 @@ class TestFeishuStructuralEdgeSelfMentionStrip(unittest.TestCase):
             bot_name=name,
         )
         text, occurrences = self._strip(normalized)
-        self.assertEqual(text, "/delegate @Alice ship it")
+        self.assertEqual(text, "/background @Alice ship it")
         (occurrence,) = occurrences
         self.assertEqual(occurrence.platform_user_id, "ou_alice")
         self.assertEqual(text[occurrence.start : occurrence.end], "@Alice")
@@ -5556,17 +5556,17 @@ class TestFeishuStructuralEdgeSelfMentionStrip(unittest.TestCase):
 
         normalized = normalize_feishu_message(
             message_type="text",
-            raw_content=json.dumps({"text": "@_user_9 /delegate do the task"}),
+            raw_content=json.dumps({"text": "@_user_9 /background do the task"}),
             mentions=[
                 self._mention("@_user_9", open_id=self.BOT_OPEN_ID, name=name)
             ],
             bot=self._bot(name),
         )
         self.assertEqual(
-            normalized.text_content, "@Hermes_Bot /delegate do the task"
+            normalized.text_content, "@Hermes_Bot /background do the task"
         )
         text, occurrences = self._strip(normalized)
-        self.assertEqual(text, "/delegate do the task")
+        self.assertEqual(text, "/background do the task")
         self.assertEqual(occurrences, ())
 
     def test_occurrence_free_plain_text_stripping_is_unchanged(self):
@@ -5593,7 +5593,7 @@ class TestFeishuStructuralEdgeSelfMentionStrip(unittest.TestCase):
             strip_edge_self_mentions_with_occurrences,
         )
 
-        text = "@Hermes\\_Bot /delegate do the task"
+        text = "@Hermes\\_Bot /background do the task"
         refs = [
             FeishuMentionRef(name="Hermes_Bot", open_id="ou_bot", is_self=True)
         ]
@@ -5615,8 +5615,8 @@ class TestFeishuStructuralEdgeSelfMentionStrip(unittest.TestCase):
 
         A later ``is_self`` occurrence laid over an earlier stranger's span
         would otherwise claim every character of it and strip a prefix whose
-        provenance is not proven, handing an unverified ``/delegate`` to the
-        command classifier. Ambiguity fails closed: the text is left alone.
+        provenance is not proven, handing an unverified ``/background`` to
+        the command classifier. Ambiguity fails closed: the text is left alone.
         """
 
         from gateway.platforms.base import MentionOccurrence, MessageType
@@ -5625,7 +5625,7 @@ class TestFeishuStructuralEdgeSelfMentionStrip(unittest.TestCase):
             strip_edge_self_mentions_with_occurrences,
         )
 
-        text = "@Hermes\\_Bot /delegate ship it"
+        text = "@Hermes\\_Bot /background ship it"
         refs = [
             FeishuMentionRef(name="Hermes_Bot", open_id="ou_someone_else"),
             FeishuMentionRef(name="Hermes_Bot", open_id="ou_bot", is_self=True),

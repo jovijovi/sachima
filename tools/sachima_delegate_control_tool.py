@@ -1,10 +1,33 @@
 """Default-off internal tool surface over the Sachima delegate control service.
 
-This is the natural-language half of ``/delegate``: creation plus ``status``,
-``cancel``, ``continue``, ``recover``, and ``result`` as *actions of the one
-coordinator*, reachable from the tool system without adding a slash command,
-an ARS operation, or a second lifecycle owner. Creation uses the same routing
-decision as the slash path; nothing here has its own state machine.
+This is the **only** user-reachable path to an external AGENT, and it is
+reached through conversation rather than through a command. Hermes understands
+what the user asked for, picks or clarifies, and calls this tool with one
+canonical ``agent_id``; creation plus ``status``, ``cancel``, ``continue``,
+``recover``, and ``result`` are *actions of the one coordinator*, without a
+slash command, an ARS operation, or a second lifecycle owner. Nothing here has
+its own state machine.
+
+The division of labour is the point:
+
+* **Hermes owns understanding.** Which AGENT a sentence means, whether the
+  candidate is unique, when to ask instead of guess, and what to make of "Tom
+  is not an AGENT" all live in the conversation, upstream of here.
+* **This surface owns the deterministic facts.** ``agents`` reports the live
+  roster annotated with two independently owned facts — whether this host may
+  run each AGENT, and which division/roles it holds — and, for an exact role,
+  the single eligible candidate or a stable clarification code. It is
+  read-only: a zero-or-several answer writes nothing.
+* **This surface owns admission.** It resolves one id against the live
+  roster — case-insensitively, otherwise exactly — and admits it only against
+  ``live ARS roster ∩ execution preset``. There is no fuzzy match, no alias
+  table, no candidate ranking, and no default AGENT: an id that does not
+  admit is refused with a stable code before any task, payload, Session, or
+  submit exists, and the canonical roster spelling is what gets stored.
+
+Creation always names an ``agent_id``, including after a role lookup. That is
+deliberate: a delegated Run should be attributable to an explicit choice in
+the record, not to a query that happened to return one row.
 
 Default-off behind two independent gates, mirroring the live-progress tool:
 
@@ -34,7 +57,11 @@ from __future__ import annotations
 import os
 from typing import Any
 
+import logging
+
 from tools.registry import registry, tool_error, tool_result
+
+logger = logging.getLogger(__name__)
 
 # --------------------------------------------------------------------------- #
 # Stable codes (module-local; the message IS the code, never raw input)
@@ -65,7 +92,19 @@ _APPROVED_CONTROL_SURFACES = frozenset({"hermes_internal"})
 TOOL_NAME = "sachima_delegate_control"
 TOOLSET_NAME = "sachima_delegate_control"
 
-_ACTIONS = ("create", "status", "cancel", "continue", "recover", "result")
+_ACTIONS = (
+    "agents",
+    "create",
+    "status",
+    "cancel",
+    "continue",
+    "recover",
+    "result",
+)
+
+#: The one action that needs no task of its own, so it is also the one that
+#: skips the "does this task belong to you" check below.
+_TASKLESS_ACTIONS = frozenset({"agents", "create"})
 
 
 def enabled_control_surface() -> str | None:
@@ -157,17 +196,39 @@ def _bound_session_store() -> Any:
     return _session_store
 
 
+def _refusal(admission: Any) -> dict:
+    """One ineligibility answer: the stable code plus the two facts behind it.
+
+    ``registered`` is reported separately so "this AGENT exists but this host
+    cannot run it" stays distinguishable from "there is no such AGENT" —
+    Hermes needs that difference to say something true. ``agent_id`` is the
+    canonical roster spelling once the selection resolved, and otherwise the
+    caller's own shape-valid text so Hermes can name what it could not find;
+    a value that failed the shape check is never reflected back.
+    """
+
+    return {
+        "refusal": admission.refusal,
+        "agent_id": admission.agent_id,
+        "registered": admission.registered,
+    }
+
+
 def _handle_delegate_control(args: dict, **kw) -> str:
     """Run one delegate control action for the caller's own Session.
 
     Fail-closed order: env gate → bound coordinator → trusted Session → the task
-    belongs to that Session (except new creation) → the coordinator's own state
-    machine. Every failure returns a stable code only.
+    belongs to that Session (except new creation) → for anything that would
+    submit a Run, ``live roster ∩ execution preset`` → the coordinator's own
+    state machine. Every failure returns a stable code only.
     """
 
     if enabled_control_surface() is None:
         return tool_error(SACHIMA_DELEGATE_CONTROL_DISABLED)
 
+    from gateway.sachima_agent_execution_presets import (
+        SACHIMA_AGENT_ROSTER_UNAVAILABLE,
+    )
     from gateway.sachima_delegate import bound_delegate_coordinator
 
     coordinator = bound_delegate_coordinator()
@@ -185,7 +246,7 @@ def _handle_delegate_control(args: dict, **kw) -> str:
 
     task_ref = args.get("task_ref")
     binding = None
-    if action != "create":
+    if action not in _TASKLESS_ACTIONS:
         if type(task_ref) is not str or not task_ref.strip():
             return tool_error(SACHIMA_DELEGATE_CONTROL_INVALID)
         task_ref = task_ref.strip()
@@ -198,40 +259,59 @@ def _handle_delegate_control(args: dict, **kw) -> str:
             # distinguishes them is an enumeration oracle for other conversations.
             return tool_error(SACHIMA_DELEGATE_CONTROL_FORBIDDEN)
 
-    requested_profile_id = args.get("requested_profile_id")
-    if requested_profile_id is not None:
-        if type(requested_profile_id) is not str or not requested_profile_id.strip():
-            return tool_error(SACHIMA_DELEGATE_CONTROL_INVALID)
-        requested_profile_id = requested_profile_id.strip()
+    agent_id = args.get("agent_id")
+    if agent_id is not None and (type(agent_id) is not str or not agent_id):
+        return tool_error(SACHIMA_DELEGATE_CONTROL_INVALID)
 
     try:
-        if action == "create":
-            from gateway.sachima_delegate_policy import resolve_route
-
+        if action == "agents":
+            # Read-only discovery. It answers who is registered, who this host
+            # may run, and who holds which role — and, for an exact role, the
+            # one candidate or the question to ask. It writes nothing, so a
+            # zero-or-several answer costs no durable state.
+            try:
+                view, selection = coordinator.agent_eligibility(
+                    role=args.get("role"), division=args.get("division")
+                )
+            except Exception:
+                logger.debug("delegate roster read failed", exc_info=True)
+                payload = {"refusal": SACHIMA_AGENT_ROSTER_UNAVAILABLE}
+            else:
+                payload = {
+                    "agents": [entry.as_dict() for entry in view],
+                    "selection": (
+                        None
+                        if selection is None
+                        else {
+                            "agent_id": selection.agent_id,
+                            "refusal": selection.refusal,
+                            "candidates": list(selection.candidates),
+                        }
+                    ),
+                }
+        elif action == "create":
             task_text = args.get("task")
             origin = _trusted_origin(session_entry)
             if (
                 type(task_text) is not str
                 or not task_text.strip()
+                or agent_id is None
                 or origin is None
             ):
+                # Creation names its AGENT. There is no default to fall back
+                # to, so an omitted id is invalid input rather than an
+                # invitation to choose one.
                 return tool_error(SACHIMA_DELEGATE_CONTROL_INVALID)
-            decision = resolve_route(
-                coordinator.policy,
-                platform=origin.platform,
-                requested_profile_id=requested_profile_id,
-                task_text=task_text.strip(),
+            admission = coordinator.admit_agent(
+                agent_id, task_text=task_text.strip()
             )
-            if not decision.routed:
-                payload = {
-                    "refusal": decision.refusal,
-                    "choices": list(decision.choices),
-                }
+            if not admission.admitted:
+                payload = _refusal(admission)
             else:
                 payload = coordinator.run_on_lifecycle_loop(
                     lambda: coordinator.create(
                         task_text=task_text.strip(),
-                        profile=decision.profile,
+                        preset=admission.preset,
                         origin=origin,
                     )
                 ).as_dict()
@@ -251,36 +331,29 @@ def _handle_delegate_control(args: dict, **kw) -> str:
             task_text = args.get("task")
             if type(task_text) is not str or not task_text.strip():
                 return tool_error(SACHIMA_DELEGATE_CONTROL_INVALID)
-            if requested_profile_id is None:
-                payload = coordinator.run_on_lifecycle_loop(
-                    lambda: coordinator.continue_task(task_ref, task_text.strip())
-                ).as_dict()
+            # A continuation submits a Run, so it proves eligibility again —
+            # for the task's own AGENT when the caller kept it, and for the
+            # named one when the caller switched. An AGENT that has since left
+            # the roster, or lost its preset, stops receiving Runs on a task
+            # that was admitted under it earlier.
+            admission = coordinator.admit_agent(
+                binding.agent_id if agent_id is None else agent_id,
+                task_text=task_text.strip(),
+            )
+            origin = _trusted_origin(session_entry)
+            if not admission.admitted:
+                payload = _refusal(admission)
+            elif origin is None:
+                return tool_error(SACHIMA_DELEGATE_CONTROL_INVALID)
             else:
-                from gateway.sachima_delegate_policy import resolve_route
-
-                decision = resolve_route(
-                    coordinator.policy,
-                    platform=binding.origin.platform,
-                    requested_profile_id=requested_profile_id,
-                    task_text=task_text.strip(),
-                )
-                origin = _trusted_origin(session_entry)
-                if not decision.routed:
-                    payload = {
-                        "refusal": decision.refusal,
-                        "choices": list(decision.choices),
-                    }
-                elif origin is None:
-                    return tool_error(SACHIMA_DELEGATE_CONTROL_INVALID)
-                else:
-                    payload = coordinator.run_on_lifecycle_loop(
-                        lambda: coordinator.continue_task(
-                            task_ref,
-                            task_text.strip(),
-                            profile=decision.profile,
-                            origin=origin,
-                        )
-                    ).as_dict()
+                payload = coordinator.run_on_lifecycle_loop(
+                    lambda: coordinator.continue_task(
+                        task_ref,
+                        task_text.strip(),
+                        preset=admission.preset,
+                        origin=origin,
+                    )
+                ).as_dict()
         else:
             payload = coordinator.result(task_ref)
             if payload is None:
@@ -298,8 +371,10 @@ def _handle_delegate_control(args: dict, **kw) -> str:
 DELEGATE_CONTROL_SCHEMA = {
     "name": TOOL_NAME,
     "description": (
-        "INTERNAL, default-off: inspect or steer one delegated external-AGENT "
-        "task in THIS conversation — create, status, cancel (the Run only), "
+        "INTERNAL, default-off: discover which external AGENTs this host can "
+        "run, then create or steer one delegated task in THIS conversation — "
+        "agents (read-only: who is registered, who is runnable, who holds "
+        "which role), create, status, cancel (the Run only), "
         "continue (a later Run in the same task and Session, or a linked new "
         "task when switching AGENT), recover (an uncertain submission), or "
         "result (the durable answer). Requires the explicit "
@@ -323,11 +398,36 @@ DELEGATE_CONTROL_SCHEMA = {
                 "type": "string",
                 "description": "For 'create' or 'continue': the task text.",
             },
-            "requested_profile_id": {
+            "role": {
                 "type": "string",
                 "description": (
-                    "Optional approved delegate profile. On continuation, a "
-                    "different profile creates a linked new task."
+                    "For 'agents': an exact configured role token (e.g. "
+                    "'architecture_design'). Matching is exact — map the "
+                    "user's words onto a role yourself. Exactly one eligible "
+                    "AGENT is returned as the selection; zero or several come "
+                    "back as a stable code plus the candidates, which is your "
+                    "cue to ask the user rather than pick."
+                ),
+            },
+            "division": {
+                "type": "string",
+                "description": (
+                    "For 'agents': an exact configured division token, alone "
+                    "or narrowing a role."
+                ),
+            },
+            "agent_id": {
+                "type": "string",
+                "description": (
+                    "The ARS agent id (e.g. 'codex'), matched exactly "
+                    "against the live roster — letter case is forgiven, "
+                    "nothing else is, and it is never a display name, "
+                    "nickname, role word, or guess. "
+                    "Required for 'create'. On 'continue' it is optional: "
+                    "omitted or the same id continues this task, a different "
+                    "id creates a linked new task under that AGENT. An id "
+                    "that is not both registered with the daemon and covered "
+                    "by an execution preset here is refused and nothing runs."
                 ),
             },
         },

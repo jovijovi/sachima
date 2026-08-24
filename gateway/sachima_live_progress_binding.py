@@ -92,12 +92,22 @@ SACHIMA_LIVE_PROGRESS_BACKEND_ENV = "SACHIMA_LIVE_PROGRESS_BACKEND"
 #: the old name.
 SACHIMA_ARSD_CONFIG_FILE_ENV = "SACHIMA_ARSD_CONFIG_FILE"
 
-#: Private JSON file carrying the ``/delegate`` AGENT profiles. Absent → the
-#: legacy single-profile synthesis, which reproduces today's behavior and is
-#: available only when each ARS ref map offers exactly one choice. A malformed
-#: policy fails the whole ``arsd`` binding closed rather than silently falling
-#: back to the legacy profile: an operator who wrote a policy meant it.
-SACHIMA_DELEGATE_POLICY_FILE_ENV = "SACHIMA_DELEGATE_POLICY_FILE"
+#: Private JSON file carrying this host's AGENT execution presets — which
+#: canonical ``agent_id`` may run here and under which approved refs. Absent →
+#: the empty catalog, so no AGENT is eligible until an operator says one is;
+#: there is no synthesized default preset, because inheriting a default
+#: configuration is exactly what the roster ∩ preset intersection removes. A
+#: malformed catalog fails the whole ``arsd`` binding closed rather than
+#: degrading to "nothing configured": an operator who wrote presets meant them.
+SACHIMA_AGENT_EXECUTION_PRESETS_FILE_ENV = "SACHIMA_AGENT_EXECUTION_PRESETS_FILE"
+
+#: Private JSON file carrying this host's AGENT role/division assignments —
+#: who belongs to which division and holds which roles. Kept separate from
+#: the execution presets on purpose: one says *may run*, the other says
+#: *does what*, and merging them would turn a permission catalog into a
+#: router. Absent → the empty catalog, so every AGENT stays reachable by
+#: explicit name and none is reachable by role.
+SACHIMA_AGENT_ROLE_POLICY_FILE_ENV = "SACHIMA_AGENT_ROLE_POLICY_FILE"
 
 _BACKEND_FAKE = "fake"
 _BACKEND_ARSD = "arsd"
@@ -160,6 +170,7 @@ _ARSD_CONFIG_KEYS = frozenset(
         "grant_hash",
         "grant_role_hash",
         "grant_capabilities",
+        "grant_by_policy_ref",
         "mcp_snapshot_hashes",
         "credential_refs",
         "evidence_policy_hash",
@@ -230,7 +241,7 @@ def _build_arsd_execution_binding(config_file: str) -> tuple[Any, Any]:
 
     The LS4-A gate is the approved ``hermes_internal`` internal surface. The
     dispatcher is given the host's own claim-check resolver — the one seam by
-    which a ``/delegate`` submission can turn an opaque ref back into the exact
+    which a delegated submission can turn an opaque ref back into the exact
     task text — and nothing else changes: composing the bundle resolves no ref,
     dispatches no turn, and submits no Run. It is a capability the bundle now
     *has*, not work it does.
@@ -264,25 +275,48 @@ def _build_arsd_execution_binding(config_file: str) -> tuple[Any, Any]:
     return bundle, config
 
 
-def _delegate_policy(config: Any) -> Any:
-    """The ``/delegate`` routing policy for this composition.
+def _agent_execution_presets(config: Any) -> Any:
+    """This composition's AGENT execution presets.
 
-    With ``SACHIMA_DELEGATE_POLICY_FILE`` set, the private policy is read and
-    validated against the ARS config; without it, the legacy single profile is
-    synthesized, which is exactly today's behavior. Neither path is a fallback
-    for the other: a configured policy that does not validate fails the binding
-    closed rather than quietly reverting to the legacy profile.
+    With ``SACHIMA_AGENT_EXECUTION_PRESETS_FILE`` set, the private catalog is
+    read and validated against the ARS config; without it the catalog is
+    empty, so the roster ∩ preset intersection is empty and nothing is
+    eligible. Neither path is a fallback for the other: a configured catalog
+    that does not validate fails the binding closed rather than quietly
+    becoming the empty one.
     """
 
-    from gateway.sachima_delegate_policy import (
-        load_delegate_policy,
-        synthesize_legacy_policy,
+    from gateway.sachima_agent_execution_presets import (
+        empty_agent_execution_presets,
+        load_agent_execution_presets,
     )
 
-    raw = os.environ.get(SACHIMA_DELEGATE_POLICY_FILE_ENV)
+    raw = os.environ.get(SACHIMA_AGENT_EXECUTION_PRESETS_FILE_ENV)
     if type(raw) is str and raw.strip():
-        return load_delegate_policy(raw.strip(), config)
-    return synthesize_legacy_policy(config)
+        return load_agent_execution_presets(raw.strip(), config)
+    return empty_agent_execution_presets()
+
+
+def _agent_role_policy() -> Any:
+    """This composition's AGENT role/division assignments.
+
+    With ``SACHIMA_AGENT_ROLE_POLICY_FILE`` set the private catalog is read
+    and validated; without it the catalog is empty, so nothing is selectable
+    by role. A configured catalog that does not validate fails the binding
+    closed rather than quietly becoming the empty one — a host whose role
+    policy silently vanished would answer "nobody does that" to every
+    question, which reads like a fact and is not one.
+    """
+
+    from gateway.sachima_agent_role_policy import (
+        empty_agent_role_policy,
+        load_agent_role_policy,
+    )
+
+    raw = os.environ.get(SACHIMA_AGENT_ROLE_POLICY_FILE_ENV)
+    if type(raw) is str and raw.strip():
+        return load_agent_role_policy(raw.strip())
+    return empty_agent_role_policy()
 
 
 def _load_binding_entries(bindings_file: str) -> list[dict[str, Any]]:
@@ -480,9 +514,14 @@ def _bind_arsd_backend(tool_mod: Any) -> dict[str, Any]:
         # The delegate coordinator is bound over the bundle that was just
         # composed, never beside it: one registry, backend, port, dispatcher,
         # ledger, and bindings store serve both the display chain and
-        # `/delegate`. Binding arms the startup barrier: the coordinator
+        # delegation. Binding arms the startup barrier: the coordinator
         # completes its restoration scans before it admits anything new.
-        bind_delegate_coordinator(bundle, config, policy=_delegate_policy(config))
+        bind_delegate_coordinator(
+            bundle,
+            config,
+            presets=_agent_execution_presets(config),
+            role_policy=_agent_role_policy(),
+        )
     except _RetiredBackendSelected:
         return _retired(tool_mod)
     except Exception:
@@ -499,7 +538,8 @@ def _bind_arsd_backend(tool_mod: Any) -> dict[str, Any]:
 
 __all__ = [
     "SACHIMA_ARSD_CONFIG_FILE_ENV",
-    "SACHIMA_DELEGATE_POLICY_FILE_ENV",
+    "SACHIMA_AGENT_EXECUTION_PRESETS_FILE_ENV",
+    "SACHIMA_AGENT_ROLE_POLICY_FILE_ENV",
     "SACHIMA_LIVE_PROGRESS_BACKEND_ENV",
     "SACHIMA_LIVE_PROGRESS_BINDINGS_FILE_ENV",
     "SACHIMA_LIVE_PROGRESS_HOST_BINDING_ABSENT",

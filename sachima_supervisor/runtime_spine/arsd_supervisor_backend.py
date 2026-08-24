@@ -128,6 +128,7 @@ from .arsd_socket_contract import (
     derive_arsd_request_id,
     project_arsd_terminal_result,
     require_enabled_arsd_supervisor_config,
+    validate_arsd_agent_list,
     validate_arsd_run_cancel_result,
     validate_arsd_run_events_page,
     validate_arsd_run_status,
@@ -543,6 +544,31 @@ class ArsdSupervisorBackend:
         if info is None:  # pragma: no cover - construction negotiates first
             _unavailable()
         return info
+
+    def list_registered_agents(self) -> tuple[str, ...]:
+        """The connected daemon's live roster of canonical agent ids.
+
+        One bounded read-only operation, validated by the contract before it
+        becomes an answer. Nothing is cached: a daemon restarted onto a
+        different registry must be able to answer differently, so the roster
+        is asked for each time it is needed rather than frozen at
+        negotiation.
+
+        It says only what is *registered*. Whether a registered AGENT may run
+        anything is decided elsewhere — by Sachima's own execution preset, and
+        finally by ``submit``. A transport failure raises
+        ``runtime_arsd_unavailable`` rather than returning an empty roster:
+        "nothing is registered" is a statement about the daemon's registry,
+        not about our inability to ask.
+        """
+
+        try:
+            raw = self._facade.agent_list()
+        except SpineError:
+            raise
+        except Exception:
+            _unavailable()
+        return validate_arsd_agent_list(raw)
 
     @property
     def task_locks(self) -> TaskOperationLocks:

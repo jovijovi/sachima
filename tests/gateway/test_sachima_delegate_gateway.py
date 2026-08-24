@@ -1,27 +1,35 @@
-"""S6 — ``/delegate [@AGENT] <task>`` end to end through the Gateway seams.
+"""S6 — semantic AGENT delegation end to end through the Gateway seams.
+
+There is no delegation **command** any more, and the first thing proven here
+is its absence: no ``CommandDef``, no help/catalog/menu line, no Gateway
+route, no handler, and no bypass. A message that happens to begin with the old
+word is ordinary text now — nothing intercepts it, translates it, or explains
+it, because there is nothing left that knows the word.
+
+What replaces it is the path the rest of this file proves: Hermes chooses a
+canonical ``agent_id`` in conversation, the gated control tool admits it
+against ``live roster ∩ execution preset``, and the coordinator owns
+everything durable from there. The Gateway's remaining job is hosting —
+trusted Session context in, delivery and the next turn's result context out.
 
 What is proven here:
 
-* **exactly one** delegate ``CommandDef`` exists, it is gateway-only, its
-  argument hint is ``[@AGENT] <task>``, the Gateway knows it — and no ``ars``
-  command, alias, or subcommand was minted beside it;
-* both Gateway paths — the cold slash path and the running-agent fast path —
-  reach the *same* handler, and the running-agent path neither interrupts the
-  active turn nor enters one;
-* empty text answers with the usage line and creates **nothing**; a raw typed
-  ``@name`` refuses with no Session, no durable write, and no auto-route;
-* a valid routed request resolves exactly one durable Hermes Session **before**
-  the first delegate write, and no ARS operation happens during that resolution;
-* the accepted receipt goes out through the injected adapter sender and carries
-  exactly ``requested_agent`` / ``requested_model`` / ``requested_effort``; the
-  handler then returns empty so no second copy is sent;
-* the terminal result reaches the adapter through ``send_plain_text_once`` as one
-  visible body inside the platform bound, carrying the durable full-result ref —
-  and Feishu sends it as one low-level ``msg_type="text"``, never a post or a
-  chunk;
-* continuation reuses the sealed task, Session, profile, and AGENT;
-* the real handler closure settles every ``SendResult`` branch, adapter
-  exceptions included.
+* the delegation command is gone from every shared surface, both Gateway
+  routes, and the slash mixin — and no ``ars`` command was minted beside it;
+* a created task resolves its durable Hermes Session from trusted Gateway
+  context and reaches no ARS operation while doing so;
+* the accepted receipt goes out through the injected adapter sender carrying
+  exactly ``requested_agent`` / ``requested_model`` / ``requested_effort``;
+* the terminal result reaches the adapter through ``send_plain_text_once`` as
+  one visible body inside the platform bound, carrying the durable full-result
+  ref — and Feishu sends it as one low-level ``msg_type="text"``, never a post
+  or a chunk;
+* continuation reuses the sealed task, Session, preset, and AGENT, and a
+  switch creates a linked task under the exact ``agent_id``;
+* the durable delivery factory keeps every platform's own call shape;
+* the finished result is folded into the next ordinary turn exactly once, and
+  the handoff latch settles once under interrupts, budget denials, proxy mode,
+  and concurrency.
 
 Everything is offline: no adapter connection, socket, daemon, network, or AGENT.
 """
@@ -29,7 +37,6 @@ Everything is offline: no adapter connection, socket, daemon, network, or AGENT.
 from __future__ import annotations
 
 import asyncio
-import inspect
 import json
 import threading
 from datetime import datetime
@@ -41,15 +48,16 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 import gateway.sachima_delegate as delegate_mod
-from gateway.platforms.base import MentionOccurrence, SendResult
-from gateway.sachima_delegate_policy import (
-    DELEGATE_POLICY_TYPE,
-    build_delegate_policy,
-    synthesize_legacy_policy,
+from gateway.platforms.base import SendResult
+from gateway.sachima_delegate_state import (
+    DelegateOrigin,
+    DelegateStateStore,
+    delegate_state_root,
 )
-from gateway.sachima_delegate_state import DelegateStateStore, delegate_state_root
 from hermes_cli.commands import (
     COMMAND_REGISTRY,
+    COMMANDS,
+    COMMANDS_BY_CATEGORY,
     GATEWAY_KNOWN_COMMANDS,
     gateway_help_lines,
     resolve_command,
@@ -64,37 +72,45 @@ from sachima_supervisor.runtime_spine.arsd_run_binding_ledger import ArsdRunBind
 from tests.gateway.test_sachima_delegate_coordinator import (
     FINAL_MESSAGE_CANARY,
     TASK_TEXT_CANARY,
+    _catalog,
     _Facade,
     _config,
 )
 
-DELEGATE = "delegate"
+#: The word that used to be a command. It is kept only so the absence tests
+#: can name what must not exist.
+RETIRED_COMMAND = "delegate"
+#: The canonical AGENT these tests delegate to.
+AGENT_ID = "codex"
 
 
 # --------------------------------------------------------------------------- #
-# A. Registration (A1)
+# A. The command is gone — from every surface, atomically
+#
+# Absence is asserted behaviorally (the registry, the resolver, the bypass
+# predicate, the access gate, the mixin) as well as textually, because a
+# removed word that still resolves somewhere is not removed. There is
+# deliberately no test asserting what old ``/delegate ...`` text *does*: it is
+# ordinary input now, and giving it a test would give it a behavior.
 # --------------------------------------------------------------------------- #
-def test_exactly_one_delegate_command_is_registered():
-    matches = [cmd for cmd in COMMAND_REGISTRY if cmd.name == DELEGATE]
-    assert len(matches) == 1
-    (delegate,) = matches
-    assert delegate.args_hint == "[@AGENT] <task>"
-    assert delegate.gateway_only is True
-    assert delegate.cli_only is False
-    assert delegate.aliases == ()
-    assert delegate.subcommands == ()
-    assert delegate.gateway_config_gate is None
+def test_no_delegation_command_is_registered_any_more():
+    assert [cmd for cmd in COMMAND_REGISTRY if cmd.name == RETIRED_COMMAND] == []
+    for cmd in COMMAND_REGISTRY:
+        assert RETIRED_COMMAND not in cmd.aliases
+        assert RETIRED_COMMAND not in cmd.subcommands
 
 
-def test_the_gateway_knows_delegate_and_resolves_it_to_itself():
-    assert DELEGATE in GATEWAY_KNOWN_COMMANDS
-    resolved = resolve_command(DELEGATE)
-    assert resolved is not None and resolved.name == DELEGATE
-    assert resolve_command("/delegate").name == DELEGATE
-    assert should_bypass_active_session(DELEGATE) is True
+def test_the_gateway_no_longer_knows_or_resolves_it():
+    from hermes_cli.commands import is_gateway_known_command
+
+    assert RETIRED_COMMAND not in GATEWAY_KNOWN_COMMANDS
+    assert is_gateway_known_command(RETIRED_COMMAND) is False
+    assert resolve_command(RETIRED_COMMAND) is None
+    assert resolve_command("/delegate") is None
+    assert should_bypass_active_session(RETIRED_COMMAND) is False
 
 
-def test_no_ars_command_was_minted_beside_it():
+def test_no_ars_command_was_minted_in_its_place():
     assert resolve_command("ars") is None
     assert "ars" not in GATEWAY_KNOWN_COMMANDS
     assert [cmd for cmd in COMMAND_REGISTRY if cmd.name == "ars"] == []
@@ -102,52 +118,49 @@ def test_no_ars_command_was_minted_beside_it():
         assert "ars" not in cmd.aliases
 
 
-def test_delegate_appears_once_in_every_gateway_surface():
-    help_lines = [line for line in gateway_help_lines() if "/delegate" in line]
-    assert len(help_lines) == 1
-    assert "`/delegate [@AGENT] <task>`" in help_lines[0]
-
-    menu = [name for name, _description in telegram_bot_commands() if name == DELEGATE]
-    assert menu == [DELEGATE]
-
-
-def test_delegate_stays_out_of_the_cli_surfaces():
-    from hermes_cli.commands import COMMANDS, COMMANDS_BY_CATEGORY
-
+def test_it_is_absent_from_every_derived_surface():
+    assert [line for line in gateway_help_lines() if "/delegate" in line] == []
+    assert [
+        name for name, _description in telegram_bot_commands()
+        if name == RETIRED_COMMAND
+    ] == []
     assert "/delegate" not in COMMANDS
     for category in COMMANDS_BY_CATEGORY.values():
         assert "/delegate" not in category
 
 
+def test_neither_gateway_route_nor_the_slash_mixin_carries_a_handler():
+    from gateway.slash_commands import GatewaySlashCommandsMixin
+
+    assert not hasattr(GatewaySlashCommandsMixin, "_handle_delegate_command")
+    assert not hasattr(GatewaySlashCommandsMixin, "_delegate_delivery_for")
+
+    src = _run_source()
+    assert "_handle_delegate_command" not in src
+    assert 'canonical == "delegate"' not in src
+    assert '_cmd_def_inner.name == "delegate"' not in src
+
+
+def test_the_one_remaining_entry_point_is_the_gated_control_tool():
+    """One surface, and it is not a command: the model-invoked control tool."""
+
+    import tools.sachima_delegate_control_tool as control
+
+    assert control.TOOL_NAME == "sachima_delegate_control"
+    assert resolve_command(control.TOOL_NAME) is None
+    assert control.TOOL_NAME not in GATEWAY_KNOWN_COMMANDS
+
+
 # --------------------------------------------------------------------------- #
 # B. The host harness
+#
+# The host is the real ``GatewayRunner`` seams a delegated task still touches:
+# the Session store that supplies trusted context, the adapter registry, and
+# the durable delivery factory rebuilt from an origin. There is no command
+# handler to drive, so tasks are created the way the control tool creates
+# them — admit one canonical ``agent_id``, then hand the coordinator the
+# admitted preset and an origin built from the caller's own Session.
 # --------------------------------------------------------------------------- #
-class _Event:
-    """The minimum of a ``MessageEvent`` the delegate handler reads."""
-
-    def __init__(self, args: str, *, chat_id="chat-1", thread_id=None, occurrences=()):
-        from gateway.config import Platform
-        from gateway.session import SessionSource
-
-        self._args = args
-        self.text = f"/delegate {args}".rstrip() if args else "/delegate"
-        self.source = SessionSource(
-            platform=Platform.TELEGRAM,
-            chat_id=chat_id,
-            chat_type="dm",
-            user_id="user-1",
-            thread_id=thread_id,
-        )
-        self.message_id = "m-1"
-        self.mention_occurrences = tuple(occurrences)
-
-    def get_command(self) -> str:
-        return DELEGATE
-
-    def get_command_args(self) -> str:
-        return self._args
-
-
 class _Adapter:
     """A fake adapter that records both delivery surfaces separately."""
 
@@ -180,24 +193,28 @@ class _Adapter:
         return self.once_result
 
 
+def _source(chat_id="chat-1", thread_id=None):
+    from gateway.config import Platform
+    from gateway.session import SessionSource
+
+    return SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id=chat_id,
+        chat_type="dm",
+        user_id="user-1",
+        thread_id=thread_id,
+    )
+
+
 class _Host:
-    """The slash mixin plus the four runner seams a delegate reply needs."""
+    """The runner seams a delegated task's Session and delivery still need."""
 
     def __init__(self, tmp_path: Path):
         from gateway.config import GatewayConfig, Platform
+        from gateway.run import GatewayRunner
         from gateway.session import SessionStore
-        from gateway.slash_commands import GatewaySlashCommandsMixin
 
-        class _Concrete(GatewaySlashCommandsMixin):
-            @staticmethod
-            def _reply_anchor_for_event(event):
-                return event.message_id
-
-            @staticmethod
-            def _thread_metadata_for_source(source, anchor=None):
-                return {"thread_id": source.thread_id, "reply_to_message_id": anchor}
-
-        self.host = _Concrete()
+        self.host = object.__new__(GatewayRunner)
         self.adapter = _Adapter()
         self.host.adapters = {Platform.TELEGRAM: self.adapter}
         self.host.session_store = SessionStore(tmp_path / "sessions", GatewayConfig())
@@ -213,7 +230,7 @@ def _unbind():
     delegate_mod.unbind_delegate_coordinator()
 
 
-def _bind(tmp_path: Path, *, facade=None, policy=None, config=None):
+def _bind(tmp_path: Path, *, facade=None, presets=None, config=None):
     facade = _Facade() if facade is None else facade
     config = _config(tmp_path) if config is None else config
     bundle = bind_arsd_execution(
@@ -225,12 +242,54 @@ def _bind(tmp_path: Path, *, facade=None, policy=None, config=None):
     coordinator = delegate_mod.SachimaDelegateCoordinator(
         bundle,
         config,
-        policy=policy or synthesize_legacy_policy(config),
+        presets=presets if presets is not None else _catalog(config),
         state=DelegateStateStore(delegate_state_root(config.binding_ledger_path)),
         observe_interval=0.01,
     )
     delegate_mod._coordinator = coordinator
     return coordinator, facade
+
+
+def _origin_for(runner, *, chat_id="chat-1", thread_id=None, anchor="m-1"):
+    """The trusted origin the control tool rebuilds from a caller's Session."""
+
+    source = _source(chat_id=chat_id, thread_id=thread_id)
+    session = runner.host.session_store.get_or_create_session(source)
+    return DelegateOrigin(
+        platform=source.platform.value,
+        chat_id=source.chat_id,
+        thread_id=str(source.thread_id) if source.thread_id else None,
+        session_key=session.session_key,
+        session_id=session.session_id,
+        reply_anchor=anchor,
+    )
+
+
+async def _delegate(
+    runner,
+    coordinator,
+    task_text: str = TASK_TEXT_CANARY,
+    *,
+    agent_id: str = AGENT_ID,
+    chat_id: str = "chat-1",
+    delivery=None,
+):
+    """Create one delegated task exactly the way the control tool does."""
+
+    admission = coordinator.admit_agent(agent_id, task_text=task_text)
+    assert admission.admitted, admission.refusal
+    return await coordinator.create(
+        task_text=task_text,
+        preset=admission.preset,
+        origin=_origin_for(runner, chat_id=chat_id),
+        delivery=delivery,
+    )
+
+
+def _adapter_delivery(runner):
+    """The surviving production delivery factory, bound to this host."""
+
+    return runner.host._delegate_delivery_from_origin
 
 
 async def _until(predicate, *, timeout=10.0):
@@ -252,100 +311,27 @@ async def _await_composed(coro, *, timeout=10.0):
     return await task
 
 
-# --------------------------------------------------------------------------- #
-# C. Refusals create nothing (A2, A5)
-# --------------------------------------------------------------------------- #
-@pytest.mark.asyncio
-async def test_empty_text_returns_the_usage_line_and_creates_nothing(tmp_path):
-    runner = _Host(tmp_path)
-    reply = await runner.host._handle_delegate_command(_Event(""))
-    assert reply == delegate_mod.DELEGATE_USAGE
-    assert delegate_mod.bound_delegate_coordinator() is None
-    assert runner.adapter.sent == []
-    assert runner.host.session_store.list_sessions() == []
+def _run_source() -> str:
+    import gateway.run
 
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("blank", ["   ", "\n", "\t "])
-async def test_whitespace_only_text_is_also_empty(tmp_path, blank):
-    runner = _Host(tmp_path)
-    reply = await runner.host._handle_delegate_command(_Event(blank))
-    assert reply == delegate_mod.DELEGATE_USAGE
-    assert runner.host.session_store.list_sessions() == []
-
-
-@pytest.mark.asyncio
-async def test_a_raw_typed_selector_refuses_before_any_session_exists(tmp_path):
-    """A2: an unverifiable selector never falls through to automatic routing."""
-
-    runner = _Host(tmp_path)
-    coordinator, facade = _bind(tmp_path)
-    reply = await runner.host._handle_delegate_command(_Event("@Alice do the thing"))
-    assert reply == delegate_mod.DELEGATE_UNVERIFIED_SELECTOR
-    assert runner.host.session_store.list_sessions() == []
-    assert coordinator.state.list_turns() == ()
-    assert facade.submit_count() == 0
-    assert runner.adapter.sent == []
-
-
-@pytest.mark.asyncio
-async def test_an_unmapped_structured_selector_refuses_with_the_choices(tmp_path):
-    runner = _Host(tmp_path)
-    config = _config(tmp_path)
-    policy = build_delegate_policy(
-        {
-            "type": DELEGATE_POLICY_TYPE,
-            "profiles": [
-                {
-                    "profile_id": "author",
-                    "workspace_ref": "ws_delegate",
-                    "agent_policy_ref": "policy_author",
-                    "model_policy_ref": "policy_model",
-                    "effort_policy_ref": "policy_effort",
-                    "run_limits_policy_ref": "policy_limits",
-                    "summary": "writes things",
-                }
-            ],
-        },
-        config,
-    )
-    coordinator, facade = _bind(tmp_path, policy=policy)
-    event = _Event(
-        "@Bob do the thing",
-        occurrences=(
-            MentionOccurrence(
-                platform_user_id="tg_bob", start=10, end=14, rendered="@Bob"
-            ),
-        ),
-    )
-    reply = await runner.host._handle_delegate_command(event)
-    assert "author" in reply
-    assert runner.host.session_store.list_sessions() == []
-    assert facade.submit_count() == 0
-
-
-@pytest.mark.asyncio
-async def test_an_unbound_host_refuses_without_creating_anything(tmp_path):
-    runner = _Host(tmp_path)
-    reply = await runner.host._handle_delegate_command(_Event("do the thing"))
-    assert reply == delegate_mod.DELEGATE_UNAVAILABLE
-    assert reply != delegate_mod.DELEGATE_USAGE
-    assert runner.adapter.sent == []
-    assert runner.host.session_store.list_sessions() == []
+    return Path(gateway.run.__file__).read_text(encoding="utf-8")
 
 
 # --------------------------------------------------------------------------- #
-# D. The accepted path (A5, A11)
+# C. Creation over the Gateway seams
 # --------------------------------------------------------------------------- #
 @pytest.mark.asyncio
-async def test_a_valid_request_creates_one_session_before_the_first_write(tmp_path):
+async def test_a_created_task_carries_the_callers_own_durable_session(tmp_path):
+    """The Session is the conversation's, resolved before any delegate write,
+    and resolving it reaches no ARS operation of its own."""
+
     runner = _Host(tmp_path)
     facade = _Facade()
     facade.submit_gate = threading.Event()
     coordinator, _ = _bind(tmp_path, facade=facade)
 
     running = asyncio.create_task(
-        runner.host._handle_delegate_command(_Event(TASK_TEXT_CANARY))
+        _delegate(runner, coordinator, delivery=None)
     )
     assert await _until(lambda: facade.submit_count() == 1)
 
@@ -354,27 +340,35 @@ async def test_a_valid_request_creates_one_session_before_the_first_write(tmp_pa
     (turn,) = coordinator.state.list_turns()
     assert turn.origin.session_id == sessions[0].session_id
     assert turn.origin.session_key == sessions[0].session_key
-    # Session resolution reached no ARS operation of its own.
     assert facade.calls.count("session_status") == 0
 
     facade.submit_gate.set()
-    reply = await running
-    # The receipt was delivered here; the handler adds no second copy.
-    assert reply == ""
+    await running
+    facade.terminalize(0)
+
+
+@pytest.mark.asyncio
+async def test_the_accepted_receipt_names_the_requested_triple(tmp_path):
+    runner = _Host(tmp_path)
+    coordinator, facade = _bind(tmp_path)
+    coordinator._delivery_factory = _adapter_delivery(runner)
+
+    await _delegate(runner, coordinator)
+
     assert len(runner.adapter.sent) == 1
     body = runner.adapter.sent[0][1]
-    assert "author-agent" in body and "claude-opus-5" in body and "xhigh" in body
+    assert AGENT_ID in body and "claude-opus-5" in body and "xhigh" in body
     assert TASK_TEXT_CANARY not in body
     facade.terminalize(0)
 
 
 @pytest.mark.asyncio
-async def test_a_second_delegate_in_the_same_chat_reuses_the_one_session(tmp_path):
+async def test_a_second_task_in_the_same_chat_reuses_the_one_session(tmp_path):
     runner = _Host(tmp_path)
     coordinator, facade = _bind(tmp_path)
-    await runner.host._handle_delegate_command(_Event("first task"))
+    await _delegate(runner, coordinator, "first task")
     facade.terminalize(0)
-    await runner.host._handle_delegate_command(_Event("second task"))
+    await _delegate(runner, coordinator, "second task")
     assert len(runner.host.session_store.list_sessions()) == 1
     session_ids = {turn.origin.session_id for turn in coordinator.state.list_turns()}
     assert len(session_ids) == 1
@@ -382,42 +376,12 @@ async def test_a_second_delegate_in_the_same_chat_reuses_the_one_session(tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_a_verified_structured_selector_routes_to_its_profile(tmp_path):
+async def test_the_task_is_sealed_under_the_exact_canonical_agent_id(tmp_path):
     runner = _Host(tmp_path)
-    config = _config(tmp_path)
-    policy = build_delegate_policy(
-        {
-            "type": DELEGATE_POLICY_TYPE,
-            "profiles": [
-                {
-                    "profile_id": "author",
-                    "workspace_ref": "ws_delegate",
-                    "agent_policy_ref": "policy_author",
-                    "model_policy_ref": "policy_model",
-                    "effort_policy_ref": "policy_effort",
-                    "run_limits_policy_ref": "policy_limits",
-                    "mentions": [
-                        {"platform": "telegram", "platform_user_id": "tg_author"}
-                    ],
-                }
-            ],
-        },
-        config,
-    )
-    coordinator, facade = _bind(tmp_path, policy=policy)
-    event = _Event(
-        "@Author write the notes",
-        occurrences=(
-            MentionOccurrence(
-                platform_user_id="tg_author", start=10, end=17, rendered="@Author"
-            ),
-        ),
-    )
-    reply = await runner.host._handle_delegate_command(event)
-    assert reply == ""
+    coordinator, facade = _bind(tmp_path)
+    await _delegate(runner, coordinator, "write the notes")
     (turn,) = coordinator.state.list_turns()
-    assert turn.profile_id == "author"
-    # Only the qualifying occurrence was removed from the task.
+    assert turn.agent_id == AGENT_ID
     assert coordinator.state.read_payload(turn.payload_ref) == "write the notes"
     facade.terminalize(0)
 
@@ -429,21 +393,10 @@ async def test_a_verified_structured_selector_routes_to_its_profile(tmp_path):
 async def test_the_terminal_result_is_one_bounded_plain_text_message(tmp_path):
     runner = _Host(tmp_path)
     coordinator, facade = _bind(tmp_path)
-    delegate_mod.set_delegate_delivery_factory(
-        lambda origin: runner.host._delegate_delivery_for(
-            SimpleNamespace(
-                platform=__import__(
-                    "gateway.config", fromlist=["Platform"]
-                ).Platform.TELEGRAM,
-                chat_id=origin.chat_id,
-                thread_id=origin.thread_id,
-            ),
-            origin.reply_anchor,
-        )
-    )
+    delegate_mod.set_delegate_delivery_factory(_adapter_delivery(runner))
     coordinator._delivery_factory = delegate_mod._delivery_factory_hook
 
-    await runner.host._handle_delegate_command(_Event(TASK_TEXT_CANARY))
+    await _delegate(runner, coordinator)
     huge = "长" * 4000 + FINAL_MESSAGE_CANARY
     facade.terminalize(0, final_message=huge)
     assert await _until(lambda: len(runner.adapter.plain_once) == 1)
@@ -480,18 +433,9 @@ async def test_the_real_notifier_closure_settles_every_send_branch(
     runner.adapter.once_result = once_result
     runner.adapter.once_error = once_error
     coordinator, facade = _bind(tmp_path)
+    coordinator._delivery_factory = _adapter_delivery(runner)
 
-    from gateway.config import Platform
-
-    coordinator._delivery_factory = lambda origin: runner.host._delegate_delivery_for(
-        SimpleNamespace(
-            platform=Platform.TELEGRAM,
-            chat_id=origin.chat_id,
-            thread_id=origin.thread_id,
-        ),
-        origin.reply_anchor,
-    )
-    await runner.host._handle_delegate_command(_Event(TASK_TEXT_CANARY))
+    await _delegate(runner, coordinator)
     facade.terminalize(0)
     assert await _until(lambda: len(runner.adapter.plain_once) == 1)
     (turn,) = coordinator.state.list_turns()
@@ -505,8 +449,9 @@ async def test_an_adapter_exception_on_the_receipt_is_uncertain_not_a_crash(tmp_
     runner = _Host(tmp_path)
     runner.adapter.send_error = RuntimeError("chat gone")
     coordinator, facade = _bind(tmp_path)
-    reply = await runner.host._handle_delegate_command(_Event(TASK_TEXT_CANARY))
-    assert reply == ""
+    coordinator._delivery_factory = _adapter_delivery(runner)
+
+    await _delegate(runner, coordinator)
     (turn,) = coordinator.state.list_turns()
     assert coordinator.state.read_turn(turn.turn_key).receipt == "uncertain"
     assert coordinator.state.read_turn(turn.turn_key).lifecycle == "admitted"
@@ -563,7 +508,7 @@ def test_the_feishu_one_message_bound_is_the_platforms_own():
 async def test_continuation_reuses_the_sealed_task_session_and_agent(tmp_path):
     runner = _Host(tmp_path)
     coordinator, facade = _bind(tmp_path)
-    await runner.host._handle_delegate_command(_Event(TASK_TEXT_CANARY))
+    await _delegate(runner, coordinator)
     facade.terminalize(0)
     (turn,) = coordinator.state.list_turns()
     assert await _until(
@@ -576,7 +521,7 @@ async def test_continuation_reuses_the_sealed_task_session_and_agent(tmp_path):
     later = coordinator.state.read_turn(outcome.turn_key)
     assert binding.task_id == later.task_id
     assert binding.spine_session_id == later.spine_session_id
-    assert binding.profile_id == later.profile_id
+    assert binding.agent_id == later.agent_id == AGENT_ID
     assert later.requested_agent == turn.requested_agent
     assert facade.submit_count() == 2
     assert facade.submitted[1]["request"]["session_id"] == "ARSSESSIONDELEGATE1"
@@ -587,9 +532,7 @@ async def test_continuation_reuses_the_sealed_task_session_and_agent(tmp_path):
 async def test_concurrent_continuations_nominate_only_one_new_turn(tmp_path):
     runner = _Host(tmp_path)
     coordinator, facade = _bind(tmp_path)
-    await _await_composed(
-        runner.host._handle_delegate_command(_Event(TASK_TEXT_CANARY))
-    )
+    await _await_composed(_delegate(runner, coordinator))
     facade.terminalize(0)
     (first,) = coordinator.state.list_turns()
     assert await _until(
@@ -616,63 +559,36 @@ async def test_concurrent_continuations_nominate_only_one_new_turn(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
-# H. Both Gateway routes reach the same handler (A1)
+# H. Nothing routes on the retired word any more
 # --------------------------------------------------------------------------- #
-def _run_source() -> str:
-    import gateway.run
+def test_the_slash_access_gate_no_longer_has_a_delegation_command_to_gate():
+    """The gate itself is untouched; it simply has one fewer command.
 
-    return Path(gateway.run.__file__).read_text(encoding="utf-8")
+    An unknown word is not admitted by the gate — it is not a command at all,
+    so it never reaches the gate's question.
+    """
 
-
-def test_both_gateway_routes_call_the_one_handler():
-    src = _run_source()
-    assert src.count("_handle_delegate_command(event)") == 2
-    assert 'if canonical == "delegate"' in src
-    assert '_cmd_def_inner.name == "delegate"' in src
-
-
-def test_the_active_agent_route_neither_interrupts_nor_enters_the_turn():
-    src = _run_source()
-    marker = '_cmd_def_inner.name == "delegate"'
-    index = src.index(marker)
-    branch = src[index : index + 400]
-    assert "return await self._handle_delegate_command(event)" in branch
-    assert "_interrupt_and_clear_session" not in branch
-    assert "interrupt(" not in branch
-    assert "_enqueue_fifo" not in branch
-    assert "_pending_messages" not in branch
-
-
-def test_the_running_agent_route_sits_under_the_existing_slash_access_gate():
-    from hermes_cli.commands import is_gateway_known_command
     from gateway.slash_access import SlashAccessPolicy
 
-    assert is_gateway_known_command(DELEGATE) is True
     policy = SlashAccessPolicy(
         enabled=True,
         admin_user_ids=frozenset({"admin-1"}),
         user_allowed_commands=frozenset({"help"}),
     )
-    assert policy.can_run("admin-1", DELEGATE) is True
-    assert policy.can_run("user-1", DELEGATE) is False
+    # The gate still works for a command that still exists.
+    assert policy.can_run("admin-1", "background") is True
+    assert policy.can_run("user-1", "background") is False
+    assert policy.can_run("user-1", "help") is True
+
+
+def test_the_running_agent_fast_path_kept_every_other_bypass():
+    """Removal was surgical: the neighbouring bypasses are still there."""
 
     src = _run_source()
-    gate = src.index("_denied = self._check_slash_access(source, _cmd_def_inner.name)")
-    delegate_branch = src.index('_cmd_def_inner.name == "delegate"')
-    assert gate < delegate_branch
-
-    cold_gate = src.index("_denied = self._check_slash_access(source, canonical)")
-    cold_branch = src.index('if canonical == "delegate"')
-    assert cold_gate < cold_branch
-
-
-def test_the_handler_is_async_and_lives_on_the_slash_commands_mixin():
-    from gateway.slash_commands import GatewaySlashCommandsMixin
-
-    handler = GatewaySlashCommandsMixin._handle_delegate_command
-    assert asyncio.iscoroutinefunction(handler)
-    signature = inspect.signature(handler)
-    assert list(signature.parameters) == ["self", "event"]
+    assert '_cmd_def_inner.name in {"approve", "deny"}' in src
+    for kept in ("agents", "background", "kanban"):
+        assert f'_cmd_def_inner.name == "{kept}"' in src
+    assert '_cmd_def_inner.name == "delegate"' not in src
 
 
 # --------------------------------------------------------------------------- #
@@ -722,12 +638,12 @@ async def test_the_control_tool_refuses_a_task_from_another_session(
     monkeypatch.setenv(control.SACHIMA_LIVE_PROGRESS_SURFACE_ENV, "hermes_internal")
     runner = _Host(tmp_path)
     coordinator, facade = _bind(tmp_path)
-    await runner.host._handle_delegate_command(_Event(TASK_TEXT_CANARY))
+    await _delegate(runner, coordinator)
     (turn,) = coordinator.state.list_turns()
 
     control.bind_delegate_control_session_store(runner.host.session_store)
     other = runner.host.session_store.get_or_create_session(
-        _Event("", chat_id="chat-2").source
+        _source(chat_id="chat-2")
     )
     monkeypatch.setenv("HERMES_SESSION_ID", other.session_id)
     answer = control._handle_delegate_control(
@@ -747,9 +663,7 @@ async def test_the_control_tool_answers_about_its_own_session(tmp_path, monkeypa
     coordinator.bind_lifecycle_loop(asyncio.get_running_loop())
     await coordinator.restore()
     control.bind_delegate_control_session_store(runner.host.session_store)
-    await _await_composed(
-        runner.host._handle_delegate_command(_Event(TASK_TEXT_CANARY))
-    )
+    await _await_composed(_delegate(runner, coordinator))
     (turn,) = coordinator.state.list_turns()
 
     monkeypatch.setenv("HERMES_SESSION_ID", turn.origin.session_id)
@@ -780,31 +694,39 @@ async def test_gateway_start_awaits_delegate_restore_before_admissions(
     coordinator, facade = _bind(tmp_path)
     entered = asyncio.Event()
     release = asyncio.Event()
-    original_restore = coordinator.restore
+    original_restore = coordinator._restore_locked
 
     async def _gated_restore():
         entered.set()
         await release.wait()
         return await original_restore()
 
-    coordinator.restore = _gated_restore  # type: ignore[method-assign]
+    # Gate the restoration scan itself rather than one entry point: startup
+    # and every admission funnel through it under the same lock, which is what
+    # makes it a barrier instead of a courtesy the caller may skip.
+    coordinator._restore_locked = _gated_restore  # type: ignore[method-assign]
     starting = asyncio.create_task(runner.start())
     await asyncio.wait_for(entered.wait(), timeout=5)
     admission_host = _Host(tmp_path / "admission")
+    admitted = coordinator.admit_agent(AGENT_ID, task_text=TASK_TEXT_CANARY)
     admission = asyncio.create_task(
-        admission_host.host._handle_delegate_command(_Event(TASK_TEXT_CANARY))
+        coordinator.create(
+            task_text=TASK_TEXT_CANARY,
+            preset=admitted.preset,
+            origin=_origin_for(admission_host),
+        )
     )
     await asyncio.sleep(0.05)
 
     assert starting.done() is False
     assert admission.done() is False
     assert runner._running is False
-    assert facade.calls == ["server_info"]
-    assert admission_host.host.session_store.list_sessions() == []
+    # Eligibility read the roster; the admission itself is still barred.
+    assert facade.calls == ["server_info", "agent_list"]
 
     release.set()
     assert await asyncio.wait_for(starting, timeout=10) is True
-    assert await _await_composed(admission) == ""
+    assert (await _await_composed(admission)).lifecycle == "admitted"
     assert coordinator.lifecycle_loop is asyncio.get_running_loop()
     assert coordinator._restored is True
     assert facade.submit_count() == 1
@@ -826,9 +748,7 @@ async def test_tool_continuation_observer_stays_on_the_gateway_owned_loop(
     coordinator.bind_lifecycle_loop(asyncio.get_running_loop())
     await coordinator.restore()
     control.bind_delegate_control_session_store(runner.host.session_store)
-    await _await_composed(
-        runner.host._handle_delegate_command(_Event(TASK_TEXT_CANARY))
-    )
+    await _await_composed(_delegate(runner, coordinator))
     facade.terminalize(0)
     (first,) = coordinator.state.list_turns()
     assert await _until(
@@ -870,9 +790,12 @@ async def test_tool_continuation_observer_stays_on_the_gateway_owned_loop(
 
 
 @pytest.mark.asyncio
-async def test_natural_language_create_uses_the_slash_routes_trusted_origin(
+async def test_natural_language_create_uses_the_hosts_trusted_origin(
     tmp_path, monkeypatch
 ):
+    """The Session is context, never an argument: the model names the AGENT
+    and the task, and the host supplies who is asking."""
+
     import tools.sachima_delegate_control_tool as control
     from gateway.session_context import clear_session_vars, set_session_vars
 
@@ -882,11 +805,8 @@ async def test_natural_language_create_uses_the_slash_routes_trusted_origin(
     coordinator.bind_lifecycle_loop(asyncio.get_running_loop())
     await coordinator.restore()
     control.bind_delegate_control_session_store(runner.host.session_store)
-    source = _Event(TASK_TEXT_CANARY).source
-    session = runner.host.session_store.get_or_create_session(source)
-    coordinator._delivery_factory = lambda _origin: runner.host._delegate_delivery_for(
-        source, "m-natural"
-    )
+    session = runner.host.session_store.get_or_create_session(_source())
+    coordinator._delivery_factory = _adapter_delivery(runner)
     tokens = set_session_vars(
         platform="telegram",
         chat_id="chat-1",
@@ -899,7 +819,11 @@ async def test_natural_language_create_uses_the_slash_routes_trusted_origin(
         raw = await _await_composed(
             asyncio.to_thread(
                 control._handle_delegate_control,
-                {"action": "create", "task": TASK_TEXT_CANARY},
+                {
+                    "action": "create",
+                    "agent_id": AGENT_ID,
+                    "task": TASK_TEXT_CANARY,
+                },
             )
         )
     finally:
@@ -909,7 +833,7 @@ async def test_natural_language_create_uses_the_slash_routes_trusted_origin(
     (turn,) = coordinator.state.list_turns()
     assert payload["action"] == "create"
     assert payload["result"]["task_ref"] == turn.task_ref
-    assert turn.profile_id == coordinator.policy.profiles[0].profile_id
+    assert turn.agent_id == AGENT_ID
     assert turn.origin.session_id == session.session_id
     assert turn.origin.reply_anchor == "m-natural"
     assert facade.submit_count() == 1
@@ -917,62 +841,28 @@ async def test_natural_language_create_uses_the_slash_routes_trusted_origin(
 
 
 @pytest.mark.asyncio
-async def test_requested_agent_switch_creates_a_linked_new_task(tmp_path, monkeypatch):
+async def test_an_agent_switch_creates_a_linked_new_task(tmp_path, monkeypatch):
+    """Switching AGENT never rewrites the old binding — it links a new task."""
+
     import tools.sachima_delegate_control_tool as control
     from gateway.session_context import clear_session_vars, set_session_vars
 
     monkeypatch.setenv(control.SACHIMA_LIVE_PROGRESS_SURFACE_ENV, "hermes_internal")
     config = _config(
         tmp_path,
-        agent_by_policy_ref={
-            "policy_author": "author-agent",
-            "policy_reviewer": "review-agent",
-        },
-        model_by_policy_ref={
-            "policy_model": "claude-opus-5",
-            "policy_review_model": "claude-sonnet-5",
-        },
-        effort_by_policy_ref={
-            "policy_effort": "xhigh",
-            "policy_review_effort": "high",
-        },
-    )
-    policy = build_delegate_policy(
-        {
-            "type": DELEGATE_POLICY_TYPE,
-            "profiles": [
-                {
-                    "profile_id": "author",
-                    "workspace_ref": "ws_delegate",
-                    "agent_policy_ref": "policy_author",
-                    "model_policy_ref": "policy_model",
-                    "effort_policy_ref": "policy_effort",
-                    "run_limits_policy_ref": "policy_limits",
-                    "priority": 10,
-                },
-                {
-                    "profile_id": "reviewer",
-                    "workspace_ref": "ws_delegate",
-                    "agent_policy_ref": "policy_reviewer",
-                    "model_policy_ref": "policy_review_model",
-                    "effort_policy_ref": "policy_review_effort",
-                    "run_limits_policy_ref": "policy_limits",
-                    "auto_selectable": False,
-                },
-            ],
-        },
-        config,
+        agent_by_policy_ref={"policy_codex": "codex", "policy_cursor": "cursor"},
+        model_by_policy_ref={"policy_model": "claude-opus-5"},
+        effort_by_policy_ref={"policy_effort": "xhigh"},
     )
     runner = _Host(tmp_path)
-    coordinator, facade = _bind(tmp_path, config=config, policy=policy)
+    coordinator, facade = _bind(
+        tmp_path, config=config, presets=_catalog(config, "codex", "cursor")
+    )
     coordinator.bind_lifecycle_loop(asyncio.get_running_loop())
     await coordinator.restore()
     control.bind_delegate_control_session_store(runner.host.session_store)
-    source = _Event(TASK_TEXT_CANARY).source
-    session = runner.host.session_store.get_or_create_session(source)
-    coordinator._delivery_factory = lambda _origin: runner.host._delegate_delivery_for(
-        source, "m-switch"
-    )
+    session = runner.host.session_store.get_or_create_session(_source())
+    coordinator._delivery_factory = _adapter_delivery(runner)
     tokens = set_session_vars(
         platform="telegram",
         chat_id="chat-1",
@@ -987,8 +877,8 @@ async def test_requested_agent_switch_creates_a_linked_new_task(tmp_path, monkey
                 control._handle_delegate_control,
                 {
                     "action": "create",
+                    "agent_id": "codex",
                     "task": TASK_TEXT_CANARY,
-                    "requested_profile_id": "author",
                 },
             )
         )
@@ -1008,7 +898,7 @@ async def test_requested_agent_switch_creates_a_linked_new_task(tmp_path, monkey
                     "action": "continue",
                     "task_ref": created_ref,
                     "task": "review the completed work",
-                    "requested_profile_id": "reviewer",
+                    "agent_id": "cursor",
                 },
             )
         )
@@ -1020,8 +910,8 @@ async def test_requested_agent_switch_creates_a_linked_new_task(tmp_path, monkey
     switched = coordinator.state.read_task(switched_ref)
     assert switched_ref != created_ref
     assert original.turn_keys == (first_key,)
-    assert original.profile_id == "author"
-    assert switched.profile_id == "reviewer"
+    assert original.agent_id == "codex"
+    assert switched.agent_id == "cursor"
     assert switched.task_id != original.task_id
     assert switched.spine_session_id != original.spine_session_id
     assert switched.linked_from == first_event.event_id
@@ -1039,7 +929,7 @@ async def test_the_result_context_is_owed_to_the_next_turn_and_confirmed_after(
 ):
     runner = _Host(tmp_path)
     coordinator, facade = _bind(tmp_path)
-    await runner.host._handle_delegate_command(_Event(TASK_TEXT_CANARY))
+    await _delegate(runner, coordinator)
     facade.terminalize(0)
     (turn,) = coordinator.state.list_turns()
     assert await _until(
@@ -1063,7 +953,7 @@ async def test_the_result_context_is_owed_to_the_next_turn_and_confirmed_after(
 async def test_an_interrupted_handoff_returns_to_pending(tmp_path):
     runner = _Host(tmp_path)
     coordinator, facade = _bind(tmp_path)
-    await runner.host._handle_delegate_command(_Event(TASK_TEXT_CANARY))
+    await _delegate(runner, coordinator)
     facade.terminalize(0)
     (turn,) = coordinator.state.list_turns()
     assert await _until(
@@ -1159,9 +1049,7 @@ async def test_gateway_confirms_handoff_only_after_the_model_turn_consumes_it(
 
     host = _Host(tmp_path)
     coordinator, facade = _bind(tmp_path)
-    await _await_composed(
-        host.host._handle_delegate_command(_Event(TASK_TEXT_CANARY))
-    )
+    await _await_composed(_delegate(host, coordinator))
     facade.terminalize(0)
     (turn,) = coordinator.state.list_turns()
     assert await _until(
@@ -1232,9 +1120,7 @@ async def _claimed_handoff(tmp_path, monkeypatch):
 
     host = _Host(tmp_path)
     coordinator, facade = _bind(tmp_path)
-    await _await_composed(
-        host.host._handle_delegate_command(_Event(TASK_TEXT_CANARY))
-    )
+    await _await_composed(_delegate(host, coordinator))
     facade.terminalize(0)
     (turn,) = coordinator.state.list_turns()
     assert await _until(

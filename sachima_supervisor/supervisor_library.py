@@ -36,7 +36,7 @@ AGENT_RUN_SUPERVISOR_DISTRIBUTION = "agent-run-supervisor"
 #: Exact expected pin. Mirrors the ``agent-run-supervisor`` extra in this
 #: repo's ``pyproject.toml`` (the single source of truth); bump both together
 #: and regenerate uv.lock — tests/test_packaging_metadata.py fails on drift.
-EXPECTED_AGENT_RUN_SUPERVISOR_VERSION = "0.7.7"
+EXPECTED_AGENT_RUN_SUPERVISOR_VERSION = "0.7.8"
 
 #: Sanitized version shape (PEP 440-ish, single line, bounded). Anything else
 #: is treated as unknown and never echoed back.

@@ -35,6 +35,7 @@ from typing import Any
 import pytest
 
 from gateway.sachima_delegate_state import (
+    DELEGATE_STATE_VERSION,
     SACHIMA_DELEGATE_STATE_CONFLICT,
     SACHIMA_DELEGATE_STATE_INVALID,
     SACHIMA_DELEGATE_STATE_UNREADABLE,
@@ -239,6 +240,7 @@ class _Facade:
             "api_version": 3,
             "supported_api_versions": [3],
             "operations": [
+                "agent_list",
                 "run_cancel",
                 "run_events",
                 "run_status",
@@ -274,6 +276,9 @@ class _Facade:
 
     def session_list(self) -> dict[str, Any]:
         raise AssertionError("composition must not list Sessions")
+
+    def agent_list(self) -> dict[str, Any]:
+        raise AssertionError("composition must not read the roster")
 
 
 def test_the_composed_bundle_exposes_the_one_ledger_the_backend_uses(tmp_path):
@@ -322,9 +327,9 @@ def _turn(store: DelegateStateStore, task_ref: str, payload_ref: str) -> Delegat
         dispatch_ref=payload_ref,
         payload_ref=payload_ref,
         spine_session_id="sess_1",
-        profile_id="author",
+        agent_id="oh-my-pi",
         launch_refs=("ws_delegate", "policy_author"),
-        requested_agent="author-agent",
+        requested_agent="oh-my-pi",
         requested_model="claude-opus-5",
         requested_effort="xhigh",
         origin=_origin(),
@@ -385,7 +390,7 @@ def test_task_turn_and_result_records_round_trip_through_a_fresh_store(tmp_path)
         task_id=TASK_ID,
         backend_handle=HANDLE,
         spine_session_id="sess_1",
-        profile_id="author",
+        agent_id="oh-my-pi",
         origin=_origin(),
         turn_keys=(turn.turn_key,),
         current_turn_key=turn.turn_key,
@@ -548,3 +553,101 @@ def test_the_session_store_resolves_a_session_by_key_as_well_as_by_id(tmp_path):
     assert store.lookup_by_session_id(entry.session_id) is entry
     assert store.lookup_by_session_key("no-such-key") is None
     assert store.lookup_by_session_key("") is None
+
+
+# --------------------------------------------------------------------------- #
+# Pre-rename durable records
+#
+# The sealed AGENT used to be written under ``profile_id``, whose grammar had
+# no room for a canonical id like ``oh-my-pi``. The field is now ``agent_id``
+# with the canonical grammar — a strict superset of every value the old one
+# could hold — so an existing record is *read*, not migrated. Whether that
+# AGENT is still eligible is a separate question, asked only when a new Run
+# would be submitted.
+# --------------------------------------------------------------------------- #
+def _legacy_document(kind: str, record: dict) -> bytes:
+    return json.dumps(
+        {"version": DELEGATE_STATE_VERSION, "kind": kind, "record": record},
+        ensure_ascii=False,
+        sort_keys=True,
+    ).encode("utf-8")
+
+
+def test_a_record_written_before_the_rename_is_still_readable(tmp_path):
+    store = DelegateStateStore(str(tmp_path / "state"))
+    root = Path(store.root)
+    task_ref = store.new_task_ref()
+    turn_key = store.new_turn_key()
+    origin = _origin().as_dict()
+
+    (root / "turns" / turn_key).write_bytes(
+        _legacy_document(
+            "turn",
+            {
+                "turn_key": turn_key,
+                "task_ref": task_ref,
+                "task_id": TASK_ID,
+                "backend_handle": HANDLE,
+                "dispatch_ref": "dlg_legacy",
+                "payload_ref": "dlg_legacy",
+                "spine_session_id": "sess_1",
+                "profile_id": "default",
+                "launch_refs": ["ws_delegate", "policy_author"],
+                "requested_agent": "author-agent",
+                "requested_model": "claude-opus-5",
+                "requested_effort": "xhigh",
+                "origin": origin,
+                "lifecycle": "terminal",
+                "cancellation": "none",
+                "receipt": "confirmed",
+                "observation": "terminal_seen",
+                "turn_ref": None,
+                "receipt_message_id": None,
+                "diagnostic": None,
+                "terminal_status": "completed",
+            },
+        )
+    )
+    (root / "tasks" / task_ref).write_bytes(
+        _legacy_document(
+            "task",
+            {
+                "task_ref": task_ref,
+                "task_id": TASK_ID,
+                "backend_handle": HANDLE,
+                "spine_session_id": "sess_1",
+                "profile_id": "default",
+                "origin": origin,
+                "turn_keys": [turn_key],
+                "current_turn_key": turn_key,
+                "terminal": True,
+                "linked_from": None,
+            },
+        )
+    )
+
+    fresh = DelegateStateStore(str(tmp_path / "state"))
+    binding = fresh.read_task(task_ref)
+    turn = fresh.read_turn(turn_key)
+
+    assert binding is not None and turn is not None
+    assert binding.agent_id == "default"
+    assert turn.agent_id == "default"
+    assert binding.turn_keys == (turn_key,)
+    assert turn.terminal_status == "completed"
+
+    # Rewritten under the current key, with no second copy of the old one.
+    fresh.put_task(binding)
+    document = json.loads((root / "tasks" / task_ref).read_text(encoding="utf-8"))
+    assert document["record"]["agent_id"] == "default"
+    assert "profile_id" not in document["record"]
+
+
+def test_a_canonical_id_the_old_ref_grammar_refused_is_now_durable(tmp_path):
+    """``oh-my-pi`` is a real registered id, and hyphens are part of it."""
+
+    store = DelegateStateStore(str(tmp_path / "state"))
+    payload_ref = store.put_payload("do the thing")
+    task_ref = store.new_task_ref()
+    turn = store.put_turn(_turn(store, task_ref, payload_ref))
+    assert store.read_turn(turn.turn_key).agent_id == "oh-my-pi"

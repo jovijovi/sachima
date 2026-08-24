@@ -1,6 +1,6 @@
 """The provider-dispatch signal — the last reliable local boundary.
 
-A claimed ``/delegate`` handoff is consumed **iff** the turn carrying it
+A claimed delegated-result handoff is consumed **iff** the turn carrying it
 commits at least one concrete local provider SDK invocation.  The conversation
 loop cannot answer that from where it hands the request to an interruptible
 helper: below that point the request can still stop at a pre-dispatch
