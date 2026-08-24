@@ -4644,3 +4644,103 @@ def test_the_sealed_payload_still_parses_under_the_real_pinned_protocol() -> Non
     command = protocol.parse_submit(payload)
     assert command.request.grant_capabilities == REVIEW_CAPABILITIES
     assert command.request.grant_ref == payload["request"]["grant_ref"]
+
+
+# --------------------------------------------------------------------------- #
+# The canonical "no effort selector" effort (model-only fidelity)
+#
+# Under the pinned distribution's model-only configuration fidelity an agent
+# advertises no independent effort selector, so ``N/A`` is the one effort such a
+# Run may request and the one effort its Session can report afterwards. It
+# carries a ``/``, which the shared wire-token grammar has never admitted, so a
+# real model-only route (Cursor's) failed closed on both the request side and
+# the Session read-back.
+# --------------------------------------------------------------------------- #
+EFFORT_NA = "N/A"
+
+#: Neither the sentinel nor an ordinary wire token. The punctuation, case and
+#: whitespace variants the old grammar refused stay refused, and ``7`` keeps the
+#: sentinel comparison from becoming a type-blind equality check.
+REFUSED_EFFORTS = ("", "n/a", " N/A", "N/A ", "N / A", "N//A", "N/A\nmedium", "/", 7)
+
+
+def test_the_effort_sentinel_mirrors_the_pinned_distribution() -> None:
+    """Drift-lock: the mirrored literal is the distribution's own constant.
+
+    It is mirrored rather than imported (module import purity forbids importing
+    ``agent_run_supervisor`` in the spine), so this is what keeps it honest.
+    """
+
+    from sachima_supervisor.runtime_spine.arsd_socket_contract import (
+        _EFFORT_NOT_APPLICABLE,
+    )
+
+    fidelity = pytest.importorskip("agent_run_supervisor.native_acp.config_fidelity")
+    assert _EFFORT_NOT_APPLICABLE == fidelity.EFFORT_NOT_APPLICABLE == EFFORT_NA
+    # The pinned request admits it, so admitting it here is not a widening.
+    assert _real_agent_run_request(requested_effort=EFFORT_NA).requested_effort == (
+        EFFORT_NA
+    )
+
+
+@pytest.mark.parametrize("effort", [EFFORT_NA, "medium"])
+def test_configured_effort_reaches_the_built_request_byte_identical(effort) -> None:
+    """The sentinel joins the ordinary vocabulary and nothing normalizes it.
+
+    The daemon compares the requested effort against its own constant by
+    equality, so a value Sachima had trimmed or case-folded on the way through
+    would be refused at admission instead of running.
+    """
+
+    config = _make_config(enabled=True, effort_by_policy_ref={"policy_reader": effort})
+    assert config.effort_by_policy_ref["policy_reader"] == effort
+    assert _build_payload(config=config)["request"]["requested_effort"] == effort
+
+
+@pytest.mark.parametrize("effort", [EFFORT_NA, "medium", None])
+def test_session_view_reads_back_the_last_effective_effort(effort) -> None:
+    """A finished model-only Session must stay validatable and reusable.
+
+    ``last_effective_effort`` is an observation of a Run that already
+    completed, and on the live daemon every Session reporting ``N/A`` is a
+    completed Cursor Run. Refusing it here made such a Session unvalidatable,
+    so status and continuation failed at Sachima's boundary after a Run the
+    agent had itself finished. ``None`` remains the "no completed Run" reading.
+    """
+
+    view = _validate_session_view(_session_view(last_effective_effort=effort))
+    assert view.last_effective_effort == effort
+
+
+@pytest.mark.parametrize("refused", REFUSED_EFFORTS)
+def test_near_miss_effort_spellings_fail_closed_on_both_sides(refused) -> None:
+    """Exact equality, not a ``/``-shaped hole in the effort field."""
+
+    with pytest.raises(SpineError) as config_error:
+        _make_config(enabled=True, effort_by_policy_ref={"policy_reader": refused})
+    assert config_error.value.code == RUNTIME_INVALID_ARSD_CONFIG
+
+    with pytest.raises(SpineError) as view_error:
+        _validate_session_view(_session_view(last_effective_effort=refused))
+    assert view_error.value.code == RUNTIME_ARSD_PROTOCOL_VIOLATION
+
+
+def test_the_effort_sentinel_is_admitted_in_the_effort_field_only() -> None:
+    """A field-specific validator, not a widening of the shared grammar."""
+
+    from sachima_supervisor.runtime_spine.arsd_socket_contract import _safe_wire_token
+
+    with pytest.raises(SpineError):
+        _safe_wire_token(EFFORT_NA)
+    # ``NA`` and ``N.A`` were ordinary wire tokens before this change and still
+    # are: the sentinel branch neither admits nor narrows them.
+    for ordinary in ("NA", "N.A"):
+        assert _safe_wire_token(ordinary) == ordinary
+
+    with pytest.raises(SpineError) as config_error:
+        _make_config(agent_by_policy_ref={"policy_reader": EFFORT_NA})
+    assert config_error.value.code == RUNTIME_INVALID_ARSD_CONFIG
+
+    with pytest.raises(SpineError) as view_error:
+        _validate_session_view(_session_view(agent_id=EFFORT_NA))
+    assert view_error.value.code == RUNTIME_ARSD_PROTOCOL_VIOLATION

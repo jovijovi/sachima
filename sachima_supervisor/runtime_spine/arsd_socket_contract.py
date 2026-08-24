@@ -239,12 +239,14 @@ _POLICY_REF_PREFIX = "policy_"
 _VERSION_RE = re.compile(r"^[0-9][0-9A-Za-z._+-]{0,31}$")
 
 #: Opaque single-line wire tokens Sachima forwards but does not own the
-#: grammar of (registered agent ids, effort levels, run ids).
+#: grammar of (registered agent ids, ordinary effort levels, run ids).
 #:
 #: Model selectors are deliberately **not** in this family any more: the
 #: pinned request validates ``requested_model`` as bounded printable text,
 #: and the configured Claude selector ``opus[1m]`` is unspellable here. See
-#: :func:`_safe_config_text`.
+#: :func:`_safe_config_text`. An effort is validated by this grammar *plus* the
+#: one canonical ``N/A`` sentinel, by exact equality and in that field only —
+#: see :func:`_safe_effort_token`.
 _WIRE_TOKEN_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
 #: The **canonical** ``agent_id`` grammar, mirrored verbatim from the pinned
@@ -256,6 +258,15 @@ _WIRE_TOKEN_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 #: tests against the imported real module.
 ARSD_AGENT_ID_PATTERN = r"[a-z0-9][a-z0-9._-]{0,63}"
 _AGENT_ID_RE = re.compile(ARSD_AGENT_ID_PATTERN)
+
+#: The **canonical** "no effort selector" effort, mirrored verbatim from the
+#: pinned distribution's ``native_acp.config_fidelity.EFFORT_NOT_APPLICABLE``.
+#: Under model-only configuration fidelity an agent advertises no independent
+#: effort selector, so this is the one effort such a Run may request and the one
+#: effort its Session can report afterwards. The daemon compares it by exact
+#: equality (``validate_fidelity_pairing``), which is why it is matched the same
+#: way here. Drift-locked by the contract tests against the real module.
+_EFFORT_NOT_APPLICABLE = "N/A"
 
 #: The bound on one roster reply. The daemon's roster is a startup snapshot of
 #: a reviewed registry file, so a reply carrying thousands of ids is not a
@@ -364,6 +375,33 @@ def _safe_wire_token(value: Any, *, code: str = RUNTIME_INVALID_ARSD_CONFIG) -> 
     if type(value) is not str or _WIRE_TOKEN_RE.fullmatch(value) is None:
         raise SpineError(code) from None
     return value
+
+
+def _safe_effort_token(value: Any, *, code: str = RUNTIME_INVALID_ARSD_CONFIG) -> str:
+    """One effort field: an ordinary wire token, or exactly ``N/A``.
+
+    Field-specific on purpose. Every ordinary effort (``medium``, ``xhigh``,
+    ...) is a wire token and keeps that exact grammar, but the canonical
+    model-only effort :data:`_EFFORT_NOT_APPLICABLE` carries a ``/`` the shared
+    grammar does not admit — so a model-only route (Cursor's) failed closed
+    twice over: at config construction, before any Run could be submitted, and
+    again on the Session view of a Run that had already completed.
+
+    The sentinel is admitted by **exact equality against one literal**: no
+    trimming, no case-folding, no normalization, no second spelling. That is
+    also how the daemon compares it, so a value Sachima had "helpfully"
+    normalized would be refused at admission instead. :data:`_WIRE_TOKEN_RE`
+    and :func:`_safe_wire_token` are unchanged, so the sentinel stays
+    unspellable as an agent id, ref, digest, Run id or Session id, and no
+    result/event validator moves.
+
+    The pinned request validates ``requested_effort`` as bounded printable text
+    and admits the sentinel, so this admits nothing the daemon would refuse.
+    """
+
+    if type(value) is str and value == _EFFORT_NOT_APPLICABLE:
+        return value
+    return _safe_wire_token(value, code=code)
 
 
 def _safe_config_text(value: Any, *, code: str = RUNTIME_INVALID_ARSD_CONFIG) -> str:
@@ -600,7 +638,7 @@ def _check_arsd_config_fields(config: Any, *, normalize: bool = False) -> None:
         model_by_policy_ref, key_prefix=_POLICY_REF_PREFIX, item=_safe_config_text
     )
     owned_efforts = _owned_ref_map(
-        effort_by_policy_ref, key_prefix=_POLICY_REF_PREFIX, item=_safe_wire_token
+        effort_by_policy_ref, key_prefix=_POLICY_REF_PREFIX, item=_safe_effort_token
     )
     owned_workspaces = _owned_ref_map(
         workspace_by_ref, key_prefix=_WORKSPACE_REF_PREFIX, item=_private_abs_path
@@ -1642,7 +1680,9 @@ class ArsdSessionView:
     ``last_effective_model`` / ``last_effective_effort`` are observations of
     the Session's **last Run**. They are recorded here and fed into nothing:
     never into request construction, and never treated as the effective
-    configuration of a Run other than the one that produced them (§5.5.4).
+    configuration of a Run other than the one that produced them (§5.5.4). A
+    model-only Session reports :data:`_EFFORT_NOT_APPLICABLE` as its effort;
+    that is preserved verbatim rather than normalized or refused.
 
     Optionality mirrors the real record rather than Sachima's preference: the
     daemon guarantees ``session_id``/``owner``/``namespace`` on every view it
@@ -1672,6 +1712,12 @@ def _optional_wire_token(value: Any) -> str | None:
     if value is None:
         return None
     return _safe_wire_token(value, code=RUNTIME_ARSD_PROTOCOL_VIOLATION)
+
+
+def _optional_effort_token(value: Any) -> str | None:
+    if value is None:
+        return None
+    return _safe_effort_token(value, code=RUNTIME_ARSD_PROTOCOL_VIOLATION)
 
 
 def _optional_config_text(value: Any) -> str | None:
@@ -1723,7 +1769,7 @@ def validate_arsd_session_view(payload: Any) -> ArsdSessionView:
         created_at=_optional_wire_timestamp(payload["created_at"]),
         updated_at=_optional_wire_timestamp(payload["updated_at"]),
         last_effective_model=_optional_config_text(payload["last_effective_model"]),
-        last_effective_effort=_optional_wire_token(payload["last_effective_effort"]),
+        last_effective_effort=_optional_effort_token(payload["last_effective_effort"]),
         quarantine_reason_code=reason_code,
     )
 
