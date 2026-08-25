@@ -54,6 +54,7 @@ from gateway.sachima_delegate_state import (
     DelegateStateStore,
     delegate_state_root,
 )
+from gateway.sachima_delegate_summary import SUMMARY_REASON_SOURCE_INCOMPLETE
 from hermes_cli.commands import (
     COMMAND_REGISTRY,
     COMMANDS,
@@ -230,7 +231,25 @@ def _unbind():
     delegate_mod.unbind_delegate_coordinator()
 
 
-def _bind(tmp_path: Path, *, facade=None, presets=None, config=None):
+GATEWAY_SUMMARY_CANARY = "Sachima 的结论：外部 AGENT 的结果已就绪。"
+
+
+class _SummaryProvider:
+    """The host's injected no-tool summariser, as the Gateway composes one."""
+
+    def __init__(self, *, text: str = GATEWAY_SUMMARY_CANARY) -> None:
+        self.text = text
+        self.calls = 0
+        self.sources: list[str] = []
+        self.generator_ref = "gateway-stub"
+
+    async def summarize(self, request: Any) -> str:
+        self.calls += 1
+        self.sources.append(request.source_text)
+        return self.text
+
+
+def _bind(tmp_path: Path, *, facade=None, presets=None, config=None, summary_provider=None):
     facade = _Facade() if facade is None else facade
     config = _config(tmp_path) if config is None else config
     bundle = bind_arsd_execution(
@@ -245,6 +264,9 @@ def _bind(tmp_path: Path, *, facade=None, presets=None, config=None):
         presets=presets if presets is not None else _catalog(config),
         state=DelegateStateStore(delegate_state_root(config.binding_ledger_path)),
         observe_interval=0.01,
+        summary_provider=(
+            _SummaryProvider() if summary_provider is None else summary_provider
+        ),
     )
     delegate_mod._coordinator = coordinator
     return coordinator, facade
@@ -409,7 +431,15 @@ async def test_the_terminal_result_is_one_bounded_plain_text_message(tmp_path):
     (turn,) = coordinator.state.list_turns()
     event = coordinator.state.result_for_turn(turn.turn_key)
     assert event.full_result_ref in body
+    # The visible body is Sachima's labelled derivative; the whole original
+    # stays behind the ref, exactly as stored.
+    assert GATEWAY_SUMMARY_CANARY in body
+    assert "Sachima 摘要：" in body
+    assert FINAL_MESSAGE_CANARY not in body
     assert coordinator.state.read_full_result(event.full_result_ref) == huge
+    summary = coordinator.state.summary_for_event(event.event_id)
+    assert summary.summary_status == "ready"
+    assert summary.summary_text == GATEWAY_SUMMARY_CANARY
     # The receipt used ``send``; the terminal did not.
     assert len(runner.adapter.sent) == 1
     delegate_mod.set_delegate_delivery_factory(None)
@@ -923,6 +953,14 @@ async def test_an_agent_switch_creates_a_linked_new_task(tmp_path, monkeypatch):
 # --------------------------------------------------------------------------- #
 # J. Next-turn-only result context (§2.3)
 # --------------------------------------------------------------------------- #
+def _summary_is_settled(coordinator, turn_key: str) -> bool:
+    event = coordinator.state.result_for_turn(turn_key)
+    if event is None:
+        return False
+    summary = coordinator.state.summary_for_event(event.event_id)
+    return summary is not None and summary.settled
+
+
 @pytest.mark.asyncio
 async def test_the_result_context_is_owed_to_the_next_turn_and_confirmed_after(
     tmp_path,
@@ -933,7 +971,7 @@ async def test_the_result_context_is_owed_to_the_next_turn_and_confirmed_after(
     facade.terminalize(0)
     (turn,) = coordinator.state.list_turns()
     assert await _until(
-        lambda: coordinator.state.result_for_turn(turn.turn_key) is not None
+        lambda: _summary_is_settled(coordinator, turn.turn_key)
     )
 
     session_id = turn.origin.session_id
@@ -941,6 +979,9 @@ async def test_the_result_context_is_owed_to_the_next_turn_and_confirmed_after(
     assert len(lines) == 1
     event = coordinator.state.result_for_turn(turn.turn_key)
     assert event.full_result_ref in lines[0]
+    assert "summary_source=sachima summary_status=ready" in lines[0]
+    assert GATEWAY_SUMMARY_CANARY in lines[0]
+    assert FINAL_MESSAGE_CANARY not in lines[0]
     assert coordinator.state.read_result(event.event_id).hermes_sink == "in_flight"
 
     # Taking it twice does not duplicate it into a second turn.
@@ -957,7 +998,7 @@ async def test_an_interrupted_handoff_returns_to_pending(tmp_path):
     facade.terminalize(0)
     (turn,) = coordinator.state.list_turns()
     assert await _until(
-        lambda: coordinator.state.result_for_turn(turn.turn_key) is not None
+        lambda: _summary_is_settled(coordinator, turn.turn_key)
     )
     session_id = turn.origin.session_id
     coordinator.pending_hermes_context(session_id)
@@ -1053,7 +1094,7 @@ async def test_gateway_confirms_handoff_only_after_the_model_turn_consumes_it(
     facade.terminalize(0)
     (turn,) = coordinator.state.list_turns()
     assert await _until(
-        lambda: coordinator.state.result_for_turn(turn.turn_key) is not None
+        lambda: _summary_is_settled(coordinator, turn.turn_key)
     )
     event = coordinator.state.result_for_turn(turn.turn_key)
     source = SessionSource(
@@ -1124,7 +1165,7 @@ async def _claimed_handoff(tmp_path, monkeypatch):
     facade.terminalize(0)
     (turn,) = coordinator.state.list_turns()
     assert await _until(
-        lambda: coordinator.state.result_for_turn(turn.turn_key) is not None
+        lambda: _summary_is_settled(coordinator, turn.turn_key)
     )
     event = coordinator.state.result_for_turn(turn.turn_key)
     source = SessionSource(

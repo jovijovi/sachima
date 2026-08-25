@@ -83,6 +83,23 @@ from gateway.sachima_delegate_result import (
     render_accepted_receipt,
     render_result_body,
 )
+from gateway.sachima_delegate_summary import (
+    SUMMARY_PROVIDER_TIMEOUT_SECONDS,
+    SUMMARY_REASON_ATTEMPT_ABANDONED,
+    SUMMARY_REASON_SOURCE_DRIFT,
+    SUMMARY_REASON_SOURCE_MISSING,
+    SUMMARY_REASON_SUMMARY_FAILED,
+    DelegateResultSummary,
+    DelegateResultSummaryProvider,
+    DelegateSummaryError,
+    build_summary_request,
+    compute_source_digest,
+    pending_summary,
+    sanitize_task_description,
+    settle_summary_attempt,
+    source_gate_reason,
+    unavailable_summary,
+)
 from gateway.sachima_delegate_state import (
     DelegateCapacity,
     DelegateOrigin,
@@ -111,6 +128,7 @@ __all__ = [
     "SACHIMA_DELEGATE_OBSERVATION_LOST",
     "SACHIMA_DELEGATE_RECOVERY_REQUIRED",
     "SACHIMA_DELEGATE_STABLE_CODES",
+    "SACHIMA_DELEGATE_SUMMARY_UNAVAILABLE",
     "SACHIMA_DELEGATE_UNBOUND",
     "SACHIMA_DELEGATE_UNKNOWN_PAYLOAD_REF",
     "SACHIMA_DELEGATE_UNKNOWN_TASK",
@@ -138,6 +156,7 @@ SACHIMA_DELEGATE_UNKNOWN_TASK = "sachima_delegate_unknown_task"
 SACHIMA_DELEGATE_NOT_CONTINUABLE = "sachima_delegate_not_continuable"
 SACHIMA_DELEGATE_NO_DELIVERY = "sachima_delegate_no_delivery"
 SACHIMA_DELEGATE_INVARIANT = "sachima_delegate_invariant"
+SACHIMA_DELEGATE_SUMMARY_UNAVAILABLE = "sachima_delegate_summary_unavailable"
 
 SACHIMA_DELEGATE_STABLE_CODES = frozenset(
     {
@@ -157,6 +176,7 @@ SACHIMA_DELEGATE_STABLE_CODES = frozenset(
         SACHIMA_DELEGATE_NOT_CONTINUABLE,
         SACHIMA_DELEGATE_NO_DELIVERY,
         SACHIMA_DELEGATE_INVARIANT,
+        SACHIMA_DELEGATE_SUMMARY_UNAVAILABLE,
     }
 )
 
@@ -274,6 +294,8 @@ class SachimaDelegateCoordinator:
         state: DelegateStateStore | None = None,
         delivery_factory: Callable[[DelegateOrigin], DelegateDelivery | None] | None = None,
         observe_interval: float = _DEFAULT_OBSERVE_INTERVAL_SECONDS,
+        summary_provider: DelegateResultSummaryProvider | None = None,
+        summary_timeout: float = SUMMARY_PROVIDER_TIMEOUT_SECONDS,
     ) -> None:
         self._binding = binding
         self._config = config
@@ -293,6 +315,11 @@ class SachimaDelegateCoordinator:
             raise ValueError(SACHIMA_DELEGATE_UNBOUND)
         self._delivery_factory = delivery_factory
         self._observe_interval = float(observe_interval)
+        # Injected, and legitimately absent. A host with no summariser is a
+        # supported composition: it reports ``unavailable`` and keeps the ref,
+        # which is the honest answer — never the answer's first characters.
+        self._summary_provider = summary_provider
+        self._summary_timeout = float(summary_timeout)
         # The one admissible source of capacity: what the daemon said, as
         # validated by the negotiation the composed backend already passed.
         self._capacity = DelegateCapacity(
@@ -335,6 +362,10 @@ class SachimaDelegateCoordinator:
     @property
     def capacity(self) -> DelegateCapacity:
         return self._capacity
+
+    @property
+    def summary_provider(self) -> DelegateResultSummaryProvider | None:
+        return self._summary_provider
 
     @property
     def lifecycle_loop(self) -> asyncio.AbstractEventLoop | None:
@@ -1176,9 +1207,178 @@ class SachimaDelegateCoordinator:
         # The result and both sink intents are durable, so the permit can go
         # back: delivery can still be reconciled after the release.
         self._capacity.release(turn.turn_key)
+        try:
+            task_description = sanitize_task_description(
+                self._state.read_payload(turn.payload_ref)
+            )
+        except DelegateStateError:
+            task_description = None
         self._state.discard_payload(turn.payload_ref)
+        # The derivative settles *before* either sink runs. Both sinks project
+        # the same durable record, so a user message and the next Hermes turn
+        # cannot end up describing one terminal two different ways.
+        await self._settle_summary(event, task_description=task_description)
         await self._reconcile_im_sink(event, turn)
         return self._outcome(turn, terminal=event.terminal)
+
+    # -- the derived summary (plan §4, §5) ---------------------------------- #
+    def _summary_for_event(
+        self, event: DelegateResultEvent
+    ) -> DelegateResultSummary | None:
+        """This result's derivative record, or ``None`` if it cannot be read."""
+
+        try:
+            return self._state.summary_for_event(event.event_id)
+        except DelegateStateError:
+            logger.warning(SACHIMA_DELEGATE_SUMMARY_UNAVAILABLE)
+            return None
+
+    def _persist_summary(
+        self, summary: DelegateResultSummary
+    ) -> DelegateResultSummary | None:
+        """Write one settled derivative, deferring to a slot already settled.
+
+        A durable conflict here means another writer reached the same slot
+        first. Its record wins: the slot is derived from the result identity, so
+        there is exactly one right answer and overwriting it would be how two
+        readings of one answer come to exist.
+        """
+
+        try:
+            return self._state.advance_summary(summary)
+        except (DelegateStateError, DelegateSummaryError):
+            logger.warning(SACHIMA_DELEGATE_SUMMARY_UNAVAILABLE)
+            try:
+                return self._state.read_summary(summary.summary_ref)
+            except DelegateStateError:
+                return None
+
+    def _settle_unavailable(
+        self, record: DelegateResultSummary, reason: str
+    ) -> DelegateResultSummary | None:
+        return self._persist_summary(unavailable_summary(record, reason=reason))
+
+    def _current_source_digest(self, full_result_ref: str) -> str:
+        """Digest the bytes currently behind a result ref, or ``""`` if unreadable."""
+
+        try:
+            source_text = self._state.read_full_result(full_result_ref)
+        except DelegateStateError:
+            return ""
+        return compute_source_digest(source_text)
+
+    async def _settle_summary(
+        self,
+        event: DelegateResultEvent,
+        *,
+        task_description: str | None = None,
+    ) -> DelegateResultSummary | None:
+        """Produce the one derivative this result identity is owed, or say why not.
+
+        Runs inside the turn's own exclusion, after the result record is durable
+        and before either sink may read it. The order is the contract:
+        ``pending`` is on disk before any provider call, so a process that dies
+        mid-attempt leaves a slot a restart can settle rather than an unbounded
+        licence to ask again.
+
+        Every exit is one durable terminal record or ``None`` for "the durable
+        state could not be read", which both sinks treat as not-yet-deliverable.
+        No exit is the answer's first characters.
+        """
+
+        existing = self._summary_for_event(event)
+        if existing is not None and existing.settled:
+            return existing
+        if existing is not None and existing.summary_status == "in_flight":
+            # A claimed attempt this frame did not make. Whether the provider
+            # was actually called is unknowable from here, so it fails closed
+            # rather than being replayed at a second real cost.
+            if not self._fresh_graph:
+                logger.warning(SACHIMA_DELEGATE_INVARIANT)
+            return self._settle_unavailable(existing, SUMMARY_REASON_ATTEMPT_ABANDONED)
+
+        try:
+            source_text: str | None = self._state.read_full_result(
+                event.full_result_ref
+            )
+        except DelegateStateError:
+            source_text = None
+        digest = "" if source_text is None else compute_source_digest(source_text)
+
+        if existing is None:
+            try:
+                record = self._state.put_summary(
+                    pending_summary(
+                        event_id=event.event_id,
+                        full_result_ref=event.full_result_ref,
+                        source_digest=digest,
+                    )
+                )
+            except (DelegateStateError, DelegateSummaryError):
+                logger.warning(SACHIMA_DELEGATE_SUMMARY_UNAVAILABLE)
+                return self._summary_for_event(event)
+        elif (
+            existing.source_full_result_ref != event.full_result_ref
+            or existing.source_digest != digest
+        ):
+            # The bytes behind the ref are not the bytes this slot was opened
+            # over. That is not a stale summary, it is a summary of something
+            # else, and it fails closed instead of being re-read.
+            return self._settle_unavailable(existing, SUMMARY_REASON_SOURCE_DRIFT)
+        else:
+            record = existing
+
+        reason = source_gate_reason(
+            source_text=source_text,
+            truncated=event.truncated,
+            has_provider=self._summary_provider is not None,
+        )
+        if reason is not None:
+            return self._settle_unavailable(record, reason)
+
+        claimed = self._state.claim_summary_attempt(record.summary_ref)
+        if claimed is None:
+            # Another writer claimed or settled the slot between the read and
+            # the claim. Whatever it decided is the one answer.
+            return self._summary_for_event(event)
+
+        try:
+            request = build_summary_request(
+                task_ref=event.task_ref,
+                terminal=event.terminal,
+                full_result_ref=event.full_result_ref,
+                source_text=source_text or "",
+                source_digest=digest,
+                task_description=task_description,
+            )
+        except DelegateSummaryError:
+            logger.warning(SACHIMA_DELEGATE_SUMMARY_UNAVAILABLE)
+            return self._settle_unavailable(claimed, SUMMARY_REASON_SUMMARY_FAILED)
+
+        # Seeded before the attempt and written in ``finally``: no branch, and
+        # no cancellation, leaves a summary ``in_flight`` in this process.
+        settled = unavailable_summary(claimed, reason=SUMMARY_REASON_SUMMARY_FAILED)
+        try:
+            settled = await settle_summary_attempt(
+                claimed,
+                request=request,
+                provider=self._summary_provider,
+                timeout=self._summary_timeout,
+            )
+            if settled.ready:
+                current_digest = self._current_source_digest(event.full_result_ref)
+                if current_digest != digest:
+                    settled = unavailable_summary(
+                        claimed,
+                        reason=(
+                            SUMMARY_REASON_SOURCE_MISSING
+                            if not current_digest
+                            else SUMMARY_REASON_SOURCE_DRIFT
+                        ),
+                    )
+        finally:
+            persisted = self._persist_summary(settled)
+        return persisted
 
     async def _reconcile_im_sink(
         self, event: DelegateResultEvent, turn: DelegateTurnRecord
@@ -1192,6 +1392,12 @@ class SachimaDelegateCoordinator:
 
         if event.im_sink not in {"pending", "failed", "uncertain"}:
             return
+        summary = self._summary_for_event(event)
+        if summary is None or not summary.settled:
+            # A result whose derivative has not settled is not deliverable yet.
+            # Both sinks wait on the same record, which is what stops the chat
+            # and the next model turn from describing one terminal differently.
+            return
         channel = self._delivery_for(turn.origin, None)
         if channel is None:
             self._state.update_result(
@@ -1201,6 +1407,7 @@ class SachimaDelegateCoordinator:
             )
             return
 
+        source_digest = self._current_source_digest(event.full_result_ref)
         self._state.update_result(event.event_id, im_sink="in_flight")
         settlement = UNCERTAIN_SETTLEMENT
         try:
@@ -1216,7 +1423,8 @@ class SachimaDelegateCoordinator:
             )
             body = render_result_body(
                 envelope,
-                self._state.read_full_result(event.full_result_ref),
+                summary,
+                source_digest=source_digest,
                 limit=channel.limit,
                 measure=channel.measure,
             )
@@ -1235,16 +1443,27 @@ class SachimaDelegateCoordinator:
     def pending_hermes_context(self, session_id: str) -> tuple[str, ...]:
         """The result projections this Session's next ordinary turn should see.
 
-        Marks each one ``in_flight`` and returns its bounded text. It never
-        mutates a running turn, never injects a synthetic user message, and never
-        touches the long-lived system-prompt prefix — the caller folds the text
-        into the *next* real user turn's own context.
+        Marks each one ``in_flight`` and returns its bounded text: the control
+        facts, the durable ref, and the *same* persisted Sachima summary the
+        user was shown. A result whose derivative has not settled stays
+        ``pending`` and is owed to a later turn — the model and the chat read one
+        record, so they cannot be told two different things about one terminal.
+
+        It never mutates a running turn, never injects a synthetic user message,
+        and never touches the long-lived system-prompt prefix — the caller folds
+        the text into the *next* real user turn's own context.
         """
 
         lines: list[str] = []
         for event in self._state.list_results():
             if event.session_id != session_id or event.hermes_sink != "pending":
                 continue
+            summary = self._summary_for_event(event)
+            if summary is None or not summary.settled:
+                # Not yet projectable. It stays ``pending`` and is owed to a
+                # later turn rather than being handed over half-settled.
+                continue
+            source_digest = self._current_source_digest(event.full_result_ref)
             self._state.update_result(event.event_id, hermes_sink="in_flight")
             envelope = build_result_envelope(
                 event_id=event.event_id,
@@ -1256,11 +1475,13 @@ class SachimaDelegateCoordinator:
                 truncated=event.truncated,
                 truncate_reason=event.truncate_reason,
             )
-            try:
-                body = self._state.read_full_result(event.full_result_ref)
-            except DelegateStateError:
-                body = ""
-            lines.append(build_hermes_context(envelope, body))
+            lines.append(
+                build_hermes_context(
+                    envelope,
+                    summary,
+                    source_digest=source_digest,
+                )
+            )
         return tuple(lines)
 
     def confirm_hermes_context(self, session_id: str) -> int:
@@ -1476,10 +1697,16 @@ class SachimaDelegateCoordinator:
             if self._restore_terminal_identity(turn):
                 identities += 1
 
+        summaries = await self._restore_summaries()
         sinks = await self._restore_sinks()
         self._restored = True
         self._fresh_graph = False
-        return {"restored": execution, "identities": identities, "sinks": sinks}
+        return {
+            "restored": execution,
+            "identities": identities,
+            "summaries": summaries,
+            "sinks": sinks,
+        }
 
     async def _restore_turn(self, turn_key: str) -> DelegateOutcome:
         """One nonterminal turn, restored under its own section.
@@ -1574,6 +1801,37 @@ class SachimaDelegateCoordinator:
         if turn.diagnostic == SACHIMA_DELEGATE_BLOCKED:
             self._state.update_turn(turn.turn_key, diagnostic=None)
         return True
+
+    async def _restore_summaries(self) -> int:
+        """Settle every derivative a crash left mid-attempt, before any sink.
+
+        A never-attempted ``pending`` slot is claimed once here — that is the
+        one replay startup is allowed. A recovered ``in_flight`` slot settles to
+        ``unavailable`` without a second provider call, because a claimed
+        attempt whose outcome nobody observed is not an attempt that can safely
+        be made again.
+        """
+
+        settled = 0
+        try:
+            events = self._state.list_results()
+        except DelegateStateError:
+            logger.warning(SACHIMA_DELEGATE_BLOCKED)
+            return 0
+        for event in events:
+            summary = self._summary_for_event(event)
+            if summary is not None and summary.settled:
+                continue
+            turn = self._state.read_turn(event.turn_key)
+            if turn is None or turn.lifecycle != "terminal":
+                # An unfinished turn's derivative belongs to the terminal
+                # closure, under that turn's own exclusion — not to this pass.
+                continue
+            await self._exclusive(
+                turn.turn_key, lambda event=event: self._settle_summary(event)
+            )
+            settled += 1
+        return settled
 
     async def _restore_sinks(self) -> int:
         """Retry unattempted sinks; reclassify interrupted attempts safely."""
@@ -1712,8 +1970,14 @@ def bind_delegate_coordinator(
     presets: AgentExecutionPresets | None = None,
     role_policy: AgentRolePolicy | None = None,
     delivery_factory: Callable[[DelegateOrigin], DelegateDelivery | None] | None = None,
+    summary_provider: DelegateResultSummaryProvider | None = None,
 ) -> SachimaDelegateCoordinator:
-    """Bind one coordinator over an already-composed execution bundle."""
+    """Bind one coordinator over an already-composed execution bundle.
+
+    ``summary_provider`` is injected, and omitting it is a valid composition:
+    the coordinator then reports every result's summary as ``unavailable`` and
+    keeps projecting the durable full-result ref.
+    """
 
     global _coordinator
     _coordinator = SachimaDelegateCoordinator(
@@ -1724,6 +1988,7 @@ def bind_delegate_coordinator(
         delivery_factory=(
             delivery_factory if delivery_factory is not None else _delivery_factory_hook
         ),
+        summary_provider=summary_provider,
     )
     return _coordinator
 

@@ -29,11 +29,20 @@ import asyncio
 import json
 import os
 import stat
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+from gateway.sachima_delegate_summary import (
+    SUMMARY_REASON_SOURCE_EMPTY,
+    DelegateResultSummary,
+    compute_source_digest,
+    pending_summary,
+    ready_summary,
+    unavailable_summary,
+)
 from gateway.sachima_delegate_state import (
     DELEGATE_STATE_VERSION,
     SACHIMA_DELEGATE_STATE_CONFLICT,
@@ -651,3 +660,213 @@ def test_a_canonical_id_the_old_ref_grammar_refused_is_now_durable(tmp_path):
     task_ref = store.new_task_ref()
     turn = store.put_turn(_turn(store, task_ref, payload_ref))
     assert store.read_turn(turn.turn_key).agent_id == "oh-my-pi"
+
+
+# --------------------------------------------------------------------------- #
+# E. The durable derived summary (S1)
+# --------------------------------------------------------------------------- #
+SOURCE_ANSWER_CANARY = "外部 AGENT 的完整原文 with the conclusion at the very end."
+SUMMARY_TEXT_CANARY = "结论：可以合并；证据：受影响测试全绿。"
+
+
+def _seeded_result(store: DelegateStateStore, *, answer: str = SOURCE_ANSWER_CANARY):
+    """One durable terminal result, with its stored answer, ready to summarize."""
+
+    payload_ref = store.put_payload("do the thing")
+    task_ref = store.new_task_ref()
+    turn = store.put_turn(_turn(store, task_ref, payload_ref))
+    full_ref, _clipped = store.put_full_result(answer)
+    event = store.put_result(
+        DelegateResultEvent(
+            event_id=store.new_event_id(),
+            turn_key=turn.turn_key,
+            task_ref=task_ref,
+            session_id=_origin().session_id,
+            terminal="completed",
+            full_result_ref=full_ref,
+        )
+    )
+    return event, full_ref
+
+
+def test_a_summary_record_survives_a_fresh_store_and_is_found_by_its_result(tmp_path):
+    root = str(tmp_path / "state")
+    store = DelegateStateStore(root)
+    event, full_ref = _seeded_result(store)
+    digest = compute_source_digest(SOURCE_ANSWER_CANARY)
+
+    pending = store.put_summary(
+        pending_summary(
+            event_id=event.event_id, full_result_ref=full_ref, source_digest=digest
+        )
+    )
+    assert pending.summary_status == "pending"
+    assert DelegateStateStore(root).summary_for_event(event.event_id) == pending
+
+    claimed = store.claim_summary_attempt(pending.summary_ref)
+    assert claimed.summary_status == "in_flight"
+    settled = store.advance_summary(
+        ready_summary(claimed, summary_text=SUMMARY_TEXT_CANARY, generator_ref="stub")
+    )
+
+    fresh = DelegateStateStore(root)
+    restored = fresh.summary_for_event(event.event_id)
+    assert restored == settled
+    assert restored.summary_text == SUMMARY_TEXT_CANARY
+    assert restored.source_digest == digest
+    assert fresh.read_summary(pending.summary_ref) == settled
+    assert [record.summary_ref for record in fresh.list_summaries()] == [
+        pending.summary_ref
+    ]
+
+
+def test_one_result_identity_can_only_have_one_terminal_summary(tmp_path):
+    store = DelegateStateStore(str(tmp_path / "state"))
+    event, full_ref = _seeded_result(store)
+    digest = compute_source_digest(SOURCE_ANSWER_CANARY)
+    pending = store.put_summary(
+        pending_summary(
+            event_id=event.event_id, full_result_ref=full_ref, source_digest=digest
+        )
+    )
+    claimed = store.claim_summary_attempt(pending.summary_ref)
+    settled = store.advance_summary(
+        ready_summary(claimed, summary_text=SUMMARY_TEXT_CANARY)
+    )
+
+    # A second attempt cannot be claimed, and neither terminal can be rewritten.
+    assert store.claim_summary_attempt(pending.summary_ref) is None
+    with pytest.raises(DelegateStateError) as excinfo:
+        store.advance_summary(
+            DelegateResultSummary(
+                summary_status="ready",
+                summary_ref=pending.summary_ref,
+                source_full_result_ref=full_ref,
+                source_digest=digest,
+                summary_text="a different reading of the same answer",
+            )
+        )
+    assert str(excinfo.value) == SACHIMA_DELEGATE_STATE_CONFLICT
+    assert store.summary_for_event(event.event_id) == settled
+
+    # Re-writing the identical terminal record is idempotent, not a conflict.
+    assert store.advance_summary(settled) == settled
+
+
+def test_a_summary_write_refuses_a_source_that_drifted(tmp_path):
+    store = DelegateStateStore(str(tmp_path / "state"))
+    event, full_ref = _seeded_result(store)
+    digest = compute_source_digest(SOURCE_ANSWER_CANARY)
+    pending = store.put_summary(
+        pending_summary(
+            event_id=event.event_id, full_result_ref=full_ref, source_digest=digest
+        )
+    )
+    claimed = store.claim_summary_attempt(pending.summary_ref)
+
+    drifted_digest = replace(
+        ready_summary(claimed, summary_text=SUMMARY_TEXT_CANARY),
+        source_digest=compute_source_digest(SOURCE_ANSWER_CANARY + " drifted"),
+    )
+    drifted_ref = replace(
+        ready_summary(claimed, summary_text=SUMMARY_TEXT_CANARY),
+        source_full_result_ref="dres_" + "f" * 16,
+    )
+    for drifted in (drifted_digest, drifted_ref):
+        with pytest.raises(DelegateStateError) as excinfo:
+            store.advance_summary(drifted)
+        assert str(excinfo.value) == SACHIMA_DELEGATE_STATE_CONFLICT
+    assert store.summary_for_event(event.event_id).summary_status == "in_flight"
+
+
+def test_a_second_pending_summary_for_one_result_is_a_conflict(tmp_path):
+    store = DelegateStateStore(str(tmp_path / "state"))
+    event, full_ref = _seeded_result(store)
+    digest = compute_source_digest(SOURCE_ANSWER_CANARY)
+    first = pending_summary(
+        event_id=event.event_id, full_result_ref=full_ref, source_digest=digest
+    )
+    store.put_summary(first)
+    # The identical record replays; a different binding under the same slot does
+    # not.
+    assert store.put_summary(first) == first
+    with pytest.raises(DelegateStateError) as excinfo:
+        store.put_summary(
+            pending_summary(
+                event_id=event.event_id,
+                full_result_ref=full_ref,
+                source_digest=compute_source_digest("something else entirely"),
+            )
+        )
+    assert str(excinfo.value) == SACHIMA_DELEGATE_STATE_CONFLICT
+
+
+def test_advancing_a_summary_that_was_never_persisted_is_a_conflict(tmp_path):
+    store = DelegateStateStore(str(tmp_path / "state"))
+    event, full_ref = _seeded_result(store)
+    orphan = pending_summary(
+        event_id=event.event_id,
+        full_result_ref=full_ref,
+        source_digest=compute_source_digest(SOURCE_ANSWER_CANARY),
+    )
+    with pytest.raises(DelegateStateError):
+        store.advance_summary(
+            unavailable_summary(orphan, reason=SUMMARY_REASON_SOURCE_EMPTY)
+        )
+    assert store.claim_summary_attempt(orphan.summary_ref) is None
+    assert store.summary_for_event(event.event_id) is None
+
+
+def test_a_damaged_or_widened_summary_record_fails_closed_and_keeps_its_bytes(tmp_path):
+    root = str(tmp_path / "state")
+    store = DelegateStateStore(root)
+    event, full_ref = _seeded_result(store)
+    pending = store.put_summary(
+        pending_summary(
+            event_id=event.event_id,
+            full_result_ref=full_ref,
+            source_digest=compute_source_digest(SOURCE_ANSWER_CANARY),
+        )
+    )
+    path = Path(root) / "summaries" / (pending.summary_ref + ".json")
+
+    widened = json.loads(path.read_text(encoding="utf-8"))
+    widened["record"]["raw_provider_response"] = "the provider's whole reply"
+    path.write_text(json.dumps(widened), encoding="utf-8")
+    with pytest.raises(DelegateStateError) as excinfo:
+        store.read_summary(pending.summary_ref)
+    assert str(excinfo.value) == SACHIMA_DELEGATE_STATE_UNREADABLE
+
+    damaged = b'{"version": 1, "kind": "summary", "record": {"summary_status"'
+    path.write_bytes(damaged)
+    with pytest.raises(DelegateStateError) as excinfo:
+        store.read_summary(pending.summary_ref)
+    assert str(excinfo.value) == SACHIMA_DELEGATE_STATE_UNREADABLE
+    assert path.read_bytes() == damaged
+
+
+def test_the_stored_summary_never_carries_the_source_answer(tmp_path):
+    root = str(tmp_path / "state")
+    store = DelegateStateStore(root)
+    event, full_ref = _seeded_result(store)
+    pending = store.put_summary(
+        pending_summary(
+            event_id=event.event_id,
+            full_result_ref=full_ref,
+            source_digest=compute_source_digest(SOURCE_ANSWER_CANARY),
+        )
+    )
+    claimed = store.claim_summary_attempt(pending.summary_ref)
+    settled = store.advance_summary(
+        ready_summary(claimed, summary_text=SUMMARY_TEXT_CANARY)
+    )
+    serialized = (Path(root) / "summaries" / (settled.summary_ref + ".json")).read_text(
+        encoding="utf-8"
+    )
+    assert SOURCE_ANSWER_CANARY not in serialized
+    assert SUMMARY_TEXT_CANARY not in repr(settled)
+    assert stat.S_IMODE(
+        os.stat(Path(root) / "summaries" / (settled.summary_ref + ".json")).st_mode
+    ) == 0o600
+    # The original is still exactly where it was.
+    assert store.read_full_result(full_ref) == SOURCE_ANSWER_CANARY

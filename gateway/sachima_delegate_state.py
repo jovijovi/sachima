@@ -15,7 +15,11 @@ here, and nothing else does. The layer owns five kinds of record:
 * **result events** — one canonical ``external_agent_result`` per settled
   terminal, with its two independent sink states;
 * **full results** — the untruncated agent answer, behind its own claim-check
-  ref, so the visible IM body can be bounded without the answer being lost.
+  ref, so the visible IM body can be bounded without the answer being lost;
+* **result summaries** — Sachima's own bounded derivative of one stored answer,
+  in a slot derived from the result identity and bound to the exact source bytes
+  by digest, so a restart addresses the same slot and a drifted source can never
+  be summarised over.
 
 Boundaries:
 
@@ -52,6 +56,14 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Mapping
 
+from gateway.sachima_delegate_summary import (
+    DelegateResultSummary,
+    DelegateSummaryError,
+    claimed_summary,
+    derive_summary_ref,
+    summary_transition_allowed,
+)
+
 __all__ = [
     "CANCELLATION_STATES",
     "DELEGATE_PAYLOAD_REF_PREFIX",
@@ -64,6 +76,7 @@ __all__ = [
     "SACHIMA_DELEGATE_STATE_STABLE_CODES",
     "SACHIMA_DELEGATE_STATE_UNREADABLE",
     "SINK_STATES",
+    "SUMMARY_RECORD_KIND",
     "DelegateCapacity",
     "DelegateOrigin",
     "DelegateResultEvent",
@@ -536,10 +549,13 @@ class DelegateResultEvent:
 # --------------------------------------------------------------------------- #
 # The store
 # --------------------------------------------------------------------------- #
+SUMMARY_RECORD_KIND = "summary"
+
 _RECORD_TYPES = {
     "task": DelegateTaskBinding,
     "turn": DelegateTurnRecord,
     "result": DelegateResultEvent,
+    SUMMARY_RECORD_KIND: DelegateResultSummary,
 }
 
 
@@ -551,7 +567,7 @@ class DelegateStateStore:
             raise _invalid()
         self._root = Path(root.strip())
         self._lock = threading.RLock()
-        for name in ("payloads", "tasks", "turns", "results"):
+        for name in ("payloads", "tasks", "turns", "results", "summaries"):
             (self._root / name).mkdir(parents=True, exist_ok=True)
             os.chmod(self._root / name, _DIR_MODE)
         os.chmod(self._root, _DIR_MODE)
@@ -617,7 +633,10 @@ class DelegateStateStore:
         record = document.get("record")
         try:
             return _RECORD_TYPES[kind].from_dict(record)
-        except DelegateStateError:
+        except (DelegateStateError, DelegateSummaryError):
+            # The summary record owns its own stable codes; a document it
+            # refuses is still "we could not read it" here, and the offending
+            # bytes are never echoed either way.
             raise _unreadable() from None
 
     # -- payloads ----------------------------------------------------------- #
@@ -847,6 +866,109 @@ class DelegateStateStore:
                 updated.as_dict(),
             )
             return updated
+
+    # -- result summaries ---------------------------------------------------- #
+    def summary_path(self, summary_ref: Any) -> Path:
+        return self._root / "summaries" / (_safe_ref(summary_ref) + ".json")
+
+    def put_summary(self, summary: DelegateResultSummary) -> DelegateResultSummary:
+        """Create one summary slot, or replay the identical record already in it.
+
+        Create-only. A *different* record under an existing slot is a conflict
+        rather than an overwrite: the slot is derived from the result identity,
+        so two different bindings under it means two readings of one answer, and
+        picking either would make "one result, one summary" a coincidence.
+        """
+
+        if type(summary) is not DelegateResultSummary:
+            raise _invalid()
+        with self._lock:
+            existing = self.read_summary(summary.summary_ref)
+            if existing is not None:
+                if existing == summary:
+                    return existing
+                raise _conflict()
+            self._write_document(
+                self.summary_path(summary.summary_ref),
+                SUMMARY_RECORD_KIND,
+                summary.as_dict(),
+            )
+        return summary
+
+    def read_summary(self, summary_ref: Any) -> DelegateResultSummary | None:
+        return self._read_document(self.summary_path(summary_ref), SUMMARY_RECORD_KIND)
+
+    def summary_for_event(self, event_id: Any) -> DelegateResultSummary | None:
+        """The one summary slot this result identity derives, or ``None``."""
+
+        try:
+            summary_ref = derive_summary_ref(event_id)
+        except DelegateSummaryError:
+            raise _invalid() from None
+        return self.read_summary(summary_ref)
+
+    def list_summaries(self) -> tuple[DelegateResultSummary, ...]:
+        records: list[DelegateResultSummary] = []
+        for path in sorted(self._root.glob("summaries/*.json")):
+            record = self._read_document(path, SUMMARY_RECORD_KIND)
+            if record is not None:
+                records.append(record)
+        return tuple(records)
+
+    def claim_summary_attempt(self, summary_ref: Any) -> DelegateResultSummary | None:
+        """Atomically take the one provider call a ``pending`` slot authorizes.
+
+        Returns ``None`` for every other state — already claimed, already
+        settled, or never created. A caller that treated "not claimable" as
+        "claim it anyway" is exactly how one answer gets summarised twice.
+        """
+
+        with self._lock:
+            existing = self.read_summary(summary_ref)
+            if existing is None or existing.summary_status != "pending":
+                return None
+            claimed = claimed_summary(existing)
+            self._write_document(
+                self.summary_path(claimed.summary_ref),
+                SUMMARY_RECORD_KIND,
+                claimed.as_dict(),
+            )
+            return claimed
+
+    def advance_summary(self, summary: DelegateResultSummary) -> DelegateResultSummary:
+        """Move one persisted summary forward, refusing drift and rewrites.
+
+        Three things are checked against the record already on disk: that the
+        slot exists, that the incoming record still names the *same* source ref
+        and digest, and that the transition is one the state machine allows.
+        Source drift fails closed here rather than being re-summarised, because
+        a summary of bytes that are no longer stored is not stale — it describes
+        something the ref no longer resolves to.
+        """
+
+        if type(summary) is not DelegateResultSummary:
+            raise _invalid()
+        with self._lock:
+            existing = self.read_summary(summary.summary_ref)
+            if existing is None:
+                raise _conflict()
+            if existing == summary:
+                return existing
+            if (
+                existing.source_full_result_ref != summary.source_full_result_ref
+                or existing.source_digest != summary.source_digest
+            ):
+                raise _conflict()
+            if not summary_transition_allowed(
+                existing.summary_status, summary.summary_status
+            ):
+                raise _conflict()
+            self._write_document(
+                self.summary_path(summary.summary_ref),
+                SUMMARY_RECORD_KIND,
+                summary.as_dict(),
+            )
+            return summary
 
     # -- internals ---------------------------------------------------------- #
     def _list(self, folder: str, kind: str) -> list[Any]:
