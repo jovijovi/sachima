@@ -20,13 +20,23 @@ Three primitives, all pure, all usable before any coordinator exists:
    is *not* a second success predicate, and no valid branch leaves a send
    ``in_flight``.
 
+Both projections show the **same** durable derivative. What the user reads and
+what the next ordinary Hermes turn reads come from one persisted
+:class:`~gateway.sachima_delegate_summary.DelegateResultSummary`, explicitly
+labelled as Sachima's own reading — never from the external AGENT's wording, and
+never from two independently generated summaries that could disagree about one
+terminal. A summary that is not ``ready``, or that is bound to a different
+source than the envelope names, projects as an honest "summary unavailable"; it
+never degrades into the answer's first characters, which is the behavior this
+module exists to retire.
+
 The visible IM body is bounded **before** the send: it reserves room for the
-full-result ref, truncates the answer to the platform's one-message text bound,
-and says it truncated. The untruncated answer stays behind its ref. Splitting
-afterwards would turn one terminal into several messages, and provider-visible
-exactly-once is not something a host can claim — what it can guarantee is one
-durable result, one logical body per attempt, and a settled record of every
-attempt.
+full-result ref, clips the *summary* to the platform's one-message text bound,
+and says it clipped. The original answer stays behind its ref on every path,
+including the one where nothing else fits. Splitting afterwards would turn one
+terminal into several messages, and provider-visible exactly-once is not
+something a host can claim — what it can guarantee is one durable result, one
+logical body per attempt, and a settled record of every attempt.
 """
 
 from __future__ import annotations
@@ -34,6 +44,17 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
+
+from gateway.sachima_delegate_summary import (
+    SUMMARY_CONTEXT_BUDGET_CHARS,
+    SUMMARY_REASON_SOURCE_DRIFT,
+    SUMMARY_REASON_SOURCE_INCOMPLETE,
+    SUMMARY_REASON_SOURCE_MISSING,
+    SUMMARY_REASON_SUMMARY_MISSING,
+    SUMMARY_SOURCE,
+    DelegateResultSummary,
+    summary_binds_source,
+)
 
 __all__ = [
     "UNCERTAIN_SETTLEMENT",
@@ -43,12 +64,15 @@ __all__ = [
     "SACHIMA_DELEGATE_SEND_FAILED",
     "SACHIMA_DELEGATE_SEND_INVALID_RESULT",
     "SACHIMA_DELEGATE_SEND_UNCERTAIN",
+    "RESULT_SUMMARY_LABEL",
     "DelegateAcceptedReceipt",
     "DelegateResultEnvelope",
     "SendSettlement",
     "build_hermes_context",
     "build_result_envelope",
     "perform_settled_send",
+    "projected_summary_reason",
+    "projected_summary_text",
     "render_accepted_receipt",
     "render_result_body",
     "settle_send_result",
@@ -78,23 +102,28 @@ RECEIPT_TEMPLATE = (
     "强度：{requested_effort}\n"
     "完成后会在这里回复。"
 )
+#: The header states the terminal truth. A failed or cancelled Run says so even
+#: when a summary of its output exists.
 RESULT_HEADER_TEMPLATE = {
-    "completed": "任务 {task_ref} 已完成：",
-    "failed": "任务 {task_ref} 执行失败：",
-    "cancelled": "任务 {task_ref} 已取消。",
+    "completed": "外部 AGENT 已完成任务 {task_ref}",
+    "failed": "外部 AGENT 执行任务 {task_ref} 失败",
+    "cancelled": "外部 AGENT 任务 {task_ref} 已取消",
 }
-RESULT_REF_TEMPLATE = "完整结果：{full_result_ref}"
+#: Attribution, not decoration. The summary is Sachima's reading of the answer,
+#: and a derivative that could pass as the AGENT's own wording would be a claim
+#: nobody made.
+RESULT_SUMMARY_LABEL = "Sachima 摘要："
+RESULT_SUMMARY_UNAVAILABLE_SUFFIX = "，摘要暂不可用"
+RESULT_REF_TEMPLATE = "完整原文：{full_result_ref}"
 RESULT_TRUNCATED_NOTICE = "（输出已截断）"
-RESULT_EMPTY_BODY = "（无输出）"
 HERMES_CONTEXT_TEMPLATE = (
     "[external-agent-result] task={task_ref} terminal={terminal} "
     "full_result_ref={full_result_ref}"
 )
-
-#: How much of the answer the next Hermes turn sees inline. The rest stays
-#: behind the ref, readable on request — a context injection is a notification,
-#: not a transcript.
-HERMES_CONTEXT_EXCERPT_CHARS = 800
+HERMES_SUMMARY_READY_TEMPLATE = f"summary_source={SUMMARY_SOURCE} summary_status=ready"
+HERMES_SUMMARY_UNAVAILABLE_TEMPLATE = (
+    f"summary_source={SUMMARY_SOURCE} summary_status=unavailable reason={{reason}}"
+)
 
 
 @dataclass(frozen=True)
@@ -182,19 +211,93 @@ def build_result_envelope(
     )
 
 
+def projected_summary_text(
+    summary: Any, *, full_result_ref: str, source_digest: str
+) -> str | None:
+    """The one summary text both sinks may show, or ``None`` if there is none.
+
+    Fails closed on every doubt: a record that is not ``ready``, is not bound to
+    the source the envelope names, or somehow exceeds the shared budget projects
+    as nothing at all. There is deliberately no repair branch — a summary this
+    function is unsure about is one the user should be told is unavailable.
+    """
+
+    text, _reason = _validated_summary_projection(
+        summary,
+        full_result_ref=full_result_ref,
+        source_digest=source_digest,
+        source_truncated=False,
+    )
+    return text
+
+
+def projected_summary_reason(
+    summary: Any, *, full_result_ref: str, source_digest: str
+) -> str:
+    """The stable code that explains an unavailable projection."""
+
+    _text, reason = _validated_summary_projection(
+        summary,
+        full_result_ref=full_result_ref,
+        source_digest=source_digest,
+        source_truncated=False,
+    )
+    return reason or SUMMARY_REASON_SUMMARY_MISSING
+
+
+def _validated_summary_projection(
+    summary: Any,
+    *,
+    full_result_ref: str,
+    source_digest: str,
+    source_truncated: bool,
+) -> tuple[str | None, str | None]:
+    """Return the one summary projection both sinks are allowed to expose."""
+
+    if type(summary) is not DelegateResultSummary:
+        return None, SUMMARY_REASON_SUMMARY_MISSING
+    if summary.source_full_result_ref != full_result_ref:
+        return None, SUMMARY_REASON_SOURCE_DRIFT
+    if summary.summary_status == "unavailable" and summary.unavailable_reason:
+        return None, summary.unavailable_reason
+    if not source_digest:
+        return None, SUMMARY_REASON_SOURCE_MISSING
+    if not summary_binds_source(
+        summary,
+        full_result_ref=full_result_ref,
+        source_digest=source_digest,
+    ):
+        return None, SUMMARY_REASON_SOURCE_DRIFT
+    if not summary.ready:
+        return None, SUMMARY_REASON_SUMMARY_MISSING
+    if source_truncated:
+        return None, SUMMARY_REASON_SOURCE_INCOMPLETE
+    text = summary.summary_text
+    if type(text) is not str or not text.strip():
+        return None, SUMMARY_REASON_SUMMARY_MISSING
+    if len(text) > SUMMARY_CONTEXT_BUDGET_CHARS:
+        return None, SUMMARY_REASON_SUMMARY_MISSING
+    return text, None
+
+
 def render_result_body(
     envelope: DelegateResultEnvelope,
-    full_result_text: str,
+    summary: Any,
     *,
+    source_digest: str,
     limit: int,
     measure: Callable[[str], int] = len,
 ) -> str:
     """One bounded plain-text body that always carries the full-result ref.
 
-    The ref's room is reserved *first*. Truncating the answer and then finding
-    there is no space left for the pointer to the untruncated one would produce
-    exactly the message this design exists to avoid: a clipped answer with no
-    way back to the rest of it.
+    The ref's room is reserved *first*. Clipping the summary and then finding
+    there is no space left for the pointer to the original would produce exactly
+    the message this design exists to avoid: a partial reading with no way back
+    to what it was read from. When not even the label fits, the header and the
+    ref still go out — a reachable original beats a body that fits.
+
+    Only the presentation is clipped. The stored derivative is never rewritten,
+    and an unavailable summary never becomes the answer's first characters.
     """
 
     if type(envelope) is not DelegateResultEnvelope:
@@ -204,30 +307,34 @@ def render_result_body(
 
     header = RESULT_HEADER_TEMPLATE[envelope.terminal].format(task_ref=envelope.task_ref)
     ref_line = RESULT_REF_TEMPLATE.format(full_result_ref=envelope.full_result_ref)
-    answer = full_result_text if type(full_result_text) is str else ""
-    answer = answer.strip() or RESULT_EMPTY_BODY
+    text, _reason = _validated_summary_projection(
+        summary,
+        full_result_ref=envelope.full_result_ref,
+        source_digest=source_digest,
+        source_truncated=envelope.truncated,
+    )
 
-    frame = f"{header}\n\n{ref_line}"
-    available = limit - measure(frame) - measure("\n\n")
-    notice_cost = measure(RESULT_TRUNCATED_NOTICE) + measure("\n")
+    if text is None:
+        return f"{header}{RESULT_SUMMARY_UNAVAILABLE_SUFFIX}\n\n{ref_line}"
+
+    frame = f"{header}\n\n{RESULT_SUMMARY_LABEL}\n\n{ref_line}"
+    available = limit - measure(frame)
+    notice_cost = measure(RESULT_TRUNCATED_NOTICE)
 
     if available <= 0:
-        # No room for any answer at all: the pointer still goes out, because a
-        # reachable result beats a body that fits.
-        return frame
+        return f"{header}\n\n{ref_line}"
 
-    if measure(answer) <= available:
-        body = answer
-        truncated = envelope.truncated
+    if measure(text) <= available:
+        body = text
+        clipped = False
     else:
-        body = _clip(answer, max(available - notice_cost, 0), measure)
-        truncated = True
+        body = _clip(text, max(available - notice_cost, 0), measure)
+        clipped = True
+    if not body:
+        return f"{header}\n\n{ref_line}"
 
-    parts = [header, "", body]
-    if truncated:
-        parts.append(RESULT_TRUNCATED_NOTICE)
-    parts.extend(["", ref_line])
-    return "\n".join(parts)
+    labelled = RESULT_SUMMARY_LABEL + body + (RESULT_TRUNCATED_NOTICE if clipped else "")
+    return f"{header}\n\n{labelled}\n\n{ref_line}"
 
 
 def _clip(text: str, budget: int, measure: Callable[[str], int]) -> str:
@@ -248,14 +355,15 @@ def _clip(text: str, budget: int, measure: Callable[[str], int]) -> str:
 
 
 def build_hermes_context(
-    envelope: DelegateResultEnvelope, full_result_text: str
+    envelope: DelegateResultEnvelope, summary: Any, *, source_digest: str
 ) -> str:
     """The next-turn Hermes projection of one result.
 
-    Deliberately a bounded excerpt plus the ref, not the whole answer: this text
-    joins the *next ordinary turn*, so it must not grow a conversation's context
-    by however large an external agent's output happened to be. The ref is how
-    the model reads the rest, on purpose.
+    The **same** persisted derivative the user was shown, plus the control facts
+    and the ref — never a second reading, and never a slice of the original. This
+    text joins the *next ordinary turn*, so what bounds it is the summary budget
+    the record already satisfied rather than however large the external agent's
+    output happened to be. The ref is how the model reads the rest, on purpose.
     """
 
     if type(envelope) is not DelegateResultEnvelope:
@@ -265,13 +373,16 @@ def build_hermes_context(
         terminal=envelope.terminal,
         full_result_ref=envelope.full_result_ref,
     )
-    answer = (full_result_text if type(full_result_text) is str else "").strip()
-    if not answer:
-        return header
-    excerpt = answer[:HERMES_CONTEXT_EXCERPT_CHARS]
-    if len(answer) > HERMES_CONTEXT_EXCERPT_CHARS:
-        excerpt = excerpt + RESULT_TRUNCATED_NOTICE
-    return f"{header}\n{excerpt}"
+    text, reason = _validated_summary_projection(
+        summary,
+        full_result_ref=envelope.full_result_ref,
+        source_digest=source_digest,
+        source_truncated=envelope.truncated,
+    )
+    if text is None:
+        reason = reason or SUMMARY_REASON_SUMMARY_MISSING
+        return f"{header}\n{HERMES_SUMMARY_UNAVAILABLE_TEMPLATE.format(reason=reason)}"
+    return f"{header}\n{HERMES_SUMMARY_READY_TEMPLATE}\n{text}"
 
 
 # --------------------------------------------------------------------------- #
