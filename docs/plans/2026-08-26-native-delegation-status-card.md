@@ -37,47 +37,49 @@ The card is a presentation surface only. It does not create Runs, prove Session 
 
 ### 2.1 Card summary and field order
 
-The card uses a state-specific title followed by one compact, fixed-order summary block. A completed round renders as:
+The card uses the fixed title form `card type · latest round state`, followed by one compact, fixed-order summary block. A completed second round renders as:
 
 ```text
-✅ 委派任务已完成
-- 💡 任务: <一句话任务目标概要>
-- 🆔 编号: <完整可复制的 dtask_*>
-- ⏱️ 时间: <YYYY-MM-DD HH:MM:SS UTC>
-- 🤖 执行: <canonical ARS agent_id> · <model> · <optional effort>
-- 👤 角色: <AGENT role>
+委派任务 · 第 2 轮已完成
+
+💡 任务： <一句话任务目标概要>
+🆔 编号： <完整可复制的 dtask_*>
+⏱️ 耗时： <任务累计耗时>
+🤖 执行： <canonical ARS agent_id> · <model> · <optional effort>
+👤 角色： <AGENT role or honest unavailable value>
 ```
 
-The same five fields and their order remain stable in created, waiting, submitting, accepted, running, failed, cancelled, and recovery states; only the title icon/text, lifecycle timestamp, and field values change. The title must identify the latest round state without presenting the Task as irreversibly closed.
+The same five fields and their order remain stable in created, waiting, submitting, accepted, running, failed, cancelled, and recovery states. There are no list bullets, hierarchy dots, or blank lines between field rows; each row begins directly with its Emoji. The title identifies the latest round state without presenting the Task as irreversibly closed.
 
 Rules:
 
 - Use a concise one-sentence human goal, never the raw execution/acceptance prompt. The visible label is `任务`.
 - Show the complete actionable `dtask_*`; do not expose routine `dres_*`, internal `turn_key`, ARS Run ID, ARS Session ID, prompts, credentials, or event logs.
 - The visible label is `编号`, and the value is copyable plain text rather than a shortened or masked identifier.
-- `时间` is the persisted timestamp of the latest visible lifecycle transition, rendered as `YYYY-MM-DD HH:MM:SS UTC`; it is not render-time `now`.
+- `耗时` is the Task lifecycle duration, never the current timestamp or card send time. Its start boundary is the persisted `task_created_at` written when Sachima durably allocates the Task/origin binding. While the latest round is active, the end boundary is the persisted projection-update instant selected for that snapshot; at a settled latest-round terminal, the end boundary is that terminal's persisted settlement time. A continuation resumes the same Task's duration projection and a terminal value remains fixed until another continuation starts. The renderer uses only persisted lifecycle evidence and must render an honest unavailable value when either boundary is missing; it must not invent a duration.
 - `执行` is `<canonical ARS agent_id> · <model> · <optional effort>`. For OMP the agent ID is `oh-my-pi`, never `omp`.
-- `角色` is the AGENT role sealed into the admitted Task/Turn execution contract. It must come from the validated role/preset selection used for that execution, not from model output, display-name guessing, or a platform identity. If no role was assigned, render a compact honest unavailable value rather than inventing one.
+- `角色` is the AGENT role sealed into the admitted Task/Turn execution contract. It must come from the validated role/preset selection used for that execution, not from model output, display-name guessing, a platform identity, or card copy. If the AGENT was selected directly and no role was assigned, render `未指定` in Chinese or `Not specified` in English instead of inventing a role.
 - Omit effort when unavailable instead of rendering an empty field or dangling separator.
-- Field labels and punctuation are fixed as `任务:`, `编号:`, `时间:`, `执行:`, and `角色:`. Feishu native rendering may apply bold label weight, but must preserve the same wording, order, and semantics in the compact Markdown fallback.
+- A Chinese card uses `任务 / 编号 / 耗时 / 执行 / 角色`, a full-width colon, and exactly one following space. An English card uses `Task / ID / Duration / Execution / Role`, an ASCII colon, and exactly one following space. One card is localized consistently; labels must not mix languages.
+- Feishu native rendering may apply bold label weight, but the compact Markdown fallback must preserve the same wording, order, punctuation, duration semantics, and no-bullet layout.
+- The confirmed native header templates are blue for `已创建`, yellow for `执行中`, and green for `已完成`. S0 must map the remaining accepted/waiting/submitting/failed/cancelled/recovery states to existing Feishu templates without changing the confirmed three; unverified color choices are implementation details, not new product states.
+- Production cards do not contain the visual-review footer `状态预览 N/4 · 非实时卡片`; that footer belongs only to the four separately sent review cards.
+- `执行` uses a deterministic user-facing label derived from the admitted execution contract. The confirmed OMP visual is `oh-my-pi · glm-5.3 · max`; any provider-prefix shortening must be unambiguous, source-backed, and covered by renderer tests rather than inferred from result text.
 
 ### 2.2 Round history
 
-Each round displays bounded, independently meaningful status:
+Each round displays bounded, independently meaningful status without repeating the five-field summary or exposing internal timestamps/identities:
 
 ```text
 执行记录
 
 ✅ 第 1 轮：建立 Session 上下文
-   受理：08:00 UTC
-   完成：08:01 UTC
-   Session：新建
-   结果：上下文已建立
+Session：新建
+结果：上下文已建立
 
 ▶️ 第 2 轮：验证 Session 上下文复用
-   受理：08:02 UTC
-   Session：复用第 1 轮
-   状态：执行中
+Session：复用状态确认中
+状态：执行中
 ```
 
 Round rules:
@@ -99,20 +101,102 @@ latest round completed
 → round N completed | failed | cancelled
 ```
 
-Required visible states:
+Required visible title states use the same `委派任务 · <state>` structure:
 
-- `任务已创建`
-- `等待执行槽位`
-- `第 1 轮提交中`
-- `第 1 轮未受理` when submission fails before ARS acceptance
-- `第 N 轮已受理`
-- `第 N 轮执行中`
-- `第 N 轮已完成`
-- `第 N 轮已失败`
-- `第 N 轮已取消`
-- `第 N 轮状态待恢复` when submission/delivery truth is uncertain
+- `委派任务 · 已创建`
+- `委派任务 · 等待执行槽位`
+- `委派任务 · 第 1 轮提交中`
+- `委派任务 · 第 1 轮未受理` when submission fails before ARS acceptance
+- `委派任务 · 第 N 轮已受理`
+- `委派任务 · 第 N 轮执行中`
+- `委派任务 · 第 N 轮已完成`
+- `委派任务 · 第 N 轮已失败`
+- `委派任务 · 第 N 轮已取消`
+- `委派任务 · 第 N 轮状态待恢复` when submission/delivery truth is uncertain
 
-Do not send another generic “same Task completed” message for every continuation. The round number and purpose make each transition unambiguous.
+English cards use the same type/state structure in Title Case, for example `Delegated Task · Created`, `Delegated Task · Round 2 Running`, and `Delegated Task · Round 2 Completed`.
+
+Do not send another generic “same Task completed” message for every continuation. The round number and purpose make each transition unambiguous. Intermediate states may be coalesced for delivery pacing; the product contract does not require every transient state to visibly flash once, but every delivered snapshot must be truthful and monotonic.
+
+### 2.4 Confirmed Session-reuse visual snapshots
+
+The user-confirmed Feishu effect is represented by these four snapshots. They are four review snapshots of one logical card, not four production messages; production patches the same `message_id` in place.
+
+**Snapshot 1 — created**
+
+```text
+委派任务 · 已创建
+
+💡 任务： 验证 oh-my-pi 的 Session 复用
+🆔 编号： dtask_<完整可复制编号>
+⏱️ 耗时： 0秒
+🤖 执行： oh-my-pi · glm-5.3 · max
+👤 角色： 未指定
+
+执行记录
+⏳ 尚未开始
+```
+
+**Snapshot 2 — round 1 running**
+
+```text
+委派任务 · 第 1 轮执行中
+
+💡 任务： 验证 oh-my-pi 的 Session 复用
+🆔 编号： dtask_<完整可复制编号>
+⏱️ 耗时： <真实累计耗时>
+🤖 执行： oh-my-pi · glm-5.3 · max
+👤 角色： 未指定
+
+执行记录
+▶️ 第 1 轮：建立 Session 上下文
+Session：新建
+状态：执行中
+```
+
+**Snapshot 3 — round 2 running**
+
+```text
+委派任务 · 第 2 轮执行中
+
+💡 任务： 验证 oh-my-pi 的 Session 复用
+🆔 编号： dtask_<完整可复制编号>
+⏱️ 耗时： <真实累计耗时>
+🤖 执行： oh-my-pi · glm-5.3 · max
+👤 角色： 未指定
+
+执行记录
+✅ 第 1 轮：建立 Session 上下文
+Session：新建
+结果：上下文已建立
+
+▶️ 第 2 轮：验证 Session 上下文复用
+Session：复用状态确认中
+状态：执行中
+```
+
+**Snapshot 4 — round 2 completed**
+
+```text
+委派任务 · 第 2 轮已完成
+
+💡 任务： 验证 oh-my-pi 的 Session 复用
+🆔 编号： dtask_<完整可复制编号>
+⏱️ 耗时： <真实最终耗时>
+🤖 执行： oh-my-pi · glm-5.3 · max
+👤 角色： 未指定
+
+执行记录
+✅ 第 1 轮：建立 Session 上下文
+Session：新建
+结果：上下文已建立
+
+✅ 第 2 轮：验证 Session 上下文复用
+Session：已确认复用
+结果：上下文验证通过
+```
+
+The preview durations used during visual review were illustrative. Production must derive every duration from persisted Task lifecycle boundaries; it must not copy preview numbers into runtime output.
 
 ## 3. Session reuse contract
 
@@ -132,21 +216,25 @@ The card exposes only the safe conclusion. Full Run/Session/event evidence remai
 ### Example: Session reuse test
 
 ```text
-✅ 委派任务已完成
-- 💡 任务: 验证 oh-my-pi 的 Session 复用
-- 🆔 编号: dtask_...
-- ⏱️ 时间: 2026-08-26 09:15:45 UTC
-- 🤖 执行: oh-my-pi · zhipu-coding-plan/glm-5.3 · max
-- 👤 角色: session_reuse_verifier
+委派任务 · 第 2 轮已完成
+
+💡 任务： 验证 oh-my-pi 的 Session 复用
+🆔 编号： dtask_...
+⏱️ 耗时： <真实最终耗时>
+🤖 执行： oh-my-pi · zhipu-coding-plan/glm-5.3 · max
+👤 角色： session_reuse_verifier
 
 执行记录
 ✅ 第 1 轮：建立 Session 上下文
-   Session：新建
-   结果：上下文已建立
+Session：新建
+结果：上下文已建立
+
 ✅ 第 2 轮：验证 Session 上下文复用
-   Session：已确认复用
-   结果：3 项上下文准确回忆
+Session：已确认复用
+结果：3 项上下文准确回忆
 ```
+
+If this task was admitted by direct AGENT selection rather than the `session_reuse_verifier` role, the same card renders `👤 角色： 未指定`; it never substitutes a descriptive display label for absent admission evidence.
 
 ## 4. Durable projection and identity model
 
@@ -154,9 +242,11 @@ Persist card projection state alongside Sachima-owned delegation state, conceptu
 
 ```text
 task_ref
+├─ task_created_at
 ├─ feishu_card_message_id
 ├─ card_sink_state: pending | confirmed | failed | uncertain
 ├─ last_projected_revision
+├─ last_projected_at
 ├─ pre_accept_status: created | waiting | submitting | rejected | omitted
 └─ rounds[]
    ├─ turn_key
@@ -170,6 +260,7 @@ task_ref
 
 Invariants:
 
+- `task_created_at` is written exactly once with the durable Task/origin allocation and is the duration start boundary; `last_projected_at` and settled round terminal timestamps are persisted projection evidence, not render-time clocks.
 - `task_ref → card message_id` is at most one confirmed active card binding per Feishu origin.
 - `turn_key → round_number` is stable, append-only, and idempotent.
 - A duplicate accepted/terminal event updates the existing round; it cannot append a duplicate round.
@@ -186,11 +277,11 @@ The existing task binding and result records remain authoritative. Card state re
 
 The complete `dtask_*` becomes user-visible only through the first card snapshot or its explicit degraded fallback. Card creation therefore occurs when the Task/origin binding is durably allocated, before capacity waiting and before ARS submission:
 
-1. persist the Task/origin binding and initial `任务已创建` projection;
+1. persist the Task/origin binding, immutable `task_created_at`, and initial `委派任务 · 已创建` projection;
 2. render a sanitized interactive card snapshot containing the complete copyable `dtask_*`;
 3. send one Feishu `interactive` message;
-4. persist the confirmed `message_id` and projected revision only after delivery ACK;
-5. patch the same card through `等待执行槽位`, `第 1 轮提交中`, and the accepted/running/terminal states;
+4. persist the confirmed `message_id`, projected revision, and `last_projected_at` only after delivery ACK;
+5. patch the same card through `委派任务 · 等待执行槽位`, `委派任务 · 第 1 轮提交中`, and the accepted/running/terminal states;
 6. if pre-accept submission fails, preserve a terminal `第 1 轮未受理` projection and the Task/card binding even if execution-only Turn state is cleaned up;
 7. if the initial send outcome is uncertain, do not blindly create another card during automatic recovery; emit at most one explicit degraded Markdown fallback and retain the uncertain binding for operator reconciliation.
 
@@ -294,7 +385,7 @@ The delegated leaf uses `oh-my-pi`; Hermes-owned orchestration, verification, Gi
 - Test: `tests/gateway/test_sachima_delegate_state.py`
 - Create test: `tests/gateway/test_sachima_delegate_card.py`
 
-**TDD:** Cover stable round numbering, duplicate-event idempotency, origin binding, revision monotonicity, bounded history, safe canonical `agent_id`, admitted-role persistence, restart roundtrip, and rejection of raw/unsafe material.
+**TDD:** Cover immutable `task_created_at`, persisted projection/terminal duration boundaries, stable round numbering, duplicate-event idempotency, origin binding, revision monotonicity, bounded history, safe canonical `agent_id`, admitted-role persistence, restart roundtrip, and rejection of raw/unsafe material.
 
 **Exit:** A fresh store reconstructs the exact safe card snapshot and cannot duplicate or reorder rounds.
 
@@ -308,7 +399,7 @@ The delegated leaf uses `oh-my-pi`; Hermes-owned orchestration, verification, Gi
 - Test: `tests/gateway/test_sachima_delegate_card.py`
 - Test: `tests/gateway/test_feishu_progress_cards.py` or the closest existing Feishu card test module identified in S0
 
-**TDD:** Cover Chinese/English labels, accepted/running/terminal state titles, the fixed `任务/编号/时间/执行/角色` order, persisted UTC timestamp formatting, full Task ID, canonical `oh-my-pi`, admitted-role rendering and honest unavailable fallback, optional effort omission, three-round overflow, unsafe text redaction, no internal IDs, compact-Markdown parity, and native card schema validity.
+**TDD:** Cover Chinese/English whole-card localization, `card type · latest round state` titles, the fixed `任务/编号/耗时/执行/角色` and `Task/ID/Duration/Execution/Role` orders, full-width versus ASCII colon rules, no-bullet/no-blank-row layout, persisted Task-duration calculation for running and terminal snapshots, continuation duration resumption, missing-boundary fallback, full Task ID, canonical `oh-my-pi`, admitted-role rendering and exact `未指定` / `Not specified` fallback, optional effort omission, the four confirmed Session-reuse snapshots, three-round overflow, unsafe text redaction, no internal IDs, compact-Markdown parity, and native card schema validity.
 
 **Exit:** The renderer emits one bounded native card payload and a separate compact Markdown fallback; neither contains raw prompts/results/events/secrets.
 
@@ -353,7 +444,7 @@ The delegated leaf uses `oh-my-pi`; Hermes-owned orchestration, verification, Gi
 - one Task, two Turns, two distinct ARS Runs, one ARS Session;
 - round 1 records Session create;
 - round 2 records Session load;
-- one Feishu card is sent before the Task ID is exposed through ordinary lifecycle output and is subsequently patched;
+- one Feishu card is sent before the Task ID is exposed through ordinary lifecycle output and is subsequently patched through the four confirmed visual snapshots (`已创建`, round 1 running, round 2 running, round 2 completed);
 - both round rows remain visible and independently terminal;
 - card displays `Session：已确认复用` only after trusted evidence;
 - duplicate reconciliation does not create another card or round;
@@ -395,7 +486,7 @@ Source implementation is complete only when:
 - prior settled rounds remain visible and immutable when a new round starts;
 - header status truthfully identifies the latest round and never treats round 1 completion as permanent Task closure;
 - `oh-my-pi` is displayed from canonical ARS `agent_id`; `omp` is never generated;
-- the summary preserves the fixed `任务/编号/时间/执行/角色` field order, renders lifecycle time from persisted UTC state, and shows only the role sealed into the admitted execution contract;
+- the summary preserves the fixed localized `任务/编号/耗时/执行/角色` or `Task/ID/Duration/Execution/Role` field order, punctuation, and no-bullet layout; derives duration only from persisted Task lifecycle boundaries; and shows only the role sealed into the admitted execution contract, with the exact honest fallback when none was assigned;
 - Session reuse is shown only from trusted same-Session/different-Run/create-then-load evidence;
 - if separately approved and implemented, cancellation targets only the current Run and is stale-round/idempotency guarded;
 - duplicate/recovered events cannot create duplicate cards, rounds, terminal updates, or cancellations;
