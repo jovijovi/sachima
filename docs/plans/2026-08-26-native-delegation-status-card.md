@@ -1,7 +1,7 @@
 # Sachima Native Delegation Status Card — Implementation Plan
 
 > **Type:** Implementation plan (candidate)
-> **Status:** Saved for review; source implementation is not authorized
+> **Status:** Product design accepted; source implementation is not authorized
 > **For Hermes:** Execute only after explicit source-implementation approval. Keep ARS as the lifecycle authority and Feishu cards as a fallible presentation projection.
 
 **Goal:** Add one persistent Feishu rich interactive status card per Sachima native delegation Task, updated in place across all continuation rounds without confusing Task identity, Turn identity, ARS Run identity, or Session reuse.
@@ -79,7 +79,7 @@ Round rules:
 - Number rounds by the durable `turn_keys` order under the Task binding.
 - Persist a concise round purpose at Turn creation/continuation time; do not infer it later from opaque result text.
 - Preserve settled prior rounds when a continuation starts.
-- Show at most the latest three rounds in the card, plus `另有 N 轮`; complete history remains available through the existing task/result query surfaces or a later dedicated details surface.
+- Show at most the latest three rounds in the card, plus `另有 N 轮`; complete history remains available through the existing task/result query surfaces or a later dedicated details surface. This is the first-slice product display contract: unit = round rows per card, default = 3, maximum = 3, scope = Feishu card rendering only, and it is neither a retention nor a safety limit. Changing it requires a reviewed config/code change and Gateway restart; S0 must replace it only if verified Feishu payload constraints require a lower maximum.
 - A failed or cancelled round does not erase successful prior rounds.
 
 ### 2.3 Status semantics
@@ -95,6 +95,10 @@ latest round completed
 
 Required visible states:
 
+- `任务已创建`
+- `等待执行槽位`
+- `第 1 轮提交中`
+- `第 1 轮未受理` when submission fails before ARS acceptance
 - `第 N 轮已受理`
 - `第 N 轮执行中`
 - `第 N 轮已完成`
@@ -146,6 +150,7 @@ task_ref
 ├─ feishu_card_message_id
 ├─ card_sink_state: pending | confirmed | failed | uncertain
 ├─ last_projected_revision
+├─ pre_accept_status: created | waiting | submitting | rejected | omitted
 └─ rounds[]
    ├─ turn_key
    ├─ round_number
@@ -162,21 +167,26 @@ Invariants:
 - A duplicate accepted/terminal event updates the existing round; it cannot append a duplicate round.
 - Card rendering uses a monotonically increasing durable projection revision so an older retry cannot overwrite a newer state.
 - Origin/chat/thread ownership remains sealed; a restored task cannot patch a card in another origin.
+- Allocating a user-visible `task_ref` creates durable Task-card projection state before queue waiting or ARS submission. A pre-accept failure may remove execution-only Turn state only after a terminal card projection/tombstone is durable; it must not erase the user-visible Task/card identity.
 - Store no raw card JSON, raw exception, raw result body, credential, or platform token in delegation state.
 
 The existing task binding and result records remain authoritative. Card state records delivery/projection facts only.
 
 ## 5. Delivery behavior
 
-### 5.1 Initial send
+### 5.1 Initial send and pre-accept identity
 
-On the first accepted round:
+The complete `dtask_*` becomes user-visible only through the first card snapshot or its explicit degraded fallback. Card creation therefore occurs when the Task/origin binding is durably allocated, before capacity waiting and before ARS submission:
 
-1. persist the Task/Turn lifecycle transition;
-2. render a sanitized interactive card snapshot;
+1. persist the Task/origin binding and initial `任务已创建` projection;
+2. render a sanitized interactive card snapshot containing the complete copyable `dtask_*`;
 3. send one Feishu `interactive` message;
 4. persist the confirmed `message_id` and projected revision only after delivery ACK;
-5. if the send outcome is uncertain, do not blindly create another card during automatic recovery.
+5. patch the same card through `等待执行槽位`, `第 1 轮提交中`, and the accepted/running/terminal states;
+6. if pre-accept submission fails, preserve a terminal `第 1 轮未受理` projection and the Task/card binding even if execution-only Turn state is cleaned up;
+7. if the initial send outcome is uncertain, do not blindly create another card during automatic recovery; emit at most one explicit degraded Markdown fallback and retain the uncertain binding for operator reconciliation.
+
+Normal-path invariant: no ordinary lifecycle text may expose a new `dtask_*` before the Task-card projection exists. Feishu delivery failure is an explicit degraded presentation state, not permission to fabricate a confirmed card.
 
 ### 5.2 In-place updates
 
@@ -185,23 +195,40 @@ For subsequent lifecycle changes and continuation rounds:
 1. rebuild the complete bounded snapshot from durable state;
 2. patch the same interactive message using `im.v1.message.patch`;
 3. coalesce intermediate updates instead of patching every event;
-4. force a bounded best-effort final patch for completed/failed/cancelled states;
+4. select one final projection revision and make one projection-layer adapter call for completed/failed/cancelled states; the adapter retains its existing transport retry policy;
 5. never block ARS execution or final Hermes response on card pacing/retry.
 
-A typical running-state cadence may be 3–5 seconds, but implementation must reuse one named display-layer setting with explicit unit/default/restart semantics rather than embedding scattered timing literals.
+S0 must define one config-backed `running_patch_interval_seconds` contract from verified Feishu rate/payload constraints and the existing adapter behavior: provenance, unit, default, allowed maximum, invalid-value handling, scope, and restart semantics must be written into the implementation/tests before S1 starts. This plan deliberately sets no speculative cadence.
 
 ### 5.3 Failure and recovery
 
-- Retry only transient Feishu send/patch failures with bounded backoff.
-- Keep merging newer revisions while a retry waits.
+- The existing Feishu adapter owns transport-level transient retry/backoff. The projection layer must not wrap it in a second retry loop; it performs at most one adapter call per selected projection revision and relies on later lifecycle reconciliation or startup recovery for another attempt.
+- Keep merging newer revisions while an adapter call or later reconciliation is pending.
 - A stale retry must not overwrite a newer terminal projection.
 - After non-retryable or exhausted final patch failure, send at most one compact sanitized Markdown notice and keep backend state authoritative.
 - Never fall back by dumping the full task-workbench/progress panel or raw card payload into chat.
 - Startup reconciliation may patch a confirmed existing card from durable state; it must not duplicate a card when the prior send outcome is uncertain.
 
+### 5.4 Numeric and retry contract
+
+| Resource | Contract for this plan | Provenance and restart semantics |
+|---|---|---|
+| Visible round rows | Unit: round rows per Feishu card; default = 3; maximum = 3 for the first slice. | Product readability/bounded-card decision, not retention or safety. A change needs reviewed config/code plus Gateway restart; S0 may only lower it when verified Feishu constraints require that. |
+| Running patch cadence | `running_patch_interval_seconds`; unit = seconds. No value is approved yet. | S0 must derive and record default, allowed maximum, invalid-value behavior, and restart semantics from current Feishu constraints and adapter behavior before S1. Missing this contract blocks implementation. |
+| Card payload size | Unit and maximum follow the verified Feishu interactive-card API/SDK constraint observed in S0; no guessed repository constant is approved here. | S0 records the authoritative source and deterministic renderer failure behavior. The renderer must fail closed or compact before the adapter call; it must not rely on API rejection as normal control flow. |
+| Projection retry attempts | Exactly one projection-layer adapter call per selected revision. | The existing Feishu adapter exclusively owns transport retry/backoff. Do not multiply its attempt count in the projection layer. Adapter-policy changes retain their own existing config/code and restart contract. |
+| Degraded Markdown notices | At most one notice per Task/card sink failure episode. | Idempotency cardinality, not a rate or safety threshold; it is persisted with sink settlement and is not configurable. |
+
+### 5.5 First activation and existing Tasks
+
+- Do not automatically backfill historical settled Tasks that predate card projection.
+- An existing Task without a card that receives a new continuation creates its Task card before that continuation becomes user-visible, reconstructing only safe persisted round summaries.
+- Existing active legacy Tasks without card bindings stay on the legacy lifecycle path until their next durable transition; startup must not guess a card binding or duplicate earlier messages.
+- Existing confirmed card bindings are reconciled normally after restart. Old receipt message IDs are not silently promoted into card bindings.
+
 ## 6. Interaction contract
 
-Initial implementation may include one state-changing action:
+The core first implementation is read-only presentation. A later separately approved optional slice may include one state-changing action:
 
 - **取消当前轮次** — visible only while the latest round is cancellable; it targets the current ARS Run through the existing controlled cancellation path.
 
@@ -246,7 +273,7 @@ The delegated leaf uses `oh-my-pi`; Hermes-owned orchestration, verification, Gi
 - `gateway/run.py`
 - corresponding delegation and Feishu tests
 
-**Exit:** A source-backed mapping identifies Task, Turn, Run, Session, origin, accepted receipt, terminal result, cancellation, existing card send/patch seams, and the exact plain-text paths to replace or retain as fallback.
+**Exit:** A source-backed mapping identifies Task, Turn, Run, Session, origin, pre-accept Task-ID exposure, accepted receipt, terminal result, cancellation, existing card send/patch seams, and the exact plain-text paths to replace or retain as fallback. S0 also closes every numeric contract above, including its authoritative source, unit, default versus maximum, validation behavior, scope, and restart semantics; S1 cannot start while any such value is unresolved.
 
 ### S1 — Persist Task-card and round projection state
 
@@ -294,9 +321,9 @@ The delegated leaf uses `oh-my-pi`; Hermes-owned orchestration, verification, Gi
 
 **Exit:** One `dtask_*` creates one Feishu card; every continuation patches it and adds exactly one round.
 
-### S4 — Controlled cancellation action
+### S4 — Optional controlled cancellation action (separate approval)
 
-**Objective:** Bind “取消当前轮次” to the latest cancellable Run without changing Task or Session lifecycle semantics.
+**Objective:** Only after separate source and live-control approval, bind “取消当前轮次” to the latest cancellable Run without changing Task or Session lifecycle semantics. S4 is not required for the read-only status-card acceptance in S5.
 
 **Likely files:**
 
@@ -318,7 +345,7 @@ The delegated leaf uses `oh-my-pi`; Hermes-owned orchestration, verification, Gi
 - one Task, two Turns, two distinct ARS Runs, one ARS Session;
 - round 1 records Session create;
 - round 2 records Session load;
-- one Feishu card is sent and subsequently patched;
+- one Feishu card is sent before the Task ID is exposed through ordinary lifecycle output and is subsequently patched;
 - both round rows remain visible and independently terminal;
 - card displays `Session：已确认复用` only after trusted evidence;
 - duplicate reconciliation does not create another card or round;
@@ -343,7 +370,8 @@ git diff --check
 
 Acceptance also requires:
 
-- card JSON redaction and bounded-size tests;
+- card JSON redaction and payload-size tests against the S0-recorded Feishu maximum;
+- pre-accept waiting/submitting/rejected tests and first-activation legacy-Task tests;
 - send/patch/final-flush failure tests;
 - persisted final state and visible final card state both verified;
 - non-Feishu fallback compatibility;
@@ -360,11 +388,11 @@ Source implementation is complete only when:
 - header status truthfully identifies the latest round and never treats round 1 completion as permanent Task closure;
 - `oh-my-pi` is displayed from canonical ARS `agent_id`; `omp` is never generated;
 - Session reuse is shown only from trusted same-Session/different-Run/create-then-load evidence;
-- cancellation targets only the current Run and is stale-round/idempotency guarded;
+- if separately approved and implemented, cancellation targets only the current Run and is stale-round/idempotency guarded;
 - duplicate/recovered events cannot create duplicate cards, rounds, terminal updates, or cancellations;
 - card send/patch failure cannot block or rewrite ARS/task truth;
 - rich-card failure falls back at most once with compact sanitized Markdown;
-- raw prompts, result bodies, reasoning, events, commands, credentials, internal refs, Run IDs, Session IDs, and card JSON are absent from user-visible output and unsafe logs;
+- raw prompts, result bodies, reasoning, events, commands, credentials, non-user-facing internal refs (`dres_*`, `turn_key`, Run IDs, Session IDs), and card JSON are absent from user-visible output and unsafe logs; the complete `dtask_*` is the deliberate user-facing exception;
 - existing Task Workbench TODO semantics and non-Feishu delegation behavior remain green.
 
 ## 11. Non-goals and authorization boundaries
@@ -378,7 +406,7 @@ Saving or accepting this plan authorizes only this documentation artifact. It do
 - ARS core, API, Session, Run, Profile, Binding, storage, roster, model, effort, or permission changes;
 - merging the delegation status card into the existing Task Workbench card;
 - exposing full results, internal IDs, prompts, reasoning, tool logs, or event streams;
-- cancelling a whole Task or Session;
+- any cancellation button or live cancellation action without the separate S4 approval, and cancelling a whole Task or Session under any status-card approval;
 - approval, merge, deployment, or permission buttons.
 
 ## 12. Rollback
