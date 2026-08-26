@@ -35,25 +35,31 @@ The card is a presentation surface only. It does not create Runs, prove Session 
 
 ## 2. User-visible card contract
 
-### 2.1 Stable Task header
+### 2.1 Card summary and field order
 
-The header remains stable across rounds:
+The card uses a state-specific title followed by one compact, fixed-order summary block. A completed round renders as:
 
 ```text
-🤝 委派任务
-💡 <concise human task description>
-🆔 <complete copyable dtask_*>
-🤖 <canonical ARS agent_id> · <model> · <optional effort>
-🔄 当前状态：<latest round status>
+✅ 委派任务已完成
+- 💡 任务: <一句话任务目标概要>
+- 🆔 编号: <完整可复制的 dtask_*>
+- ⏱️ 时间: <YYYY-MM-DD HH:MM:SS UTC>
+- 🤖 执行: <canonical ARS agent_id> · <model> · <optional effort>
+- 👤 角色: <AGENT role>
 ```
+
+The same five fields and their order remain stable in created, waiting, submitting, accepted, running, failed, cancelled, and recovery states; only the title icon/text, lifecycle timestamp, and field values change. The title must identify the latest round state without presenting the Task as irreversibly closed.
 
 Rules:
 
-- Use a concise human goal, never the raw execution/acceptance prompt.
+- Use a concise one-sentence human goal, never the raw execution/acceptance prompt. The visible label is `任务`.
 - Show the complete actionable `dtask_*`; do not expose routine `dres_*`, internal `turn_key`, ARS Run ID, ARS Session ID, prompts, credentials, or event logs.
-- The executor is the canonical live ARS `agent_id`. For OMP this is `oh-my-pi`, never `omp`.
+- The visible label is `编号`, and the value is copyable plain text rather than a shortened or masked identifier.
+- `时间` is the persisted timestamp of the latest visible lifecycle transition, rendered as `YYYY-MM-DD HH:MM:SS UTC`; it is not render-time `now`.
+- `执行` is `<canonical ARS agent_id> · <model> · <optional effort>`. For OMP the agent ID is `oh-my-pi`, never `omp`.
+- `角色` is the AGENT role sealed into the admitted Task/Turn execution contract. It must come from the validated role/preset selection used for that execution, not from model output, display-name guessing, or a platform identity. If no role was assigned, render a compact honest unavailable value rather than inventing one.
 - Omit effort when unavailable instead of rendering an empty field or dangling separator.
-- UTC timestamps come from persisted lifecycle transitions, not render-time `now`.
+- Field labels and punctuation are fixed as `任务:`, `编号:`, `时间:`, `执行:`, and `角色:`. Feishu native rendering may apply bold label weight, but must preserve the same wording, order, and semantics in the compact Markdown fallback.
 
 ### 2.2 Round history
 
@@ -126,11 +132,12 @@ The card exposes only the safe conclusion. Full Run/Session/event evidence remai
 ### Example: Session reuse test
 
 ```text
-🤝 委派任务
-💡 验证 oh-my-pi 的 Session 复用
-🆔 dtask_...
-🤖 oh-my-pi · zhipu-coding-plan/glm-5.3 · max
-✅ 当前状态：第 2 轮已完成
+✅ 委派任务已完成
+- 💡 任务: 验证 oh-my-pi 的 Session 复用
+- 🆔 编号: dtask_...
+- ⏱️ 时间: 2026-08-26 09:15:45 UTC
+- 🤖 执行: oh-my-pi · zhipu-coding-plan/glm-5.3 · max
+- 👤 角色: session_reuse_verifier
 
 执行记录
 ✅ 第 1 轮：建立 Session 上下文
@@ -155,6 +162,7 @@ task_ref
    ├─ turn_key
    ├─ round_number
    ├─ purpose
+   ├─ admitted_role
    ├─ lifecycle/status timestamps
    ├─ safe result/reason summary reference
    └─ session_projection: new | reused | unconfirmed | omitted
@@ -286,7 +294,7 @@ The delegated leaf uses `oh-my-pi`; Hermes-owned orchestration, verification, Gi
 - Test: `tests/gateway/test_sachima_delegate_state.py`
 - Create test: `tests/gateway/test_sachima_delegate_card.py`
 
-**TDD:** Cover stable round numbering, duplicate-event idempotency, origin binding, revision monotonicity, bounded history, safe canonical `agent_id`, restart roundtrip, and rejection of raw/unsafe material.
+**TDD:** Cover stable round numbering, duplicate-event idempotency, origin binding, revision monotonicity, bounded history, safe canonical `agent_id`, admitted-role persistence, restart roundtrip, and rejection of raw/unsafe material.
 
 **Exit:** A fresh store reconstructs the exact safe card snapshot and cannot duplicate or reorder rounds.
 
@@ -300,7 +308,7 @@ The delegated leaf uses `oh-my-pi`; Hermes-owned orchestration, verification, Gi
 - Test: `tests/gateway/test_sachima_delegate_card.py`
 - Test: `tests/gateway/test_feishu_progress_cards.py` or the closest existing Feishu card test module identified in S0
 
-**TDD:** Cover Chinese/English labels, accepted/running/terminal states, full Task ID, canonical `oh-my-pi`, optional effort omission, three-round overflow, unsafe text redaction, no internal IDs, and native card schema validity.
+**TDD:** Cover Chinese/English labels, accepted/running/terminal state titles, the fixed `任务/编号/时间/执行/角色` order, persisted UTC timestamp formatting, full Task ID, canonical `oh-my-pi`, admitted-role rendering and honest unavailable fallback, optional effort omission, three-round overflow, unsafe text redaction, no internal IDs, compact-Markdown parity, and native card schema validity.
 
 **Exit:** The renderer emits one bounded native card payload and a separate compact Markdown fallback; neither contains raw prompts/results/events/secrets.
 
@@ -387,6 +395,7 @@ Source implementation is complete only when:
 - prior settled rounds remain visible and immutable when a new round starts;
 - header status truthfully identifies the latest round and never treats round 1 completion as permanent Task closure;
 - `oh-my-pi` is displayed from canonical ARS `agent_id`; `omp` is never generated;
+- the summary preserves the fixed `任务/编号/时间/执行/角色` field order, renders lifecycle time from persisted UTC state, and shows only the role sealed into the admitted execution contract;
 - Session reuse is shown only from trusted same-Session/different-Run/create-then-load evidence;
 - if separately approved and implemented, cancellation targets only the current Run and is stale-round/idempotency guarded;
 - duplicate/recovered events cannot create duplicate cards, rounds, terminal updates, or cancellations;
