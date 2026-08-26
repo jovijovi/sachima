@@ -379,8 +379,9 @@ async def test_the_accepted_receipt_names_the_requested_triple(tmp_path):
 
     assert len(runner.adapter.sent) == 1
     body = runner.adapter.sent[0][1]
+    assert body.startswith("🤝 **委派任务已受理**")
+    assert f"- 💡: {TASK_TEXT_CANARY}" in body
     assert AGENT_ID in body and "claude-opus-5" in body and "xhigh" in body
-    assert TASK_TEXT_CANARY not in body
     facade.terminalize(0)
 
 
@@ -423,18 +424,18 @@ async def test_the_terminal_result_is_one_bounded_plain_text_message(tmp_path):
     facade.terminalize(0, final_message=huge)
     assert await _until(lambda: len(runner.adapter.plain_once) == 1)
 
-    # Exactly one visible body, inside the platform's own bound, carrying the
-    # durable ref — and nothing went through the ordinary chunking send.
+    # Exactly one visible body inside the platform's own bound; internal result
+    # identity stays in the Hermes handoff, not in the user-facing message.
     (chat_id, body, _metadata) = runner.adapter.plain_once[0]
     assert chat_id == "chat-1"
     assert len(body) <= runner.adapter.MAX_MESSAGE_LENGTH
     (turn,) = coordinator.state.list_turns()
     event = coordinator.state.result_for_turn(turn.turn_key)
-    assert event.full_result_ref in body
-    # The visible body is Sachima's labelled derivative; the whole original
-    # stays behind the ref, exactly as stored.
+    assert event.full_result_ref not in body
+    assert body.startswith("✅ **委派任务已完成**")
+    assert f"- 💡: {TASK_TEXT_CANARY}" in body
     assert GATEWAY_SUMMARY_CANARY in body
-    assert "Sachima 摘要：" in body
+    assert f"- 📄: {GATEWAY_SUMMARY_CANARY}" in body
     assert FINAL_MESSAGE_CANARY not in body
     assert coordinator.state.read_full_result(event.full_result_ref) == huge
     summary = coordinator.state.summary_for_event(event.event_id)

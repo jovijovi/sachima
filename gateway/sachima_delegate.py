@@ -54,6 +54,7 @@ import logging
 import threading
 import uuid
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable
 
 from gateway.sachima_agent_role_policy import (
@@ -279,6 +280,10 @@ def _new_task_id() -> str:
     """One fresh spine task id per delegated task."""
 
     return "delegate_" + uuid.uuid4().hex[:12]
+
+
+def _utc_status_time() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
 class SachimaDelegateCoordinator:
@@ -630,6 +635,7 @@ class SachimaDelegateCoordinator:
                 requested_model=requested[1],
                 requested_effort=requested[2],
                 origin=origin,
+                task_description=sanitize_task_description(task_text),
             )
         )
         self._state.put_task(
@@ -1017,6 +1023,9 @@ class SachimaDelegateCoordinator:
             turn.turn_key,
             lifecycle="admitted",
             turn_ref=record.run_ref,
+            accepted_at=(
+                turn.accepted_at or getattr(record, "accepted_at", None) or _utc_status_time()
+            ),
             diagnostic=None,
         )
         self._capacity.reserve(turn.turn_key)
@@ -1061,6 +1070,8 @@ class SachimaDelegateCoordinator:
                 text = render_accepted_receipt(
                     DelegateAcceptedReceipt(
                         task_ref=turn.task_ref,
+                        task_description=turn.task_description,
+                        status_time=turn.accepted_at,
                         requested_agent=turn.requested_agent,
                         requested_model=turn.requested_model,
                         requested_effort=turn.requested_effort,
@@ -1171,6 +1182,7 @@ class SachimaDelegateCoordinator:
                 session_id=turn.origin.session_id,
                 terminal=terminal,
                 full_result_ref=full_ref,
+                terminal_at=_utc_status_time(),
                 truncated=bool(getattr(result, "truncated", False)) or clipped,
                 truncate_reason=getattr(result, "truncate_reason", None),
             )
@@ -1427,6 +1439,11 @@ class SachimaDelegateCoordinator:
                 source_digest=source_digest,
                 limit=channel.limit,
                 measure=channel.measure,
+                task_description=turn.task_description,
+                status_time=event.terminal_at,
+                requested_agent=turn.requested_agent,
+                requested_model=turn.requested_model,
+                requested_effort=turn.requested_effort,
             )
             settlement = await perform_settled_send(
                 lambda: channel.send_plain_text_once(body)

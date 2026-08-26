@@ -305,6 +305,8 @@ class DelegateTurnRecord:
     requested_model: str
     requested_effort: str
     origin: DelegateOrigin
+    task_description: str | None = None
+    accepted_at: str | None = None
     lifecycle: str = "prepared"
     cancellation: str = "none"
     receipt: str = "pending"
@@ -332,6 +334,8 @@ class DelegateTurnRecord:
         _safe_text(self.requested_effort)
         if type(self.origin) is not DelegateOrigin:
             raise _invalid()
+        _optional_text(self.task_description)
+        _optional_text(self.accepted_at, maximum=64)
         _member(self.lifecycle, LIFECYCLE_STATES)
         _member(self.cancellation, CANCELLATION_STATES)
         _member(self.receipt, RECEIPT_STATES)
@@ -362,6 +366,8 @@ class DelegateTurnRecord:
             "requested_model": self.requested_model,
             "requested_effort": self.requested_effort,
             "origin": self.origin.as_dict(),
+            "task_description": self.task_description,
+            "accepted_at": self.accepted_at,
             "lifecycle": self.lifecycle,
             "cancellation": self.cancellation,
             "receipt": self.receipt,
@@ -393,6 +399,8 @@ class DelegateTurnRecord:
             requested_model=document.get("requested_model", ""),
             requested_effort=document.get("requested_effort", ""),
             origin=DelegateOrigin.from_dict(document.get("origin")),
+            task_description=document.get("task_description"),
+            accepted_at=document.get("accepted_at"),
             lifecycle=document.get("lifecycle", "prepared"),
             cancellation=document.get("cancellation", "none"),
             receipt=document.get("receipt", "pending"),
@@ -488,6 +496,7 @@ class DelegateResultEvent:
     session_id: str
     terminal: str
     full_result_ref: str
+    terminal_at: str | None = None
     truncated: bool = False
     truncate_reason: str | None = None
     im_sink: str = "pending"
@@ -502,6 +511,7 @@ class DelegateResultEvent:
         _safe_text(self.session_id)
         _safe_text(self.terminal, maximum=64)
         _safe_ref(self.full_result_ref)
+        _optional_text(self.terminal_at, maximum=64)
         if type(self.truncated) is not bool:
             raise _invalid()
         _optional_text(self.truncate_reason, maximum=64)
@@ -518,6 +528,7 @@ class DelegateResultEvent:
             "session_id": self.session_id,
             "terminal": self.terminal,
             "full_result_ref": self.full_result_ref,
+            "terminal_at": self.terminal_at,
             "truncated": self.truncated,
             "truncate_reason": self.truncate_reason,
             "im_sink": self.im_sink,
@@ -537,6 +548,7 @@ class DelegateResultEvent:
             session_id=document.get("session_id", ""),
             terminal=document.get("terminal", ""),
             full_result_ref=document.get("full_result_ref"),
+            terminal_at=document.get("terminal_at"),
             truncated=document.get("truncated", False),
             truncate_reason=document.get("truncate_reason"),
             im_sink=document.get("im_sink", "pending"),

@@ -27,8 +27,6 @@ from gateway.sachima_delegate_result import (
     DELEGATE_RESULT_ENVELOPE_TYPE,
     DELEGATE_RESULT_ENVELOPE_VERSION,
     RESULT_HEADER_TEMPLATE,
-    RESULT_SUMMARY_LABEL,
-    RESULT_SUMMARY_UNAVAILABLE_SUFFIX,
     RESULT_TRUNCATED_NOTICE,
     SACHIMA_DELEGATE_SEND_FAILED,
     SACHIMA_DELEGATE_SEND_INVALID_RESULT,
@@ -64,11 +62,15 @@ ANSWER_CANARY = "the external agent's full answer, which is long and specific"
 SUMMARY_CANARY = "Sachima 的结论：可以合并；证据：受影响测试全绿。"
 SOURCE_DIGEST = compute_source_digest(ANSWER_CANARY)
 EVENT_ID = "devt_1"
+TASK_DESCRIPTION = "实现冒泡算法并验证 Session 复用"
+STATUS_TIME = "2026-08-26T08:15:32+00:00"
 
 
 def _receipt() -> DelegateAcceptedReceipt:
     return DelegateAcceptedReceipt(
         task_ref="dtask_abc",
+        task_description=TASK_DESCRIPTION,
+        status_time=STATUS_TIME,
         requested_agent="author-agent",
         requested_model="claude-opus-5",
         requested_effort="xhigh",
@@ -115,10 +117,36 @@ def _unavailable(reason: str, full_result_ref: str = "dres_" + "a" * 8):
 # --------------------------------------------------------------------------- #
 # A. The accepted receipt (A11)
 # --------------------------------------------------------------------------- #
+def test_the_accepted_receipt_uses_the_approved_markdown_lifecycle_format():
+    assert render_accepted_receipt(_receipt()) == (
+        "🤝 **委派任务已受理**\n"
+        f"- 💡: {TASK_DESCRIPTION}\n"
+        "- 🆔: dtask_abc\n"
+        "- ⏱️: 2026-08-26 08:15:32 UTC\n"
+        "- 🤖: author-agent · claude-opus-5 · xhigh"
+    )
+
+
+def test_the_accepted_receipt_omits_missing_effort_without_a_dangling_separator():
+    receipt = DelegateAcceptedReceipt(
+        task_ref="dtask_abc",
+        task_description=TASK_DESCRIPTION,
+        status_time=STATUS_TIME,
+        requested_agent="author-agent",
+        requested_model="claude-opus-5",
+        requested_effort="",
+    )
+    rendered = render_accepted_receipt(receipt)
+    assert rendered.endswith("- 🤖: author-agent · claude-opus-5")
+    assert " · \n" not in rendered and not rendered.endswith(" · ")
+
+
 def test_the_receipt_names_exactly_the_three_requested_fields():
     payload = _receipt().as_dict()
     assert set(payload) == {
         "task_ref",
+        "task_description",
+        "status_time",
         "requested_agent",
         "requested_model",
         "requested_effort",
@@ -231,18 +259,70 @@ def test_a_successful_send_returns_the_adapters_own_settlement():
 # --------------------------------------------------------------------------- #
 # C. One bounded body carrying the Sachima summary and the ref (I8 / A16)
 # --------------------------------------------------------------------------- #
+@pytest.mark.parametrize(
+    ("terminal", "header"),
+    [
+        ("completed", "✅ **委派任务已完成**"),
+        ("failed", "❌ **委派任务执行失败**"),
+        ("cancelled", "🚫 **委派任务已取消**"),
+    ],
+)
+def test_every_terminal_uses_the_approved_markdown_lifecycle_format(terminal, header):
+    envelope = _envelope(terminal=terminal)
+    body = render_result_body(
+        envelope,
+        _ready(),
+        source_digest=SOURCE_DIGEST,
+        limit=8000,
+        task_description=TASK_DESCRIPTION,
+        status_time=STATUS_TIME,
+        requested_agent="author-agent",
+        requested_model="claude-opus-5",
+        requested_effort="xhigh",
+    )
+    assert body.startswith(
+        f"{header}\n"
+        f"- 💡: {TASK_DESCRIPTION}\n"
+        "- 🆔: dtask_abc\n"
+        "- ⏱️: 2026-08-26 08:15:32 UTC\n"
+        "- 🤖: author-agent · claude-opus-5 · xhigh"
+    )
+    assert envelope.full_result_ref not in body
+    if terminal == "completed":
+        assert f"- 📄: {SUMMARY_CANARY}" in body
+    else:
+        assert "- 📄:" not in body
+
+
+def test_a_completed_terminal_omits_the_result_row_when_the_summary_is_unavailable():
+    body = render_result_body(
+        _envelope(),
+        _unavailable(SUMMARY_REASON_NO_PROVIDER),
+        source_digest=SOURCE_DIGEST,
+        limit=8000,
+        task_description=TASK_DESCRIPTION,
+        status_time=STATUS_TIME,
+        requested_agent="author-agent",
+        requested_model="claude-opus-5",
+        requested_effort="",
+    )
+    assert "- 📄:" not in body
+    assert "摘要暂不可用" not in body
+    assert body.endswith("- 🤖: author-agent · claude-opus-5")
+
+
 def test_a_ready_summary_is_rendered_whole_labelled_and_with_the_ref():
     envelope = _envelope()
     body = render_result_body(
         envelope, _ready(), source_digest=SOURCE_DIGEST, limit=8000
     )
     assert SUMMARY_CANARY in body
-    assert RESULT_SUMMARY_LABEL in body
-    assert envelope.full_result_ref in body
+    assert "- 📄:" in body
+    assert envelope.full_result_ref not in body
     assert envelope.task_ref in body
     assert RESULT_TRUNCATED_NOTICE not in body
     # The derivative is attributed. It never passes as the AGENT's own wording.
-    assert body.index(RESULT_SUMMARY_LABEL) < body.index(SUMMARY_CANARY)
+    assert body.index("- 📄:") < body.index(SUMMARY_CANARY)
 
 
 def test_the_body_shows_the_summary_and_never_the_source_answer():
@@ -271,9 +351,8 @@ def test_an_unusable_summary_says_so_and_still_points_at_the_original(summary):
     body = render_result_body(
         envelope, summary, source_digest=SOURCE_DIGEST, limit=8000
     )
-    assert RESULT_SUMMARY_UNAVAILABLE_SUFFIX in body
-    assert envelope.full_result_ref in body
-    assert RESULT_SUMMARY_LABEL not in body
+    assert "- 📄:" not in body
+    assert envelope.full_result_ref not in body
     assert ANSWER_CANARY not in body
 
 
@@ -284,8 +363,8 @@ def test_a_summary_bound_to_another_source_is_refused_rather_than_shown():
         envelope, drifted, source_digest=SOURCE_DIGEST, limit=8000
     )
     assert SUMMARY_CANARY not in body
-    assert RESULT_SUMMARY_UNAVAILABLE_SUFFIX in body
-    assert envelope.full_result_ref in body
+    assert "- 📄:" not in body
+    assert envelope.full_result_ref not in body
     assert (
         projected_summary_reason(
             drifted,
@@ -312,8 +391,8 @@ def test_platform_clipping_keeps_the_label_and_the_ref(tmp_path):
     )
 
     assert len(body) <= 400
-    assert full_ref in body
-    assert RESULT_SUMMARY_LABEL in body
+    assert full_ref not in body
+    assert "- 📄:" in body
     assert RESULT_TRUNCATED_NOTICE in body
     # Presentation was clipped; the stored original is untouched behind its ref.
     assert store.read_full_result(full_ref) == huge
@@ -325,7 +404,7 @@ def test_the_ref_survives_even_when_the_bound_leaves_no_room_for_a_summary():
     body = render_result_body(
         envelope, _ready(), source_digest=SOURCE_DIGEST, limit=40
     )
-    assert envelope.full_result_ref in body
+    assert envelope.full_result_ref not in body
     assert SUMMARY_CANARY not in body
 
 
@@ -342,8 +421,8 @@ def test_the_platforms_own_length_metric_is_what_bounds_the_body():
         limit=400,
         measure=_double,
     )
-    assert _double(body) <= 400 + 2 * len(envelope.full_result_ref)
-    assert envelope.full_result_ref in body
+    assert _double(body) <= 400
+    assert envelope.full_result_ref not in body
 
 
 @pytest.mark.parametrize("terminal", ["completed", "failed", "cancelled"])
@@ -352,7 +431,7 @@ def test_every_terminal_renders_one_body_with_the_ref_and_its_own_truth(terminal
     body = render_result_body(
         envelope, _ready(), source_digest=SOURCE_DIGEST, limit=8000
     )
-    assert envelope.full_result_ref in body
+    assert envelope.full_result_ref not in body
     assert envelope.task_ref in body
     assert body.startswith(
         RESULT_HEADER_TEMPLATE[terminal].format(task_ref=envelope.task_ref)
@@ -466,7 +545,7 @@ def test_the_user_and_the_next_turn_read_the_same_persisted_summary():
     assert summary.summary_text is not None
     assert summary.summary_text in body
     assert summary.summary_text in context
-    assert envelope.full_result_ref in body
+    assert envelope.full_result_ref not in body
     assert envelope.full_result_ref in context
     assert (
         projected_summary_text(
@@ -536,9 +615,8 @@ def test_a_ready_summary_over_a_changed_or_gone_source_is_never_projected(
 
     body = render_result_body(envelope, summary, source_digest=current, limit=8000)
     assert SUMMARY_CANARY not in body
-    assert RESULT_SUMMARY_LABEL not in body
-    assert RESULT_SUMMARY_UNAVAILABLE_SUFFIX in body
-    assert envelope.full_result_ref in body
+    assert "- 📄:" not in body
+    assert envelope.full_result_ref not in body
 
     context = build_hermes_context(envelope, summary, source_digest=current)
     assert SUMMARY_CANARY not in context
@@ -554,9 +632,8 @@ def test_a_ready_summary_over_a_now_incomplete_source_is_never_projected():
     summary = _ready()
     body = render_result_body(envelope, summary, source_digest=SOURCE_DIGEST, limit=8000)
     assert SUMMARY_CANARY not in body
-    assert RESULT_SUMMARY_LABEL not in body
-    assert RESULT_SUMMARY_UNAVAILABLE_SUFFIX in body
-    assert envelope.full_result_ref in body
+    assert "- 📄:" not in body
+    assert envelope.full_result_ref not in body
 
     context = build_hermes_context(envelope, summary, source_digest=SOURCE_DIGEST)
     assert SUMMARY_CANARY not in context
@@ -575,8 +652,8 @@ def test_an_unavailable_summary_stays_honest_whatever_the_source_now_is():
         assert f"reason={SUMMARY_REASON_SOURCE_INCOMPLETE}" in context
         assert envelope.full_result_ref in context
         body = render_result_body(envelope, summary, source_digest=current, limit=8000)
-        assert RESULT_SUMMARY_UNAVAILABLE_SUFFIX in body
-        assert envelope.full_result_ref in body
+        assert "- 📄:" not in body
+        assert envelope.full_result_ref not in body
 
 
 def test_the_projection_cannot_be_asked_to_skip_verification():
