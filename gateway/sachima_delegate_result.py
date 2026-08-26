@@ -30,19 +30,21 @@ source than the envelope names, projects as an honest "summary unavailable"; it
 never degrades into the answer's first characters, which is the behavior this
 module exists to retire.
 
-The visible IM body is bounded **before** the send: it reserves room for the
-full-result ref, clips the *summary* to the platform's one-message text bound,
-and says it clipped. The original answer stays behind its ref on every path,
-including the one where nothing else fits. Splitting afterwards would turn one
-terminal into several messages, and provider-visible exactly-once is not
-something a host can claim — what it can guarantee is one durable result, one
-logical body per attempt, and a settled record of every attempt.
+The visible IM body is bounded **before** the send and never exposes the internal
+full-result ref. The durable envelope and next-turn Hermes handoff retain that
+claim-check identity; the chat receives the public task ref, UTC status time,
+requested execution triple, and an optional clipped result summary. Splitting
+afterwards would turn one terminal into several messages, and provider-visible
+exactly-once is not something a host can claim — what it can guarantee is one
+durable result, one logical body per attempt, and a settled record of every
+attempt.
 """
 
 from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable
 
 from gateway.sachima_delegate_summary import (
@@ -53,6 +55,7 @@ from gateway.sachima_delegate_summary import (
     SUMMARY_REASON_SUMMARY_MISSING,
     SUMMARY_SOURCE,
     DelegateResultSummary,
+    sanitize_task_description,
     summary_binds_source,
 )
 
@@ -64,7 +67,6 @@ __all__ = [
     "SACHIMA_DELEGATE_SEND_FAILED",
     "SACHIMA_DELEGATE_SEND_INVALID_RESULT",
     "SACHIMA_DELEGATE_SEND_UNCERTAIN",
-    "RESULT_SUMMARY_LABEL",
     "DelegateAcceptedReceipt",
     "DelegateResultEnvelope",
     "SendSettlement",
@@ -95,26 +97,14 @@ SACHIMA_DELEGATE_SEND_INVALID_RESULT = "sachima_delegate_send_invalid_result"
 #: mapped to ``failed`` by the spine before it gets here.
 DELEGATE_TERMINALS = ("completed", "failed", "cancelled")
 
-RECEIPT_TEMPLATE = (
-    "已接受任务 {task_ref}\n"
-    "AGENT：{requested_agent}\n"
-    "模型：{requested_model}\n"
-    "强度：{requested_effort}\n"
-    "完成后会在这里回复。"
-)
+RECEIPT_HEADER = "🤝 **委派任务已受理**"
 #: The header states the terminal truth. A failed or cancelled Run says so even
 #: when a summary of its output exists.
 RESULT_HEADER_TEMPLATE = {
-    "completed": "外部 AGENT 已完成任务 {task_ref}",
-    "failed": "外部 AGENT 执行任务 {task_ref} 失败",
-    "cancelled": "外部 AGENT 任务 {task_ref} 已取消",
+    "completed": "✅ **委派任务已完成**",
+    "failed": "❌ **委派任务执行失败**",
+    "cancelled": "🚫 **委派任务已取消**",
 }
-#: Attribution, not decoration. The summary is Sachima's reading of the answer,
-#: and a derivative that could pass as the AGENT's own wording would be a claim
-#: nobody made.
-RESULT_SUMMARY_LABEL = "Sachima 摘要："
-RESULT_SUMMARY_UNAVAILABLE_SUFFIX = "，摘要暂不可用"
-RESULT_REF_TEMPLATE = "完整原文：{full_result_ref}"
 RESULT_TRUNCATED_NOTICE = "（输出已截断）"
 HERMES_CONTEXT_TEMPLATE = (
     "[external-agent-result] task={task_ref} terminal={terminal} "
@@ -128,13 +118,11 @@ HERMES_SUMMARY_UNAVAILABLE_TEMPLATE = (
 
 @dataclass(frozen=True)
 class DelegateAcceptedReceipt:
-    """What Sachima says once — and only once — a Run is durably accepted.
-
-    The three value fields are named for what they are. Nothing here observes a
-    Run; nothing here is an effective readback.
-    """
+    """What Sachima says once — and only once — a Run is durably accepted."""
 
     task_ref: str
+    task_description: str | None
+    status_time: str | None
     requested_agent: str
     requested_model: str
     requested_effort: str
@@ -142,18 +130,76 @@ class DelegateAcceptedReceipt:
     def as_dict(self) -> dict[str, Any]:
         return {
             "task_ref": self.task_ref,
+            "task_description": self.task_description,
+            "status_time": self.status_time,
             "requested_agent": self.requested_agent,
             "requested_model": self.requested_model,
             "requested_effort": self.requested_effort,
         }
 
 
+def _formatted_status_time(value: Any) -> str | None:
+    if type(value) is not str or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None or parsed.utcoffset() != timezone.utc.utcoffset(parsed):
+        return None
+    return parsed.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+
+def _execution_summary(agent: Any, model: Any, effort: Any) -> str | None:
+    values: list[str] = []
+    for value in (agent, model, effort):
+        if type(value) is str:
+            collapsed = " ".join(value.split())
+            if collapsed:
+                values.append(collapsed)
+    return " · ".join(values) or None
+
+
+def _task_fact_lines(
+    header: str,
+    *,
+    task_ref: str,
+    task_description: Any,
+    status_time: Any,
+    requested_agent: Any,
+    requested_model: Any,
+    requested_effort: Any,
+) -> list[str]:
+    lines = [header]
+    description = sanitize_task_description(task_description)
+    if description is not None:
+        lines.append(f"- 💡: {description}")
+    lines.append(f"- 🆔: {task_ref}")
+    rendered_time = _formatted_status_time(status_time)
+    if rendered_time is not None:
+        lines.append(f"- ⏱️: {rendered_time}")
+    execution = _execution_summary(requested_agent, requested_model, requested_effort)
+    if execution is not None:
+        lines.append(f"- 🤖: {execution}")
+    return lines
+
+
 def render_accepted_receipt(receipt: DelegateAcceptedReceipt) -> str:
-    """The one visible acceptance line for a durably accepted Run."""
+    """Render the one visible acceptance message for a durable Run."""
 
     if type(receipt) is not DelegateAcceptedReceipt:
         raise ValueError(SACHIMA_DELEGATE_SEND_INVALID_RESULT)
-    return RECEIPT_TEMPLATE.format(**receipt.as_dict())
+    return "\n".join(
+        _task_fact_lines(
+            RECEIPT_HEADER,
+            task_ref=receipt.task_ref,
+            task_description=receipt.task_description,
+            status_time=receipt.status_time,
+            requested_agent=receipt.requested_agent,
+            requested_model=receipt.requested_model,
+            requested_effort=receipt.requested_effort,
+        )
+    )
 
 
 @dataclass(frozen=True)
@@ -287,26 +333,30 @@ def render_result_body(
     source_digest: str,
     limit: int,
     measure: Callable[[str], int] = len,
+    task_description: Any = None,
+    status_time: Any = None,
+    requested_agent: Any = None,
+    requested_model: Any = None,
+    requested_effort: Any = None,
 ) -> str:
-    """One bounded plain-text body that always carries the full-result ref.
-
-    The ref's room is reserved *first*. Clipping the summary and then finding
-    there is no space left for the pointer to the original would produce exactly
-    the message this design exists to avoid: a partial reading with no way back
-    to what it was read from. When not even the label fits, the header and the
-    ref still go out — a reachable original beats a body that fits.
-
-    Only the presentation is clipped. The stored derivative is never rewritten,
-    and an unavailable summary never becomes the answer's first characters.
-    """
+    """Render one bounded lifecycle message without exposing the internal result ref."""
 
     if type(envelope) is not DelegateResultEnvelope:
         raise ValueError(SACHIMA_DELEGATE_SEND_INVALID_RESULT)
     if isinstance(limit, bool) or type(limit) is not int or limit < 1:
         raise ValueError(SACHIMA_DELEGATE_SEND_INVALID_RESULT)
 
-    header = RESULT_HEADER_TEMPLATE[envelope.terminal].format(task_ref=envelope.task_ref)
-    ref_line = RESULT_REF_TEMPLATE.format(full_result_ref=envelope.full_result_ref)
+    frame = "\n".join(
+        _task_fact_lines(
+            RESULT_HEADER_TEMPLATE[envelope.terminal],
+            task_ref=envelope.task_ref,
+            task_description=task_description,
+            status_time=status_time,
+            requested_agent=requested_agent,
+            requested_model=requested_model,
+            requested_effort=requested_effort,
+        )
+    )
     text, _reason = _validated_summary_projection(
         summary,
         full_result_ref=envelope.full_result_ref,
@@ -314,15 +364,14 @@ def render_result_body(
         source_truncated=envelope.truncated,
     )
 
-    if text is None:
-        return f"{header}{RESULT_SUMMARY_UNAVAILABLE_SUFFIX}\n\n{ref_line}"
+    if envelope.terminal != "completed" or text is None:
+        return frame
 
-    frame = f"{header}\n\n{RESULT_SUMMARY_LABEL}\n\n{ref_line}"
-    available = limit - measure(frame)
+    prefix = "\n- 📄: "
+    available = limit - measure(frame + prefix)
     notice_cost = measure(RESULT_TRUNCATED_NOTICE)
-
     if available <= 0:
-        return f"{header}\n\n{ref_line}"
+        return frame
 
     if measure(text) <= available:
         body = text
@@ -331,10 +380,8 @@ def render_result_body(
         body = _clip(text, max(available - notice_cost, 0), measure)
         clipped = True
     if not body:
-        return f"{header}\n\n{ref_line}"
-
-    labelled = RESULT_SUMMARY_LABEL + body + (RESULT_TRUNCATED_NOTICE if clipped else "")
-    return f"{header}\n\n{labelled}\n\n{ref_line}"
+        return frame
+    return frame + prefix + body + (RESULT_TRUNCATED_NOTICE if clipped else "")
 
 
 def _clip(text: str, budget: int, measure: Callable[[str], int]) -> str:

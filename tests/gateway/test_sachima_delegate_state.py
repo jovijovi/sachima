@@ -341,6 +341,8 @@ def _turn(store: DelegateStateStore, task_ref: str, payload_ref: str) -> Delegat
         requested_agent="oh-my-pi",
         requested_model="claude-opus-5",
         requested_effort="xhigh",
+        task_description="do the thing",
+        accepted_at="2026-08-19T04:05:06+00:00",
         origin=_origin(),
     )
 
@@ -409,6 +411,8 @@ def test_task_turn_and_result_records_round_trip_through_a_fresh_store(tmp_path)
     fresh = DelegateStateStore(root)
     assert fresh.read_task(task_ref) == binding
     assert fresh.read_turn(turn.turn_key) == turn
+    assert fresh.read_turn(turn.turn_key).task_description == "do the thing"
+    assert fresh.read_turn(turn.turn_key).accepted_at == "2026-08-19T04:05:06+00:00"
     assert fresh.read_turn(turn.turn_key).ledger_key == (TASK_ID, HANDLE, payload_ref)
     assert [record.turn_key for record in fresh.list_turns()] == [turn.turn_key]
 
@@ -421,6 +425,7 @@ def test_task_turn_and_result_records_round_trip_through_a_fresh_store(tmp_path)
         session_id=_origin().session_id,
         terminal="completed",
         full_result_ref=full_ref,
+        terminal_at="2026-08-19T05:06:07+00:00",
     )
     fresh.put_result(event)
     assert DelegateStateStore(root).result_for_turn(turn.turn_key) == event
@@ -497,13 +502,14 @@ def test_a_write_leaves_no_partial_file_behind(tmp_path):
     assert list(Path(root).glob("**/*.tmp")) == []
 
 
-def test_the_task_text_is_absent_from_every_record_surface(tmp_path):
+def test_only_the_sanitized_display_description_reaches_the_turn_record(tmp_path):
     store = DelegateStateStore(str(tmp_path / "state"))
-    canary = "the private delegate canary body"
+    canary = "the private\n\tdelegate canary body"
     payload_ref = store.put_payload(canary)
     turn = store.put_turn(_turn(store, store.new_task_ref(), payload_ref))
     assert canary not in json.dumps(turn.as_dict())
     assert canary not in repr(turn)
+    assert turn.task_description == "do the thing"
     assert store.read_payload(payload_ref) == canary
 
 

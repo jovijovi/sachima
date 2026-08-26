@@ -287,7 +287,7 @@ class _Delivery:
         )
 
     async def _send_text(self, text: str) -> Any:
-        if "已接受任务" in text:
+        if "委派任务已受理" in text:
             self.receipts.append(text)
             if self.receipt_error is not None:
                 raise self.receipt_error
@@ -490,10 +490,14 @@ async def test_the_accepted_receipt_carries_the_requested_triple_and_settles_onc
     assert outcome.receipt == "confirmed"
     assert len(delivery.receipts) == 1
     receipt = delivery.receipts[0]
+    assert receipt.startswith("🤝 **委派任务已受理**")
+    assert f"- 💡: {TASK_TEXT_CANARY}" in receipt
+    assert f"- 🆔: {outcome.task_ref}" in receipt
+    assert "- ⏱️: 2026-08-19 04:05:01 UTC" in receipt
+    assert "- 🤖: codex · claude-opus-5 · xhigh" in receipt
     assert "codex" in receipt
     assert "claude-opus-5" in receipt
     assert "xhigh" in receipt
-    assert TASK_TEXT_CANARY not in receipt
 
     turn = coordinator.state.read_turn(outcome.turn_key)
     assert turn.receipt == "confirmed"
@@ -764,10 +768,13 @@ async def test_one_terminal_makes_one_envelope_one_release_and_two_sinks(tmp_pat
     assert event.hermes_sink == "pending"
     assert coordinator.state.read_full_result(event.full_result_ref) == FINAL_MESSAGE_CANARY
     body = delivery.terminals[0]
-    assert event.full_result_ref in body
-    # The user reads Sachima's labelled derivative, not the AGENT's own text.
-    assert SUMMARY_CANARY in body
-    assert "Sachima 摘要：" in body
+    assert body.startswith("✅ **委派任务已完成**")
+    assert f"- 💡: {TASK_TEXT_CANARY}" in body
+    assert f"- 🆔: {outcome.task_ref}" in body
+    assert "- ⏱️:" in body and " UTC" in body
+    assert "- 🤖: codex · claude-opus-5 · xhigh" in body
+    assert f"- 📄: {SUMMARY_CANARY}" in body
+    assert event.full_result_ref not in body
     assert FINAL_MESSAGE_CANARY not in body
 
     # Exactly one release, and the private text is gone.
@@ -832,7 +839,17 @@ async def test_every_ars_terminal_reaches_one_of_the_three_envelope_terminals(
     )
     facade.terminalize(0, status=status)
     assert await _until(lambda: len(delivery.terminals) == 1)
-    assert coordinator.state.result_for_turn(outcome.turn_key).terminal == expected
+    event = coordinator.state.result_for_turn(outcome.turn_key)
+    assert event.terminal == expected
+    body = delivery.terminals[0]
+    expected_header = {
+        "completed": "✅ **委派任务已完成**",
+        "failed": "❌ **委派任务执行失败**",
+        "cancelled": "🚫 **委派任务已取消**",
+    }[expected]
+    assert body.startswith(expected_header)
+    assert event.full_result_ref not in body
+    assert ("- 📄:" in body) is (expected == "completed")
 
 
 @pytest.mark.asyncio
@@ -1640,7 +1657,10 @@ async def test_a_provider_cannot_echo_private_task_context_into_either_sink(tmp_
     assert summary.summary_status == "unavailable"
     assert summary.unavailable_reason == SUMMARY_REASON_SUMMARY_FAILED
     assert TASK_TEXT_CANARY not in json.dumps(summary.as_dict(), ensure_ascii=False)
-    assert TASK_TEXT_CANARY not in delivery.terminals[0]
+    body = delivery.terminals[0]
+    assert body.count(TASK_TEXT_CANARY) == 1
+    assert f"- 💡: {TASK_TEXT_CANARY}" in body
+    assert "- 📄:" not in body
 
     contexts = coordinator.pending_hermes_context(_origin().session_id)
     assert len(contexts) == 1
@@ -1717,7 +1737,7 @@ async def test_an_incomplete_or_empty_source_never_reaches_the_provider(
     assert summary.summary_text is None
     assert provider.calls == 0
     # The original is still reachable, which is the whole point of the ref.
-    assert event.full_result_ref in delivery.terminals[0]
+    assert event.full_result_ref not in delivery.terminals[0]
 
 
 @pytest.mark.asyncio
@@ -1761,7 +1781,7 @@ async def test_a_host_composed_without_a_summariser_is_valid_and_says_unavailabl
     assert summary.summary_status == "unavailable"
     assert summary.unavailable_reason == SUMMARY_REASON_NO_PROVIDER
     assert FINAL_MESSAGE_CANARY not in delivery.terminals[0]
-    assert event.full_result_ref in delivery.terminals[0]
+    assert event.full_result_ref not in delivery.terminals[0]
 
 
 @pytest.mark.asyncio
@@ -1804,7 +1824,7 @@ async def test_a_faulty_summariser_settles_unavailable_and_leaks_nothing(
     assert "oc_secret" not in delivery.terminals[0]
     # A summary that could not be produced never becomes an answer prefix.
     assert FINAL_MESSAGE_CANARY not in delivery.terminals[0]
-    assert event.full_result_ref in delivery.terminals[0]
+    assert event.full_result_ref not in delivery.terminals[0]
 
 
 @pytest.mark.asyncio
@@ -1869,7 +1889,7 @@ async def test_source_drift_while_the_provider_runs_cannot_commit_a_ready_summar
     assert summary.unavailable_reason == SUMMARY_REASON_SOURCE_DRIFT
     assert summary.summary_text is None
     assert SUMMARY_CANARY not in delivery.terminals[0]
-    assert event.full_result_ref in delivery.terminals[0]
+    assert event.full_result_ref not in delivery.terminals[0]
 
 
 @pytest.mark.asyncio
@@ -1989,7 +2009,7 @@ async def test_a_recovered_in_flight_summary_settles_unavailable_without_replay(
     assert second.calls == 0
     assert len(delivery.terminals) == 1
     assert FINAL_MESSAGE_CANARY not in delivery.terminals[0]
-    assert event.full_result_ref in delivery.terminals[0]
+    assert event.full_result_ref not in delivery.terminals[0]
 
 
 @pytest.mark.asyncio
@@ -2024,7 +2044,7 @@ async def test_the_delegated_answer_is_inert_data_all_the_way_to_the_summariser(
     # ref it arrived under.
     assert coordinator.state.summary_for_event(event.event_id).summary_text == SUMMARY_CANARY
     assert "IGNORE ALL PREVIOUS INSTRUCTIONS" not in delivery.terminals[0]
-    assert event.full_result_ref in delivery.terminals[0]
+    assert event.full_result_ref not in delivery.terminals[0]
     assert coordinator.state.read_full_result(event.full_result_ref) == injection
 
 
@@ -2079,7 +2099,7 @@ async def test_any_answer_shape_is_summarised_without_a_schema_requirement(
     assert summary.source_digest == compute_source_digest(answer)
     assert coordinator.state.read_full_result(event.full_result_ref) == answer
     assert SUMMARY_CANARY in delivery.terminals[0]
-    assert event.full_result_ref in delivery.terminals[0]
+    assert event.full_result_ref not in delivery.terminals[0]
 
 
 @pytest.mark.asyncio
@@ -2105,11 +2125,12 @@ async def test_a_conclusion_at_the_end_is_not_lost_to_a_fixed_head(tmp_path):
     event = coordinator.state.result_for_turn(outcome.turn_key)
     for projection in (body, line):
         # Neither projection is a slice of the source: not its head, not its
-        # tail. It is Sachima's derivative, plus the ref to all of it.
+        # tail. Both use the same persisted Sachima derivative.
         assert CONCLUSION_AT_END_ANSWER[:200] not in projection
         assert CONCLUSION_TAIL not in projection
         assert SUMMARY_CANARY in projection
-        assert event.full_result_ref in projection
+    assert event.full_result_ref not in body
+    assert event.full_result_ref in line
 
 
 @pytest.mark.asyncio
@@ -2167,7 +2188,7 @@ async def test_a_source_that_drifted_under_a_pending_summary_fails_closed(tmp_pa
     assert restored.summary_text is None
     assert second.calls == 0
     assert len(delivery.terminals) == 1
-    assert event.full_result_ref in delivery.terminals[0]
+    assert event.full_result_ref not in delivery.terminals[0]
 
 
 @pytest.mark.asyncio
@@ -2227,7 +2248,7 @@ async def test_a_ready_summary_is_rechecked_before_the_im_sink_after_restart(tmp
     assert second.calls == 0
     assert len(delivery.terminals) == 1
     assert SUMMARY_CANARY not in delivery.terminals[0]
-    assert event.full_result_ref in delivery.terminals[0]
+    assert event.full_result_ref not in delivery.terminals[0]
     assert fresh.state.read_result(event.event_id).im_sink == "confirmed"
 
 
@@ -2440,18 +2461,23 @@ async def test_nothing_private_reaches_the_summary_record_the_body_or_the_logs(
     serialized = (
         root / "summaries" / (summary.summary_ref + ".json")
     ).read_text(encoding="utf-8")
-    surfaces = [
+    private_surfaces = [
         serialized,
         json.dumps(summary.as_dict(), ensure_ascii=False),
         repr(summary),
-        delivery.terminals[0],
         caplog.text,
     ]
-    for surface in surfaces:
+    for surface in private_surfaces:
         assert "sk-live-DEADBEEF" not in surface
         assert "oc_private_chat_id" not in surface
         assert TASK_TEXT_CANARY not in surface
         assert "Authorization" not in surface
+    body = delivery.terminals[0]
+    assert f"- 💡: {TASK_TEXT_CANARY}" in body
+    assert "sk-live-DEADBEEF" not in body
+    assert "oc_private_chat_id" not in body
+    assert "Authorization" not in body
+    assert "- 📄:" not in body
     # Every stable code that did travel is one this layer owns.
     assert summary.unavailable_reason in {
         SUMMARY_REASON_SUMMARY_FAILED,
