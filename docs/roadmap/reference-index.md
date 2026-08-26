@@ -12,6 +12,9 @@
 - Active runtime-spine development roadmap: `docs/plans/2026-07-03-sachima-private-hermes-runtime-spine-development-plan.md`
 - Live-stream integration plan: `docs/plans/2026-07-05-ars-live-stream-integration-plan.md`
 - ARS S2 permission/goal/no-op consumption hardening slice: `docs/plans/2026-07-08-ars-permission-goal-noop-consumption-hardening.md`
+- Semantic AGENT delegation and `/delegate` removal plan: `docs/plans/2026-08-21-semantic-agent-delegation-and-delegate-command-removal.md`
+- Native delegation result semantic projection plan: `docs/plans/2026-08-25-native-delegation-result-semantic-projection.md`
+- Native delegation status card plan: `docs/plans/2026-08-26-native-delegation-status-card.md`
 - Runtime-spine development plan manifest: `docs/plans/2026-07-03-sachima-private-hermes-runtime-spine-development-plan-manifest.yaml`
 - Superseded active-roadmap register: `docs/roadmap/superseded-plans.md`
 - Architecture directory index: `docs/architecture/README.md`
