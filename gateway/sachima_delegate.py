@@ -51,11 +51,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import threading
+import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Mapping
 
 from gateway.sachima_agent_role_policy import (
     AgentRolePolicy,
@@ -81,6 +83,7 @@ from gateway.sachima_delegate_result import (
     build_hermes_context,
     build_result_envelope,
     perform_settled_send,
+    projected_summary_text,
     render_accepted_receipt,
     render_result_body,
 )
@@ -100,6 +103,25 @@ from gateway.sachima_delegate_summary import (
     settle_summary_attempt,
     source_gate_reason,
     unavailable_summary,
+)
+from gateway.sachima_delegate_card import (
+    CARD_ROUND_WINDOW,
+    DelegateCardError,
+    DelegateCardProjection,
+    advance_round,
+    append_round,
+    bind_card_message,
+    bounded_card_payload,
+    derive_session_ref,
+    new_card_projection,
+    next_projection_revision,
+    normalize_running_patch_interval,
+    project_session_evidence,
+    projected_revision,
+    render_delegation_markdown,
+    safe_card_instant,
+    sanitize_card_line,
+    settle_card_sink,
 )
 from gateway.sachima_delegate_state import (
     DelegateCapacity,
@@ -121,6 +143,8 @@ __all__ = [
     "DELEGATE_WAITING_TEMPLATE",
     "SACHIMA_AGENT_NO_PRESET",
     "SACHIMA_DELEGATE_BLOCKED",
+    "SACHIMA_DELEGATE_CARD_PATCH_INTERVAL_ENV",
+    "SACHIMA_DELEGATE_CARD_UNAVAILABLE",
     "SACHIMA_DELEGATE_DISPATCH_FAILED",
     "SACHIMA_DELEGATE_INVALID_TARGET",
     "SACHIMA_DELEGATE_INVALID_TASK_TEXT",
@@ -138,6 +162,7 @@ __all__ = [
     "SachimaDelegateCoordinator",
     "bind_delegate_coordinator",
     "bound_delegate_coordinator",
+    "configured_running_patch_interval",
     "delegate_payload_resolver",
     "unbind_delegate_coordinator",
 ]
@@ -158,6 +183,7 @@ SACHIMA_DELEGATE_NOT_CONTINUABLE = "sachima_delegate_not_continuable"
 SACHIMA_DELEGATE_NO_DELIVERY = "sachima_delegate_no_delivery"
 SACHIMA_DELEGATE_INVARIANT = "sachima_delegate_invariant"
 SACHIMA_DELEGATE_SUMMARY_UNAVAILABLE = "sachima_delegate_summary_unavailable"
+SACHIMA_DELEGATE_CARD_UNAVAILABLE = "sachima_delegate_card_unavailable"
 
 SACHIMA_DELEGATE_STABLE_CODES = frozenset(
     {
@@ -178,6 +204,7 @@ SACHIMA_DELEGATE_STABLE_CODES = frozenset(
         SACHIMA_DELEGATE_NO_DELIVERY,
         SACHIMA_DELEGATE_INVARIANT,
         SACHIMA_DELEGATE_SUMMARY_UNAVAILABLE,
+        SACHIMA_DELEGATE_CARD_UNAVAILABLE,
     }
 )
 
@@ -231,22 +258,60 @@ _TERMINAL_TO_ENVELOPE = {
     "unknown": "failed",
 }
 
+#: The terminals a persisted Turn may carry, as the card's own round states.
+#: Derived from the envelope map rather than restated, so a new terminal cannot
+#: be readable as a result and unreadable as a round row.
+_CARD_TERMINALS = frozenset(_TERMINAL_TO_ENVELOPE.values())
+
+#: How a Run reached its ARS Session, as the admission itself recorded it. The
+#: backend writes ``session_mode`` into the accepted binding's ``resolver_refs``
+#: from the submit it actually made — ``create`` when it asked the daemon for a
+#: new Session, ``reuse`` when it named an existing one — so this is admission
+#: evidence rather than a reading of the Task's shape. The two tokens are
+#: private to ``arsd_supervisor_backend`` and are therefore mirrored here and
+#: drift-locked by ``tests/gateway/test_sachima_delegate_coordinator.py``.
+_SESSION_MODE_TO_ORIGIN = {"create": "created", "reuse": "loaded"}
+
+#: The deployment's running-patch cadence, in seconds. It is read once at
+#: composition, validated by the one card-layer validator, and answered with the
+#: default when it is absent or outside the contract; changing it is a reviewed
+#: config change plus a Gateway restart.
+SACHIMA_DELEGATE_CARD_PATCH_INTERVAL_ENV = "SACHIMA_DELEGATE_CARD_PATCH_INTERVAL_SECONDS"
+
 
 @dataclass(frozen=True)
 class DelegateDelivery:
     """One origin's delivery capability, injected by the host.
 
-    Two senders, deliberately: the accepted receipt is an ordinary short
+    Two text senders, deliberately: the accepted receipt is an ordinary short
     message, while the terminal result is a single bounded plain-text body that
     must not be chunked or turned into a rich card. ``limit``/``measure`` are the
     platform's own one-message text bound and its own length metric, so the body
     is bounded by what the platform actually enforces rather than by a guess.
+
+    ``send_card`` / ``patch_card`` are the optional rich-card pair. An origin
+    that supplies both owns one persistent delegation status card patched in
+    place; an origin that supplies neither — every non-Feishu platform, and
+    Feishu itself when the adapter is unavailable — keeps the existing plain
+    Markdown lifecycle unchanged. There is deliberately no half-capable state:
+    a card that could be sent but not patched would become a new message per
+    transition, which is the behavior the card exists to retire.
     """
 
     send_text: Callable[[str], Awaitable[Any]] = field(repr=False)
     send_plain_text_once: Callable[[str], Awaitable[Any]] = field(repr=False)
     limit: int = 4000
     measure: Callable[[str], int] = field(default=len, repr=False)
+    send_card: Callable[[dict], Awaitable[Any]] | None = field(default=None, repr=False)
+    patch_card: Callable[[str, dict], Awaitable[Any]] | None = field(
+        default=None, repr=False
+    )
+
+    @property
+    def card_capable(self) -> bool:
+        """Whether this origin can own one patched-in-place status card."""
+
+        return self.send_card is not None and self.patch_card is not None
 
 
 @dataclass(frozen=True)
@@ -286,6 +351,32 @@ def _utc_status_time() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def configured_running_patch_interval(config: Any = None) -> float:
+    """This deployment's running-patch cadence, through the one validator.
+
+    Two sources, in one order: a composed config that declares the cadence
+    itself, then the host environment. Both end at
+    :func:`normalize_running_patch_interval`, so there is exactly one place that
+    decides what is in contract — a mis-typed or out-of-range deployment value
+    composes a Gateway at the default rather than either refusing to start or
+    being honoured into a patch storm.
+    """
+
+    declared = getattr(config, "running_patch_interval_seconds", None)
+    if declared is None:
+        declared = os.environ.get(SACHIMA_DELEGATE_CARD_PATCH_INTERVAL_ENV)
+        if type(declared) is str:
+            try:
+                declared = float(declared)
+            except ValueError:
+                # Left as the unparsable text on purpose: the validator owns
+                # "this is not a cadence", and it answers with the default.
+                pass
+    return normalize_running_patch_interval(declared)
+
+
+
+
 class SachimaDelegateCoordinator:
     """The single source of delegate submissions for one bound bundle."""
 
@@ -301,6 +392,8 @@ class SachimaDelegateCoordinator:
         observe_interval: float = _DEFAULT_OBSERVE_INTERVAL_SECONDS,
         summary_provider: DelegateResultSummaryProvider | None = None,
         summary_timeout: float = SUMMARY_PROVIDER_TIMEOUT_SECONDS,
+        card_locale: str = "zh",
+        running_patch_interval: Any = None,
     ) -> None:
         self._binding = binding
         self._config = config
@@ -330,9 +423,21 @@ class SachimaDelegateCoordinator:
         self._capacity = DelegateCapacity(
             int(binding.backend.negotiated_server_info.max_concurrent_runs)
         )
+        # One card localization per host: a card is localized consistently, and
+        # mixing labels inside one card is exactly what the contract forbids.
+        self._card_locale = card_locale if card_locale in ("zh", "en") else "zh"
+        # The S0 running-patch cadence contract. It is read once, here, so a
+        # change is a reviewed code/config change plus a Gateway restart; the
+        # in-memory pacing state below is rebuilt from durable projection state
+        # after a restart rather than carried across one.
+        self._running_patch_interval = normalize_running_patch_interval(
+            running_patch_interval
+        )
+        self._card_patched_at: dict[str, float] = {}
         self._guard = threading.RLock()
         self._turn_locks: dict[str, asyncio.Lock] = {}
         self._task_gates: dict[str, asyncio.Lock] = {}
+        self._card_publications: dict[str, asyncio.Lock] = {}
         self._owned: set[asyncio.Task] = set()
         self._observers: dict[str, asyncio.Task] = {}
         # Only a genuinely fresh composition graph may reclassify a found
@@ -371,6 +476,16 @@ class SachimaDelegateCoordinator:
     @property
     def summary_provider(self) -> DelegateResultSummaryProvider | None:
         return self._summary_provider
+
+    @property
+    def running_patch_interval(self) -> float:
+        """The seconds this host coalesces running-state card patches by."""
+
+        return self._running_patch_interval
+
+    @property
+    def card_locale(self) -> str:
+        return self._card_locale
 
     @property
     def lifecycle_loop(self) -> asyncio.AbstractEventLoop | None:
@@ -436,6 +551,23 @@ class SachimaDelegateCoordinator:
             if gate is None:
                 gate = asyncio.Lock()
                 self._task_gates[task_ref] = gate
+            return gate
+
+    def _card_publication(self, task_ref: str) -> asyncio.Lock:
+        """The one card this Task owns, held by one publisher at a time.
+
+        Scoped to the ``dtask_*`` and to nothing wider: one Task's card is one
+        platform message, so two publishers of *that* message are the only pair
+        whose completion order can be observed. Two Tasks are two messages and
+        stay independent — a shared gate would let one slow adapter call stall
+        every other Task's card for no truth-preserving reason.
+        """
+
+        with self._guard:
+            gate = self._card_publications.get(task_ref)
+            if gate is None:
+                gate = asyncio.Lock()
+                self._card_publications[task_ref] = gate
             return gate
 
     async def _exclusive(self, turn_key: str, factory: Callable[[], Awaitable[Any]]) -> Any:
@@ -580,6 +712,7 @@ class SachimaDelegateCoordinator:
         origin: DelegateOrigin,
         delivery: DelegateDelivery | None = None,
         linked_from: str | None = None,
+        admitted_role: Any = None,
     ) -> DelegateOutcome:
         """Register one delegated task and drive its first turn to a disposition.
 
@@ -636,9 +769,10 @@ class SachimaDelegateCoordinator:
                 requested_effort=requested[2],
                 origin=origin,
                 task_description=sanitize_task_description(task_text),
+                admitted_role=self._sealed_role(preset.agent_id, admitted_role),
             )
         )
-        self._state.put_task(
+        binding = self._state.put_task(
             DelegateTaskBinding(
                 task_ref=task_ref,
                 task_id=task_id,
@@ -651,6 +785,10 @@ class SachimaDelegateCoordinator:
                 linked_from=linked_from,
             )
         )
+        # The Task/origin binding is durable, so the card — and with it the
+        # complete copyable ``dtask_*`` — becomes visible before capacity
+        # waiting and before anything could reach the daemon.
+        await self._ensure_card(binding, turn, delivery)
         return await self._exclusive(
             turn.turn_key,
             lambda: self._drive(turn.turn_key, mode="dispatch", delivery=delivery),
@@ -664,6 +802,7 @@ class SachimaDelegateCoordinator:
         delivery: DelegateDelivery | None = None,
         preset: AgentExecutionPreset | None = None,
         origin: DelegateOrigin | None = None,
+        admitted_role: Any = None,
     ) -> DelegateOutcome:
         """Continue the same task, in the same Sessions, under the same AGENT.
 
@@ -742,6 +881,7 @@ class SachimaDelegateCoordinator:
                     origin=origin,
                     delivery=delivery,
                     linked_from=event.event_id,
+                    admitted_role=admitted_role,
                 )
             if preset is None:
                 preset = self._presets.preset(binding.agent_id)
@@ -769,6 +909,11 @@ class SachimaDelegateCoordinator:
                     requested_model=requested[1],
                     requested_effort=requested[2],
                     origin=binding.origin,
+                    # The round purpose is sealed at continuation time from the
+                    # continuation's own ask; it is never inferred later from
+                    # opaque result text.
+                    task_description=sanitize_task_description(task_text),
+                    admitted_role=self._sealed_role(binding.agent_id, admitted_role),
                 )
             )
             self._state.update_task(
@@ -777,6 +922,10 @@ class SachimaDelegateCoordinator:
                 current_turn_key=turn.turn_key,
             )
 
+        # A Task that predates card projection creates its card here, before the
+        # continuation becomes user-visible; one that already has a card reuses
+        # it and adds exactly one round row.
+        await self._ensure_card(binding, turn, delivery)
         return await self._exclusive(
             turn.turn_key,
             lambda: self._drive(turn.turn_key, mode="dispatch", delivery=delivery),
@@ -804,6 +953,7 @@ class SachimaDelegateCoordinator:
                 # exactly what must not happen, whatever the caller asked for.
                 return await self._apply(turn, disposition, record, code, delivery=delivery)
             await self._acquire_capacity(turn, delivery)
+            await self._card_open_round(turn, delivery)
             await self._run_dispatch(turn)
         elif mode == "recover":
             if disposition == _DISPOSITION_PENDING:
@@ -824,14 +974,22 @@ class SachimaDelegateCoordinator:
     async def _acquire_capacity(
         self, turn: DelegateTurnRecord, delivery: DelegateDelivery | None
     ) -> None:
-        """Take one permit, saying so **only** when the wait is real."""
+        """Take one permit, saying so **only** when the wait is real.
+
+        A card-capable origin is told through its own card rather than through a
+        second message: one Task, one surface. Every other origin keeps the
+        existing plain notice.
+        """
 
         if self._capacity.would_wait() and not self._capacity.holds(turn.turn_key):
-            await self._notify(
-                turn,
-                DELEGATE_WAITING_TEMPLATE.format(task_ref=turn.task_ref),
-                delivery,
-            )
+            if self._card_channel(turn.origin, delivery) is not None:
+                await self._card_pre_accept(turn, "waiting", delivery)
+            else:
+                await self._notify(
+                    turn,
+                    DELEGATE_WAITING_TEMPLATE.format(task_ref=turn.task_ref),
+                    delivery,
+                )
         await self._capacity.acquire(turn.turn_key)
 
     async def _run_dispatch(self, turn: DelegateTurnRecord) -> None:
@@ -901,19 +1059,34 @@ class SachimaDelegateCoordinator:
         """Execute exactly one row of the exact-key disposition table."""
 
         if disposition == _DISPOSITION_NO_RECORD:
-            return self._admission_failed(turn)
+            return await self._admission_failed(turn, delivery=delivery)
         if disposition == _DISPOSITION_PENDING:
-            return self._recovery_required(turn, restoring=restoring)
+            outcome = self._recovery_required(turn, restoring=restoring)
+            await self._card_round_state(turn, "recovering", delivery)
+            return outcome
         if disposition == _DISPOSITION_BLOCKED:
-            return self._blocked(turn, code)
+            outcome = self._blocked(turn, code)
+            await self._card_round_state(turn, "recovering", delivery)
+            return outcome
         return await self._admitted(turn, record, delivery=delivery, restoring=restoring)
 
-    def _admission_failed(self, turn: DelegateTurnRecord) -> DelegateOutcome:
-        """No record: nothing was admitted, so nothing is retained.
+    async def _admission_failed(
+        self, turn: DelegateTurnRecord, *, delivery: DelegateDelivery | None = None
+    ) -> DelegateOutcome:
+        """No record: nothing was admitted, so nothing execution-shaped is kept.
 
         This is the one row that cleans up, and it is safe *because* the
         snapshot proved there is no durable record — not because a return value
-        looked like a failure.
+        looked like a failure. What it cleans up is execution-only material: the
+        task payload and the capacity permit, neither of which anything can
+        still be waiting on.
+
+        The identity stays. The ``dtask_*`` was made user-visible by the card
+        before this submission could fail, so the Task binding and its Turn
+        remain readable in their truthful ``admission_failed`` state: a task
+        number a user was shown and can quote back must answer with what
+        happened to it, not with ``unknown_task``. Nothing here fabricates the
+        Run, Session, or acceptance evidence the snapshot proved does not exist.
         """
 
         updated = self._state.update_turn(
@@ -921,13 +1094,11 @@ class SachimaDelegateCoordinator:
             lifecycle="admission_failed",
             diagnostic=SACHIMA_DELEGATE_DISPATCH_FAILED,
         )
+        await self._card_round_state(
+            turn, "rejected", delivery, settled_at=_utc_status_time()
+        )
         self._state.discard_payload(turn.payload_ref)
         self._capacity.release(turn.turn_key)
-        binding = self._state.read_task(turn.task_ref)
-        if binding is not None and binding.turn_keys == (turn.turn_key,):
-            # An orphan task binding whose only turn never became work.
-            self._state.discard_task(turn.task_ref)
-        self._state.discard_turn(turn.turn_key)
         return DelegateOutcome(
             task_ref=turn.task_ref,
             turn_key=turn.turn_key,
@@ -1029,6 +1200,10 @@ class SachimaDelegateCoordinator:
             diagnostic=None,
         )
         self._capacity.reserve(turn.turn_key)
+        # The round's Run/Session evidence is recorded before the acceptance is
+        # made visible, so the snapshot the user sees and the evidence the next
+        # continuation reasons over are the same durable fact.
+        self._card_admitted_round(updated, record)
         updated = await self._settle_receipt(updated, delivery)
         self._arm_observer(updated.turn_key)
         return DelegateOutcome(
@@ -1051,6 +1226,10 @@ class SachimaDelegateCoordinator:
         once; anything already settled replays unchanged; an ``in_flight`` found
         by a live graph is an invariant error rather than a licence to resend,
         because the other attempt may be about to succeed.
+
+        On a card-capable origin the acceptance *is* the card patch: the same
+        durable receipt dimension settles from that one adapter call, so the
+        user never gets a card and a redundant acceptance message about one Run.
         """
 
         if turn.receipt != "pending":
@@ -1065,6 +1244,12 @@ class SachimaDelegateCoordinator:
             if channel is None:
                 settlement = SendSettlement(
                     state="failed", diagnostic=SACHIMA_DELEGATE_NO_DELIVERY
+                )
+            elif channel.card_capable:
+                settlement = await self._flush_card(
+                    turn.task_ref, turn.origin, channel, force=True
+                ) or SendSettlement(
+                    state="failed", diagnostic=SACHIMA_DELEGATE_CARD_UNAVAILABLE
                 )
             else:
                 text = render_accepted_receipt(
@@ -1116,6 +1301,9 @@ class SachimaDelegateCoordinator:
         turn = self._state.read_turn(turn_key)
         if turn is None:
             return
+        # The Run is the daemon's now: the card says so once, forcefully, and
+        # every later running snapshot is paced by the cadence contract.
+        await self._card_round_state(turn, "running", None)
         failures = 0
         blindness_reported = False
         while True:
@@ -1130,14 +1318,17 @@ class SachimaDelegateCoordinator:
                 if failures >= _MAX_CONSECUTIVE_OBSERVE_FAILURES and not blindness_reported:
                     blindness_reported = True
                     logger.warning(SACHIMA_DELEGATE_OBSERVATION_LOST)
-                    await self._notify(
-                        turn,
-                        DELEGATE_LOST_TEMPLATE.format(
-                            task_ref=turn.task_ref,
-                            code=SACHIMA_DELEGATE_OBSERVATION_LOST,
-                        ),
-                        None,
-                    )
+                    if self._card_channel(turn.origin, None) is not None:
+                        await self._card_round_state(turn, "recovering", None)
+                    else:
+                        await self._notify(
+                            turn,
+                            DELEGATE_LOST_TEMPLATE.format(
+                                task_ref=turn.task_ref,
+                                code=SACHIMA_DELEGATE_OBSERVATION_LOST,
+                            ),
+                            None,
+                        )
             else:
                 failures = 0
                 if result is not None:
@@ -1145,6 +1336,9 @@ class SachimaDelegateCoordinator:
                         turn_key, lambda: self._close_terminal(turn_key, result)
                     )
                     return
+                # A running card's duration keeps moving without the poll
+                # becoming a patch storm: this call coalesces by contract.
+                await self._flush_card(turn.task_ref, turn.origin, None)
             await asyncio.sleep(self._observe_interval)
 
     # -- the canonical terminal closure (I8) -------------------------------- #
@@ -1419,6 +1613,27 @@ class SachimaDelegateCoordinator:
             )
             return
 
+        if channel.card_capable:
+            # One Task, one surface: the terminal is the card's final projection
+            # revision rather than another "same task completed" message. The
+            # same durable ``im_sink`` settles from that one adapter call.
+            self._state.update_result(event.event_id, im_sink="in_flight")
+            settlement = UNCERTAIN_SETTLEMENT
+            try:
+                settlement = await self._card_terminal_round(
+                    turn, event, summary, channel
+                ) or SendSettlement(
+                    state="failed", diagnostic=SACHIMA_DELEGATE_CARD_UNAVAILABLE
+                )
+            finally:
+                self._state.update_result(
+                    event.event_id,
+                    im_sink=settlement.state,
+                    im_message_id=settlement.message_id,
+                    im_diagnostic=settlement.diagnostic,
+                )
+            return
+
         source_digest = self._current_source_digest(event.full_result_ref)
         self._state.update_result(event.event_id, im_sink="in_flight")
         settlement = UNCERTAIN_SETTLEMENT
@@ -1599,6 +1814,11 @@ class SachimaDelegateCoordinator:
             return DelegateOutcome(turn_key=turn_key, diagnostic=SACHIMA_DELEGATE_UNKNOWN_TASK)
         if turn.lifecycle == "blocked" or turn.diagnostic == SACHIMA_DELEGATE_BLOCKED:
             return self._outcome(turn, diagnostic=SACHIMA_DELEGATE_BLOCKED)
+        if turn.lifecycle == "admission_failed":
+            # A settled pre-accept failure is read, never re-driven: the exact
+            # key already proved there is nothing to find, and re-running the
+            # row would only re-time a round that has a frozen terminal.
+            return self._outcome(turn, diagnostic=SACHIMA_DELEGATE_DISPATCH_FAILED)
         if turn.lifecycle == "terminal":
             event = self._state.result_for_turn(turn_key)
             if event is not None and event.im_sink in {"failed", "uncertain"}:
@@ -1863,6 +2083,13 @@ class SachimaDelegateCoordinator:
             if event.im_sink == "in_flight":
                 event = self._state.update_result(event.event_id, im_sink="uncertain")
                 moved += 1
+                # An interrupted attempt on a *card* sink is owed the one patch
+                # that makes the durable state visible again. A card is patched
+                # in place, so unlike a text body it cannot become a second
+                # message — which is why this reclassification is followed
+                # through instead of being left for an explicit reconciliation.
+                if await self._reconcile_restored_card(event):
+                    moved += 1
             if event.hermes_sink == "in_flight":
                 event = self._state.update_result(event.event_id, hermes_sink="pending")
                 moved += 1
@@ -1877,6 +2104,670 @@ class SachimaDelegateCoordinator:
                 )
                 moved += 1
         return moved
+
+    async def _reconcile_restored_card(self, event: DelegateResultEvent) -> bool:
+        """Patch the one already-bound card whose delivery a restart interrupted.
+
+        Startup may reconcile a *confirmed* card binding from durable state, and
+        only that. Three guards say so: a non-card origin is left alone, because
+        re-sending a text body is how one terminal becomes two messages; a card
+        with no confirmed ``message_id`` is left alone, because the prior send's
+        outcome is unknown and sending again is how one Task ends up with two
+        cards; and a turn that is not terminal has nothing to reconcile here.
+
+        Nothing in this path resubmits to ARS, re-reads the Run, or re-runs the
+        summariser — it projects state that is already durable.
+        """
+
+        turn = self._state.read_turn(event.turn_key)
+        if turn is None or turn.lifecycle != "terminal":
+            return False
+        if self._card_channel(turn.origin, None) is None:
+            return False
+        projection = self._read_card(event.task_ref)
+        if projection is None or projection.card_message_id is None:
+            return False
+        await self._exclusive(
+            turn.turn_key,
+            lambda: self._reconcile_im_sink(event, turn),
+        )
+        return True
+
+    # -- the Task status card (plan §4, §5) ---------------------------------- #
+    #
+    # One card per ``dtask_*``, one round row per Turn, patched in place. The
+    # card never decides anything: every method here reads durable state, writes
+    # a projection, and makes at most one adapter call. A card that fails is a
+    # failed *presentation*, which is why nothing below can change a lifecycle,
+    # a permit, a result, or a sink other than the card's own.
+    def _card_channel(
+        self, origin: DelegateOrigin, delivery: DelegateDelivery | None
+    ) -> DelegateDelivery | None:
+        """This origin's card capability, or ``None`` for the legacy text path."""
+
+        channel = self._delivery_for(origin, delivery)
+        if channel is None or not channel.card_capable:
+            return None
+        return channel
+
+    def _read_card(self, task_ref: str) -> DelegateCardProjection | None:
+        try:
+            return self._state.read_card(task_ref)
+        except (DelegateStateError, DelegateCardError):
+            logger.warning(SACHIMA_DELEGATE_CARD_UNAVAILABLE)
+            return None
+
+    def _save_card(
+        self, projection: DelegateCardProjection
+    ) -> DelegateCardProjection | None:
+        """Persist one forward card state as a revision of its own.
+
+        The revision is claimed from the projection *this* caller read, so a
+        writer whose snapshot has since been overtaken conflicts and is dropped
+        instead of replacing newer state with its own older view of the card.
+        A dropped presentation write changes no task truth: the next transition
+        rebuilds the snapshot from durable state and projects that.
+        """
+
+        try:
+            return self._state.advance_card(next_projection_revision(projection))
+        except (DelegateStateError, DelegateCardError):
+            logger.warning(SACHIMA_DELEGATE_CARD_UNAVAILABLE)
+            return None
+
+    def _write_card(
+        self, projection: DelegateCardProjection
+    ) -> DelegateCardProjection | None:
+        """Persist a projection that already selected its own revision."""
+
+        try:
+            return self._state.advance_card(projection)
+        except (DelegateStateError, DelegateCardError):
+            logger.warning(SACHIMA_DELEGATE_CARD_UNAVAILABLE)
+            return None
+
+    def _sealed_role(self, agent_id: str, role: Any) -> str | None:
+        """The role this AGENT actually holds, or ``None`` — never a guess.
+
+        The card's ``角色`` line is the role sealed into the admitted execution
+        contract. A role the validated policy does not assign to this exact
+        AGENT is not narrowed, aliased, or accepted "close enough": it simply is
+        not sealed, and the card says so rather than inventing one.
+        """
+
+        if type(role) is not str or not role.strip():
+            return None
+        assignment = self._role_policy.for_agent(agent_id)
+        if assignment is None or not assignment.holds(role=role, division=None):
+            return None
+        return role
+
+    async def _ensure_card(
+        self,
+        binding: DelegateTaskBinding,
+        turn: DelegateTurnRecord,
+        delivery: DelegateDelivery | None,
+    ) -> None:
+        """Create this Task's card projection and send the first snapshot.
+
+        Called with the durable Task/origin allocation — before capacity waiting
+        and before anything could submit — so the complete copyable ``dtask_*``
+        becomes visible through the card rather than through lifecycle text. A
+        Task that already has a card (a continuation, a restart) only reuses it;
+        nothing here can mint a second one.
+        """
+
+        channel = self._card_channel(binding.origin, delivery)
+        if channel is None:
+            return
+        if self._read_card(binding.task_ref) is not None:
+            return
+        earlier = self._reconstructed_rounds(binding, turn.turn_key)
+        try:
+            projection = new_card_projection(
+                task_ref=binding.task_ref,
+                task_created_at=self._task_start_boundary(earlier),
+                origin_platform=binding.origin.platform,
+                origin_chat_id=binding.origin.chat_id,
+                origin_session_id=binding.origin.session_id,
+                origin_thread_id=binding.origin.thread_id,
+                locale=self._card_locale,
+                agent_id=binding.agent_id,
+                model=turn.requested_model,
+                effort=turn.requested_effort,
+                task_description=sanitize_card_line(turn.task_description),
+            )
+            for row in earlier:
+                projection = append_round(
+                    projection,
+                    turn_key=row["turn_key"],
+                    purpose=row["purpose"],
+                    admitted_role=row["admitted_role"],
+                    started_at=row["started_at"],
+                )
+                projection = advance_round(
+                    projection,
+                    row["turn_key"],
+                    status=row["status"],
+                    settled_at=row["settled_at"],
+                )
+            self._state.put_card(projection)
+        except (DelegateStateError, DelegateCardError):
+            logger.warning(SACHIMA_DELEGATE_CARD_UNAVAILABLE)
+            return
+        await self._flush_card(binding.task_ref, binding.origin, channel, force=True)
+
+    def _reconstructed_rounds(
+        self, binding: DelegateTaskBinding, current_turn_key: str
+    ) -> list[dict[str, Any]]:
+        """Safe persisted round summaries for a Task that predates its card.
+
+        First activation does not backfill settled history, but a Task that
+        gains a card on its *next* continuation must still number that round by
+        the durable ``turn_keys`` order — a continuation announced as ``第 1 轮``
+        would be a plainly untrue header. Only persisted, already-sanitized
+        material is reconstructed: the sealed purpose, the sealed role, the
+        lifecycle boundaries, and the recorded terminal. Nothing about the
+        earlier Runs' ARS Sessions was persisted for the card, so those rows
+        make no Session claim at all and cannot become evidence later.
+        """
+
+        rows: list[dict[str, Any]] = []
+        for turn_key in binding.turn_keys:
+            if turn_key == current_turn_key:
+                continue
+            try:
+                prior = self._state.read_turn(turn_key)
+            except DelegateStateError:
+                prior = None
+            if prior is None:
+                # The turn_key is durable proof the round happened; this host
+                # simply retains nothing readable about it. Keeping the row
+                # preserves the numbering and says exactly that, which beats
+                # both silently renumbering and inventing a terminal.
+                rows.append(
+                    {
+                        "turn_key": turn_key,
+                        "purpose": None,
+                        "admitted_role": None,
+                        "status": "recovering",
+                        "started_at": None,
+                        "settled_at": None,
+                    }
+                )
+                continue
+            rows.append(
+                {
+                    "turn_key": turn_key,
+                    "purpose": sanitize_card_line(prior.task_description),
+                    "admitted_role": sanitize_card_line(prior.admitted_role),
+                    "status": self._reconstructed_status(prior),
+                    "started_at": safe_card_instant(prior.accepted_at),
+                    "settled_at": safe_card_instant(self._terminal_instant(turn_key)),
+                }
+            )
+        return rows
+
+    @staticmethod
+    def _reconstructed_status(prior: DelegateTurnRecord) -> str:
+        """One persisted Turn lifecycle, as the round state it really reached."""
+
+        if prior.lifecycle == "terminal" and prior.terminal_status in _CARD_TERMINALS:
+            return prior.terminal_status
+        if prior.lifecycle == "admission_failed":
+            return "rejected"
+        return "recovering"
+
+    def _terminal_instant(self, turn_key: str) -> str | None:
+        try:
+            event = self._state.result_for_turn(turn_key)
+        except DelegateStateError:
+            return None
+        return None if event is None else event.terminal_at
+
+    @staticmethod
+    def _task_start_boundary(earlier: list[dict[str, Any]]) -> str | None:
+        """The Task duration's start: this allocation, or no claim at all.
+
+        Only a genuine first allocation — no earlier round at all — starts now,
+        because that instant *is* the Task allocation this method was called
+        for. It is the one moment a host can honestly say a Task began.
+
+        A Task that already ran rounds began before anything here observed it,
+        and this host retains no Task-level boundary for it. The round
+        boundaries it *does* retain are not a substitute: a round's
+        ``started_at`` is when a **Turn** was admitted, which is a fact about
+        that Turn and says nothing about when the Task was allocated — the
+        queue wait, the earlier rounds, and the allocation itself all precede
+        it. Borrowing one would silently under-report the Task's whole life as
+        a confident number, and a wall-clock reading would invent a start such
+        a Task demonstrably did not have. Both are refused: the card renders the
+        honest unavailable value instead, which is what a missing boundary is.
+        """
+
+        return None if earlier else _utc_status_time()
+
+    async def _card_pre_accept(
+        self,
+        turn: DelegateTurnRecord,
+        status: str,
+        delivery: DelegateDelivery | None,
+    ) -> None:
+        projection = self._read_card(turn.task_ref)
+        if projection is None:
+            return
+        try:
+            updated = replace(projection, pre_accept_status=status)
+        except DelegateCardError:
+            return
+        if self._save_card(updated) is None:
+            return
+        await self._flush_card(turn.task_ref, turn.origin, delivery, force=True)
+
+    async def _card_open_round(
+        self, turn: DelegateTurnRecord, delivery: DelegateDelivery | None
+    ) -> None:
+        """Append this Turn's round row, once, before anything could submit."""
+
+        projection = self._read_card(turn.task_ref)
+        if projection is None:
+            return
+        try:
+            updated = append_round(
+                replace(projection, pre_accept_status="submitting"),
+                turn_key=turn.turn_key,
+                purpose=sanitize_card_line(turn.task_description),
+                admitted_role=sanitize_card_line(turn.admitted_role),
+                started_at=_utc_status_time(),
+            )
+        except DelegateCardError:
+            logger.warning(SACHIMA_DELEGATE_CARD_UNAVAILABLE)
+            return
+        if updated == projection or self._save_card(updated) is None:
+            return
+        await self._flush_card(turn.task_ref, turn.origin, delivery, force=True)
+
+    @staticmethod
+    def _admitted_session_origin(record: Any) -> str | None:
+        """How this Run reached its ARS Session, as the admission recorded it.
+
+        The submit either asked the daemon to create a Session or named one to
+        load, and the accepted binding keeps that mode with the dispatch it
+        belongs to. That is the only admissible answer. A round's *position* in
+        the Task is not evidence: being round one says nothing about what the
+        daemon actually served, and a Task whose card was created late has
+        rounds whose real first Session nobody here observed. A record that
+        carries no mode claims neither origin.
+        """
+
+        refs = getattr(record, "resolver_refs", None)
+        if not isinstance(refs, Mapping):
+            return None
+        return _SESSION_MODE_TO_ORIGIN.get(refs.get("session_mode"))
+
+    @staticmethod
+    def _earlier_rounds(
+        projection: DelegateCardProjection, turn_key: str
+    ) -> tuple[Any, ...]:
+        """Every round of this Task that opened before the given one."""
+
+        earlier: list[Any] = []
+        for row in projection.rounds:
+            if row.turn_key == turn_key:
+                break
+            earlier.append(row)
+        return tuple(earlier)
+
+    @staticmethod
+    def _round_row(
+        projection: DelegateCardProjection, turn: DelegateTurnRecord
+    ) -> DelegateCardProjection:
+        """This Turn's row, opened from its own record if it is not there yet.
+
+        :meth:`_card_open_round` normally opens the row before anything could
+        submit, but the Task/card projection becomes durable *before* that — so
+        a host that died in between would otherwise leave the round, and with
+        it the terminal, permanently unprojectable. Healing reads the same
+        sealed Turn record the normal path reads, so it can neither invent a
+        purpose nor renumber a round; ``append_round`` makes it a no-op once
+        the row exists.
+        """
+
+        return append_round(
+            projection,
+            turn_key=turn.turn_key,
+            purpose=sanitize_card_line(turn.task_description),
+            admitted_role=sanitize_card_line(turn.admitted_role),
+            started_at=safe_card_instant(turn.accepted_at),
+        )
+
+    def _card_admitted_round(
+        self, turn: DelegateTurnRecord, record: Any
+    ) -> DelegateCardProjection | None:
+        """Record this round's Run/Session evidence at the moment of admission.
+
+        The evidence is the ledger's own accepted record — the Run this turn
+        really got and the ARS Session the daemon really answered with. Whether
+        that adds up to reuse is :func:`project_session_evidence`'s decision,
+        never this method's, and never the card's.
+        """
+
+        projection = self._read_card(turn.task_ref)
+        if projection is None:
+            return None
+        try:
+            projection = self._round_row(projection, turn)
+        except DelegateCardError:
+            logger.warning(SACHIMA_DELEGATE_CARD_UNAVAILABLE)
+            return None
+        session_ref = derive_session_ref(getattr(record, "ars_session_id", None))
+        run_ref = getattr(record, "run_ref", None)
+        earlier = self._earlier_rounds(projection, turn.turn_key)
+        session_origin = (
+            self._admitted_session_origin(record) if session_ref is not None else None
+        )
+        try:
+            updated = advance_round(
+                projection,
+                turn.turn_key,
+                status="accepted",
+                session_ref=session_ref,
+                run_ref=run_ref,
+                session_origin=session_origin,
+                admitted_role=sanitize_card_line(turn.admitted_role),
+                session_projection=project_session_evidence(
+                    earlier_rounds=earlier,
+                    session_ref=session_ref,
+                    run_ref=run_ref,
+                    session_origin=session_origin,
+                    settled=False,
+                ),
+            )
+        except DelegateCardError:
+            logger.warning(SACHIMA_DELEGATE_CARD_UNAVAILABLE)
+            return None
+        return self._save_card(updated)
+
+    async def _card_round_state(
+        self,
+        turn: DelegateTurnRecord,
+        status: str,
+        delivery: DelegateDelivery | None,
+        *,
+        force: bool = True,
+        settled_at: str | None = None,
+    ) -> None:
+        projection = self._read_card(turn.task_ref)
+        if projection is None:
+            return
+        if projection.round_for(turn.turn_key) is None:
+            await self._card_pre_accept(turn, status, delivery)
+            return
+        try:
+            updated = advance_round(
+                projection, turn.turn_key, status=status, settled_at=settled_at
+            )
+        except DelegateCardError:
+            # A settled round is not reopened by a later transient state.
+            return
+        if updated == projection:
+            await self._flush_card(turn.task_ref, turn.origin, delivery, force=force)
+            return
+        if self._save_card(updated) is None:
+            return
+        await self._flush_card(turn.task_ref, turn.origin, delivery, force=force)
+
+    async def _card_terminal_round(
+        self,
+        turn: DelegateTurnRecord,
+        event: DelegateResultEvent,
+        summary: Any,
+        channel: DelegateDelivery,
+    ) -> SendSettlement | None:
+        """Settle this round's row and flush the one final projection revision."""
+
+        projection = self._read_card(turn.task_ref)
+        if projection is None:
+            return None
+        try:
+            projection = self._round_row(projection, turn)
+        except DelegateCardError:
+            logger.warning(SACHIMA_DELEGATE_CARD_UNAVAILABLE)
+            return None
+        row = projection.round_for(turn.turn_key)
+
+        result_summary = None
+        if event.terminal == "completed":
+            result_summary = sanitize_card_line(
+                projected_summary_text(
+                    summary,
+                    full_result_ref=event.full_result_ref,
+                    source_digest=self._current_source_digest(event.full_result_ref),
+                )
+            )
+        earlier = self._earlier_rounds(projection, turn.turn_key)
+        try:
+            updated = advance_round(
+                projection,
+                turn.turn_key,
+                status=event.terminal,
+                settled_at=event.terminal_at,
+                result_summary=result_summary,
+                session_projection=project_session_evidence(
+                    earlier_rounds=earlier,
+                    session_ref=row.session_ref,
+                    run_ref=row.run_ref,
+                    session_origin=row.session_origin,
+                    settled=True,
+                ),
+            )
+        except DelegateCardError:
+            logger.warning(SACHIMA_DELEGATE_CARD_UNAVAILABLE)
+            return None
+        if updated != projection and self._save_card(updated) is None:
+            return None
+        return await self._flush_card(
+            turn.task_ref, turn.origin, channel, force=True
+        )
+
+    def _card_pacing_allows(self, task_ref: str) -> bool:
+        with self._guard:
+            last = self._card_patched_at.get(task_ref)
+        return (
+            last is None
+            or (time.monotonic() - last) >= self._running_patch_interval
+        )
+
+    async def _flush_card(
+        self,
+        task_ref: str,
+        origin: DelegateOrigin,
+        delivery: DelegateDelivery | None,
+        *,
+        force: bool = False,
+    ) -> SendSettlement | None:
+        """Make at most one adapter call for one selected projection revision.
+
+        Intermediate updates coalesce; a forced flush — an acceptance, a state
+        change, a terminal — never does. The adapter owns transport retry, so
+        this performs exactly one call per revision and leaves another attempt
+        to later reconciliation or startup recovery.
+
+        The whole publication lives inside this Task's section: the state is
+        read, the revision is selected, the create-or-patch decision is made,
+        the fail-closed premark is persisted, the one call is issued, and its
+        outcome is settled — and only then is the section released. Deciding
+        outside it decides from a read another publisher may already have
+        overtaken, which is how two flushes each see "no message id yet" and
+        each create a card for one Task. Holding it across the call is also what
+        makes issue order and platform order the same order: two calls for one
+        card can complete in either order, so an older one that was merely slow
+        would otherwise land last and un-complete a round the user saw finish.
+        """
+
+        channel = self._card_channel(origin, delivery)
+        if channel is None:
+            return None
+        if not force and not self._card_pacing_allows(task_ref):
+            return None
+        async with self._card_publication(task_ref):
+            projection = self._read_card(task_ref)
+            if projection is None:
+                return None
+            if (
+                projection.card_message_id is None
+                and projection.card_sink_state == "uncertain"
+            ):
+                # A send may or may not have landed. Sending again is how one
+                # Task ends up with two cards, so the uncertain binding is
+                # retained for operator reconciliation instead.
+                await self._degrade_card(projection, channel)
+                return None
+            try:
+                projection = projected_revision(projection, at=_utc_status_time())
+            except DelegateCardError:
+                return None
+            saved = self._write_card(projection)
+            if saved is None:
+                return None
+
+            payload, _fallback = bounded_card_payload(
+                saved, limit=channel.limit, measure=channel.measure
+            )
+            with self._guard:
+                self._card_patched_at[task_ref] = time.monotonic()
+            if payload is None:
+                # Fail closed *before* the adapter call: API rejection is not
+                # control flow, and a bounded card that cannot be bounded
+                # further degrades to the compact Markdown the user still needs.
+                await self._degrade_card(saved, channel)
+                return SendSettlement(
+                    state="failed", diagnostic=SACHIMA_DELEGATE_CARD_UNAVAILABLE
+                )
+
+            message_id = saved.card_message_id
+            if message_id is None:
+                premarked = self._premark_card_send(saved)
+                if premarked is None:
+                    # The gap could not be recorded, so it must not be opened.
+                    return None
+                saved = premarked
+                settlement = await perform_settled_send(
+                    lambda: channel.send_card(payload)
+                )
+            else:
+                settlement = await perform_settled_send(
+                    lambda: channel.patch_card(message_id, payload)
+                )
+            await self._settle_card(saved, settlement, channel)
+        return settlement
+
+    def _premark_card_send(
+        self, projection: DelegateCardProjection
+    ) -> DelegateCardProjection | None:
+        """Persist the fail-closed no-id state *before* a card is created.
+
+        A create is the one card call whose side effect this host cannot
+        address afterwards: the platform has the message, and the only thing
+        that ties it back is a ``message_id`` that arrives with the reply. A
+        host that died between the two would restart holding "nothing was ever
+        sent" and would send a second card for the same Task — so the gap is
+        recorded before it can be opened, and closed by the settlement that
+        follows it.
+
+        Recording it is not a guess about the outcome. ``uncertain`` is exactly
+        what is true from here until the reply — it may or may not have landed —
+        and it is the existing sink state whose meaning already is "keep this
+        binding for reconciliation and never send again". Nothing new is
+        introduced to carry it: an outbox or a cross-restart send id would be a
+        second durable authority over a card this layer only ever projects.
+        """
+
+        return self._save_card(settle_card_sink(projection, state="uncertain"))
+
+    async def _settle_card(
+        self,
+        projection: DelegateCardProjection,
+        settlement: SendSettlement,
+        channel: DelegateDelivery,
+    ) -> None:
+        """Persist one card delivery outcome, and degrade at most once.
+
+        The outcome is applied to the projection as it stands *now*, not to the
+        snapshot that was rendered: a delivery fact is about the message, and
+        writing it back through a stale snapshot would undo whatever the round
+        moved on to while the call was in flight. Losing it is worse still — a
+        forgotten binding is how the next flush sends this Task a second card —
+        so the settlement rides on top of the newest state instead.
+        """
+
+        current = self._read_card(projection.task_ref) or projection
+        if settlement.confirmed:
+            message_id = (
+                current.card_message_id
+                or projection.card_message_id
+                or settlement.message_id
+            )
+            if message_id is None:
+                # Confirmed with no id: the card exists but this host cannot
+                # address it, so it is recorded as uncertain rather than bound
+                # to nothing.
+                self._save_card(settle_card_sink(current, state="uncertain"))
+                return
+            try:
+                bound = bind_card_message(
+                    current,
+                    message_id=message_id,
+                    revision=current.revision,
+                    at=current.last_projected_at or _utc_status_time(),
+                )
+            except DelegateCardError:
+                logger.warning(SACHIMA_DELEGATE_CARD_UNAVAILABLE)
+                return
+            if bound != current:
+                self._save_card(bound)
+            return
+
+        settled = current
+        failed = settle_card_sink(current, state=settlement.state)
+        if failed != current:
+            settled = self._save_card(failed) or current
+        await self._degrade_card(settled, channel)
+
+    async def _degrade_card(
+        self, projection: DelegateCardProjection, channel: DelegateDelivery
+    ) -> None:
+        """One compact sanitized Markdown notice per card-sink failure episode.
+
+        Cardinality, not a rate limit: the notice exists so the complete
+        ``dtask_*`` still reaches the user when rich delivery could not. It is
+        persisted with the sink settlement, so a restart cannot turn one episode
+        into a second notice.
+        """
+
+        if projection.degraded_notice:
+            return
+        try:
+            marked = self._save_card(
+                settle_card_sink(
+                    projection, state=projection.card_sink_state, degraded_notice=True
+                )
+            )
+        except DelegateCardError:
+            logger.warning(SACHIMA_DELEGATE_CARD_UNAVAILABLE)
+            return
+        if marked is None:
+            return
+        # Compact: the notice carries the same fields in the same order, with
+        # as much round history as the platform's own bound allows. The
+        # narrowest form keeps the five summary rows — and with them the
+        # copyable ``dtask_*`` — which is the whole reason this notice exists.
+        body = ""
+        for window in (CARD_ROUND_WINDOW, 1, 0):
+            body = render_delegation_markdown(marked, window=window)
+            if channel.measure(body) <= channel.limit:
+                break
+        await perform_settled_send(lambda: channel.send_text(body))
 
     # -- helpers ------------------------------------------------------------ #
     def _current_turn(self, task_ref: Any) -> DelegateTurnRecord | None:
@@ -1994,6 +2885,11 @@ def bind_delegate_coordinator(
     ``summary_provider`` is injected, and omitting it is a valid composition:
     the coordinator then reports every result's summary as ``unavailable`` and
     keeps projecting the durable full-result ref.
+
+    This is also where the deployment's card cadence enters the graph. Reading
+    it here rather than defaulting inside the coordinator is what makes it a
+    *configured* value: a host that declares one gets it, and the S0 contract
+    answers for every host that does not.
     """
 
     global _coordinator
@@ -2006,6 +2902,7 @@ def bind_delegate_coordinator(
             delivery_factory if delivery_factory is not None else _delivery_factory_hook
         ),
         summary_provider=summary_provider,
+        running_patch_interval=configured_running_patch_interval(config),
     )
     return _coordinator
 

@@ -876,3 +876,201 @@ def test_the_stored_summary_never_carries_the_source_answer(tmp_path):
     ) == 0o600
     # The original is still exactly where it was.
     assert store.read_full_result(full_ref) == SOURCE_ANSWER_CANARY
+
+
+# --------------------------------------------------------------------------- #
+# S1 — the durable Task-card projection
+#
+# The store is the atomic, private home of the card projection; the card module
+# owns its invariants. What is proven here is that the two hold together across
+# a fresh process: one card record per Task, an immutable creation boundary,
+# stable append-only round numbering, revision monotonicity, a sealed origin,
+# and no raw material on disk.
+# --------------------------------------------------------------------------- #
+CARD_TASK_REF = "dtask_" + "ab12cd34" * 4
+CARD_CREATED_AT = "2026-08-26T09:00:00+00:00"
+
+
+def _card_projection(**overrides):
+    from gateway.sachima_delegate_card import new_card_projection
+
+    base = dict(
+        task_ref=CARD_TASK_REF,
+        task_created_at=CARD_CREATED_AT,
+        origin_platform="feishu",
+        origin_chat_id="oc_private_chat",
+        origin_session_id="sess_1",
+        agent_id="oh-my-pi",
+        model="glm-5.3",
+        effort="max",
+        task_description="验证 Session 复用",
+    )
+    base.update(overrides)
+    return new_card_projection(**base)
+
+
+def test_a_card_projection_survives_a_fresh_store(tmp_path):
+    from gateway.sachima_delegate_card import advance_round, append_round
+
+    root = str(tmp_path / "state")
+    store = DelegateStateStore(root)
+    projection = append_round(
+        _card_projection(), turn_key="dturn_one", purpose="建立 Session 上下文"
+    )
+    projection = advance_round(
+        projection,
+        "dturn_one",
+        status="completed",
+        session_projection="new",
+        result_summary="上下文已建立",
+        settled_at="2026-08-26T09:00:40+00:00",
+    )
+    store.put_card(projection)
+
+    fresh = DelegateStateStore(root)
+    restored = fresh.read_card(CARD_TASK_REF)
+    assert restored == projection
+    assert fresh.list_cards() == (projection,)
+
+
+def test_a_card_record_is_create_only_and_replays_identically(tmp_path):
+    store = DelegateStateStore(str(tmp_path / "state"))
+    projection = _card_projection()
+    store.put_card(projection)
+    assert store.put_card(projection) == projection
+
+    from dataclasses import replace as _replace
+
+    with pytest.raises(DelegateStateError) as excinfo:
+        store.put_card(_replace(projection, pre_accept_status="waiting"))
+    assert str(excinfo.value) == SACHIMA_DELEGATE_STATE_CONFLICT
+
+
+def _forward(projection, **changes):
+    """One card state moved forward: the changes, at the next revision."""
+
+    from dataclasses import replace as _replace
+
+    from gateway.sachima_delegate_card import next_projection_revision
+
+    return next_projection_revision(_replace(projection, **changes))
+
+
+def test_advancing_a_card_keeps_the_creation_boundary_and_the_origin(tmp_path):
+    store = DelegateStateStore(str(tmp_path / "state"))
+    projection = store.put_card(_card_projection())
+    moved = store.advance_card(_forward(projection, pre_accept_status="waiting"))
+    assert moved.pre_accept_status == "waiting"
+    assert moved.task_created_at == CARD_CREATED_AT
+
+    # The immutable creation boundary cannot be rewritten under the same Task.
+    with pytest.raises(DelegateStateError) as excinfo:
+        store.advance_card(
+            _forward(moved, task_created_at="2026-08-26T10:00:00+00:00")
+        )
+    assert str(excinfo.value) == SACHIMA_DELEGATE_STATE_CONFLICT
+
+    # Neither can the sealed origin: a restored Task cannot move conversations.
+    with pytest.raises(DelegateStateError):
+        store.advance_card(_forward(moved, origin_chat_id="oc_other_chat"))
+
+
+def test_conflicting_card_state_at_an_equal_revision_never_overwrites(tmp_path):
+    """Monotonic means *strictly* forward: an equal revision is not a licence.
+
+    Two writers that read the same projection compute two different next states.
+    Letting the later write win merely because its revision is not *smaller* is
+    how an already-projected card state is silently replaced by another writer's
+    view of it, so only the exact same record replays.
+    """
+
+    from dataclasses import replace as _replace
+
+    store = DelegateStateStore(str(tmp_path / "state"))
+    projection = store.put_card(_card_projection())
+    moved = store.advance_card(_forward(projection, pre_accept_status="waiting"))
+
+    # An exact duplicate of the accepted projection is a no-op, not a conflict.
+    assert store.advance_card(moved) == moved
+
+    with pytest.raises(DelegateStateError) as excinfo:
+        store.advance_card(_replace(moved, pre_accept_status="submitting"))
+    assert str(excinfo.value) == SACHIMA_DELEGATE_STATE_CONFLICT
+    assert store.read_card(CARD_TASK_REF) == moved
+
+
+def test_a_card_revision_never_moves_backwards(tmp_path):
+    from dataclasses import replace as _replace
+
+    store = DelegateStateStore(str(tmp_path / "state"))
+    from gateway.sachima_delegate_card import projected_revision
+
+    projection = store.put_card(_card_projection())
+    second = store.advance_card(
+        projected_revision(projection, at="2026-08-26T09:00:10+00:00")
+    )
+    third = store.advance_card(
+        projected_revision(second, at="2026-08-26T09:00:20+00:00")
+    )
+    assert third.revision == 2
+
+    stale = _replace(third, revision=1, pre_accept_status="waiting")
+    with pytest.raises(DelegateStateError) as excinfo:
+        store.advance_card(stale)
+    assert str(excinfo.value) == SACHIMA_DELEGATE_STATE_CONFLICT
+    # The newer state is still exactly what is on disk.
+    assert store.read_card(CARD_TASK_REF).revision == 2
+
+
+def test_advancing_a_card_that_was_never_persisted_is_a_conflict(tmp_path):
+    store = DelegateStateStore(str(tmp_path / "state"))
+    with pytest.raises(DelegateStateError) as excinfo:
+        store.advance_card(_card_projection())
+    assert str(excinfo.value) == SACHIMA_DELEGATE_STATE_CONFLICT
+
+
+def test_a_damaged_card_record_fails_closed_and_keeps_its_bytes(tmp_path):
+    root = str(tmp_path / "state")
+    store = DelegateStateStore(root)
+    store.put_card(_card_projection())
+    path = Path(root) / "cards" / (CARD_TASK_REF + ".json")
+    damaged = b'{"version": 1, "kind": "card", "record": {"task_ref"'
+    path.write_bytes(damaged)
+    with pytest.raises(DelegateStateError) as excinfo:
+        store.read_card(CARD_TASK_REF)
+    assert str(excinfo.value) == SACHIMA_DELEGATE_STATE_UNREADABLE
+    assert path.read_bytes() == damaged
+
+    widened = {
+        "version": DELEGATE_STATE_VERSION,
+        "kind": "card",
+        "record": {**_card_projection().as_dict(), "raw_card_json": "{...}"},
+    }
+    path.write_text(json.dumps(widened), encoding="utf-8")
+    with pytest.raises(DelegateStateError):
+        store.read_card(CARD_TASK_REF)
+
+
+def test_the_stored_card_carries_no_raw_material_and_stays_private(tmp_path):
+    from gateway.sachima_delegate_card import advance_round, append_round
+
+    root = str(tmp_path / "state")
+    store = DelegateStateStore(root)
+    projection = append_round(_card_projection(), turn_key="dturn_one", purpose="第一步")
+    projection = advance_round(
+        projection, "dturn_one", status="running", run_ref="run_ab12cd34"
+    )
+    store.put_card(projection)
+    path = Path(root) / "cards" / (CARD_TASK_REF + ".json")
+    serialized = path.read_text(encoding="utf-8")
+    for forbidden in ("dres_", "dlg_", "wide_screen_mode", "elements"):
+        assert forbidden not in serialized
+    assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
+
+
+def test_a_card_lookup_never_echoes_a_malformed_task_ref(tmp_path):
+    store = DelegateStateStore(str(tmp_path / "state"))
+    with pytest.raises(DelegateStateError) as excinfo:
+        store.read_card("../../etc/passwd")
+    assert str(excinfo.value) == SACHIMA_DELEGATE_STATE_INVALID
+    assert store.read_card("dtask_" + "00" * 8) is None

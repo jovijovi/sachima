@@ -313,6 +313,10 @@ def _handle_delegate_control(args: dict, **kw) -> str:
                         task_text=task_text.strip(),
                         preset=admission.preset,
                         origin=origin,
+                        # Sealed only when the validated role policy really
+                        # assigns this role to this exact AGENT; otherwise the
+                        # task carries none and the status card says so.
+                        admitted_role=args.get("role"),
                     )
                 ).as_dict()
         elif action == "status":
@@ -352,6 +356,7 @@ def _handle_delegate_control(args: dict, **kw) -> str:
                         task_text.strip(),
                         preset=admission.preset,
                         origin=origin,
+                        admitted_role=args.get("role"),
                     )
                 ).as_dict()
         else:
@@ -401,12 +406,15 @@ DELEGATE_CONTROL_SCHEMA = {
             "role": {
                 "type": "string",
                 "description": (
-                    "For 'agents': an exact configured role token (e.g. "
+                    "An exact configured role token (e.g. "
                     "'architecture_design'). Matching is exact — map the "
-                    "user's words onto a role yourself. Exactly one eligible "
-                    "AGENT is returned as the selection; zero or several come "
-                    "back as a stable code plus the candidates, which is your "
-                    "cue to ask the user rather than pick."
+                    "user's words onto a role yourself. For 'agents', exactly "
+                    "one eligible AGENT is returned as the selection; zero or "
+                    "several come back as a stable code plus the candidates, "
+                    "which is your cue to ask the user rather than pick. For "
+                    "'create' or 'continue' it is optional and records which "
+                    "role the AGENT was admitted under; a role the AGENT does "
+                    "not actually hold is not sealed and changes nothing."
                 ),
             },
             "division": {

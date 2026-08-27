@@ -2826,11 +2826,33 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     origin.chat_id, text, metadata=metadata, **anchor_kwargs
                 )
 
+            # The delegation status card is offered only where the adapter can
+            # both send an interactive card and patch that same message in
+            # place.  Half the pair would turn one Task's card into a new
+            # message per transition, which is the behavior it exists to
+            # retire, so a partial capability declines rather than degrades —
+            # and every other platform keeps the plain lifecycle unchanged.
+            send_card_fn = getattr(adapter, "send_interactive_card", None)
+            patch_card_fn = getattr(adapter, "patch_interactive_card", None)
+            send_card = None
+            patch_card = None
+            if callable(send_card_fn) and callable(patch_card_fn):
+
+                async def send_card(card):  # noqa: F811 - capability, not a redefinition
+                    return await send_card_fn(
+                        origin.chat_id, card, metadata=metadata, **anchor_kwargs
+                    )
+
+                async def patch_card(message_id, card):  # noqa: F811
+                    return await patch_card_fn(origin.chat_id, message_id, card)
+
             return DelegateDelivery(
                 send_text=_send_text,
                 send_plain_text_once=_send_once,
                 limit=adapter.single_message_text_limit(),
                 measure=adapter.measure_text,
+                send_card=send_card,
+                patch_card=patch_card,
             )
         except Exception:
             logger.debug("delegate delivery unavailable", exc_info=True)
