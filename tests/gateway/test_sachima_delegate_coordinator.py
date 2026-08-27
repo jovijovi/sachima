@@ -2712,7 +2712,7 @@ async def test_two_turns_two_runs_one_session_prove_reuse_on_the_card(tmp_path):
     await _run_one_round(coordinator, facade, delivery, index=0, text="建立上下文")
 
     mid = _card_text(delivery.last_card)
-    assert "Session：新建" in mid
+    assert "**Session**：新建" in mid
     assert "已确认复用" not in mid
 
     await _run_one_round(coordinator, facade, delivery, index=1, text="验证上下文复用")
@@ -2734,8 +2734,8 @@ async def test_two_turns_two_runs_one_session_prove_reuse_on_the_card(tmp_path):
     assert second.session_projection == "reused"
 
     final = _card_text(delivery.last_card)
-    assert "Session：新建" in final
-    assert "Session：已确认复用" in final
+    assert "**Session**：新建" in final
+    assert "**Session**：已确认复用" in final
     # Nothing internal ever reached the surface.
     for forbidden in ("dturn_", "dres_", "RUN-delegate", "ARSSESSION", "oc_chat"):
         assert forbidden not in json.dumps(delivery.last_card, ensure_ascii=False)
@@ -2771,8 +2771,8 @@ async def test_a_third_round_confirms_reuse_against_the_original_created_anchor(
     assert third.session_projection == "reused"
 
     final = _card_text(delivery.last_card)
-    assert final.count("Session：已确认复用") == 2
-    assert "Session：新建" in final
+    assert final.count("**Session**：已确认复用") == 2
+    assert "**Session**：新建" in final
     assert len(delivery.sent_cards) == 1
 
 
@@ -3044,7 +3044,7 @@ async def test_the_admitted_role_is_sealed_from_the_role_policy_or_left_unspecif
         coordinator.state.read_turn(outcome.turn_key).admitted_role
         == "session_reuse_verifier"
     )
-    assert "👤 角色： session_reuse_verifier" in _card_text(delivery.last_card)
+    assert "👤 **角色**： session_reuse_verifier" in _card_text(delivery.last_card)
     facade.terminalize(0)
 
 
@@ -3060,7 +3060,7 @@ async def test_a_role_the_agent_does_not_hold_is_never_sealed(tmp_path):
         admitted_role="pretend_role",
     )
     assert coordinator.state.read_turn(outcome.turn_key).admitted_role is None
-    assert "👤 角色： 未指定" in _card_text(delivery.last_card)
+    assert "👤 **角色**： 未指定" in _card_text(delivery.last_card)
     facade.terminalize(0)
 
 
@@ -3177,9 +3177,152 @@ async def test_a_legacy_task_without_a_card_gets_one_on_its_next_continuation(tm
     final = _card_text(cards.last_card)
     assert outcome.task_ref in final
     assert final.startswith("委派任务 · 第 2 轮已完成")
-    assert "⏱️ 耗时： 未知" in final
+    assert "⏱️ **耗时**： 未知" in final
     assert "✅ 第 1 轮：旧任务的第一轮" in final
     assert "✅ 第 2 轮：继续这个旧任务" in final
+
+
+CARD_TITLE_CANARY = "核对交付卡文案"
+
+
+@pytest.mark.asyncio
+async def test_the_task_line_is_the_supplied_title_and_never_the_execution_prompt(
+    tmp_path,
+):
+    """The card shows the title it was given; the Turn keeps the whole ask."""
+
+    delivery = _CardDelivery()
+    coordinator, facade = _coordinator(tmp_path, delivery=delivery)
+    outcome = await coordinator.create(
+        task_text=TASK_TEXT_CANARY,
+        preset=_preset(coordinator),
+        origin=_origin(),
+        delivery=delivery.channel(),
+        task_title=CARD_TITLE_CANARY,
+    )
+
+    assert _card_text(delivery.last_card).split("\n")[2] == (
+        f"💡 **任务**： {CARD_TITLE_CANARY}"
+    )
+    assert TASK_TEXT_CANARY not in _card_text(delivery.last_card).split("\n")[2]
+
+    # Both halves are durable, and a fresh reader sees the same two facts: a
+    # title that lived only in memory would drift to "未提供" after a restart.
+    from gateway.sachima_delegate_state import DelegateStateStore
+
+    fresh = DelegateStateStore(coordinator.state.root)
+    assert fresh.read_task(outcome.task_ref).task_title == CARD_TITLE_CANARY
+    assert fresh.read_card(outcome.task_ref).task_description == CARD_TITLE_CANARY
+    assert fresh.read_turn(outcome.turn_key).task_description == TASK_TEXT_CANARY
+    facade.terminalize(0)
+
+
+@pytest.mark.asyncio
+async def test_a_continuation_adds_a_round_without_moving_the_card_title(tmp_path):
+    """A later round is a new row, never a new headline for the same Task."""
+
+    delivery = _CardDelivery()
+    coordinator, facade = _coordinator(tmp_path, delivery=delivery)
+    outcome = await coordinator.create(
+        task_text=TASK_TEXT_CANARY,
+        preset=_preset(coordinator),
+        origin=_origin(),
+        delivery=delivery.channel(),
+        task_title=CARD_TITLE_CANARY,
+    )
+    facade.terminalize(0)
+    assert await _until(lambda: _sink_settled(coordinator, outcome.turn_key))
+    await _run_one_round(
+        coordinator, facade, delivery, index=1, text="继续这个任务的第二段完整执行指令"
+    )
+
+    projection = coordinator.state.read_card(outcome.task_ref)
+    assert projection.task_description == CARD_TITLE_CANARY
+    assert len(projection.rounds) == 2
+    final = _card_text(delivery.last_card)
+    assert final.split("\n")[2] == f"💡 **任务**： {CARD_TITLE_CANARY}"
+    # The round row still states the continuation's own ask, from the Turn.
+    assert "第 2 轮：继续这个任务的第二段完整执行指令" in final
+
+
+@pytest.mark.asyncio
+async def test_a_late_card_takes_its_title_from_the_persisted_task(tmp_path):
+    """A Task that predates its card is titled from durable state, not the ask."""
+
+    plain = _Delivery()
+    coordinator, facade = _coordinator(tmp_path, delivery=plain)
+    outcome = await coordinator.create(
+        task_text=TASK_TEXT_CANARY,
+        preset=_preset(coordinator),
+        origin=_origin(),
+        delivery=plain.channel(),
+        task_title=CARD_TITLE_CANARY,
+    )
+    facade.terminalize(0)
+    assert await _until(lambda: _sink_settled(coordinator, outcome.turn_key))
+    assert coordinator.state.read_card(outcome.task_ref) is None
+
+    cards = _CardDelivery()
+    coordinator._delivery_factory = lambda _origin: cards.channel()
+    await _run_one_round(coordinator, facade, cards, index=1, text="继续这个旧任务")
+
+    projection = coordinator.state.read_card(outcome.task_ref)
+    assert projection.task_description == CARD_TITLE_CANARY
+    assert _card_text(cards.last_card).split("\n")[2] == (
+        f"💡 **任务**： {CARD_TITLE_CANARY}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_task_created_without_a_title_says_so_rather_than_guessing(tmp_path):
+    """No title, no headline: the card renders the honest unavailable value."""
+
+    delivery = _CardDelivery()
+    coordinator, facade = _coordinator(tmp_path, delivery=delivery)
+    outcome = await coordinator.create(
+        task_text=TASK_TEXT_CANARY,
+        preset=_preset(coordinator),
+        origin=_origin(),
+        delivery=delivery.channel(),
+    )
+
+    assert coordinator.state.read_task(outcome.task_ref).task_title is None
+    body = _card_text(delivery.last_card)
+    assert body.split("\n")[2] == "💡 **任务**： 未提供"
+    assert TASK_TEXT_CANARY not in body.split("\n")[2]
+    facade.terminalize(0)
+
+
+@pytest.mark.asyncio
+async def test_an_unsafe_title_is_folded_into_one_bounded_leak_free_line(tmp_path):
+    """The producer sanitizes with the existing rules — no second budget."""
+
+    from gateway.sachima_delegate_card import CARD_TEXT_BUDGET_CHARS
+
+    delivery = _CardDelivery()
+    coordinator, facade = _coordinator(tmp_path, delivery=delivery)
+    outcome = await coordinator.create(
+        task_text=TASK_TEXT_CANARY,
+        preset=_preset(coordinator),
+        origin=_origin(),
+        delivery=delivery.channel(),
+        task_title="核对 dtask_0f3c9a11b2c34d5e6f70 的\n多行\x07标题 " + "长" * 300,
+    )
+
+    title = coordinator.state.read_task(outcome.task_ref).task_title
+    assert len(title) == CARD_TEXT_BUDGET_CHARS
+    assert "\n" not in title and "\x07" not in title
+    assert "dtask_0f3c9a11b2c34d5e6f70" not in title
+    body = _card_text(delivery.last_card)
+    # What is *stored* is the sanitized line; what is *shown* is that same line
+    # with its markdown meaning removed, so the redaction marker reads as the
+    # brackets it is rather than opening a link.
+    shown = title.replace("[", "\\[").replace("]", "\\]")
+    assert body.split("\n")[2] == f"💡 **任务**： {shown}"
+    # The card's own identity line is still the only task ref on the card, and
+    # the complete ref stays copyable — its underscore is intraword.
+    assert body.count(outcome.task_ref) == 1
+    facade.terminalize(0)
 
 
 @pytest.mark.asyncio
@@ -3211,9 +3354,9 @@ async def test_a_reconstructed_legacy_round_is_never_read_as_session_evidence(tm
     assert continuation.session_projection == "unconfirmed"
 
     final = _card_text(cards.last_card)
-    assert "Session：新建" not in final
+    assert "**Session**：新建" not in final
     assert "已确认复用" not in final
-    assert "Session：复用状态未确认" in final
+    assert "**Session**：复用状态未确认" in final
 
 
 @pytest.mark.asyncio
@@ -3756,7 +3899,7 @@ async def test_the_role_line_follows_the_current_round_not_the_first_one(tmp_pat
     )
     facade.terminalize(0)
     assert await _until(lambda: _sink_settled(coordinator, outcome.turn_key))
-    assert "👤 角色： session_reuse_verifier" in _card_text(delivery.last_card)
+    assert "👤 **角色**： session_reuse_verifier" in _card_text(delivery.last_card)
 
     # The continuation names no role, so the card must not keep showing one.
     second = await coordinator.continue_task(
@@ -3764,7 +3907,7 @@ async def test_the_role_line_follows_the_current_round_not_the_first_one(tmp_pat
     )
     assert second.lifecycle == "admitted"
     assert coordinator.state.read_turn(second.turn_key).admitted_role is None
-    assert "👤 角色： 未指定" in _card_text(delivery.last_card)
+    assert "👤 **角色**： 未指定" in _card_text(delivery.last_card)
     facade.terminalize(1)
 
 
@@ -3996,7 +4139,7 @@ async def test_a_legacy_task_start_is_never_a_turn_admission_instant(tmp_path):
     # Positive control: a Task whose start this host really did allocate keeps a
     # persisted boundary and a numeric elapsed value.
     assert coordinator.state.read_card(task_ref).task_created_at is not None
-    assert _duration_line(delivery) != "⏱️ 耗时： 未知"
+    assert _duration_line(delivery) != "⏱️ **耗时**： 未知"
 
     # The Task this host retains from before card projection: durable turns that
     # carry their own admission instants, and no card at all.
@@ -4014,5 +4157,5 @@ async def test_a_legacy_task_start_is_never_a_turn_admission_instant(tmp_path):
     # start it is not evidence for stays unavailable, and the card says so.
     assert projection.rounds[0].started_at == admitted
     assert projection.task_created_at is None
-    assert _duration_line(delivery) == "⏱️ 耗时： 未知"
+    assert _duration_line(delivery) == "⏱️ **耗时**： 未知"
     facade.terminalize(1)

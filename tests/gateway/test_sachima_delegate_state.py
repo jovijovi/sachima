@@ -405,11 +405,16 @@ def test_task_turn_and_result_records_round_trip_through_a_fresh_store(tmp_path)
         origin=_origin(),
         turn_keys=(turn.turn_key,),
         current_turn_key=turn.turn_key,
+        task_title="核对交付卡文案",
     )
     store.put_task(binding)
 
     fresh = DelegateStateStore(root)
     assert fresh.read_task(task_ref) == binding
+    # The Task's own display title is durable: the card is rebuilt from this
+    # record after a restart, so a title that lived only in memory would drift
+    # into the honest "not provided" fallback on the next projection.
+    assert fresh.read_task(task_ref).task_title == "核对交付卡文案"
     assert fresh.read_turn(turn.turn_key) == turn
     assert fresh.read_turn(turn.turn_key).task_description == "do the thing"
     assert fresh.read_turn(turn.turn_key).accepted_at == "2026-08-19T04:05:06+00:00"
@@ -931,6 +936,84 @@ def test_a_card_projection_survives_a_fresh_store(tmp_path):
     restored = fresh.read_card(CARD_TASK_REF)
     assert restored == projection
     assert fresh.list_cards() == (projection,)
+
+
+def test_a_card_file_written_by_the_shipped_release_is_read_and_patched(tmp_path):
+    """A card already on disk keeps its message binding across this change.
+
+    The file is written here the way the running host wrote it — not through
+    the record class, which would prove only that the class agrees with
+    itself. A record this host refused to read would be a Task whose one bound
+    Feishu message could never be patched again, so the durable key is frozen
+    and the projection moves forward from what was already there.
+    """
+
+    import json
+
+    from gateway.sachima_delegate_card import (
+        DelegateCardProjection,
+        next_projection_revision,
+        render_delegation_card,
+    )
+
+    root = tmp_path / "state"
+    store = DelegateStateStore(str(root))
+    (root / "cards").mkdir(parents=True, exist_ok=True)
+    record = {
+        "task_ref": CARD_TASK_REF,
+        "task_created_at": CARD_CREATED_AT,
+        "origin_platform": "feishu",
+        "origin_chat_id": "oc_private_chat",
+        "origin_session_id": "sess_1",
+        "origin_thread_id": None,
+        "locale": "zh",
+        "agent_id": "oh-my-pi",
+        "model": "glm-5.3",
+        "effort": "max",
+        "task_description": "验证 Session 复用",
+        "card_message_id": "om_shipped",
+        "card_sink_state": "confirmed",
+        "revision": 4,
+        "last_projected_at": "2026-08-26T09:00:20+00:00",
+        "pre_accept_status": "submitting",
+        "degraded_notice": False,
+        "rounds": [
+            {
+                "turn_key": "dturn_one",
+                "round_number": 1,
+                "purpose": "建立 Session 上下文",
+                "admitted_role": None,
+                "status": "running",
+                "session_projection": "new",
+                "run_ref": "run_one",
+                "session_ref": "sess_abcd1234",
+                "session_origin": "created",
+                "started_at": "2026-08-26T09:00:05+00:00",
+                "settled_at": None,
+                "result_summary": None,
+            }
+        ],
+    }
+    (root / "cards" / (CARD_TASK_REF + ".json")).write_text(
+        json.dumps({"version": 1, "kind": "card", "record": record}),
+        encoding="utf-8",
+    )
+
+    restored = store.read_card(CARD_TASK_REF)
+    assert type(restored) is DelegateCardProjection
+    assert restored.card_message_id == "om_shipped"
+    assert "💡 **任务**： 验证 Session 复用" in (
+        render_delegation_card(restored)["elements"][0]["content"]
+    )
+
+    # The next projection is a patch of that same card, not a second one.
+    moved = store.advance_card(next_projection_revision(restored))
+    assert moved.revision == 5
+    assert moved.card_message_id == "om_shipped"
+    assert store.read_card(CARD_TASK_REF) == moved
+    assert "task_title" not in json.loads(
+        (root / "cards" / (CARD_TASK_REF + ".json")).read_text(encoding="utf-8")
+    )["record"]
 
 
 def test_a_card_record_is_create_only_and_replays_identically(tmp_path):

@@ -71,6 +71,7 @@ from sachima_supervisor.runtime_spine.agent_run_supervisor_execution_binding imp
 from sachima_supervisor.runtime_spine.arsd_run_binding_ledger import ArsdRunBindingLedger
 
 from tests.gateway.test_sachima_delegate_coordinator import (
+    CARD_TITLE_CANARY,
     FINAL_MESSAGE_CANARY,
     TASK_TEXT_CANARY,
     _catalog,
@@ -854,6 +855,7 @@ async def test_natural_language_create_uses_the_hosts_trusted_origin(
                     "action": "create",
                     "agent_id": AGENT_ID,
                     "task": TASK_TEXT_CANARY,
+                    "task_title": CARD_TITLE_CANARY,
                 },
             )
         )
@@ -910,6 +912,7 @@ async def test_an_agent_switch_creates_a_linked_new_task(tmp_path, monkeypatch):
                     "action": "create",
                     "agent_id": "codex",
                     "task": TASK_TEXT_CANARY,
+                    "task_title": CARD_TITLE_CANARY,
                 },
             )
         )
