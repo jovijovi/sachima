@@ -1905,6 +1905,11 @@ class _DelegateResultHandoff:
     what settlement targets — compression can rotate the live session entry
     mid-turn, but the event is bound to the ID that claimed it.
 
+    ``continuity`` is the ``TrustedSession`` that claim was proven with, carried
+    so settlement asks the identical question. A result claimed by a compression
+    continuation is bound to the Session that *produced* it, so settling on the
+    claiming id alone would leave it stuck ``in_flight``.
+
     ``mark_provider_attempt`` is handed to the agent and fires at the real
     provider/model invocation boundary.  It is a one-way latch: once the model
     has seen the handoff, a later interruption, a zero-call recursive follow-up,
@@ -1916,10 +1921,11 @@ class _DelegateResultHandoff:
     taken under a lock — repeated attempts are fine, a second settlement is not.
     """
 
-    __slots__ = ("session_id", "_consumed", "_settled", "_settle_lock")
+    __slots__ = ("session_id", "continuity", "_consumed", "_settled", "_settle_lock")
 
-    def __init__(self, session_id: str) -> None:
+    def __init__(self, session_id: str, *, continuity: Any = None) -> None:
         self.session_id = session_id
+        self.continuity = continuity
         self._consumed = threading.Event()
         self._settled = False
         self._settle_lock = threading.Lock()
@@ -2858,7 +2864,32 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             logger.debug("delegate delivery unavailable", exc_info=True)
             return None
 
-    def _consume_delegate_result_context(self, session_id: str) -> str:
+    def _delegate_result_continuity(self, session_entry) -> Any:
+        """This turn's proven claim over its own conversation, or ``None``.
+
+        A delegated task can finish while the user is away, and the conversation
+        can be compressed before their next message arrives — which forks a new
+        physical ``session_id`` and would strand a result bound to the previous
+        one. The Session/Gateway authority resolves that once, here, from the
+        persisted Session lineage; the coordinator is handed the answer rather
+        than a second copy of the rule.
+        """
+
+        try:
+            from gateway.session_continuity import resolve_trusted_session
+
+            return resolve_trusted_session(
+                self.session_store,
+                session_id=getattr(session_entry, "session_id", "") or "",
+                session_key=getattr(session_entry, "session_key", "") or "",
+            )
+        except Exception:
+            logger.debug("delegate result continuity unavailable", exc_info=True)
+            return None
+
+    def _consume_delegate_result_context(
+        self, session_id: str, *, continuity: Any = None
+    ) -> str:
         """External AGENT results owed to this Session's **next** ordinary turn.
 
         Returns the bounded projection text (or ``""``), marking each result's
@@ -2874,14 +2905,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             coordinator = bound_delegate_coordinator()
             if coordinator is None or not session_id:
                 return ""
-            lines = coordinator.pending_hermes_context(session_id)
+            lines = coordinator.pending_hermes_context(
+                session_id, continuity=continuity
+            )
             return "\n\n".join(lines) if lines else ""
         except Exception:
             logger.debug("delegate result context skipped", exc_info=True)
             return ""
 
-    def _settle_delegate_result_context(self, session_id: str, *, consumed: bool) -> None:
-        """Confirm a consumed handoff, or return an interrupted one to pending."""
+    def _settle_delegate_result_context(
+        self, session_id: str, *, consumed: bool, continuity: Any = None
+    ) -> None:
+        """Confirm a consumed handoff, or return an interrupted one to pending.
+
+        Settlement carries the *same* continuity the claim was made with, so a
+        handoff the compression continuation took is one it can also settle.
+        """
 
         try:
             from gateway.sachima_delegate import bound_delegate_coordinator
@@ -2890,9 +2929,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if coordinator is None or not session_id:
                 return
             if consumed:
-                coordinator.confirm_hermes_context(session_id)
+                coordinator.confirm_hermes_context(session_id, continuity=continuity)
             else:
-                coordinator.release_hermes_context(session_id)
+                coordinator.release_hermes_context(session_id, continuity=continuity)
         except Exception:
             logger.debug("delegate result context settlement skipped", exc_info=True)
 
@@ -9716,8 +9755,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # about to be sent (like history-backfill context), so no running turn
         # is mutated, no synthetic user message is injected, and the long-lived
         # system-prompt prefix is untouched.
+        _delegate_continuity = self._delegate_result_continuity(session_entry)
         _delegate_result_context = self._consume_delegate_result_context(
-            session_entry.session_id
+            session_entry.session_id, continuity=_delegate_continuity
         )
         if _delegate_result_context:
             message_text = (
@@ -9725,7 +9765,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
             # Settlement targets the Session the claim was made against, not
             # whatever the entry holds when the turn ends.
-            _delegate_handoff = _DelegateResultHandoff(session_entry.session_id)
+            _delegate_handoff = _DelegateResultHandoff(
+                session_entry.session_id, continuity=_delegate_continuity
+            )
 
         # Capture the platform event time as message metadata and keep the
         # persisted transcript clean (strip any leading timestamp prefix).
@@ -10397,6 +10439,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 self._settle_delegate_result_context(
                     _delegate_handoff.session_id,
                     consumed=_delegate_handoff.consumed,
+                    continuity=_delegate_handoff.continuity,
                 )
             # Restore session context variables to their pre-handler state
             self._clear_session_env(_session_env_tokens)

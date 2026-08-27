@@ -1,5 +1,6 @@
 """Focused tests for API server session-control endpoints."""
 
+import json
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -8,6 +9,7 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from gateway.config import PlatformConfig
 from gateway.platforms.api_server import APIServerAdapter
+from gateway.session_continuity import is_compression_continuation
 from hermes_state import SessionDB
 
 
@@ -209,6 +211,71 @@ async def test_session_fork_uses_current_sessiondb_branch_primitives(adapter, se
     assert fork["title"] == "Alternative"
     assert [m["content"] for m in session_db.get_messages(fork["id"])] == ["first path", "answer"]
     assert session_db.get_session(source_id)["end_reason"] == "branched"
+
+
+@pytest.mark.asyncio
+async def test_session_fork_persists_branch_marker(adapter, session_db):
+    """An API fork is a branch, and says so in its own row.
+
+    ``end_reason='branched'`` on the parent is not a durable statement about
+    the child: it lives on a row the child does not own, and the first end
+    reason wins, so a parent that was ended for any other reason first keeps
+    that reason forever. The child's own ``_branched_from`` marker is the fact
+    that survives — which is why ``/branch`` writes it in the CLI, the Gateway,
+    and the TUI. The API fork route is the fourth branch producer and must
+    write it too.
+    """
+
+    source_id = session_db.create_session("marker-source", "api_server")
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.post(f"/api/sessions/{source_id}/fork", json={})
+        assert resp.status == 201
+        fork_id = (await resp.json())["session"]["id"]
+
+    row = session_db.get_session(fork_id)
+    config = json.loads(row["model_config"]) if row["model_config"] else {}
+    assert config.get("_branched_from") == source_id
+
+
+@pytest.mark.asyncio
+async def test_session_fork_off_a_compressed_parent_is_not_a_continuation(adapter, session_db):
+    """An API fork never inherits the conversation it forked away from.
+
+    Reachable ordering: the parent is compressed first (context compression
+    ends it with ``end_reason='compression'``), then the client forks it. The
+    route's ``end_session(parent, 'branched')`` cannot correct the record —
+    first end reason wins — so the parent still reads ``'compression'`` and the
+    child is born with a compression-ended parent and a later ``started_at``:
+    the exact three facts the continuation edge looks for. Only the child's own
+    ``_branched_from`` marker tells the two apart.
+
+    Without it, this fork satisfies the continuity rule and inherits the
+    parent's delegate control grant and its unclaimed results — a task the fork
+    was never given. Proven at both layers that answer the question: the
+    persisted lineage in ``SessionDB``, and the single Gateway resolver every
+    consumer goes through.
+    """
+
+    source_id = session_db.create_session("compressed-source", "api_server")
+    session_db.end_session(source_id, "compression")
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.post(f"/api/sessions/{source_id}/fork", json={})
+        assert resp.status == 201
+        fork_id = (await resp.json())["session"]["id"]
+
+    # The route could not overwrite the parent's compression record.
+    assert session_db.get_session(source_id)["end_reason"] == "compression"
+
+    assert not session_db.is_compression_continuation(
+        ancestor_session_id=source_id, descendant_session_id=fork_id
+    )
+    assert not is_compression_continuation(
+        session_db, ancestor_session_id=source_id, descendant_session_id=fork_id
+    )
 
 
 @pytest.mark.asyncio

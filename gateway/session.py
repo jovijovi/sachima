@@ -759,6 +759,19 @@ class SessionStore:
         except Exception as e:
             print(f"[gateway] Warning: SQLite session store unavailable, falling back to JSONL: {e}")
     
+    @property
+    def session_db(self) -> Optional[Any]:
+        """The persisted Session store behind this cache, or ``None``.
+
+        The entries here are a live cache of *which* Session a conversation is
+        currently on; the durable lineage behind them (parents, end reasons,
+        compression splits) lives in SQLite. A caller that has to reason about
+        the lineage — "is this the same conversation after a compression?" —
+        needs the persisted side, and reaching for it through a named accessor
+        keeps that a supported question rather than a private-attribute poke.
+        """
+        return self._db
+
     def _ensure_loaded(self) -> None:
         """Load sessions index from disk if not already loaded."""
         with self._lock:

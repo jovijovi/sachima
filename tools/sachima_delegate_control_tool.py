@@ -46,7 +46,13 @@ model-invoked control surface safe:
 * **The caller's Session is trusted context, never an argument.** It comes from
   the Gateway's own ``HERMES_SESSION_ID`` (with a key lookup as the fallback for
   callers that only carry the key). A model-supplied session identifier is not
-  accepted, so a model cannot act on a conversation it is not in.
+  accepted, so a model cannot act on a conversation it is not in. A *task* also
+  belongs to a Session, and context compression forks a new physical one out
+  from under a live conversation — so "is this task yours" is asked of
+  ``gateway.session_continuity``, which admits this exact Session or a
+  compression continuation of it proven hop by hop from persisted lineage.
+  ``/new``, reset, ``/branch``, and subagent runs inherit nothing, and this
+  surface holds no copy of that rule.
 * **Task text never comes back.** Answers are refs, closed-vocabulary states,
   and stable codes. ``result`` is the one action that returns agent output, and
   it returns the durable result the user already received a bounded copy of.
@@ -132,43 +138,44 @@ def check_delegate_control_available() -> bool:
     return enabled_control_surface() is not None
 
 
-def _trusted_session_entry() -> Any:
-    """The caller's persisted Session, from trusted Gateway context only.
+def _trusted_session() -> Any:
+    """The caller's live conversation, from trusted Gateway context only.
 
-    Never a tool argument. The Gateway sets both the id and the key; the key
-    lookup is the fallback for a caller that only ever had one, and it goes
-    through the store rather than being reconstructed.
+    Never a tool argument. The Gateway sets both the id and the key, and the
+    Session/Gateway authority in ``gateway.session_continuity`` resolves them —
+    including the one legitimate disagreement, the window where context
+    compression has already rotated the contextvar onto the continuation and the
+    store still names the pre-compression parent. That window is admitted only
+    on persisted, per-hop lineage proof; this surface holds no rule of its own.
     """
 
     from gateway.session_context import get_session_env
+    from gateway.session_continuity import resolve_trusted_session
 
     store = _bound_session_store()
     if store is None:
         return None
-    session_id = (get_session_env("HERMES_SESSION_ID", "") or "").strip()
-    session_key = (get_session_env("HERMES_SESSION_KEY", "") or "").strip()
-    try:
-        entry = store.lookup_by_session_id(session_id) if session_id else None
-        if entry is None and session_key:
-            entry = store.lookup_by_session_key(session_key)
-    except Exception:
-        return None
-    if entry is None:
-        return None
-    if session_id and entry.session_id != session_id:
-        return None
-    if session_key and entry.session_key != session_key:
-        return None
-    return entry
+    return resolve_trusted_session(
+        store,
+        session_id=(get_session_env("HERMES_SESSION_ID", "") or "").strip(),
+        session_key=(get_session_env("HERMES_SESSION_KEY", "") or "").strip(),
+    )
 
 
-def _trusted_origin(session_entry: Any) -> Any:
-    """Rebuild a delegate origin from the persisted Session and turn context."""
+def _trusted_origin(trusted: Any) -> Any:
+    """Rebuild a delegate origin from the persisted Session and turn context.
+
+    The Session carried here is the one the conversation is *on* — after a
+    compression split that is the continuation, so a task created now is
+    attributed to the Session that actually holds the conversation rather than
+    to the parent the store has not caught up with yet.
+    """
 
     from gateway.sachima_delegate_state import DelegateOrigin
     from gateway.session_context import get_session_env
 
-    source = getattr(session_entry, "origin", None)
+    entry = getattr(trusted, "entry", None)
+    source = getattr(entry, "origin", None)
     platform_value = getattr(getattr(source, "platform", None), "value", None)
     if (
         source is None
@@ -183,8 +190,8 @@ def _trusted_origin(session_entry: Any) -> Any:
         thread_id=(
             str(source.thread_id) if getattr(source, "thread_id", None) else None
         ),
-        session_key=session_entry.session_key,
-        session_id=session_entry.session_id,
+        session_key=entry.session_key,
+        session_id=trusted.session_id,
         reply_anchor=message_id or None,
     )
 
@@ -247,8 +254,8 @@ def _handle_delegate_control(args: dict, **kw) -> str:
     action = args.get("action")
     if type(action) is not str or action not in _ACTIONS:
         return tool_error(SACHIMA_DELEGATE_CONTROL_INVALID)
-    session_entry = _trusted_session_entry()
-    if session_entry is None:
+    trusted = _trusted_session()
+    if trusted is None:
         return tool_error(SACHIMA_DELEGATE_CONTROL_NO_SESSION)
 
     task_ref = args.get("task_ref")
@@ -261,9 +268,13 @@ def _handle_delegate_control(args: dict, **kw) -> str:
             binding = coordinator.state.read_task(task_ref)
         except Exception:
             return tool_error(SACHIMA_DELEGATE_CONTROL_INVALID)
-        if binding is None or binding.origin.session_id != session_entry.session_id:
+        if binding is None or not trusted.claims(binding.origin):
             # Unknown and not-yours answer the same way: a control surface that
             # distinguishes them is an enumeration oracle for other conversations.
+            # "Yours" is the Session/Gateway authority's one rule: this exact
+            # Session, or the compression continuation of it that the persisted
+            # lineage proves. A branch, a subagent, and a ``/new`` all answer
+            # here exactly as another conversation does.
             return tool_error(SACHIMA_DELEGATE_CONTROL_FORBIDDEN)
 
     agent_id = args.get("agent_id")
@@ -306,7 +317,7 @@ def _handle_delegate_control(args: dict, **kw) -> str:
             # characters is empty for display purposes, and calling it present
             # would submit a Run whose card then says nothing was provided.
             task_title = sanitize_card_line(args.get("task_title"))
-            origin = _trusted_origin(session_entry)
+            origin = _trusted_origin(trusted)
             if (
                 type(task_text) is not str
                 or not task_text.strip()
@@ -364,7 +375,7 @@ def _handle_delegate_control(args: dict, **kw) -> str:
                 binding.agent_id if agent_id is None else agent_id,
                 task_text=task_text.strip(),
             )
-            origin = _trusted_origin(session_entry)
+            origin = _trusted_origin(trusted)
             if not admission.admitted:
                 payload = _refusal(admission)
             elif origin is None:
@@ -377,6 +388,11 @@ def _handle_delegate_control(args: dict, **kw) -> str:
                         preset=admission.preset,
                         origin=origin,
                         admitted_role=args.get("role"),
+                        # An AGENT switch links a new task, so the coordinator
+                        # re-asks whether the caller is this task's conversation.
+                        # It gets the same proven answer this surface used, not
+                        # a second rule of its own.
+                        continuity=trusted,
                     )
                 ).as_dict()
         else:
