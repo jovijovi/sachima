@@ -237,6 +237,99 @@ def test_projection_refuses_unsafe_material():
         _projection(locale="fr")
 
 
+#: One card record exactly as the shipped release writes it. The visible task
+#: line has always been persisted under ``task_description``; what changed is
+#: only *what is put there* — a supplied display title instead of the ask — so
+#: the document shape is deliberately frozen here rather than migrated.
+_SHIPPED_CARD_DOCUMENT = {
+    "task_ref": TASK_REF,
+    "task_created_at": CREATED_AT,
+    "origin_platform": "feishu",
+    "origin_chat_id": "oc_chat",
+    "origin_session_id": "sess_1",
+    "origin_thread_id": None,
+    "locale": "zh",
+    "agent_id": "oh-my-pi",
+    "model": "glm-5.3",
+    "effort": "max",
+    "task_description": "验证 oh-my-pi 的 Session 复用",
+    "card_message_id": "om_card",
+    "card_sink_state": "confirmed",
+    "revision": 3,
+    "last_projected_at": "2026-08-26T09:00:20+00:00",
+    "pre_accept_status": "submitting",
+    "degraded_notice": False,
+    "rounds": [
+        {
+            "turn_key": "dturn_a1",
+            "round_number": 1,
+            "purpose": "建立 Session 上下文",
+            "admitted_role": None,
+            "status": "running",
+            "session_projection": "new",
+            "run_ref": "run_one",
+            "session_ref": "sess_abcd1234",
+            "session_origin": "created",
+            "started_at": "2026-08-26T09:00:05+00:00",
+            "settled_at": None,
+            "result_summary": None,
+        }
+    ],
+}
+
+
+def test_a_card_written_by_the_shipped_release_still_restores_and_renders():
+    """An already-delivered card keeps working, unchanged, across this change.
+
+    A projection this host cannot read is a card it can no longer patch: the
+    Task's one bound message would freeze at whatever it last said. So the
+    persisted key stays exactly what the shipped release writes, and the only
+    thing that moved is which text a *new* Task puts there.
+    """
+
+    restored = DelegateCardProjection.from_dict(dict(_SHIPPED_CARD_DOCUMENT))
+
+    assert restored.task_description == "验证 oh-my-pi 的 Session 复用"
+    # Still bound, so the next revision patches the same message rather than
+    # sending this Task a second card.
+    assert restored.bound and restored.card_message_id == "om_card"
+    assert "💡 **任务**： 验证 oh-my-pi 的 Session 复用" in _card_text(
+        render_delegation_card(restored)
+    )
+    # And what it writes back is byte-for-byte the shape it was read from: no
+    # new key, no renamed key, nothing for an older host to choke on.
+    assert restored.as_dict() == _SHIPPED_CARD_DOCUMENT
+    assert "task_title" not in restored.as_dict()
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "带 dtask_0f3c9a11b2c34d5e6f70 的标题",
+        "目" * (CARD_TEXT_BUDGET_CHARS + 1),
+        "两行\n标题",
+        "带\x07控制符",
+        "   ",
+    ],
+)
+def test_the_durable_title_boundary_fails_closed_on_unsafe_material(value):
+    """The producer sanitizes; the record refuses. No repair, no echo."""
+
+    with pytest.raises(DelegateCardError) as excinfo:
+        _projection(task_description=value)
+    assert str(excinfo.value) == SACHIMA_DELEGATE_CARD_INVALID
+
+
+def test_a_sanitized_title_is_always_accepted_by_the_durable_boundary():
+    """Drift lock: what the producer's sanitizer emits, the record takes."""
+
+    cleaned = sanitize_card_line(
+        "验证 dtask_0f3c9a11b2c34d5e6f70 的\n Session 复用 " + "长" * 500
+    )
+    assert len(cleaned) == CARD_TEXT_BUDGET_CHARS
+    assert _projection(task_description=cleaned).task_description == cleaned
+
+
 def test_task_created_at_is_immutable_across_the_task_life():
     projection = _projection()
     with pytest.raises(DelegateCardError) as excinfo:
@@ -651,11 +744,11 @@ def test_chinese_summary_keeps_the_fixed_order_punctuation_and_no_bullets():
     lines = _lines(body)
     assert lines[0] == "委派任务 · 已创建"
     assert lines[1] == ""
-    assert lines[2] == "💡 任务： 验证 oh-my-pi 的 Session 复用"
-    assert lines[3] == f"🆔 编号： {TASK_REF}"
-    assert lines[4] == "⏱️ 耗时： 0秒"
-    assert lines[5] == "🤖 执行： oh-my-pi · glm-5.3 · max"
-    assert lines[6] == "👤 角色： 未指定"
+    assert lines[2] == "💡 **任务**： 验证 oh-my-pi 的 Session 复用"
+    assert lines[3] == f"🆔 **编号**： {TASK_REF}"
+    assert lines[4] == "⏱️ **耗时**： 0秒"
+    assert lines[5] == "🤖 **执行**： oh-my-pi · glm-5.3 · max"
+    assert lines[6] == "👤 **角色**： 未指定"
     # No bullets anywhere, and no blank line between the five field rows.
     for line in lines[2:7]:
         assert not line.startswith("-")
@@ -667,11 +760,11 @@ def test_english_summary_uses_ascii_colons_and_english_labels():
     projection = _projection(locale="en", task_description="Verify oh-my-pi session reuse")
     lines = _lines(_card_text(render_delegation_card(projection)))
     assert lines[0] == "Delegated Task · Created"
-    assert lines[2] == "💡 Task: Verify oh-my-pi session reuse"
-    assert lines[3] == f"🆔 ID: {TASK_REF}"
-    assert lines[4] == "⏱️ Duration: 0s"
-    assert lines[5] == "🤖 Execution: oh-my-pi · glm-5.3 · max"
-    assert lines[6] == "👤 Role: Not specified"
+    assert lines[2] == "💡 **Task**: Verify oh-my-pi session reuse"
+    assert lines[3] == f"🆔 **ID**: {TASK_REF}"
+    assert lines[4] == "⏱️ **Duration**: 0s"
+    assert lines[5] == "🤖 **Execution**: oh-my-pi · glm-5.3 · max"
+    assert lines[6] == "👤 **Role**: Not specified"
 
 
 def test_one_card_never_mixes_locales():
@@ -679,6 +772,203 @@ def test_one_card_never_mixes_locales():
         body = _card_text(render_delegation_card(_projection(locale=locale)))
         for token in foreign:
             assert token not in body
+
+
+@pytest.mark.parametrize(
+    ("locale", "expected"),
+    [
+        (
+            "zh",
+            (
+                "💡 **任务**：",
+                "🆔 **编号**：",
+                "⏱️ **耗时**：",
+                "🤖 **执行**：",
+                "👤 **角色**：",
+            ),
+        ),
+        (
+            "en",
+            (
+                "💡 **Task**:",
+                "🆔 **ID**:",
+                "⏱️ **Duration**:",
+                "🤖 **Execution**:",
+                "👤 **Role**:",
+            ),
+        ),
+    ],
+)
+def test_every_summary_field_name_is_bold_and_its_value_is_not(locale, expected):
+    """The five field names carry the emphasis; the values stay plain weight.
+
+    A value that emphasised itself would compete with the name it answers, and
+    a card whose whole row is bold reads as one shouted line rather than as a
+    label and a fact.
+    """
+
+    lines = _lines(_card_text(render_delegation_card(_projection(locale=locale))))[2:7]
+    for line, prefix in zip(lines, expected):
+        assert line.startswith(prefix), line
+        value = line[len(prefix) :]
+        assert value.strip()
+        assert "*" not in value
+
+
+def test_every_round_key_label_is_bold_and_its_value_is_not():
+    """Session / 结果 / 状态 follow the summary rule, in both locales."""
+
+    zh = _card_text(render_delegation_card(_two_round_projection()))
+    assert "**Session**：新建" in zh
+    assert "**结果**：上下文已建立" in zh
+    assert "**状态**：执行中" not in zh  # round 2 has not opened a status yet
+    zh_running = _card_text(
+        render_delegation_card(
+            advance_round(_two_round_projection(), "dturn_b2", status="running")
+        )
+    )
+    assert "**状态**：执行中" in zh_running
+
+    english = append_round(
+        _projection(locale="en"), turn_key="dturn_e1", purpose="Establish context"
+    )
+    english = advance_round(
+        english, "dturn_e1", status="running", session_projection="new"
+    )
+    body = _card_text(render_delegation_card(english))
+    assert "**Session**: New" in body
+    assert "**Status**: Running" in body
+    # The round heading is not a key/value field, so it keeps its plain weight.
+    assert "▶️ Round 1: Establish context" in body
+
+
+def test_bold_field_names_never_leak_into_the_values_they_label():
+    """One emphasis pair per rendered key, and none around any value."""
+
+    projection = advance_round(
+        _two_round_projection(),
+        "dturn_b2",
+        status="completed",
+        session_projection="reused",
+        result_summary="上下文验证通过",
+        settled_at="2026-08-26T09:01:20+00:00",
+    )
+    for line in _lines(_card_text(render_delegation_card(projection))):
+        assert line.count("**") in (0, 2), line
+
+
+#: Host text that is markup, paired with the literal line it must render as.
+#: The expectations are written out rather than computed from the renderer's
+#: own helper, so a helper that stopped escaping could not agree with itself.
+_MARKUP_VALUES = [
+    ("**核对交付卡文案**", "\\*\\*核对交付卡文案\\*\\*"),
+    ("_斜体_", "\\_斜体\\_"),
+    ("~~删除线~~", "\\~\\~删除线\\~\\~"),
+    ("`code`", "\\`code\\`"),
+    ("[看这里](https://example.invalid)", "\\[看这里\\](https://example.invalid)"),
+    ("<at id=all></at>", "\\<at id=all\\>\\</at\\>"),
+    ("反斜杠 \\ 本身", "反斜杠 \\\\ 本身"),
+]
+
+
+@pytest.mark.parametrize(("raw", "shown"), _MARKUP_VALUES)
+def test_a_task_title_that_looks_like_markup_is_shown_as_text(raw, shown):
+    """A value says something; it never *does* something.
+
+    The card body is one markdown block, so an unescaped value is markup: a
+    title wrapped in ``**`` would render bold, competing with the field names
+    that are deliberately the only emphasis on the card, and a link or a Feishu
+    tag in a value would be worse than cosmetic.
+    """
+
+    projection = _projection(task_description=raw)
+    line = _lines(_card_text(render_delegation_card(projection)))[2]
+
+    assert line == f"💡 **任务**： {shown}"
+    # The label keeps its own emphasis — exactly one pair, and it is the key's.
+    assert line.count("**") == 2
+    # One rule for both surfaces: the fallback is the same block, not a second
+    # rendering with its own escaping.
+    assert line in render_delegation_markdown(projection)
+
+
+def test_a_result_summary_and_purpose_that_look_like_markup_are_shown_as_text():
+    projection = append_round(_projection(), turn_key="dturn_a1", purpose="*重点*")
+    projection = advance_round(
+        projection,
+        "dturn_a1",
+        status="completed",
+        session_projection="new",
+        result_summary="**已完成**",
+        settled_at="2026-08-26T09:00:40+00:00",
+    )
+    lines = _lines(_card_text(render_delegation_card(projection)))
+
+    assert "✅ 第 1 轮：\\*重点\\*" in lines
+    assert "**结果**：\\*\\*已完成\\*\\*" in lines
+
+
+def test_an_admitted_role_that_looks_like_markup_is_shown_as_text():
+    projection = append_round(
+        _projection(), turn_key="dturn_a1", admitted_role="`code_owner`"
+    )
+    body = _card_text(render_delegation_card(projection))
+    # ``code_owner``'s underscore is intraword, so only the code fences move.
+    assert "👤 **角色**： \\`code_owner\\`" in body
+
+
+def test_an_intraword_underscore_is_never_escaped():
+    """The copyable ID and snake_case tokens are rendered exactly as stored.
+
+    A ``_`` between two alphanumerics cannot open or close emphasis, so
+    escaping one would add a backslash to the two values a person is most
+    likely to copy — the complete ``dtask_*`` and a configured role token —
+    for no safety a reader could name.
+    """
+
+    projection = append_round(
+        _projection(), turn_key="dturn_a1", admitted_role="session_reuse_verifier"
+    )
+    body = _card_text(render_delegation_card(projection))
+
+    assert f"🆔 **编号**： {TASK_REF}" in body
+    assert "👤 **角色**： session_reuse_verifier" in body
+    assert "\\_" not in body
+    # A value that wraps *itself* in underscores is still not italic.
+    wrapped = _card_text(render_delegation_card(_projection(task_description="_全文_")))
+    assert "💡 **任务**： \\_全文\\_" in wrapped
+
+
+def test_every_dynamic_value_is_escaped_by_the_one_shared_rule():
+    """Injection into any value leaves the card with the labels' emphasis only."""
+
+    projection = _projection(task_description="**标题**")
+    projection = append_round(
+        projection, turn_key="dturn_a1", purpose="~~目的~~", admitted_role="*角色*"
+    )
+    projection = advance_round(
+        projection,
+        "dturn_a1",
+        status="completed",
+        session_projection="new",
+        result_summary="[结果](https://example.invalid)",
+        settled_at="2026-08-26T09:00:40+00:00",
+    )
+    body = _card_text(render_delegation_card(projection))
+    assert body == render_delegation_markdown(projection)
+
+    for line in _lines(body):
+        stripped = line.replace("**任务**", "").replace("**编号**", "")
+        stripped = stripped.replace("**耗时**", "").replace("**执行**", "")
+        stripped = stripped.replace("**角色**", "").replace("**Session**", "")
+        stripped = stripped.replace("**结果**", "").replace("**状态**", "")
+        # Whatever emphasis, code, link or tag character survives in a value is
+        # escaped: it is preceded by a backslash that is not itself escaped.
+        for index, char in enumerate(stripped):
+            if char not in "*~`[]<>":
+                continue
+            assert index and stripped[index - 1] == "\\", line
+            assert index < 2 or stripped[index - 2] != "\\", line
 
 
 def test_the_full_task_id_is_shown_and_never_shortened():
@@ -690,7 +980,7 @@ def test_the_full_task_id_is_shown_and_never_shortened():
 
 def test_effort_is_omitted_rather_than_left_dangling():
     body = _card_text(render_delegation_card(_projection(effort="")))
-    assert "🤖 执行： oh-my-pi · glm-5.3" in body
+    assert "🤖 **执行**： oh-my-pi · glm-5.3" in body
     assert "glm-5.3 ·" not in body
 
 
@@ -706,23 +996,23 @@ def test_admitted_role_is_rendered_from_the_sealed_execution_contract():
         _projection(), turn_key="dturn_a1", admitted_role="session_reuse_verifier"
     )
     body = _card_text(render_delegation_card(projection))
-    assert "👤 角色： session_reuse_verifier" in body
+    assert "👤 **角色**： session_reuse_verifier" in body
 
 
 def test_absent_role_renders_the_exact_honest_fallback():
     zh = _card_text(render_delegation_card(_projection()))
-    assert "👤 角色： 未指定" in zh
+    assert "👤 **角色**： 未指定" in zh
     en = _card_text(render_delegation_card(_projection(locale="en")))
-    assert "👤 Role: Not specified" in en
+    assert "👤 **Role**: Not specified" in en
 
 
 def test_missing_task_description_renders_an_honest_unavailable_value():
     zh = _card_text(render_delegation_card(_projection(task_description=None)))
-    assert "💡 任务： 未提供" in zh
+    assert "💡 **任务**： 未提供" in zh
     en = _card_text(
         render_delegation_card(_projection(locale="en", task_description=None))
     )
-    assert "💡 Task: Not provided" in en
+    assert "💡 **Task**: Not provided" in en
 
 
 # --------------------------------------------------------------------------- #
@@ -734,7 +1024,7 @@ def test_running_duration_uses_the_persisted_projection_instant():
         at="2026-08-26T09:01:30+00:00",
     )
     projection = advance_round(projection, "dturn_a1", status="running")
-    assert "⏱️ 耗时： 1分30秒" in _card_text(render_delegation_card(projection))
+    assert "⏱️ **耗时**： 1分30秒" in _card_text(render_delegation_card(projection))
 
 
 def test_terminal_duration_is_fixed_at_the_settlement_instant():
@@ -747,7 +1037,7 @@ def test_terminal_duration_is_fixed_at_the_settlement_instant():
     )
     # A later projection stamp does not move a settled terminal's duration.
     projection = projected_revision(projection, at="2026-08-26T09:30:00+00:00")
-    assert "⏱️ 耗时： 45秒" in _card_text(render_delegation_card(projection))
+    assert "⏱️ **耗时**： 45秒" in _card_text(render_delegation_card(projection))
 
 
 def test_a_continuation_resumes_the_same_task_duration():
@@ -762,17 +1052,17 @@ def test_a_continuation_resumes_the_same_task_duration():
     projection = projected_revision(projection, at="2026-08-26T10:00:00+00:00")
     projection = advance_round(projection, "dturn_b2", status="running")
     # One hour of Task life, not 45 seconds and not a fresh zero.
-    assert "⏱️ 耗时： 1小时0分0秒" in _card_text(render_delegation_card(projection))
+    assert "⏱️ **耗时**： 1小时0分0秒" in _card_text(render_delegation_card(projection))
 
 
 def test_a_missing_boundary_renders_an_honest_unavailable_duration():
     projection = append_round(_projection(), turn_key="dturn_a1")
     projection = advance_round(projection, "dturn_a1", status="running")
     # Nothing has been projected yet, so there is no persisted end boundary.
-    assert "⏱️ 耗时： 未知" in _card_text(render_delegation_card(projection))
+    assert "⏱️ **耗时**： 未知" in _card_text(render_delegation_card(projection))
     english = append_round(_projection(locale="en"), turn_key="dturn_a1")
     english = advance_round(english, "dturn_a1", status="running")
-    assert "⏱️ Duration: Unknown" in _card_text(render_delegation_card(english))
+    assert "⏱️ **Duration**: Unknown" in _card_text(render_delegation_card(english))
 
 
 def test_a_negative_interval_is_unavailable_rather_than_invented():
@@ -783,7 +1073,7 @@ def test_a_negative_interval_is_unavailable_rather_than_invented():
         status="completed",
         settled_at="2026-08-26T08:00:00+00:00",
     )
-    assert "⏱️ 耗时： 未知" in _card_text(render_delegation_card(projection))
+    assert "⏱️ **耗时**： 未知" in _card_text(render_delegation_card(projection))
 
 
 # --------------------------------------------------------------------------- #
@@ -798,11 +1088,11 @@ def test_snapshot_1_created():
     assert _card_text(render_delegation_card(projection)) == (
         "委派任务 · 已创建\n"
         "\n"
-        "💡 任务： 验证 oh-my-pi 的 Session 复用\n"
-        f"🆔 编号： {TASK_REF}\n"
-        "⏱️ 耗时： 0秒\n"
-        "🤖 执行： oh-my-pi · glm-5.3 · max\n"
-        "👤 角色： 未指定\n"
+        "💡 **任务**： 验证 oh-my-pi 的 Session 复用\n"
+        f"🆔 **编号**： {TASK_REF}\n"
+        "⏱️ **耗时**： 0秒\n"
+        "🤖 **执行**： oh-my-pi · glm-5.3 · max\n"
+        "👤 **角色**： 未指定\n"
         "\n"
         "执行记录\n"
         "⏳ 尚未开始"
@@ -820,16 +1110,16 @@ def test_snapshot_2_round_1_running():
     assert _card_text(render_delegation_card(projection)) == (
         "委派任务 · 第 1 轮执行中\n"
         "\n"
-        "💡 任务： 验证 oh-my-pi 的 Session 复用\n"
-        f"🆔 编号： {TASK_REF}\n"
-        "⏱️ 耗时： 20秒\n"
-        "🤖 执行： oh-my-pi · glm-5.3 · max\n"
-        "👤 角色： 未指定\n"
+        "💡 **任务**： 验证 oh-my-pi 的 Session 复用\n"
+        f"🆔 **编号**： {TASK_REF}\n"
+        "⏱️ **耗时**： 20秒\n"
+        "🤖 **执行**： oh-my-pi · glm-5.3 · max\n"
+        "👤 **角色**： 未指定\n"
         "\n"
         "执行记录\n"
         "▶️ 第 1 轮：建立 Session 上下文\n"
-        "Session：新建\n"
-        "状态：执行中"
+        "**Session**：新建\n"
+        "**状态**：执行中"
     )
 
 
@@ -857,20 +1147,20 @@ def test_snapshot_3_round_2_running():
     assert _card_text(render_delegation_card(projection)) == (
         "委派任务 · 第 2 轮执行中\n"
         "\n"
-        "💡 任务： 验证 oh-my-pi 的 Session 复用\n"
-        f"🆔 编号： {TASK_REF}\n"
-        "⏱️ 耗时： 1分0秒\n"
-        "🤖 执行： oh-my-pi · glm-5.3 · max\n"
-        "👤 角色： 未指定\n"
+        "💡 **任务**： 验证 oh-my-pi 的 Session 复用\n"
+        f"🆔 **编号**： {TASK_REF}\n"
+        "⏱️ **耗时**： 1分0秒\n"
+        "🤖 **执行**： oh-my-pi · glm-5.3 · max\n"
+        "👤 **角色**： 未指定\n"
         "\n"
         "执行记录\n"
         "✅ 第 1 轮：建立 Session 上下文\n"
-        "Session：新建\n"
-        "结果：上下文已建立\n"
+        "**Session**：新建\n"
+        "**结果**：上下文已建立\n"
         "\n"
         "▶️ 第 2 轮：验证 Session 上下文复用\n"
-        "Session：复用状态确认中\n"
-        "状态：执行中"
+        "**Session**：复用状态确认中\n"
+        "**状态**：执行中"
     )
 
 
@@ -887,20 +1177,20 @@ def test_snapshot_4_round_2_completed():
     assert _card_text(render_delegation_card(projection)) == (
         "委派任务 · 第 2 轮已完成\n"
         "\n"
-        "💡 任务： 验证 oh-my-pi 的 Session 复用\n"
-        f"🆔 编号： {TASK_REF}\n"
-        "⏱️ 耗时： 1分20秒\n"
-        "🤖 执行： oh-my-pi · glm-5.3 · max\n"
-        "👤 角色： 未指定\n"
+        "💡 **任务**： 验证 oh-my-pi 的 Session 复用\n"
+        f"🆔 **编号**： {TASK_REF}\n"
+        "⏱️ **耗时**： 1分20秒\n"
+        "🤖 **执行**： oh-my-pi · glm-5.3 · max\n"
+        "👤 **角色**： 未指定\n"
         "\n"
         "执行记录\n"
         "✅ 第 1 轮：建立 Session 上下文\n"
-        "Session：新建\n"
-        "结果：上下文已建立\n"
+        "**Session**：新建\n"
+        "**结果**：上下文已建立\n"
         "\n"
         "✅ 第 2 轮：验证 Session 上下文复用\n"
-        "Session：已确认复用\n"
-        "结果：上下文验证通过"
+        "**Session**：已确认复用\n"
+        "**结果**：上下文验证通过"
     )
 
 
@@ -914,7 +1204,7 @@ def test_unconfirmed_reuse_says_so_rather_than_claiming_it():
         settled_at="2026-08-26T09:01:20+00:00",
     )
     body = _card_text(render_delegation_card(projection))
-    assert "Session：复用状态未确认" in body
+    assert "**Session**：复用状态未确认" in body
     assert "已确认复用" not in body.split("第 2 轮")[1]
 
 
@@ -924,6 +1214,8 @@ def test_an_omitted_session_projection_drops_the_line_entirely():
         projection, "dturn_a1", status="running", session_projection="omitted"
     )
     body = _card_text(render_delegation_card(projection))
+    # The rendered key is gone — not merely its old unemphasised spelling.
+    assert "**Session**" not in body
     assert "Session：" not in body
 
 
@@ -944,8 +1236,8 @@ def test_english_round_history_is_fully_localized():
     body = _card_text(render_delegation_card(projection))
     assert "Execution Log" in body
     assert "✅ Round 1: Establish session context" in body
-    assert "Session: New" in body
-    assert "Result: Context established" in body
+    assert "**Session**: New" in body
+    assert "**Result**: Context established" in body
     assert "执行记录" not in body
 
 
@@ -1028,6 +1320,13 @@ def test_markdown_fallback_is_at_parity_with_the_native_card():
     for line in _lines(markdown):
         assert not line.startswith("- ")
         assert not line.startswith("* ")
+    # The emphasis is part of that text, so the degraded surface carries the
+    # same bold field names as the card it stands in for.
+    lines = _lines(markdown)
+    assert lines[2] == "💡 **任务**： 验证 oh-my-pi 的 Session 复用"
+    assert lines[6] == "👤 **角色**： 未指定"
+    assert "**Session**：已确认复用" in markdown
+    assert "**结果**：上下文验证通过" in markdown
 
 
 def test_payload_is_bounded_before_the_adapter_call():
@@ -1144,7 +1443,7 @@ def test_a_settled_round_freezes_the_instant_its_duration_stopped_at():
         result_summary="上下文已建立",
     )
     frozen = _card_text(render_delegation_card(projection))
-    assert "⏱️ 耗时： 45秒" in frozen
+    assert "⏱️ **耗时**： 45秒" in frozen
 
     # A later replay of the same terminal carries a new clock reading. Honouring
     # it would restart a duration this Task already finished measuring.
@@ -1191,14 +1490,14 @@ def test_the_role_line_is_the_latest_round_and_never_an_earlier_one():
     projection = advance_round(
         projection, "dturn_a1", status="completed", settled_at="2026-08-26T09:00:45+00:00"
     )
-    assert "👤 角色： session_reuse_verifier" in _card_text(
+    assert "👤 **角色**： session_reuse_verifier" in _card_text(
         render_delegation_card(projection)
     )
 
     # The continuation was admitted by direct AGENT selection, so this card must
     # say so rather than re-showing a role the current round does not hold.
     projection = append_round(projection, turn_key="dturn_b2")
-    assert "👤 角色： 未指定" in _card_text(render_delegation_card(projection))
+    assert "👤 **角色**： 未指定" in _card_text(render_delegation_card(projection))
 
 
 def test_a_task_with_no_trustworthy_start_renders_an_unavailable_duration():
@@ -1206,14 +1505,14 @@ def test_a_task_with_no_trustworthy_start_renders_an_unavailable_duration():
 
     projection = _projection(task_created_at=None)
     assert projection.task_created_at is None
-    assert "⏱️ 耗时： 未知" in _card_text(render_delegation_card(projection))
+    assert "⏱️ **耗时**： 未知" in _card_text(render_delegation_card(projection))
 
     projection = append_round(projection, turn_key="dturn_a1")
     projection = projected_revision(projection, at="2026-08-26T10:00:00+00:00")
     projection = advance_round(projection, "dturn_a1", status="running")
-    assert "⏱️ 耗时： 未知" in _card_text(render_delegation_card(projection))
+    assert "⏱️ **耗时**： 未知" in _card_text(render_delegation_card(projection))
     english = _projection(locale="en", task_created_at=None)
-    assert "⏱️ Duration: Unknown" in _card_text(render_delegation_card(english))
+    assert "⏱️ **Duration**: Unknown" in _card_text(render_delegation_card(english))
 
 
 def test_an_unavailable_task_start_survives_a_reload_as_unavailable():
@@ -1231,7 +1530,7 @@ def test_an_unavailable_task_start_survives_a_reload_as_unavailable():
     # A later projection stamp moves neither a settled terminal nor an absence.
     unavailable = projected_revision(unavailable, at="2026-08-26T09:30:00+00:00")
     frozen = _card_text(render_delegation_card(unavailable))
-    assert "⏱️ 耗时： 未知" in frozen
+    assert "⏱️ **耗时**： 未知" in frozen
 
     reloaded = DelegateCardProjection.from_dict(unavailable.as_dict())
     assert reloaded.task_created_at is None
@@ -1247,7 +1546,7 @@ def test_an_unavailable_task_start_survives_a_reload_as_unavailable():
         settled_at="2026-08-26T09:00:45+00:00",
     )
     trusted = projected_revision(trusted, at="2026-08-26T09:30:00+00:00")
-    assert "⏱️ 耗时： 45秒" in _card_text(render_delegation_card(trusted))
-    assert "⏱️ 耗时： 45秒" in _card_text(
+    assert "⏱️ **耗时**： 45秒" in _card_text(render_delegation_card(trusted))
+    assert "⏱️ **耗时**： 45秒" in _card_text(
         render_delegation_card(DelegateCardProjection.from_dict(trusted.as_dict()))
     )

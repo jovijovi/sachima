@@ -443,6 +443,12 @@ class DelegateTaskBinding:
     current_turn_key: str | None = None
     terminal: bool = False
     linked_from: str | None = None
+    #: The concise line this Task is displayed under, sealed at creation. It is
+    #: Task-level rather than per-Turn because the card's headline names the
+    #: Task, so a continuation adds a round row and never a second headline; a
+    #: Task recorded before this field simply carries ``None``, which the card
+    #: renders as its honest "not provided" value.
+    task_title: str | None = None
 
     def __post_init__(self) -> None:
         _safe_ref(self.task_ref)
@@ -460,6 +466,7 @@ class DelegateTaskBinding:
         if type(self.terminal) is not bool:
             raise _invalid()
         _optional_ref(self.linked_from)
+        _optional_text(self.task_title)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -473,6 +480,7 @@ class DelegateTaskBinding:
             "current_turn_key": self.current_turn_key,
             "terminal": self.terminal,
             "linked_from": self.linked_from,
+            "task_title": self.task_title,
         }
 
     @classmethod
@@ -493,6 +501,7 @@ class DelegateTaskBinding:
             current_turn_key=document.get("current_turn_key"),
             terminal=document.get("terminal", False),
             linked_from=document.get("linked_from"),
+            task_title=document.get("task_title"),
         )
 
 

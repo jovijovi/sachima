@@ -73,6 +73,9 @@ from sachima_supervisor.runtime_spine.arsd_socket_contract import (
 from tools.registry import registry
 
 TASK_TEXT_CANARY = "audit the sachima delegation canary payload body"
+#: The short TODO-style line the card shows; the AGENT still receives the full
+#: task text above, which is what makes "shown" and "executed" provably distinct.
+TASK_TITLE_CANARY = "核对委派卡展示标题"
 LIVE_ROSTER = ("claude", "codex", "cursor", "oh-my-pi", "opencode")
 
 V3_OPERATIONS = [
@@ -390,6 +393,23 @@ def test_the_schema_takes_a_canonical_agent_id_and_no_profile_argument() -> None
     assert "profile" not in serialized
 
 
+def test_the_schema_separates_the_displayed_title_from_the_executed_task() -> None:
+    """Two arguments, two jobs: one is shown, the other is executed.
+
+    The card's ``任务`` row is a TODO-style line a person reads; the AGENT still
+    receives the whole ``task``. A surface with only one field forces the card
+    to either show an execution prompt or truncate one, and both were the
+    problem this argument exists to remove.
+    """
+
+    properties = control_mod.DELEGATE_CONTROL_SCHEMA["parameters"]["properties"]
+    assert properties["task_title"]["type"] == "string"
+    title_description = properties["task_title"]["description"]
+    assert "create" in title_description
+    # The two descriptions must not read alike, or a model will fill them alike.
+    assert title_description != properties["task"]["description"]
+
+
 def test_the_registered_tool_is_still_the_one_default_off_control_surface() -> None:
     assert registry.get_entry(control_mod.TOOL_NAME) is not None
     assert control_mod.TOOLSET_NAME == "sachima_delegate_control"
@@ -411,7 +431,12 @@ def test_the_registered_tool_is_still_the_one_default_off_control_surface() -> N
 # B. Create — the exact intersection admits, everything else refuses
 # --------------------------------------------------------------------------- #
 def test_an_exact_id_in_both_halves_creates_one_task_and_one_submit(control) -> None:
-    answer = _call(action="create", agent_id="codex", task=TASK_TEXT_CANARY)
+    answer = _call(
+        action="create",
+        agent_id="codex",
+        task=TASK_TEXT_CANARY,
+        task_title=TASK_TITLE_CANARY,
+    )
 
     assert answer["type"] == control_mod.DELEGATE_CONTROL_ENVELOPE_TYPE
     assert answer["action"] == "create"
@@ -445,7 +470,12 @@ def test_an_exact_id_in_both_halves_creates_one_task_and_one_submit(control) -> 
 def test_an_ineligible_id_refuses_before_anything_durable_exists(
     control, agent_id, refusal
 ) -> None:
-    answer = _call(action="create", agent_id=agent_id, task=TASK_TEXT_CANARY)
+    answer = _call(
+        action="create",
+        agent_id=agent_id,
+        task=TASK_TEXT_CANARY,
+        task_title=TASK_TITLE_CANARY,
+    )
 
     assert answer["result"]["refusal"] == refusal
     assert control.facade.submit_count() == 0
@@ -458,8 +488,18 @@ def test_a_registered_agent_without_a_preset_is_reported_as_registered(
     """Registered-and-unavailable is a different answer from "no such AGENT",
     and Hermes needs the difference to say something true."""
 
-    absent = _call(action="create", agent_id="oh-my-pi", task=TASK_TEXT_CANARY)
-    unknown = _call(action="create", agent_id="tom", task=TASK_TEXT_CANARY)
+    absent = _call(
+        action="create",
+        agent_id="oh-my-pi",
+        task=TASK_TEXT_CANARY,
+        task_title=TASK_TITLE_CANARY,
+    )
+    unknown = _call(
+        action="create",
+        agent_id="tom",
+        task=TASK_TEXT_CANARY,
+        task_title=TASK_TITLE_CANARY,
+    )
 
     assert absent["result"] == {
         "refusal": SACHIMA_AGENT_NO_PRESET,
@@ -475,7 +515,12 @@ def test_a_registered_agent_without_a_preset_is_reported_as_registered(
 
 def test_a_preset_whose_agent_left_the_roster_stops_submitting(control) -> None:
     control.facade.registered_agent_ids = ("claude", "cursor")
-    answer = _call(action="create", agent_id="codex", task=TASK_TEXT_CANARY)
+    answer = _call(
+        action="create",
+        agent_id="codex",
+        task=TASK_TEXT_CANARY,
+        task_title=TASK_TITLE_CANARY,
+    )
 
     assert answer["result"]["refusal"] == SACHIMA_AGENT_NOT_REGISTERED
     assert control.facade.submit_count() == 0
@@ -484,7 +529,12 @@ def test_a_preset_whose_agent_left_the_roster_stops_submitting(control) -> None:
 
 def test_an_unreadable_roster_refuses_rather_than_assuming_anything(control) -> None:
     control.facade.agent_list_error = ConnectionError("socket gone")
-    answer = _call(action="create", agent_id="codex", task=TASK_TEXT_CANARY)
+    answer = _call(
+        action="create",
+        agent_id="codex",
+        task=TASK_TEXT_CANARY,
+        task_title=TASK_TITLE_CANARY,
+    )
 
     assert answer["result"]["refusal"] == SACHIMA_AGENT_ROSTER_UNAVAILABLE
     assert control.facade.submit_count() == 0
@@ -496,7 +546,11 @@ def test_create_without_an_agent_id_never_picks_one(control) -> None:
     input rather than an invitation to route."""
 
     answer = control_mod._handle_delegate_control(
-        {"action": "create", "task": TASK_TEXT_CANARY}
+        {
+            "action": "create",
+            "task": TASK_TEXT_CANARY,
+            "task_title": TASK_TITLE_CANARY,
+        }
     )
     assert json.loads(answer)["error"] == control_mod.SACHIMA_DELEGATE_CONTROL_INVALID
     assert control.facade.submit_count() == 0
@@ -505,16 +559,143 @@ def test_create_without_an_agent_id_never_picks_one(control) -> None:
 
 def test_an_empty_task_creates_nothing_even_for_an_eligible_agent(control) -> None:
     answer = control_mod._handle_delegate_control(
-        {"action": "create", "agent_id": "codex", "task": "   "}
+        {
+            "action": "create",
+            "agent_id": "codex",
+            "task": "   ",
+            "task_title": TASK_TITLE_CANARY,
+        }
     )
     assert json.loads(answer)["error"] == control_mod.SACHIMA_DELEGATE_CONTROL_INVALID
     assert _durable_counts(control.coordinator) == (0, 0)
 
 
+@pytest.mark.parametrize(
+    "title",
+    [None, "", "   ", 7, ["核对委派卡展示标题"]],
+)
+def test_create_without_a_usable_title_creates_nothing(control, title) -> None:
+    """The displayed line is required input, never derived from the prompt.
+
+    Falling back to a clipped ``task`` is exactly the behaviour this argument
+    replaces: a truncated execution prompt reads as a sentence the user never
+    wrote. With no title there is nothing honest to show, so nothing is created.
+    """
+
+    args = {"action": "create", "agent_id": "codex", "task": TASK_TEXT_CANARY}
+    if title is not None:
+        args["task_title"] = title
+    answer = control_mod._handle_delegate_control(args)
+
+    assert json.loads(answer)["error"] == control_mod.SACHIMA_DELEGATE_CONTROL_INVALID
+    assert control.facade.submit_count() == 0
+    assert _durable_counts(control.coordinator) == (0, 0)
+
+
+@pytest.mark.parametrize("title", ["\x00\x07", "\x1b\x1b", "\x7f", "\x00 \x1b\t"])
+def test_a_title_that_survives_nothing_visible_creates_nothing(control, title) -> None:
+    """"Non-empty string" is not the contract — "renders a line" is.
+
+    A title made only of control characters passes a raw emptiness check and
+    then sanitizes away to nothing, which would submit a Run and leave the card
+    saying ``未提供`` about a task the user did name. The refusal has to be
+    decided on the cleaned line, and it has to land before admission: nothing
+    is asked of the roster, nothing durable is written, and nothing is
+    submitted.
+    """
+
+    answer = control_mod._handle_delegate_control(
+        {
+            "action": "create",
+            "agent_id": "codex",
+            "task": TASK_TEXT_CANARY,
+            "task_title": title,
+        }
+    )
+
+    assert json.loads(answer)["error"] == control_mod.SACHIMA_DELEGATE_CONTROL_INVALID
+    assert control.facade.calls.count("agent_list") == 0
+    assert control.facade.submit_count() == 0
+    assert _durable_counts(control.coordinator) == (0, 0)
+    assert control.coordinator.state.list_tasks() == ()
+
+
+def test_a_title_that_still_renders_after_cleaning_is_created_from_that_line(
+    control,
+) -> None:
+    """The stored line is the sanitized one: single line, bounded, redacted."""
+
+    from gateway.sachima_delegate_card import (
+        CARD_TEXT_BUDGET_CHARS,
+        sanitize_card_line,
+    )
+
+    raw = "核对 dtask_0f3c9a11b2c34d5e6f70 的\n多行\x07标题 " + "长" * 300
+    task_ref = _call(
+        action="create", agent_id="codex", task=TASK_TEXT_CANARY, task_title=raw
+    )["result"]["task_ref"]
+
+    stored = control.coordinator.state.read_task(task_ref).task_title
+    # The tool applies the card layer's own rule rather than a second one.
+    assert stored == sanitize_card_line(raw)
+    assert len(stored) == CARD_TEXT_BUDGET_CHARS
+    assert "\n" not in stored and "\x07" not in stored
+    assert "dtask_0f3c9a11b2c34d5e6f70" not in stored
+    assert control.facade.submit_count() == 1
+
+
+def test_the_agent_receives_the_whole_task_while_the_task_keeps_the_title(
+    control,
+) -> None:
+    """One create, two durable facts: the executed prompt and the shown line."""
+
+    answer = _call(
+        action="create",
+        agent_id="codex",
+        task=TASK_TEXT_CANARY,
+        task_title=TASK_TITLE_CANARY,
+    )
+    task_ref = answer["result"]["task_ref"]
+
+    binding = control.coordinator.state.read_task(task_ref)
+    assert binding.task_title == TASK_TITLE_CANARY
+    # The AGENT's instruction is untouched by the display decision.
+    assert control.facade.submitted[0]["prompt_text"] == TASK_TEXT_CANARY
+    # And the Turn still carries the full ask as its execution/summary context.
+    turn = control.coordinator.state.read_turn(binding.current_turn_key)
+    assert turn.task_description == TASK_TEXT_CANARY
+    assert turn.task_description != binding.task_title
+
+
+def test_a_surrounding_whitespace_title_is_stored_as_the_line_it_renders(
+    control,
+) -> None:
+    task_ref = _call(
+        action="create",
+        agent_id="codex",
+        task=TASK_TEXT_CANARY,
+        task_title="  核对委派卡展示标题  ",
+    )["result"]["task_ref"]
+
+    assert control.coordinator.state.read_task(task_ref).task_title == (
+        "核对委派卡展示标题"
+    )
+
+
 def test_the_roster_is_read_live_for_every_create(control) -> None:
-    _call(action="create", agent_id="codex", task=TASK_TEXT_CANARY)
+    _call(
+        action="create",
+        agent_id="codex",
+        task=TASK_TEXT_CANARY,
+        task_title=TASK_TITLE_CANARY,
+    )
     first = control.facade.calls.count("agent_list")
-    _call(action="create", agent_id="codex", task=TASK_TEXT_CANARY)
+    _call(
+        action="create",
+        agent_id="codex",
+        task=TASK_TEXT_CANARY,
+        task_title=TASK_TITLE_CANARY,
+    )
     assert control.facade.calls.count("agent_list") == first + 1
 
 
@@ -529,7 +710,12 @@ def _completed_task(control) -> str:
     slow without turning that into a failure about continuation.
     """
 
-    task_ref = _call(action="create", agent_id="codex", task=TASK_TEXT_CANARY)[
+    task_ref = _call(
+        action="create",
+        agent_id="codex",
+        task=TASK_TEXT_CANARY,
+        task_title=TASK_TITLE_CANARY,
+    )[
         "result"
     ]["task_ref"]
     control.facade.terminalize(0)
@@ -565,6 +751,55 @@ def test_continuation_restates_the_same_agent_without_forking_the_task(
     )
     assert answer["result"]["task_ref"] == task_ref
     assert len(control.coordinator.state.read_task(task_ref).turn_keys) == 2
+
+
+def test_a_continuation_never_rewrites_the_title_at_the_top_of_the_card(
+    control,
+) -> None:
+    """One Task, one title. A later round adds a row; it never retitles.
+
+    The header line names the Task, and the Task is the same one the user
+    started. Letting a continuation move it would rewrite history in place:
+    the rounds already on the card would suddenly answer a different question.
+    """
+
+    task_ref = _completed_task(control)
+    _call(
+        action="continue",
+        task_ref=task_ref,
+        task="and now the second half",
+        task_title="第二段的新标题",
+    )
+
+    assert control.coordinator.state.read_task(task_ref).task_title == (
+        TASK_TITLE_CANARY
+    )
+
+
+def test_switching_agent_carries_the_title_into_the_linked_task(control) -> None:
+    """A switch is the same work under another AGENT, so it keeps the title.
+
+    The linked Task inherits the source Task's persisted title verbatim — the
+    one explicit rule here. It is neither re-derived from the continuation's
+    prompt nor left blank, because both would make the two cards of one piece
+    of work disagree about what that work is.
+    """
+
+    task_ref = _completed_task(control)
+    linked_ref = _call(
+        action="continue",
+        task_ref=task_ref,
+        agent_id="cursor",
+        task="take it from here",
+        task_title="调用方另给的标题",
+    )["result"]["task_ref"]
+
+    assert linked_ref != task_ref
+    linked = control.coordinator.state.read_task(linked_ref)
+    assert linked.task_title == TASK_TITLE_CANARY
+    assert control.coordinator.state.read_task(task_ref).task_title == (
+        TASK_TITLE_CANARY
+    )
 
 
 def test_switching_agent_creates_a_linked_task_and_leaves_the_old_one_alone(
@@ -702,7 +937,12 @@ def test_another_conversations_task_is_never_reachable(control) -> None:
 def test_a_cased_selection_creates_under_the_canonical_roster_id(
     control, spelling
 ) -> None:
-    answer = _call(action="create", agent_id=spelling, task=TASK_TEXT_CANARY)
+    answer = _call(
+        action="create",
+        agent_id=spelling,
+        task=TASK_TEXT_CANARY,
+        task_title=TASK_TITLE_CANARY,
+    )
     task_ref = answer["result"]["task_ref"]
 
     assert control.coordinator.state.read_task(task_ref).agent_id == "codex"
@@ -754,7 +994,12 @@ def _submitted_grant(control, index: int = 0) -> dict[str, Any]:
 
 
 def test_a_review_preset_submits_without_write(control) -> None:
-    _call(action="create", agent_id="codex", task=TASK_TEXT_CANARY)
+    _call(
+        action="create",
+        agent_id="codex",
+        task=TASK_TEXT_CANARY,
+        task_title=TASK_TITLE_CANARY,
+    )
 
     grant = _submitted_grant(control)
     assert grant["grant_capabilities"] == list(ENGINEERING_BASELINE_PERMISSIONS)
@@ -762,7 +1007,12 @@ def test_a_review_preset_submits_without_write(control) -> None:
 
 
 def test_an_implementation_preset_submits_with_write(control) -> None:
-    _call(action="create", agent_id="cursor", task=TASK_TEXT_CANARY)
+    _call(
+        action="create",
+        agent_id="cursor",
+        task=TASK_TEXT_CANARY,
+        task_title=TASK_TITLE_CANARY,
+    )
 
     grant = _submitted_grant(control)
     assert grant["grant_capabilities"] == list(IMPLEMENTATION_PERMISSIONS)
@@ -771,8 +1021,18 @@ def test_an_implementation_preset_submits_with_write(control) -> None:
 def test_the_two_presets_never_share_a_sealed_grant_identity(control) -> None:
     """Two Runs with different authority must be distinguishable afterwards."""
 
-    _call(action="create", agent_id="codex", task=TASK_TEXT_CANARY)
-    _call(action="create", agent_id="cursor", task=TASK_TEXT_CANARY)
+    _call(
+        action="create",
+        agent_id="codex",
+        task=TASK_TEXT_CANARY,
+        task_title=TASK_TITLE_CANARY,
+    )
+    _call(
+        action="create",
+        agent_id="cursor",
+        task=TASK_TEXT_CANARY,
+        task_title=TASK_TITLE_CANARY,
+    )
 
     review = _submitted_grant(control, 0)
     author = _submitted_grant(control, 1)
@@ -818,7 +1078,12 @@ def test_the_sealed_grant_is_reproducible_from_the_config_alone(control) -> None
         derive_arsd_sealed_grant,
     )
 
-    _call(action="create", agent_id="codex", task=TASK_TEXT_CANARY)
+    _call(
+        action="create",
+        agent_id="codex",
+        task=TASK_TEXT_CANARY,
+        task_title=TASK_TITLE_CANARY,
+    )
     grant = _submitted_grant(control)
     expected = derive_arsd_sealed_grant(
         control.config, ENGINEERING_BASELINE_PERMISSIONS
@@ -909,7 +1174,10 @@ def test_the_discovered_agent_is_then_created_by_its_canonical_name(control) -> 
     assert selection["agent_id"] == "codex"
 
     created = _call(
-        action="create", agent_id=selection["agent_id"], task=TASK_TEXT_CANARY
+        action="create",
+        agent_id=selection["agent_id"],
+        task=TASK_TEXT_CANARY,
+        task_title=TASK_TITLE_CANARY,
     )
     task_ref = created["result"]["task_ref"]
     assert control.coordinator.state.read_task(task_ref).agent_id == "codex"

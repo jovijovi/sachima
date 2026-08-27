@@ -713,6 +713,7 @@ class SachimaDelegateCoordinator:
         delivery: DelegateDelivery | None = None,
         linked_from: str | None = None,
         admitted_role: Any = None,
+        task_title: Any = None,
     ) -> DelegateOutcome:
         """Register one delegated task and drive its first turn to a disposition.
 
@@ -721,6 +722,14 @@ class SachimaDelegateCoordinator:
         task binding. Only then can anything reach the daemon. A failure before
         that point makes no ARS call at all, which is what makes the failure
         recoverable rather than merely reported.
+
+        ``task_title`` is the short line the Task's card is displayed under. It
+        is sanitized here, at the producer, and sealed into the Task binding —
+        ``task_text`` keeps going to the AGENT and to the Turn's own
+        description untouched, so what a person reads and what an AGENT
+        executes stay separately owned. A caller that has none passes ``None``
+        rather than a clipped prompt: the card says "not provided", which is
+        true, instead of showing half an instruction as if it were a sentence.
         """
 
         await self._ensure_restored()
@@ -783,6 +792,7 @@ class SachimaDelegateCoordinator:
                 turn_keys=(turn.turn_key,),
                 current_turn_key=turn.turn_key,
                 linked_from=linked_from,
+                task_title=sanitize_card_line(task_title),
             )
         )
         # The Task/origin binding is durable, so the card — and with it the
@@ -875,6 +885,12 @@ class SachimaDelegateCoordinator:
                     )
                 # The AGENT is sealed into a task. Switching therefore
                 # creates a new linked task; it never rewrites the old binding.
+                # The linked Task is the same work under another AGENT, so it
+                # inherits the source Task's persisted title verbatim — never a
+                # title re-derived from this continuation's prompt, which is
+                # how two cards of one piece of work start disagreeing about
+                # what that work is. A source Task that retains none passes
+                # none on, and the new card says so.
                 return await self.create(
                     task_text=task_text,
                     preset=preset,
@@ -882,6 +898,7 @@ class SachimaDelegateCoordinator:
                     delivery=delivery,
                     linked_from=event.event_id,
                     admitted_role=admitted_role,
+                    task_title=binding.task_title,
                 )
             if preset is None:
                 preset = self._presets.preset(binding.agent_id)
@@ -2235,7 +2252,13 @@ class SachimaDelegateCoordinator:
                 agent_id=binding.agent_id,
                 model=turn.requested_model,
                 effort=turn.requested_effort,
-                task_description=sanitize_card_line(turn.task_description),
+                # The headline names the *Task*, so it is read from the durable
+                # Task binding rather than from whichever Turn happens to be
+                # creating the card. A Task that gains its card late therefore
+                # shows the title it was created under, not this round's ask.
+                # The projection's field keeps its shipped name; only what this
+                # host puts in it moved from the ask to the supplied title.
+                task_description=sanitize_card_line(binding.task_title),
             )
             for row in earlier:
                 projection = append_round(

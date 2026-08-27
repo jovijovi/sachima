@@ -33,6 +33,14 @@ and one Session conclusion; ``dres_*``, ``turn_key``, ARS Run/Session ids,
 prompts, credentials, and raw events are absent from every rendered surface and
 refused at the durable boundary.
 
+**Shown is not executed.** ``task_description`` holds the Task's one visible
+headline — the concise title supplied at creation and sealed there — while the
+execution prompt stays on the Turn. The persisted name predates that split and
+is kept: a card a shipped host already delivered must stay readable, or its one
+bound message can never be patched again. The renderer emphasises field *names*
+only; every value, including that headline, is host text and is rendered at
+plain weight after the same sanitization as any other visible line.
+
 **Reuse is proven or it is not claimed.** ``Session：已确认复用`` requires the
 same Task, two *different* Run identities, one *same* ARS Session identity, a
 **settled** earlier round that recorded the create, and a recorded load now.
@@ -597,6 +605,14 @@ class DelegateCardProjection:
     agent_id: str = ""
     model: str = ""
     effort: str = ""
+    #: The Task's one visible headline, as the producer sanitized it. It is
+    #: the concise display title the caller supplied at creation, sealed with
+    #: the Task and never rewritten by a later round — deliberately *not* the
+    #: execution prompt, which stays on the Turn where the AGENT and the
+    #: summariser read it, and never derived from a result, from AGENT output,
+    #: or by clipping the ask. The persisted name is unchanged on purpose: a
+    #: card already delivered by a shipped host must stay readable, and a
+    #: renamed key would strand it at whatever it last said.
     task_description: str | None = None
     card_message_id: str | None = field(default=None, repr=False)
     card_sink_state: str = "pending"
@@ -1298,6 +1314,64 @@ def _admitted_role(projection: DelegateCardProjection) -> str:
 # --------------------------------------------------------------------------- #
 # Rendering
 # --------------------------------------------------------------------------- #
+#: One emphasis rule, applied to field **names** only: the five summary labels
+#: and the round rows' ``Session`` / ``结果`` / ``状态`` keys. Values stay plain
+#: weight, because a bold value competes with the label it answers and a fully
+#: bold row reads as one shouted line instead of a label and a fact. It is
+#: applied to closed-vocabulary labels this module owns — never to host text,
+#: which would let a value inject emphasis into the card.
+_EMPHASIS = "**"
+
+
+def _bold(label: str) -> str:
+    return _EMPHASIS + label + _EMPHASIS
+
+
+#: The characters that would otherwise let a *value* mean something instead of
+#: say something: emphasis, strikethrough, inline code, links/images, and the
+#: platform's own tag syntax. ``\`` is one of them and is handled in the same
+#: single pass, so an escape can never itself be escaped a second time.
+_MARKDOWN_META = frozenset("\\*~`[]<>")
+
+
+def _emphasising_underscore(text: str, index: int) -> bool:
+    """Whether the ``_`` at this position could open or close emphasis.
+
+    Markdown's own intraword rule says one between two alphanumerics cannot,
+    and that exception is worth keeping: escaping it would put a backslash
+    through the two values a person is most likely to copy — the complete
+    ``dtask_*`` and a configured ``snake_case`` role — while a value that wraps
+    itself in underscores is still refused its italics.
+    """
+
+    before = text[index - 1] if index else ""
+    after = text[index + 1] if index + 1 < len(text) else ""
+    return not (before.isalnum() and after.isalnum())
+
+
+def _plain(value: str) -> str:
+    """One dynamic value, rendered as literal text rather than as markup.
+
+    The card body is a single markdown block, so every value in it is markup
+    until something says otherwise. Escaping is done *here*, at the render
+    boundary shared by the native card and the Markdown fallback, and never in
+    the durable record: what is stored stays the text the producer sanitized,
+    and one rule keeps the two surfaces from drifting apart. It runs over the
+    values only — the field names this module owns keep their emphasis.
+    """
+
+    if type(value) is not str:
+        return value
+    escaped: list[str] = []
+    for index, char in enumerate(value):
+        if char in _MARKDOWN_META or (
+            char == "_" and _emphasising_underscore(value, index)
+        ):
+            escaped.append("\\")
+        escaped.append(char)
+    return "".join(escaped)
+
+
 def _summary_lines(projection: DelegateCardProjection) -> list[str]:
     locale = projection.locale
     separator = _FIELD_SEPARATOR[locale] + " "
@@ -1309,7 +1383,7 @@ def _summary_lines(projection: DelegateCardProjection) -> list[str]:
         _admitted_role(projection),
     )
     return [
-        f"{emoji} {label}{separator}{value}"
+        f"{emoji} {_bold(label)}{separator}{_plain(value)}"
         for emoji, label, value in zip(_FIELD_EMOJI, _FIELD_LABELS[locale], values)
     ]
 
@@ -1322,20 +1396,20 @@ def _round_block(row: DelegateCardRound, locale: str) -> list[str]:
     else:
         heading = f"{emoji} Round {row.round_number}"
     if row.purpose:
-        heading = f"{heading}{separator}{row.purpose}"
+        heading = f"{heading}{separator}{_plain(row.purpose)}"
     lines = [heading]
 
     session_text = _SESSION_TEXT[locale].get(row.session_projection)
     if session_text is not None:
-        lines.append(f"{_SESSION_LABEL}{separator}{session_text}")
+        lines.append(f"{_bold(_SESSION_LABEL)}{separator}{_plain(session_text)}")
 
     if row.settled:
         detail = row.result_summary or _ROUND_TITLE_STATE[locale][row.status]
-        lines.append(f"{_RESULT_LABEL[locale]}{separator}{detail}")
+        lines.append(f"{_bold(_RESULT_LABEL[locale])}{separator}{_plain(detail)}")
     else:
         lines.append(
-            f"{_STATUS_LABEL[locale]}{separator}"
-            f"{_ROUND_TITLE_STATE[locale][row.status]}"
+            f"{_bold(_STATUS_LABEL[locale])}{separator}"
+            f"{_plain(_ROUND_TITLE_STATE[locale][row.status])}"
         )
     return lines
 
