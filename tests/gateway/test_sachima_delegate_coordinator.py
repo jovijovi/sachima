@@ -385,6 +385,7 @@ def _coordinator(
     delivery=None,
     summary_provider=_DEFAULT_PROVIDER,
     summary_timeout=5.0,
+    running_patch_interval=None,
     **config_overrides,
 ):
     facade = _Facade() if facade is None else facade
@@ -407,6 +408,7 @@ def _coordinator(
         observe_interval=0.01,
         summary_provider=summary_provider,
         summary_timeout=summary_timeout,
+        running_patch_interval=running_patch_interval,
     )
     delegate_mod._coordinator = coordinator
     return coordinator, facade
@@ -663,7 +665,15 @@ async def test_a_success_shaped_dispatch_with_no_record_is_a_failed_admission(tm
     assert delivery.receipts == []
     assert facade.submit_count() == 0
     assert coordinator.capacity.held() == 0
-    assert coordinator.state.list_turns() == ()
+    # Execution-only material is released; the durable failure is retained, and
+    # it carries no Run, no acceptance, and no receipt it never earned.
+    (turn,) = coordinator.state.list_turns()
+    assert turn.lifecycle == "admission_failed"
+    assert turn.turn_ref is None
+    assert turn.accepted_at is None
+    assert turn.receipt == "pending"
+    with pytest.raises(DelegateStateError):
+        coordinator.state.read_payload(turn.payload_ref)
 
 
 @pytest.mark.asyncio
@@ -2530,3 +2540,1479 @@ async def test_continuation_in_the_same_session_is_unaffected_by_summarisation(
     lines = coordinator.pending_hermes_context(_origin().session_id)
     assert len(lines) == 2
     assert all(SUMMARY_CANARY in line for line in lines)
+
+
+# --------------------------------------------------------------------------- #
+# S3 / S5 — one Task, one Feishu card, one round row per Turn
+#
+# The card is a presentation projection over the same durable state the rest of
+# this module proves. What is added here is the delivery contract: one card is
+# created before the task id is exposed, every later transition patches that
+# same ``message_id``, a continuation adds exactly one round, Session reuse is
+# claimed only from trusted evidence, and a card that fails changes no task
+# truth at all.
+# --------------------------------------------------------------------------- #
+class _CardDelivery(_Delivery):
+    """A card-capable origin: records every send and patch, faultable at both."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.sent_cards: list[dict] = []
+        self.patched: list[tuple[str, dict]] = []
+        self.card_result: Any = SendResult(success=True, message_id="om_card")
+        self.patch_result: Any = SendResult(success=True, message_id="om_card")
+        self.card_error: BaseException | None = None
+        self.patch_error: BaseException | None = None
+
+    def channel(self, limit: int = 4000) -> DelegateDelivery:
+        return DelegateDelivery(
+            send_text=self._send_text,
+            send_plain_text_once=self._send_once,
+            limit=limit,
+            send_card=self._send_card,
+            patch_card=self._patch_card,
+        )
+
+    async def _send_card(self, card: dict) -> Any:
+        self.sent_cards.append(card)
+        if self.card_error is not None:
+            raise self.card_error
+        return self.card_result
+
+    async def _patch_card(self, message_id: str, card: dict) -> Any:
+        self.patched.append((message_id, card))
+        if self.patch_error is not None:
+            raise self.patch_error
+        return self.patch_result
+
+    @property
+    def last_card(self) -> dict:
+        return self.patched[-1][1] if self.patched else self.sent_cards[-1]
+
+
+def _card_text(card: dict) -> str:
+    return card["header"]["title"]["content"] + "\n\n" + card["elements"][0]["content"]
+
+
+def _titles(delivery: _CardDelivery) -> list[str]:
+    return [
+        card["header"]["title"]["content"]
+        for card in [*delivery.sent_cards, *(card for _mid, card in delivery.patched)]
+    ]
+
+
+def _sink_settled(coordinator, turn_key: str) -> bool:
+    """The turn is terminal *and* its one delivery attempt has settled."""
+
+    turn = coordinator.state.read_turn(turn_key)
+    if turn is None or turn.lifecycle != "terminal":
+        return False
+    event = coordinator.state.result_for_turn(turn_key)
+    return event is not None and event.im_sink in {"confirmed", "failed", "uncertain"}
+
+
+async def _run_one_round(coordinator, facade, delivery, *, index: int, text: str):
+    """Drive one whole round to its settled terminal."""
+
+    if index == 0:
+        outcome = await coordinator.create(
+            task_text=text,
+            preset=_preset(coordinator),
+            origin=_origin(),
+            delivery=delivery.channel(),
+        )
+    else:
+        outcome = await coordinator.continue_task(
+            coordinator.state.list_tasks()[0].task_ref,
+            text,
+            delivery=delivery.channel(),
+        )
+    assert outcome.lifecycle == "admitted", outcome
+    facade.terminalize(index)
+    assert await _until(lambda: _sink_settled(coordinator, outcome.turn_key))
+    return outcome
+
+
+@pytest.mark.asyncio
+async def test_one_card_is_created_before_the_task_id_is_ever_exposed(tmp_path):
+    facade = _Facade()
+    facade.submit_gate = threading.Event()
+    delivery = _CardDelivery()
+    coordinator, _ = _coordinator(tmp_path, facade=facade, delivery=delivery)
+
+    created = asyncio.create_task(
+        coordinator.create(
+            task_text=TASK_TEXT_CANARY,
+            preset=_preset(coordinator),
+            origin=_origin(),
+            delivery=delivery.channel(),
+        )
+    )
+    assert await _until(lambda: facade.submit_count() == 1)
+
+    # The card exists before the submit could have been accepted, and no
+    # ordinary lifecycle text has exposed a task ref.
+    assert len(delivery.sent_cards) == 1
+    first = _card_text(delivery.sent_cards[0])
+    assert first.startswith("委派任务 · 已创建")
+    task_ref = coordinator.state.list_tasks()[0].task_ref
+    assert task_ref in first
+    assert not any(task_ref in text for text in delivery.notices)
+    assert not any(task_ref in text for text in delivery.receipts)
+
+    projection = coordinator.state.read_card(task_ref)
+    assert projection.card_message_id == "om_card"
+    assert projection.card_sink_state == "confirmed"
+    assert projection.task_created_at
+
+    facade.submit_gate.set()
+    await created
+
+
+@pytest.mark.asyncio
+async def test_every_later_transition_patches_the_same_message(tmp_path):
+    delivery = _CardDelivery()
+    coordinator, facade = _coordinator(tmp_path, delivery=delivery)
+    await _run_one_round(coordinator, facade, delivery, index=0, text=TASK_TEXT_CANARY)
+
+    assert len(delivery.sent_cards) == 1
+    assert delivery.patched
+    assert {message_id for message_id, _card in delivery.patched} == {"om_card"}
+    # The lifecycle text path is replaced, not doubled up.
+    assert delivery.receipts == []
+    assert delivery.terminals == []
+    assert _titles(delivery)[-1] == "委派任务 · 第 1 轮已完成"
+
+
+@pytest.mark.asyncio
+async def test_a_continuation_patches_the_same_card_and_adds_exactly_one_round(tmp_path):
+    delivery = _CardDelivery()
+    coordinator, facade = _coordinator(tmp_path, delivery=delivery)
+    await _run_one_round(coordinator, facade, delivery, index=0, text="建立上下文")
+    await _run_one_round(coordinator, facade, delivery, index=1, text="验证上下文复用")
+
+    task_ref = coordinator.state.list_tasks()[0].task_ref
+    projection = coordinator.state.read_card(task_ref)
+    assert [row.round_number for row in projection.rounds] == [1, 2]
+    assert len(delivery.sent_cards) == 1
+
+    final = _card_text(delivery.last_card)
+    assert final.startswith("委派任务 · 第 2 轮已完成")
+    # Round 1 stays visible and independently terminal.
+    assert "✅ 第 1 轮：建立上下文" in final
+    assert "✅ 第 2 轮：验证上下文复用" in final
+
+
+@pytest.mark.asyncio
+async def test_two_turns_two_runs_one_session_prove_reuse_on_the_card(tmp_path):
+    """S5: the exact multi-round problem the design exists for."""
+
+    delivery = _CardDelivery()
+    coordinator, facade = _coordinator(tmp_path, delivery=delivery)
+    await _run_one_round(coordinator, facade, delivery, index=0, text="建立上下文")
+
+    mid = _card_text(delivery.last_card)
+    assert "Session：新建" in mid
+    assert "已确认复用" not in mid
+
+    await _run_one_round(coordinator, facade, delivery, index=1, text="验证上下文复用")
+
+    # Two distinct ARS Runs on one ARS Session, from the daemon's own replies.
+    assert facade.run_ids == ["RUN-delegate-1", "RUN-delegate-2"]
+    reused_session = [
+        dict(payload).get("request", {}).get("session_id") for payload in facade.submitted
+    ]
+    assert reused_session[0] is None and reused_session[1]
+
+    task_ref = coordinator.state.list_tasks()[0].task_ref
+    projection = coordinator.state.read_card(task_ref)
+    first, second = projection.rounds
+    assert first.session_ref == second.session_ref
+    assert first.run_ref != second.run_ref
+    assert first.session_origin == "created"
+    assert second.session_origin == "loaded"
+    assert second.session_projection == "reused"
+
+    final = _card_text(delivery.last_card)
+    assert "Session：新建" in final
+    assert "Session：已确认复用" in final
+    # Nothing internal ever reached the surface.
+    for forbidden in ("dturn_", "dres_", "RUN-delegate", "ARSSESSION", "oc_chat"):
+        assert forbidden not in json.dumps(delivery.last_card, ensure_ascii=False)
+
+
+@pytest.mark.asyncio
+async def test_a_third_round_confirms_reuse_against_the_original_created_anchor(tmp_path):
+    """The anchor is the round that created the Session, not the row behind.
+
+    By round three the previous row is itself a load, so a conclusion drawn
+    from that row alone is either a guess or a refusal. The Task's own ordered
+    history still holds the create, and that is what the claim rests on.
+    """
+
+    delivery = _CardDelivery()
+    coordinator, facade = _coordinator(tmp_path, delivery=delivery)
+    await _run_one_round(coordinator, facade, delivery, index=0, text="建立上下文")
+    await _run_one_round(coordinator, facade, delivery, index=1, text="验证上下文复用")
+    await _run_one_round(coordinator, facade, delivery, index=2, text="再次验证复用")
+
+    task_ref = coordinator.state.list_tasks()[0].task_ref
+    projection = coordinator.state.read_card(task_ref)
+    first, second, third = projection.rounds
+    assert [row.session_origin for row in projection.rounds] == [
+        "created",
+        "loaded",
+        "loaded",
+    ]
+    # Three Runs, one Session — the durable evidence the claim is made from.
+    assert first.session_ref == second.session_ref == third.session_ref
+    assert len({first.run_ref, second.run_ref, third.run_ref}) == 3
+    assert second.session_projection == "reused"
+    assert third.session_projection == "reused"
+
+    final = _card_text(delivery.last_card)
+    assert final.count("Session：已确认复用") == 2
+    assert "Session：新建" in final
+    assert len(delivery.sent_cards) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_replaced_session_can_never_become_a_reuse_claim(tmp_path):
+    """A continuation the daemon answers with another Session is refused."""
+
+    delivery = _CardDelivery()
+    coordinator, facade = _coordinator(tmp_path, delivery=delivery)
+    await _run_one_round(coordinator, facade, delivery, index=0, text="建立上下文")
+
+    original_submit = facade.submit
+
+    def _fresh_session(*, request_id: str, payload: Any):
+        reply = original_submit(request_id=request_id, payload=payload)
+        return {**reply, "session_id": "ARSSESSIONDELEGATEOTHER"}
+
+    facade.submit = _fresh_session  # type: ignore[method-assign]
+    task_ref = coordinator.state.list_tasks()[0].task_ref
+    outcome = await coordinator.continue_task(
+        task_ref, "验证上下文复用", delivery=delivery.channel()
+    )
+
+    # The binding ledger refuses a swapped Session, so this round never becomes
+    # an admitted Run — and therefore can never be projected as reuse.
+    assert outcome.lifecycle != "admitted"
+    projection = coordinator.state.read_card(task_ref)
+    assert projection.rounds[1].session_projection != "reused"
+    assert projection.rounds[1].session_ref is None
+    final = _card_text(delivery.last_card)
+    assert "已确认复用" not in final.split("第 2 轮")[1]
+
+
+@pytest.mark.asyncio
+async def test_duplicate_reconciliation_creates_no_second_card_or_round(tmp_path):
+    delivery = _CardDelivery()
+    coordinator, facade = _coordinator(tmp_path, delivery=delivery)
+    outcome = await _run_one_round(
+        coordinator, facade, delivery, index=0, text=TASK_TEXT_CANARY
+    )
+    sends = len(delivery.sent_cards)
+    rounds = len(coordinator.state.read_card(outcome.task_ref).rounds)
+
+    for _ in range(3):
+        await coordinator.status(outcome.task_ref)
+    assert len(delivery.sent_cards) == sends
+    assert len(coordinator.state.read_card(outcome.task_ref).rounds) == rounds
+
+
+@pytest.mark.asyncio
+async def test_restart_recovery_patches_the_confirmed_card_without_duplicating_it(
+    tmp_path,
+):
+    delivery = _CardDelivery()
+    coordinator, facade = _coordinator(tmp_path, delivery=delivery)
+    outcome = await coordinator.create(
+        task_text=TASK_TEXT_CANARY,
+        preset=_preset(coordinator),
+        origin=_origin(),
+        delivery=delivery.channel(),
+    )
+    assert outcome.lifecycle == "admitted"
+    assert len(delivery.sent_cards) == 1
+
+    # A fresh graph over the same durable state.
+    restored, _ = _coordinator(tmp_path, facade=facade, delivery=delivery)
+    facade.terminalize(0)
+    await restored.restore()
+    assert await _until(
+        lambda: restored.state.read_turn(outcome.turn_key).lifecycle == "terminal"
+    )
+
+    # Still exactly one card, and it is the one that was already confirmed.
+    assert len(delivery.sent_cards) == 1
+    assert {message_id for message_id, _card in delivery.patched} == {"om_card"}
+    assert len(restored.state.read_card(outcome.task_ref).rounds) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_stale_revision_can_never_overwrite_a_newer_terminal(tmp_path):
+    from dataclasses import replace as _replace
+
+    delivery = _CardDelivery()
+    coordinator, facade = _coordinator(tmp_path, delivery=delivery)
+    outcome = await _run_one_round(
+        coordinator, facade, delivery, index=0, text=TASK_TEXT_CANARY
+    )
+    settled = coordinator.state.read_card(outcome.task_ref)
+    assert settled.revision >= 1
+
+    stale = _replace(settled, revision=0, pre_accept_status="waiting")
+    with pytest.raises(DelegateStateError):
+        coordinator.state.advance_card(stale)
+    assert coordinator.state.read_card(outcome.task_ref) == settled
+
+
+@pytest.mark.asyncio
+async def test_running_patches_are_coalesced_but_the_terminal_always_flushes(tmp_path):
+    from gateway.sachima_delegate_card import RUNNING_PATCH_INTERVAL_SECONDS
+
+    delivery = _CardDelivery()
+    coordinator, facade = _coordinator(tmp_path, delivery=delivery)
+    outcome = await coordinator.create(
+        task_text=TASK_TEXT_CANARY,
+        preset=_preset(coordinator),
+        origin=_origin(),
+        delivery=delivery.channel(),
+    )
+    assert coordinator.running_patch_interval == RUNNING_PATCH_INTERVAL_SECONDS
+
+    # The observer polls every 10ms in this fixture; the cadence contract is
+    # seconds, so a long poll run must not become a patch storm.
+    running_patches = len(delivery.patched)
+    await asyncio.sleep(0.3)
+    assert len(delivery.patched) - running_patches <= 1
+
+    facade.terminalize(0)
+    assert await _until(lambda: _sink_settled(coordinator, outcome.turn_key))
+    # The terminal is never paced away.
+    assert _titles(delivery)[-1] == "委派任务 · 第 1 轮已完成"
+
+
+@pytest.mark.asyncio
+async def test_an_out_of_contract_configured_cadence_falls_back_to_the_default(tmp_path):
+    from gateway.sachima_delegate_card import RUNNING_PATCH_INTERVAL_SECONDS
+
+    fresh, _ = _coordinator(tmp_path, running_patch_interval="soon")
+    assert fresh.running_patch_interval == RUNNING_PATCH_INTERVAL_SECONDS
+    absurd, _ = _coordinator(tmp_path, running_patch_interval=0.001)
+    assert absurd.running_patch_interval == RUNNING_PATCH_INTERVAL_SECONDS
+
+
+@pytest.mark.asyncio
+async def test_a_failed_final_patch_degrades_once_and_keeps_task_truth(tmp_path):
+    delivery = _CardDelivery()
+    coordinator, facade = _coordinator(tmp_path, delivery=delivery)
+    outcome = await coordinator.create(
+        task_text=TASK_TEXT_CANARY,
+        preset=_preset(coordinator),
+        origin=_origin(),
+        delivery=delivery.channel(),
+    )
+    delivery.patch_result = SendResult(success=False, error="card patch failed")
+    facade.terminalize(0)
+    assert await _until(lambda: _sink_settled(coordinator, outcome.turn_key))
+
+    # One compact sanitized Markdown notice, carrying the copyable task id.
+    assert len(delivery.notices) == 1
+    assert outcome.task_ref in delivery.notices[0]
+    assert "委派任务" in delivery.notices[0]
+
+    # A second failed reconciliation does not produce a second notice.
+    await coordinator.status(outcome.task_ref)
+    assert len(delivery.notices) == 1
+
+    # Task truth is untouched by the presentation failure.
+    turn = coordinator.state.read_turn(outcome.turn_key)
+    assert turn.lifecycle == "terminal"
+    assert turn.terminal_status == "completed"
+    event = coordinator.state.result_for_turn(outcome.turn_key)
+    assert event.terminal == "completed"
+    assert coordinator.state.read_full_result(event.full_result_ref) == FINAL_MESSAGE_CANARY
+
+
+@pytest.mark.asyncio
+async def test_a_card_send_that_never_lands_does_not_block_the_task(tmp_path):
+    delivery = _CardDelivery()
+    delivery.card_error = ConnectionError("card send lost")
+    coordinator, facade = _coordinator(tmp_path, delivery=delivery)
+    outcome = await coordinator.create(
+        task_text=TASK_TEXT_CANARY,
+        preset=_preset(coordinator),
+        origin=_origin(),
+        delivery=delivery.channel(),
+    )
+    assert outcome.lifecycle == "admitted"
+    projection = coordinator.state.read_card(outcome.task_ref)
+    # An uncertain send keeps its binding-less projection for reconciliation and
+    # does not blindly create a second card.
+    assert projection.card_sink_state == "uncertain"
+    assert projection.card_message_id is None
+    assert len(delivery.sent_cards) == 1
+    facade.terminalize(0)
+
+
+@pytest.mark.asyncio
+async def test_a_non_card_origin_keeps_the_existing_plain_lifecycle(tmp_path):
+    delivery = _Delivery()
+    coordinator, facade = _coordinator(tmp_path, delivery=delivery)
+    outcome = await _run_one_round(
+        coordinator, facade, delivery, index=0, text=TASK_TEXT_CANARY
+    )
+    assert len(delivery.receipts) == 1
+    assert len(delivery.terminals) == 1
+    assert delivery.terminals[0].startswith("✅ **委派任务已完成**")
+    # No card projection is invented for an origin that cannot render one.
+    assert coordinator.state.read_card(outcome.task_ref) is None
+
+
+@pytest.mark.asyncio
+async def test_a_pre_accept_failure_keeps_a_terminal_card_and_the_task_identity(tmp_path):
+    from sachima_supervisor.runtime_spine.agent_run_supervisor_turn_dispatcher import (
+        TurnDispatchOutcome,
+    )
+
+    delivery = _CardDelivery()
+    coordinator, _ = _coordinator(tmp_path, delivery=delivery)
+
+    def _never_admitted(request):
+        # Success-shaped, but no durable record ever existed: the exact-key
+        # snapshot — not the return value — makes this a failed admission.
+        return TurnDispatchOutcome(
+            task_id=request.task_id,
+            session_id=request.session_id,
+            turn_ref="run_deadbeef",
+            supervisor_status="accepted",
+            artifact_ref="run_deadbeef",
+            error_code=None,
+        )
+
+    coordinator.binding.dispatcher.dispatch = _never_admitted  # type: ignore[method-assign]
+    outcome = await coordinator.create(
+        task_text=TASK_TEXT_CANARY,
+        preset=_preset(coordinator),
+        origin=_origin(),
+        delivery=delivery.channel(),
+    )
+    assert outcome.lifecycle == "admission_failed"
+    # Execution-only material is gone; the user-visible Task/card identity, and
+    # the durable failed state behind it, are not.
+    turn = coordinator.state.read_turn(outcome.turn_key)
+    assert turn is not None and turn.lifecycle == "admission_failed"
+    projection = coordinator.state.read_card(outcome.task_ref)
+    assert projection is not None
+    assert _titles(delivery)[-1] == "委派任务 · 第 1 轮未受理"
+
+
+@pytest.mark.asyncio
+async def test_the_admitted_role_is_sealed_from_the_role_policy_or_left_unspecified(
+    tmp_path,
+):
+    from gateway.sachima_agent_role_policy import (
+        AGENT_ROLE_POLICY_TYPE,
+        build_agent_role_policy,
+    )
+
+    delivery = _CardDelivery()
+    coordinator, facade = _coordinator(tmp_path, delivery=delivery)
+    coordinator._role_policy = build_agent_role_policy(
+        {
+            "type": AGENT_ROLE_POLICY_TYPE,
+            "assignments": [
+                {
+                    "agent_id": "codex",
+                    "division": "engineering",
+                    "roles": ["session_reuse_verifier"],
+                }
+            ],
+        }
+    )
+    outcome = await coordinator.create(
+        task_text=TASK_TEXT_CANARY,
+        preset=_preset(coordinator),
+        origin=_origin(),
+        delivery=delivery.channel(),
+        admitted_role="session_reuse_verifier",
+    )
+    assert (
+        coordinator.state.read_turn(outcome.turn_key).admitted_role
+        == "session_reuse_verifier"
+    )
+    assert "👤 角色： session_reuse_verifier" in _card_text(delivery.last_card)
+    facade.terminalize(0)
+
+
+@pytest.mark.asyncio
+async def test_a_role_the_agent_does_not_hold_is_never_sealed(tmp_path):
+    delivery = _CardDelivery()
+    coordinator, facade = _coordinator(tmp_path, delivery=delivery)
+    outcome = await coordinator.create(
+        task_text=TASK_TEXT_CANARY,
+        preset=_preset(coordinator),
+        origin=_origin(),
+        delivery=delivery.channel(),
+        admitted_role="pretend_role",
+    )
+    assert coordinator.state.read_turn(outcome.turn_key).admitted_role is None
+    assert "👤 角色： 未指定" in _card_text(delivery.last_card)
+    facade.terminalize(0)
+
+
+@pytest.mark.asyncio
+async def test_the_card_walks_the_four_confirmed_snapshots_in_order(tmp_path):
+    """S5 acceptance: the visual contract, as a delivered sequence."""
+
+    delivery = _CardDelivery()
+    coordinator, facade = _coordinator(tmp_path, delivery=delivery)
+    await _run_one_round(coordinator, facade, delivery, index=0, text="建立 Session 上下文")
+    await _run_one_round(
+        coordinator, facade, delivery, index=1, text="验证 Session 上下文复用"
+    )
+
+    titles = _titles(delivery)
+    assert titles[0] == "委派任务 · 已创建"
+    for expected in (
+        "委派任务 · 第 1 轮执行中",
+        "委派任务 · 第 2 轮执行中",
+        "委派任务 · 第 2 轮已完成",
+    ):
+        assert expected in titles, titles
+    # Monotonic: round 1 never reappears after round 2 opened.
+    assert titles.index("委派任务 · 第 1 轮执行中") < titles.index(
+        "委派任务 · 第 2 轮执行中"
+    )
+    assert titles[-1] == "委派任务 · 第 2 轮已完成"
+
+    # Persisted final state and visible final card state agree.
+    task_ref = coordinator.state.list_tasks()[0].task_ref
+    projection = coordinator.state.read_card(task_ref)
+    assert projection.card_sink_state == "confirmed"
+    assert projection.card_message_id == "om_card"
+    assert [row.status for row in projection.rounds] == ["completed", "completed"]
+    from gateway.sachima_delegate_card import render_delegation_markdown
+
+    assert render_delegation_markdown(projection) == _card_text(delivery.last_card)
+
+
+@pytest.mark.asyncio
+async def test_the_card_reports_the_queue_wait_instead_of_a_second_message(tmp_path):
+    facade = _Facade(max_concurrent_runs=1)
+    facade.submit_gate = threading.Event()
+    delivery = _CardDelivery()
+    coordinator, _ = _coordinator(tmp_path, facade=facade, delivery=delivery)
+
+    first = asyncio.create_task(
+        coordinator.create(
+            task_text="占用唯一席位",
+            preset=_preset(coordinator),
+            origin=_origin(),
+            delivery=delivery.channel(),
+        )
+    )
+    assert await _until(lambda: facade.submit_count() == 1)
+
+    second = asyncio.create_task(
+        coordinator.create(
+            task_text="等待席位",
+            preset=_preset(coordinator),
+            origin=_origin(),
+            delivery=delivery.channel(),
+        )
+    )
+    assert await _until(lambda: "委派任务 · 等待执行槽位" in _titles(delivery))
+    # The wait is told through the waiting task's own card, not a plain notice.
+    assert delivery.notices == []
+
+    facade.submit_gate.set()
+    await first
+    facade.terminalize(0)
+    assert await _until(lambda: facade.submit_count() == 2, timeout=15.0)
+    await second
+    assert "委派任务 · 第 1 轮提交中" in _titles(delivery)
+
+
+@pytest.mark.asyncio
+async def test_a_legacy_task_without_a_card_gets_one_on_its_next_continuation(tmp_path):
+    """First activation: no backfill, but the next durable transition is covered."""
+
+    plain = _Delivery()
+    coordinator, facade = _coordinator(tmp_path, delivery=plain)
+    outcome = await _run_one_round(
+        coordinator, facade, plain, index=0, text="旧任务的第一轮"
+    )
+    assert coordinator.state.read_card(outcome.task_ref) is None
+
+    # The same host, now card-capable for this origin.
+    cards = _CardDelivery()
+    coordinator._delivery_factory = lambda _origin: cards.channel()
+    await _run_one_round(coordinator, facade, cards, index=1, text="继续这个旧任务")
+
+    projection = coordinator.state.read_card(outcome.task_ref)
+    assert projection is not None
+    assert len(cards.sent_cards) == 1
+    # The card is created before the continuation becomes user-visible, and it
+    # carries only the rounds this projection can honestly reconstruct.  Round
+    # numbering is the durable ``turn_keys`` order under the Task binding, so
+    # the continuation is the *second* round, not a fresh first one.
+    assert [row.round_number for row in projection.rounds] == [1, 2]
+    assert projection.rounds[0].purpose == "旧任务的第一轮"
+    assert projection.rounds[0].status == "completed"
+    assert projection.rounds[1].purpose == "继续这个旧任务"
+
+    # This Task began before anything here observed it, and no Task-level start
+    # was ever persisted for it. The round's own admission instant is retained
+    # as what it is — a *Turn* boundary — and is not promoted into the Task
+    # start it is not evidence for, so the duration stays honestly unavailable
+    # rather than restarting at the card's creation instant.
+    legacy_turn = coordinator.state.read_turn(outcome.turn_key)
+    assert projection.rounds[0].started_at == legacy_turn.accepted_at
+    assert projection.task_created_at is None
+
+    final = _card_text(cards.last_card)
+    assert outcome.task_ref in final
+    assert final.startswith("委派任务 · 第 2 轮已完成")
+    assert "⏱️ 耗时： 未知" in final
+    assert "✅ 第 1 轮：旧任务的第一轮" in final
+    assert "✅ 第 2 轮：继续这个旧任务" in final
+
+
+@pytest.mark.asyncio
+async def test_a_reconstructed_legacy_round_is_never_read_as_session_evidence(tmp_path):
+    """A round with no persisted Session evidence proves neither new nor reuse."""
+
+    plain = _Delivery()
+    coordinator, facade = _coordinator(tmp_path, delivery=plain)
+    outcome = await _run_one_round(
+        coordinator, facade, plain, index=0, text="旧任务的第一轮"
+    )
+
+    cards = _CardDelivery()
+    coordinator._delivery_factory = lambda _origin: cards.channel()
+    await _run_one_round(coordinator, facade, cards, index=1, text="继续这个旧任务")
+
+    projection = coordinator.state.read_card(outcome.task_ref)
+    legacy, continuation = projection.rounds
+    # Nothing safe was persisted about round 1's ARS Session, so the row makes
+    # no Session claim at all.
+    assert legacy.session_ref is None
+    assert legacy.session_origin is None
+    assert legacy.session_projection == "omitted"
+    # And the continuation must not read that silence as "this Task's first
+    # Session", which would claim ``新建`` for a Run that really loaded one. Its
+    # own admission says it loaded a Session; with nothing to compare that to,
+    # the conclusion the card may draw from it is still nothing.
+    assert continuation.session_origin == "loaded"
+    assert continuation.session_projection == "unconfirmed"
+
+    final = _card_text(cards.last_card)
+    assert "Session：新建" not in final
+    assert "已确认复用" not in final
+    assert "Session：复用状态未确认" in final
+
+
+@pytest.mark.asyncio
+async def test_a_card_whose_round_row_was_never_opened_heals_at_admission(tmp_path):
+    """A host that died before the row was written still projects its terminal.
+
+    The Task/card projection is durable before capacity waiting, and the round
+    row is opened after it.  A crash inside that window must not leave the card
+    stuck on ``已创建`` with a result that can never be delivered.
+    """
+
+    delivery = _CardDelivery()
+    coordinator, facade = _coordinator(tmp_path, delivery=delivery)
+
+    async def _never_opened(_turn, _delivery):
+        return None
+
+    coordinator._card_open_round = _never_opened
+    outcome = await coordinator.create(
+        task_text=TASK_TEXT_CANARY,
+        preset=_preset(coordinator),
+        origin=_origin(),
+        delivery=delivery.channel(),
+    )
+    assert outcome.lifecycle == "admitted"
+
+    # Admission rebuilt the row from the same sealed Turn record.
+    projection = coordinator.state.read_card(outcome.task_ref)
+    assert [row.turn_key for row in projection.rounds] == [outcome.turn_key]
+    assert projection.rounds[0].purpose == TASK_TEXT_CANARY
+
+    facade.terminalize(0)
+    assert await _until(lambda: _sink_settled(coordinator, outcome.turn_key))
+    event = coordinator.state.result_for_turn(outcome.turn_key)
+    assert event.im_sink == "confirmed"
+    assert _titles(delivery)[-1] == "委派任务 · 第 1 轮已完成"
+    assert delivery.notices == []
+
+
+@pytest.mark.asyncio
+async def test_an_oversized_card_fails_closed_to_the_markdown_fallback(tmp_path):
+    """A payload the renderer cannot bound never reaches the adapter."""
+
+    delivery = _CardDelivery()
+    coordinator, facade = _coordinator(tmp_path, delivery=delivery)
+    coordinator._delivery_factory = lambda _origin: delivery.channel(limit=80)
+
+    outcome = await coordinator.create(
+        task_text=TASK_TEXT_CANARY,
+        preset=_preset(coordinator),
+        origin=_origin(),
+        delivery=delivery.channel(limit=80),
+    )
+    assert delivery.sent_cards == []
+    assert len(delivery.notices) == 1
+    assert outcome.task_ref in delivery.notices[0]
+    assert "💡" in delivery.notices[0]
+    # Task truth is unaffected by a presentation bound.
+    assert outcome.lifecycle == "admitted"
+    facade.terminalize(0)
+
+
+# --------------------------------------------------------------------------- #
+# S3 / S5 — durable failure, monotonic projection, sealed terminals, restart
+# reconciliation, injected cadence, and evidence-only Session claims
+#
+# The card made one thing user-visible that never was before: a ``dtask_*`` the
+# user can ask about. These are the paths where that promise, the projection's
+# monotonicity, and the "evidence or no claim" rule have to hold together.
+# --------------------------------------------------------------------------- #
+def _break_admission(coordinator) -> None:
+    """Make every dispatch success-shaped while admitting nothing durable."""
+
+    from sachima_supervisor.runtime_spine.agent_run_supervisor_turn_dispatcher import (
+        TurnDispatchOutcome,
+    )
+
+    def _never_admitted(request):
+        return TurnDispatchOutcome(
+            task_id=request.task_id,
+            session_id=request.session_id,
+            turn_ref="run_deadbeef",
+            supervisor_status="accepted",
+            artifact_ref="run_deadbeef",
+            error_code=None,
+        )
+
+    coordinator.binding.dispatcher.dispatch = _never_admitted  # type: ignore[method-assign]
+
+
+def _duration_line(delivery: _CardDelivery) -> str:
+    for line in _card_text(delivery.last_card).split("\n"):
+        if line.startswith("⏱️"):
+            return line
+    raise AssertionError(_card_text(delivery.last_card))
+
+
+@pytest.mark.asyncio
+async def test_a_pre_accept_failure_stays_queryable_instead_of_becoming_unknown(
+    tmp_path,
+):
+    """A Task the user was shown must remain a Task this host can answer about."""
+
+    delivery = _CardDelivery()
+    coordinator, _ = _coordinator(tmp_path, delivery=delivery)
+    _break_admission(coordinator)
+    outcome = await coordinator.create(
+        task_text=TASK_TEXT_CANARY,
+        preset=_preset(coordinator),
+        origin=_origin(),
+        delivery=delivery.channel(),
+    )
+    assert outcome.lifecycle == "admission_failed"
+
+    again = await coordinator.status(outcome.task_ref)
+    assert again.task_ref == outcome.task_ref
+    assert again.lifecycle == "admission_failed"
+    assert again.diagnostic == SACHIMA_DELEGATE_DISPATCH_FAILED
+
+    # The durable failed state is retained, and it invents no Run or Session.
+    assert coordinator.state.read_task(outcome.task_ref) is not None
+    turn = coordinator.state.read_turn(outcome.turn_key)
+    assert turn is not None
+    assert turn.lifecycle == "admission_failed"
+    assert turn.turn_ref is None
+    assert turn.accepted_at is None
+    row = coordinator.state.read_card(outcome.task_ref).rounds[0]
+    assert row.status == "rejected"
+    assert row.run_ref is None
+    assert row.session_ref is None
+    # Execution-only material really is gone; the identity is not.
+    with pytest.raises(DelegateStateError):
+        coordinator.state.read_payload(turn.payload_ref)
+    assert coordinator.capacity.held() == 0
+
+
+@pytest.mark.asyncio
+async def test_a_settled_rejection_keeps_its_frozen_duration_and_terminal(tmp_path):
+    """A repeated query re-reads a sealed round; it never re-times it."""
+
+    delivery = _CardDelivery()
+    coordinator, _ = _coordinator(tmp_path, delivery=delivery)
+    _break_admission(coordinator)
+    outcome = await coordinator.create(
+        task_text=TASK_TEXT_CANARY,
+        preset=_preset(coordinator),
+        origin=_origin(),
+        delivery=delivery.channel(),
+    )
+    sealed = coordinator.state.read_card(outcome.task_ref).rounds[0]
+    frozen = _duration_line(delivery)
+    assert _titles(delivery)[-1] == "委派任务 · 第 1 轮未受理"
+
+    await asyncio.sleep(1.1)
+    for _ in range(2):
+        await coordinator.status(outcome.task_ref)
+    # A late event carrying a new clock reading reaches the same sealed row.
+    turn = coordinator.state.read_turn(outcome.turn_key)
+    await coordinator._card_round_state(
+        turn, "rejected", delivery.channel(), settled_at="2099-01-01T00:00:00+00:00"
+    )
+    # A running state cannot reopen it either.
+    await coordinator._card_round_state(turn, "running", delivery.channel())
+
+    row = coordinator.state.read_card(outcome.task_ref).rounds[0]
+    assert row.status == "rejected"
+    assert row.settled_at == sealed.settled_at
+    assert _duration_line(delivery) == frozen
+    assert _titles(delivery)[-1] == "委派任务 · 第 1 轮未受理"
+
+    # The Task thread stays sealed to continuation under the existing contract.
+    again = await coordinator.continue_task(
+        outcome.task_ref, "再试一次", delivery=delivery.channel()
+    )
+    assert again.diagnostic == SACHIMA_DELEGATE_NOT_CONTINUABLE
+    assert len(coordinator.state.read_card(outcome.task_ref).rounds) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_card_settlement_never_reverts_a_newer_projection(tmp_path):
+    """The binding lands on the newest state, and cannot restore an older one."""
+
+    delivery = _CardDelivery()
+    coordinator, facade = _coordinator(tmp_path, delivery=delivery)
+    original_send = delivery._send_card
+    moved = "并发写入的新描述"
+
+    async def _advance_while_in_flight(card: dict):
+        # Another writer moved the projection forward while this payload was
+        # being delivered — exactly the window a settlement must not undo.
+        from dataclasses import replace as _replace
+
+        from gateway.sachima_delegate_card import next_projection_revision
+
+        task_ref = coordinator.state.list_tasks()[0].task_ref
+        current = coordinator.state.read_card(task_ref)
+        coordinator.state.advance_card(
+            next_projection_revision(_replace(current, task_description=moved))
+        )
+        return await original_send(card)
+
+    delivery._send_card = _advance_while_in_flight  # type: ignore[method-assign]
+    outcome = await coordinator.create(
+        task_text=TASK_TEXT_CANARY,
+        preset=_preset(coordinator),
+        origin=_origin(),
+        delivery=delivery.channel(),
+    )
+    projection = coordinator.state.read_card(outcome.task_ref)
+    # The newer content survived, and the delivery fact still landed on it: a
+    # lost binding is how the next flush would send this Task a second card.
+    assert projection.task_description == moved
+    assert projection.card_message_id == "om_card"
+    assert projection.card_sink_state == "confirmed"
+    assert len(delivery.sent_cards) == 1
+    facade.terminalize(0)
+
+
+@pytest.mark.asyncio
+async def test_a_restart_reconciles_an_interrupted_card_delivery_once(tmp_path):
+    """A crash inside the terminal patch leaves the card owed exactly one patch."""
+
+    delivery = _CardDelivery()
+    coordinator, facade = _coordinator(tmp_path, delivery=delivery)
+    outcome = await _run_one_round(
+        coordinator, facade, delivery, index=0, text=TASK_TEXT_CANARY
+    )
+    event = coordinator.state.result_for_turn(outcome.turn_key)
+    # The durable state a process that died inside the patch call leaves behind.
+    coordinator.state.update_result(event.event_id, im_sink="in_flight")
+    patches = len(delivery.patched)
+    submits = facade.submit_count()
+
+    fresh = _recompose(tmp_path, facade=facade, delivery=delivery)
+    await _await_composed(fresh.restore())
+
+    restored = fresh.state.read_result(event.event_id)
+    assert restored.im_sink == "confirmed"
+    # One patch of the card this Task is already bound to — never a new card,
+    # never a second text body, and never another Run.
+    assert len(delivery.patched) == patches + 1
+    assert delivery.patched[-1][0] == "om_card"
+    assert len(delivery.sent_cards) == 1
+    assert delivery.terminals == []
+    assert facade.submit_count() == submits
+    assert _titles(delivery)[-1] == "委派任务 · 第 1 轮已完成"
+
+
+@pytest.mark.asyncio
+async def test_an_unbound_card_is_not_resent_by_a_restart(tmp_path):
+    """Startup may reconcile a confirmed binding, and only a confirmed one."""
+
+    delivery = _CardDelivery()
+    delivery.card_error = ConnectionError("card send lost")
+    coordinator, facade = _coordinator(tmp_path, delivery=delivery)
+    outcome = await coordinator.create(
+        task_text=TASK_TEXT_CANARY,
+        preset=_preset(coordinator),
+        origin=_origin(),
+        delivery=delivery.channel(),
+    )
+    facade.terminalize(0)
+    assert await _until(lambda: _sink_settled(coordinator, outcome.turn_key))
+    assert coordinator.state.read_card(outcome.task_ref).card_message_id is None
+    event = coordinator.state.result_for_turn(outcome.turn_key)
+    coordinator.state.update_result(event.event_id, im_sink="in_flight")
+    sends = len(delivery.sent_cards)
+
+    fresh = _recompose(tmp_path, facade=facade, delivery=delivery)
+    await _await_composed(fresh.restore())
+
+    # The uncertain binding is retained for operator reconciliation.
+    assert len(delivery.sent_cards) == sends
+    assert delivery.patched == []
+    assert fresh.state.read_result(event.event_id).im_sink == "uncertain"
+
+
+class _CrashingCardDelivery(_CardDelivery):
+    """A card sink whose create lands on the platform and never returns here.
+
+    This is the one card call whose side effect a process death cannot undo:
+    Feishu has the message, and the only thing that would tie it back is a
+    ``message_id`` that arrives with a reply this host never sees.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.issued = asyncio.Event()
+
+    async def _send_card(self, card: dict) -> Any:
+        self.sent_cards.append(card)
+        self.issued.set()
+        await asyncio.Event().wait()
+
+
+@pytest.mark.asyncio
+async def test_a_crash_after_the_first_card_send_never_creates_a_second_card(tmp_path):
+    """The platform has the card; this host died before it could bind the id."""
+
+    delivery = _CrashingCardDelivery()
+    coordinator, facade = _coordinator(tmp_path, delivery=delivery)
+    creating = asyncio.create_task(
+        coordinator.create(
+            task_text=TASK_TEXT_CANARY,
+            preset=_preset(coordinator),
+            origin=_origin(),
+            delivery=delivery.channel(),
+        )
+    )
+    assert await _until(delivery.issued.is_set)
+    task_ref = coordinator.state.list_tasks()[0].task_ref
+
+    # A genuinely fresh graph over exactly the durable state that death left,
+    # asked to publish this Task's card again and again.
+    recovery = _CardDelivery()
+    fresh = _recompose(tmp_path, facade=facade, delivery=recovery)
+    origin = fresh.state.read_task(task_ref).origin
+    settlements = [
+        await fresh._flush_card(task_ref, origin, recovery.channel(), force=True)
+        for _ in range(3)
+    ]
+
+    # One rich card was created in the world, and it stays one.
+    assert recovery.sent_cards == []
+    assert len(delivery.sent_cards) == 1
+    # Nothing patches a card this host holds no id for.
+    assert recovery.patched == []
+    assert settlements == [None, None, None]
+    # The copyable task id still reaches the user, through one degradation.
+    assert len(recovery.notices) == 1
+    assert task_ref in recovery.notices[0]
+    assert "委派任务" in recovery.notices[0]
+    # No card recovery ever resubmits the delegated work.
+    assert facade.submit_count() == 0
+
+    # The premark is what makes all of that hold: the fail-closed no-id state is
+    # durable *before* the adapter call, not after a reply that may never come.
+    parked = fresh.state.read_card(task_ref)
+    assert parked.card_message_id is None
+    assert parked.card_sink_state == "uncertain"
+
+    creating.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await creating
+
+
+@pytest.mark.asyncio
+async def test_an_explicitly_refused_first_card_settles_failed_and_is_still_owed(
+    tmp_path,
+):
+    """A refusal is not a gap: nothing landed, so the create stays available.
+
+    The premark records "this may or may not have landed" for exactly as long
+    as that is true. A platform that answered *no* has resolved it, and holding
+    the card at ``uncertain`` afterwards would strand a Task that never got a
+    card at all behind a rule written for one that may already have.
+    """
+
+    delivery = _CardDelivery()
+    delivery.card_result = SendResult(success=False, error="card send refused")
+    coordinator, facade = _coordinator(tmp_path, delivery=delivery)
+    facade.submit_gate = threading.Event()
+    creating = asyncio.create_task(
+        coordinator.create(
+            task_text=TASK_TEXT_CANARY,
+            preset=_preset(coordinator),
+            origin=_origin(),
+            delivery=delivery.channel(),
+        )
+    )
+    # Every pre-submit transition has published by the time the dispatch parks.
+    assert await _until(lambda: facade.submit_count() == 1)
+    task_ref = coordinator.state.list_tasks()[0].task_ref
+
+    def _refused() -> bool:
+        record = coordinator.state.read_card(task_ref)
+        return record is not None and record.card_sink_state == "failed"
+
+    assert await _until(_refused)
+    assert coordinator.state.read_card(task_ref).card_message_id is None
+
+    # So the card is still owed, and a later flush is free to create it.
+    sends = len(delivery.sent_cards)
+    delivery.card_result = SendResult(success=True, message_id="om_card")
+    settlement = await coordinator._flush_card(
+        task_ref, _origin(), delivery.channel(), force=True
+    )
+    assert settlement is not None and settlement.confirmed
+    assert len(delivery.sent_cards) == sends + 1
+    assert coordinator.state.read_card(task_ref).card_message_id == "om_card"
+
+    facade.submit_gate.set()
+    assert (await creating).lifecycle == "admitted"
+    facade.terminalize(0)
+
+
+@pytest.mark.asyncio
+async def test_the_configured_running_patch_cadence_reaches_the_composed_host(
+    tmp_path, monkeypatch
+):
+    """The composition root, not just the constructor, honours the deployment."""
+
+    from gateway.sachima_delegate import (
+        SACHIMA_DELEGATE_CARD_PATCH_INTERVAL_ENV,
+        bind_delegate_coordinator,
+    )
+    from gateway.sachima_delegate_card import RUNNING_PATCH_INTERVAL_SECONDS
+
+    config = _config(tmp_path)
+    bundle = bind_arsd_execution(
+        config,
+        facade=_Facade(),
+        ledger=ArsdRunBindingLedger(config.binding_ledger_path),
+        payload_resolver=delegate_mod.delegate_payload_resolver(),
+    )
+
+    monkeypatch.setenv(SACHIMA_DELEGATE_CARD_PATCH_INTERVAL_ENV, "8")
+    composed = bind_delegate_coordinator(bundle, config, presets=_catalog(config))
+    assert composed.running_patch_interval == 8.0
+
+    # An out-of-contract deployment value composes a host, at the default.
+    monkeypatch.setenv(SACHIMA_DELEGATE_CARD_PATCH_INTERVAL_ENV, "900")
+    assert (
+        bind_delegate_coordinator(
+            bundle, config, presets=_catalog(config)
+        ).running_patch_interval
+        == RUNNING_PATCH_INTERVAL_SECONDS
+    )
+    monkeypatch.setenv(SACHIMA_DELEGATE_CARD_PATCH_INTERVAL_ENV, "soon")
+    assert (
+        bind_delegate_coordinator(
+            bundle, config, presets=_catalog(config)
+        ).running_patch_interval
+        == RUNNING_PATCH_INTERVAL_SECONDS
+    )
+    monkeypatch.delenv(SACHIMA_DELEGATE_CARD_PATCH_INTERVAL_ENV)
+    assert (
+        bind_delegate_coordinator(
+            bundle, config, presets=_catalog(config)
+        ).running_patch_interval
+        == RUNNING_PATCH_INTERVAL_SECONDS
+    )
+
+
+def test_the_session_mode_evidence_is_the_backends_own_vocabulary():
+    """Drift-lock: the admission evidence this card reads is the one recorded."""
+
+    from sachima_supervisor.runtime_spine import arsd_supervisor_backend as backend_mod
+
+    assert set(delegate_mod._SESSION_MODE_TO_ORIGIN) == {
+        backend_mod._SESSION_MODE_CREATE,
+        backend_mod._SESSION_MODE_REUSE,
+    }
+    assert delegate_mod._SESSION_MODE_TO_ORIGIN[backend_mod._SESSION_MODE_CREATE] == (
+        "created"
+    )
+    assert delegate_mod._SESSION_MODE_TO_ORIGIN[backend_mod._SESSION_MODE_REUSE] == (
+        "loaded"
+    )
+
+
+@pytest.mark.asyncio
+async def test_session_origin_comes_from_admission_evidence_not_round_position(
+    tmp_path,
+):
+    """Being round one proves nothing about the Session the daemon served."""
+
+    delivery = _CardDelivery()
+    coordinator, facade = _coordinator(tmp_path, delivery=delivery)
+    facade.submit_gate = threading.Event()
+    created = asyncio.create_task(
+        coordinator.create(
+            task_text=TASK_TEXT_CANARY,
+            preset=_preset(coordinator),
+            origin=_origin(),
+            delivery=delivery.channel(),
+        )
+    )
+    assert await _until(lambda: facade.submit_count() == 1)
+    turn = coordinator.state.list_turns()[0]
+    assert await _until(
+        lambda: coordinator.state.read_card(turn.task_ref).round_for(turn.turn_key)
+        is not None
+    )
+
+    # An admission that recorded no mode claims neither origin, however early
+    # in the Task it is.
+    silent = SimpleNamespace(
+        run_ref="run_first", ars_session_id="ARSSESSIONDELEGATE1", resolver_refs={}
+    )
+    projection = coordinator._card_admitted_round(turn, silent)
+    assert projection.rounds[0].session_origin is None
+    assert projection.rounds[0].session_projection != "new"
+
+    # And when the daemon answered this first round by *loading* a Session, the
+    # row says exactly that rather than "it was round one, so it is new".
+    loaded = SimpleNamespace(
+        run_ref="run_first",
+        ars_session_id="ARSSESSIONDELEGATE1",
+        resolver_refs={"session_mode": "reuse"},
+    )
+    projection = coordinator._card_admitted_round(turn, loaded)
+    assert projection.rounds[0].session_origin == "loaded"
+    assert projection.rounds[0].session_projection != "new"
+
+    facade.submit_gate.set()
+    await created
+    facade.terminalize(0)
+
+
+@pytest.mark.asyncio
+async def test_the_role_line_follows_the_current_round_not_the_first_one(tmp_path):
+    """The card shows the role *this* round was admitted under, or none."""
+
+    from gateway.sachima_agent_role_policy import (
+        AGENT_ROLE_POLICY_TYPE,
+        build_agent_role_policy,
+    )
+
+    delivery = _CardDelivery()
+    coordinator, facade = _coordinator(tmp_path, delivery=delivery)
+    coordinator._role_policy = build_agent_role_policy(
+        {
+            "type": AGENT_ROLE_POLICY_TYPE,
+            "assignments": [
+                {
+                    "agent_id": "codex",
+                    "division": "engineering",
+                    "roles": ["session_reuse_verifier"],
+                }
+            ],
+        }
+    )
+    outcome = await coordinator.create(
+        task_text="建立上下文",
+        preset=_preset(coordinator),
+        origin=_origin(),
+        delivery=delivery.channel(),
+        admitted_role="session_reuse_verifier",
+    )
+    facade.terminalize(0)
+    assert await _until(lambda: _sink_settled(coordinator, outcome.turn_key))
+    assert "👤 角色： session_reuse_verifier" in _card_text(delivery.last_card)
+
+    # The continuation names no role, so the card must not keep showing one.
+    second = await coordinator.continue_task(
+        outcome.task_ref, "继续这个任务", delivery=delivery.channel()
+    )
+    assert second.lifecycle == "admitted"
+    assert coordinator.state.read_turn(second.turn_key).admitted_role is None
+    assert "👤 角色： 未指定" in _card_text(delivery.last_card)
+    facade.terminalize(1)
+
+
+def test_a_late_card_never_invents_a_task_start_it_cannot_evidence():
+    """A legacy Task with no retained boundary has no start, not a fresh one."""
+
+    boundary = SachimaDelegateCoordinator._task_start_boundary
+    # An ordinary first allocation: this instant *is* the allocation.
+    assert boundary([]) is not None
+    # A Task that already ran rounds this host retains no boundary for.
+    assert (
+        boundary(
+            [
+                {"turn_key": "dturn_a1", "started_at": None, "settled_at": None},
+                {"turn_key": "dturn_b2", "started_at": None, "settled_at": None},
+            ]
+        )
+        is None
+    )
+    # A retained *round* boundary is not the Task's. ``started_at`` is when a
+    # Turn was admitted, which is neither when the Task was allocated nor a
+    # licence to report an elapsed time measured from it.
+    assert (
+        boundary(
+            [
+                {"turn_key": "dturn_a1", "started_at": None},
+                {"turn_key": "dturn_b2", "started_at": "2026-08-26T09:00:00+00:00"},
+            ]
+        )
+        is None
+    )
+
+
+# --------------------------------------------------------------------------- #
+# S3 / S5 — the trusted-projection boundary
+#
+# Two ways untrusted material reaches the one surface the user reads. In *time*:
+# two adapter calls for one Task can complete out of order, so an older payload
+# that was merely slow lands last and un-completes a newer round. In
+# *provenance*: a Turn admission instant is not a Task allocation instant, so
+# borrowing one reports an elapsed duration the Task never had.
+# --------------------------------------------------------------------------- #
+class _GatedCardDelivery(_CardDelivery):
+    """A card sink whose calls can be held open and released out of order.
+
+    ``applied`` is the platform's own view of the card: a payload joins it when
+    its adapter call *returns*, never when it is issued. Issue order is what
+    this host controls; completion order is what the user actually sees, and it
+    is exactly what a slow older call scrambles.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.applied: list[dict] = []
+        self._holds: dict[str, asyncio.Event] = {}
+        self._arrived: dict[str, asyncio.Event] = {}
+
+    def hold(self, marker: str) -> None:
+        self._holds[marker] = asyncio.Event()
+        self._arrived[marker] = asyncio.Event()
+
+    def held(self, marker: str) -> bool:
+        return self._arrived[marker].is_set()
+
+    def release(self, marker: str) -> None:
+        self._holds[marker].set()
+
+    @property
+    def in_flight(self) -> int:
+        """Calls this host has issued that the platform has not applied yet."""
+
+        return len(self.sent_cards) + len(self.patched) - len(self.applied)
+
+    async def _hold_open(self, card: dict) -> None:
+        text = _card_text(card)
+        for marker, gate in list(self._holds.items()):
+            if marker in text:
+                self._arrived[marker].set()
+                await gate.wait()
+                return
+
+    async def _send_card(self, card: dict) -> Any:
+        self.sent_cards.append(card)
+        await self._hold_open(card)
+        if self.card_error is not None:
+            raise self.card_error
+        self.applied.append(card)
+        return self.card_result
+
+    async def _patch_card(self, message_id: str, card: dict) -> Any:
+        self.patched.append((message_id, card))
+        await self._hold_open(card)
+        if self.patch_error is not None:
+            raise self.patch_error
+        self.applied.append(card)
+        return self.patch_result
+
+
+def _applied_titles(delivery: _GatedCardDelivery) -> list[str]:
+    """The header titles the platform actually applied, in that order."""
+
+    return [card["header"]["title"]["content"] for card in delivery.applied]
+
+
+def _visible_round(title: str) -> int:
+    """The round number a title projects, or ``0`` before any round exists."""
+
+    if "第 " not in title:
+        return 0
+    return int(title.split("第 ", 1)[1].split(" 轮", 1)[0])
+
+
+@pytest.mark.asyncio
+async def test_a_late_older_card_patch_cannot_roll_the_card_backward(tmp_path):
+    """A slow older patch that lands last must not un-complete a newer round."""
+
+    delivery = _GatedCardDelivery()
+    coordinator, facade = _coordinator(tmp_path, delivery=delivery)
+
+    # Round 1 reaches its terminal, and its final patch is held *inside* the
+    # adapter: this host has issued it, and the platform has not applied it.
+    delivery.hold("委派任务 · 第 1 轮已完成")
+    first = await coordinator.create(
+        task_text="建立上下文",
+        preset=_preset(coordinator),
+        origin=_origin(),
+        delivery=delivery.channel(),
+    )
+    assert first.lifecycle == "admitted"
+    facade.terminalize(0)
+    assert await _until(lambda: delivery.held("委派任务 · 第 1 轮已完成"))
+
+    task_ref = first.task_ref
+    before = coordinator.state.read_card(task_ref).revision
+
+    # Round 2 is admitted against the same Task and drives its own newer card
+    # state — the projection the user must be left looking at.
+    second = asyncio.create_task(
+        _run_one_round(coordinator, facade, delivery, index=1, text="验证上下文复用")
+    )
+    assert await _until(
+        lambda: len(coordinator.state.read_card(task_ref).rounds) == 2
+    )
+    # Under the defect the newer card completes right here while the older patch
+    # is still parked; under the repair it waits for this Task's publication
+    # boundary. Either way the older patch is released next.
+    await _until(second.done, timeout=2.0)
+    delivery.release("委派任务 · 第 1 轮已完成")
+    assert (await second).lifecycle == "admitted"
+    assert await _until(lambda: delivery.in_flight == 0)
+
+    # What the platform applied never goes backward, and the last thing it
+    # applied is the newest round.
+    shown = [_visible_round(title) for title in _applied_titles(delivery)]
+    assert shown == sorted(shown), _applied_titles(delivery)
+    assert _applied_titles(delivery)[-1] == "委派任务 · 第 2 轮已完成"
+
+    # Durable state stayed monotonic, and one Task still owns exactly one card.
+    projection = coordinator.state.read_card(task_ref)
+    assert projection.revision > before
+    assert [row.status for row in projection.rounds] == ["completed", "completed"]
+    assert len(delivery.sent_cards) == 1
+    assert {message_id for message_id, _card in delivery.patched} == {"om_card"}
+
+
+@pytest.mark.asyncio
+async def test_one_tasks_held_card_patch_never_stalls_another_task(tmp_path):
+    """Publication is serialized per Task, and Tasks stay independent."""
+
+    delivery = _GatedCardDelivery()
+    coordinator, facade = _coordinator(tmp_path, delivery=delivery)
+    first = await coordinator.create(
+        task_text="第一个任务",
+        preset=_preset(coordinator),
+        origin=_origin(),
+        delivery=delivery.channel(),
+    )
+    second = await coordinator.create(
+        task_text="第二个任务",
+        preset=_preset(coordinator),
+        origin=_origin(),
+        delivery=delivery.channel(),
+    )
+    assert first.task_ref != second.task_ref
+
+    delivery.hold(first.task_ref)
+    held = asyncio.create_task(
+        coordinator._flush_card(
+            first.task_ref,
+            coordinator.state.read_task(first.task_ref).origin,
+            delivery.channel(),
+            force=True,
+        )
+    )
+    assert await _until(lambda: delivery.held(first.task_ref))
+    applied = len(delivery.applied)
+
+    # The other Task's card publishes while the first Task's call is still open.
+    settlement = await asyncio.wait_for(
+        coordinator._flush_card(
+            second.task_ref,
+            coordinator.state.read_task(second.task_ref).origin,
+            delivery.channel(),
+            force=True,
+        ),
+        timeout=5.0,
+    )
+    assert settlement is not None and settlement.confirmed
+    assert len(delivery.applied) == applied + 1
+    assert second.task_ref in _card_text(delivery.applied[-1])
+
+    delivery.release(first.task_ref)
+    assert await held is not None
+    facade.terminalize(0)
+    facade.terminalize(1)
+
+
+@pytest.mark.asyncio
+async def test_a_legacy_task_start_is_never_a_turn_admission_instant(tmp_path):
+    """``accepted_at`` belongs to a Turn admission, and never becomes a Task's."""
+
+    delivery = _CardDelivery()
+    coordinator, facade = _coordinator(tmp_path, delivery=delivery)
+    first = await _run_one_round(
+        coordinator, facade, delivery, index=0, text="建立上下文"
+    )
+    task_ref = first.task_ref
+
+    # Positive control: a Task whose start this host really did allocate keeps a
+    # persisted boundary and a numeric elapsed value.
+    assert coordinator.state.read_card(task_ref).task_created_at is not None
+    assert _duration_line(delivery) != "⏱️ 耗时： 未知"
+
+    # The Task this host retains from before card projection: durable turns that
+    # carry their own admission instants, and no card at all.
+    admitted = coordinator.state.read_turn(first.turn_key).accepted_at
+    assert admitted
+    coordinator.state.discard_card(task_ref)
+
+    second = await coordinator.continue_task(
+        task_ref, "验证上下文复用", delivery=delivery.channel()
+    )
+    assert second.lifecycle == "admitted"
+
+    projection = coordinator.state.read_card(task_ref)
+    # The round boundary is still trusted evidence about that *round*; the Task
+    # start it is not evidence for stays unavailable, and the card says so.
+    assert projection.rounds[0].started_at == admitted
+    assert projection.task_created_at is None
+    assert _duration_line(delivery) == "⏱️ 耗时： 未知"
+    facade.terminalize(1)

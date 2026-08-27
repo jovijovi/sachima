@@ -1922,3 +1922,94 @@ def test_a_legacy_run_conversation_double_is_never_handed_the_private_lease():
         "_provider_dispatch_lease": lease
     }
     assert provider_dispatch_lease_kwargs(AIAgent.run_conversation, None) == {}
+
+
+# --------------------------------------------------------------------------- #
+# S3 — the host's card capability, per origin
+#
+# The delegation status card is a Feishu capability, so the host offers it only
+# where the adapter can really send *and* patch one in place. Everywhere else
+# the delivery is byte-for-byte the plain-text capability it already was.
+# --------------------------------------------------------------------------- #
+class _CardAdapter(_OriginAdapter):
+    """A Feishu-shaped adapter: both interactive-card seams, recorded."""
+
+    MAX_MESSAGE_LENGTH = 8000
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.cards: list[dict[str, Any]] = []
+        self.patches: list[tuple[str, dict[str, Any]]] = []
+
+    async def send_interactive_card(self, chat_id, card, *, reply_to=None, metadata=None):
+        self.cards.append({"chat_id": chat_id, "card": card, "metadata": metadata})
+        return SendResult(success=True, message_id="om_card")
+
+    async def patch_interactive_card(self, chat_id, message_id, card, *, finalize=False):
+        self.patches.append((message_id, card))
+        return SendResult(success=True, message_id=message_id)
+
+
+def _card_origin_host():
+    from gateway.config import Platform
+    from gateway.run import GatewayRunner
+
+    adapter = _CardAdapter()
+    runner = object.__new__(GatewayRunner)
+    runner.adapters = {Platform.FEISHU: adapter}
+    return runner, adapter
+
+
+def _feishu_origin(thread_id: str | None = None) -> DelegateOrigin:
+    return DelegateOrigin(
+        platform="feishu",
+        chat_id="oc_chat",
+        thread_id=thread_id,
+        session_key="feishu:oc_chat",
+        session_id="20260826_000000_abcd1234",
+        reply_anchor=None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_feishu_origin_is_card_capable_and_keeps_its_call_shape():
+    runner, adapter = _card_origin_host()
+    delivery = runner._delegate_delivery_from_origin(_feishu_origin(thread_id="th_1"))
+
+    assert delivery.card_capable is True
+    assert delivery.limit == _CardAdapter.MAX_MESSAGE_LENGTH
+
+    card = {"config": {}, "header": {}, "elements": []}
+    sent = await delivery.send_card(card)
+    assert sent.message_id == "om_card"
+    assert adapter.cards[0]["chat_id"] == "oc_chat"
+    assert adapter.cards[0]["card"] is card
+    assert adapter.cards[0]["metadata"]["thread_id"] == "th_1"
+
+    patched = await delivery.patch_card("om_card", card)
+    assert patched.success is True
+    assert adapter.patches == [("om_card", card)]
+
+
+@pytest.mark.asyncio
+async def test_an_adapter_without_both_card_seams_stays_on_the_plain_path():
+    from gateway.config import Platform
+    from gateway.run import GatewayRunner
+
+    adapter = _OriginAdapter()
+    runner = object.__new__(GatewayRunner)
+    runner.adapters = {Platform.FEISHU: adapter}
+    delivery = runner._delegate_delivery_from_origin(_feishu_origin())
+
+    assert delivery.card_capable is False
+    assert delivery.send_card is None
+    assert delivery.patch_card is None
+    await delivery.send_plain_text_once("plain body")
+    assert adapter.calls[0]["kind"] == "once"
+
+
+@pytest.mark.asyncio
+async def test_a_telegram_origin_is_never_offered_a_card():
+    runner, _adapter, _calls = _telegram_origin_host()
+    delivery = runner._delegate_delivery_from_origin(_delegate_origin())
+    assert delivery.card_capable is False

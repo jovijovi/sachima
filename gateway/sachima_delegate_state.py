@@ -56,6 +56,11 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Mapping
 
+from gateway.sachima_delegate_card import (
+    DelegateCardError,
+    DelegateCardProjection,
+    safe_card_task_ref,
+)
 from gateway.sachima_delegate_summary import (
     DelegateResultSummary,
     DelegateSummaryError,
@@ -66,6 +71,7 @@ from gateway.sachima_delegate_summary import (
 
 __all__ = [
     "CANCELLATION_STATES",
+    "CARD_RECORD_KIND",
     "DELEGATE_PAYLOAD_REF_PREFIX",
     "DELEGATE_STATE_VERSION",
     "LIFECYCLE_STATES",
@@ -306,6 +312,13 @@ class DelegateTurnRecord:
     requested_effort: str
     origin: DelegateOrigin
     task_description: str | None = None
+    #: The AGENT role sealed into *this* Turn's admitted execution contract, or
+    #: ``None`` when the AGENT was selected directly and no role was assigned.
+    #: It comes from the validated role policy at admission time and is never
+    #: derived from model output, a display name, or card copy — which is why a
+    #: task with no assigned role renders an honest "not specified" rather than
+    #: a plausible-looking label.
+    admitted_role: str | None = None
     accepted_at: str | None = None
     lifecycle: str = "prepared"
     cancellation: str = "none"
@@ -335,6 +348,8 @@ class DelegateTurnRecord:
         if type(self.origin) is not DelegateOrigin:
             raise _invalid()
         _optional_text(self.task_description)
+        if self.admitted_role is not None:
+            _safe_text(self.admitted_role, maximum=64)
         _optional_text(self.accepted_at, maximum=64)
         _member(self.lifecycle, LIFECYCLE_STATES)
         _member(self.cancellation, CANCELLATION_STATES)
@@ -367,6 +382,7 @@ class DelegateTurnRecord:
             "requested_effort": self.requested_effort,
             "origin": self.origin.as_dict(),
             "task_description": self.task_description,
+            "admitted_role": self.admitted_role,
             "accepted_at": self.accepted_at,
             "lifecycle": self.lifecycle,
             "cancellation": self.cancellation,
@@ -400,6 +416,7 @@ class DelegateTurnRecord:
             requested_effort=document.get("requested_effort", ""),
             origin=DelegateOrigin.from_dict(document.get("origin")),
             task_description=document.get("task_description"),
+            admitted_role=document.get("admitted_role"),
             accepted_at=document.get("accepted_at"),
             lifecycle=document.get("lifecycle", "prepared"),
             cancellation=document.get("cancellation", "none"),
@@ -562,12 +579,14 @@ class DelegateResultEvent:
 # The store
 # --------------------------------------------------------------------------- #
 SUMMARY_RECORD_KIND = "summary"
+CARD_RECORD_KIND = "card"
 
 _RECORD_TYPES = {
     "task": DelegateTaskBinding,
     "turn": DelegateTurnRecord,
     "result": DelegateResultEvent,
     SUMMARY_RECORD_KIND: DelegateResultSummary,
+    CARD_RECORD_KIND: DelegateCardProjection,
 }
 
 
@@ -579,7 +598,7 @@ class DelegateStateStore:
             raise _invalid()
         self._root = Path(root.strip())
         self._lock = threading.RLock()
-        for name in ("payloads", "tasks", "turns", "results", "summaries"):
+        for name in ("payloads", "tasks", "turns", "results", "summaries", "cards"):
             (self._root / name).mkdir(parents=True, exist_ok=True)
             os.chmod(self._root / name, _DIR_MODE)
         os.chmod(self._root, _DIR_MODE)
@@ -645,7 +664,7 @@ class DelegateStateStore:
         record = document.get("record")
         try:
             return _RECORD_TYPES[kind].from_dict(record)
-        except (DelegateStateError, DelegateSummaryError):
+        except (DelegateStateError, DelegateSummaryError, DelegateCardError):
             # The summary record owns its own stable codes; a document it
             # refuses is still "we could not read it" here, and the offending
             # bytes are never echoed either way.
@@ -981,6 +1000,107 @@ class DelegateStateStore:
                 summary.as_dict(),
             )
             return summary
+
+    # -- Task-card projections ----------------------------------------------- #
+    def card_path(self, task_ref: Any) -> Path:
+        """The one file this Task's card projection lives in.
+
+        Keyed by the public ``dtask_*`` rather than a derived slot: one Task
+        owns at most one card, so the task ref *is* the index and there is no
+        second place for the two to disagree.
+        """
+
+        try:
+            reference = safe_card_task_ref(task_ref)
+        except DelegateCardError:
+            raise _invalid() from None
+        return self._root / "cards" / (reference + ".json")
+
+    def put_card(self, projection: DelegateCardProjection) -> DelegateCardProjection:
+        """Create one Task's card projection, or replay the identical record.
+
+        Create-only, like the summary slot and for the same reason: the record
+        is derived from a Task identity, so a *different* record under an
+        existing slot means two projections of one Task, and picking either
+        would make "one Task, one card" a coincidence. Forward movement goes
+        through :meth:`advance_card`, which checks what may actually change.
+        """
+
+        if type(projection) is not DelegateCardProjection:
+            raise _invalid()
+        with self._lock:
+            existing = self.read_card(projection.task_ref)
+            if existing is not None:
+                if existing == projection:
+                    return existing
+                raise _conflict()
+            self._write_document(
+                self.card_path(projection.task_ref),
+                CARD_RECORD_KIND,
+                projection.as_dict(),
+            )
+        return projection
+
+    def read_card(self, task_ref: Any) -> DelegateCardProjection | None:
+        return self._read_document(self.card_path(task_ref), CARD_RECORD_KIND)
+
+    def list_cards(self) -> tuple[DelegateCardProjection, ...]:
+        records: list[DelegateCardProjection] = []
+        for path in sorted(self._root.glob("cards/*.json")):
+            record = self._read_document(path, CARD_RECORD_KIND)
+            if record is not None:
+                records.append(record)
+        return tuple(records)
+
+    def advance_card(
+        self, projection: DelegateCardProjection
+    ) -> DelegateCardProjection:
+        """Move one persisted card projection forward, refusing three rewrites.
+
+        The creation boundary, the sealed origin, and a revision that did not
+        move are each a conflict rather than a write. They are the three ways a
+        card stops being a truthful projection: a moved start boundary invents a
+        duration, a moved origin patches a card in someone else's conversation,
+        and a revision that is merely *not older* lets a writer that started
+        from the same read replace a projection somebody else already accepted.
+
+        Monotonic therefore means strictly forward. Only the exact same record
+        replays: a duplicate write is a no-op, and every real change carries its
+        own new revision, which is what makes "an older retry cannot overwrite a
+        newer state" hold for two concurrent writers rather than only for one
+        writer's own retry.
+        """
+
+        if type(projection) is not DelegateCardProjection:
+            raise _invalid()
+        with self._lock:
+            existing = self.read_card(projection.task_ref)
+            if existing is None:
+                raise _conflict()
+            if existing == projection:
+                return existing
+            if existing.task_created_at != projection.task_created_at:
+                raise _conflict()
+            if not existing.owns_origin(
+                platform=projection.origin_platform,
+                chat_id=projection.origin_chat_id,
+                session_id=projection.origin_session_id,
+            ):
+                raise _conflict()
+            if projection.revision <= existing.revision:
+                raise _conflict()
+            self._write_document(
+                self.card_path(projection.task_ref),
+                CARD_RECORD_KIND,
+                projection.as_dict(),
+            )
+            return projection
+
+    def discard_card(self, task_ref: Any) -> None:
+        try:
+            os.unlink(self.card_path(task_ref))
+        except OSError:
+            return
 
     # -- internals ---------------------------------------------------------- #
     def _list(self, folder: str, kind: str) -> list[Any]:
