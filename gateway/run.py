@@ -3993,6 +3993,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         return str(cfg_get(cfg, "agent", "system_prompt", default="") or "").strip()
 
     @staticmethod
+    def _load_progress_model_config_display() -> tuple[str | None, str | None]:
+        """Load raw configured model-display suffixes for the task workbench."""
+        cfg = _load_gateway_runtime_config()
+        reasoning_effort = str(cfg_get(cfg, "agent", "reasoning_effort", default="") or "").strip()
+        service_tier = str(cfg_get(cfg, "agent", "service_tier", default="") or "").strip()
+        return reasoning_effort or None, service_tier or None
+
+    @staticmethod
     def _load_reasoning_config() -> dict | None:
         """Load reasoning effort from config.yaml.
 
@@ -15185,7 +15193,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if progress_tracker is None or agent_obj is None or agent_obj is _AGENT_PENDING_SENTINEL:
                 return
             try:
-                progress_tracker.update_display_metadata(model_display=getattr(agent_obj, "model", None))
+                reasoning_effort_display, service_tier_display = self._load_progress_model_config_display()
+                progress_tracker.update_display_metadata(
+                    model_display=getattr(agent_obj, "model", None),
+                    reasoning_effort_display=reasoning_effort_display,
+                    service_tier_display=service_tier_display,
+                )
             except Exception as model_err:
                 logger.debug("Task tracker model display update failed: %s", model_err)
 

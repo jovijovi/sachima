@@ -95,6 +95,8 @@ class ProgressTracker:
         self._context_usage: ContextUsageSnapshot | None = None
         self._iteration_usage: IterationUsageSnapshot | None = None
         self._model_display: str | None = None
+        self._reasoning_effort_display: str | None = None
+        self._service_tier_display: str | None = None
         self._account_limit_lines: tuple[str, ...] = ()
         self._todo_items: tuple[TodoItemSnapshot, ...] = ()
         self._todo_lifecycle: TodoLifecycleSnapshot | None = None
@@ -235,6 +237,8 @@ class ProgressTracker:
                 context_usage=context_usage,
                 iteration_usage=iteration_usage,
                 model_display=self._model_display,
+                reasoning_effort_display=self._reasoning_effort_display,
+                service_tier_display=self._service_tier_display,
                 account_limit_lines=self._account_limit_lines,
                 todo_items=self._todo_items,
                 todo_lifecycle=self._todo_lifecycle,
@@ -245,6 +249,8 @@ class ProgressTracker:
         self,
         *,
         model_display: Any = None,
+        reasoning_effort_display: Any = None,
+        service_tier_display: Any = None,
         account_limit_lines: Any = None,
     ) -> None:
         """Update optional, sanitized display-only metadata for this transaction."""
@@ -252,6 +258,10 @@ class ProgressTracker:
         with self._lock:
             if model_display is not None:
                 self._model_display = _sanitize_model_display(model_display)
+            if reasoning_effort_display is not None:
+                self._reasoning_effort_display = _sanitize_config_display(reasoning_effort_display)
+            if service_tier_display is not None:
+                self._service_tier_display = _sanitize_config_display(service_tier_display)
             if account_limit_lines is not None:
                 self._account_limit_lines = _sanitize_account_limit_lines(account_limit_lines)
             self._touch()
@@ -584,6 +594,12 @@ def _sanitize_todo_content(value: Any) -> str:
 def _sanitize_todo_status(value: Any) -> str:
     text = sanitize_value_for_progress(value, key="todo_status", max_len=40).strip().lower()
     return text if text in _VALID_TODO_STATUSES else "pending"
+
+
+def _sanitize_config_display(value: Any) -> str | None:
+    """Sanitize a raw config value for display without semantic validation."""
+    safe = sanitize_for_progress(value).replace("\n", " ").strip()
+    return safe if safe and "[REDACTED]" not in safe else None
 
 
 def _sanitize_model_display(value: Any) -> str | None:

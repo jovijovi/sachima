@@ -95,3 +95,5 @@ class TransactionSnapshot:
     todo_items: tuple[TodoItemSnapshot, ...] = ()
     todo_lifecycle: TodoLifecycleSnapshot | None = None
     suspended_todo_hint: SuspendedTodoHint | None = None
+    reasoning_effort_display: str | None = None
+    service_tier_display: str | None = None

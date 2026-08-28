@@ -254,7 +254,13 @@ def render_feishu_progress_card(
     total_duration = _snapshot_elapsed_duration(snapshot, feishu=True)
     if total_duration:
         details.append(f"{_feishu_metric_label('⏱️', labels['duration'], lang)} {total_duration}")
-    model_detail = _feishu_model_detail(snapshot.model_display, labels=labels, language=lang)
+    model_detail = _feishu_model_detail(
+        snapshot.model_display,
+        reasoning_effort_display=snapshot.reasoning_effort_display,
+        service_tier_display=snapshot.service_tier_display,
+        labels=labels,
+        language=lang,
+    )
     if model_detail:
         details.append(model_detail)
     context_detail = _context_usage_feishu_line(snapshot.context_usage, language=lang)
@@ -267,24 +273,27 @@ def render_feishu_progress_card(
     if account_detail:
         details.append(account_detail)
 
-    elements: list[dict] = [{"tag": "markdown", "content": "\n".join(details)}]
+    sections: list[list[dict]] = [[{"tag": "markdown", "content": "\n".join(details)}]]
 
     # The todo block sits between the metric details and the recent-operations
     # list so the workbench reads plan-first, activity-second.
+    todo_section: list[dict] = []
     todo_element = (
         _feishu_todo_element(getattr(snapshot, "todo_items", ()), language=lang)
         if should_render_main_todos(snapshot)
         else None
     )
     if todo_element is not None:
-        elements.append(todo_element)
+        todo_section.append(todo_element)
 
     suspended_element = _feishu_suspended_hint_element(
         getattr(snapshot, "suspended_todo_hint", None),
         language=lang,
     )
     if suspended_element is not None:
-        elements.append(suspended_element)
+        todo_section.append(suspended_element)
+    if todo_section:
+        sections.append(todo_section)
 
     if mode != "off":
         operation_lines = list(
@@ -296,14 +305,22 @@ def render_feishu_progress_card(
                 language=lang,
             )
         )
-        operation_label = f"**{labels['recent_operations']}：**" if lang == "zh" else f"**{labels['recent_operations']}:**"
+        operation_label = f"**{labels['recent_operations']}**"
         empty_copy = "暂无操作" if lang == "zh" else "No operations yet"
-        elements.append(
-            {
-                "tag": "markdown",
-                "content": operation_label + "\n" + ("\n".join(operation_lines) if operation_lines else empty_copy),
-            }
+        sections.append(
+            [
+                {
+                    "tag": "markdown",
+                    "content": operation_label + "\n" + ("\n".join(operation_lines) if operation_lines else empty_copy),
+                }
+            ]
         )
+
+    elements: list[dict] = []
+    for section in sections:
+        if elements:
+            elements.append({"tag": "hr"})
+        elements.extend(section)
 
     progress_link = _safe_progress_dashboard_url(dashboard_url)
     if progress_link:
@@ -839,14 +856,31 @@ def _feishu_metric_label(icon: str, label: str, language: str) -> str:
     return f"**{icon} {label}{separator}**"
 
 
-def _feishu_model_detail(model_display: object, *, labels: dict[str, str], language: str) -> str:
+def _feishu_model_detail(
+    model_display: object,
+    *,
+    reasoning_effort_display: object = None,
+    service_tier_display: object = None,
+    labels: dict[str, str],
+    language: str,
+) -> str:
     model = str(model_display or "").strip()
     if not model or "[REDACTED]" in model or _FEISHU_UNSAFE_METADATA_LINE_RE.search(model):
         return ""
     safe_model = _feishu_escape_markdown_text(model)
     if not safe_model or "[REDACTED]" in safe_model:
         return ""
-    return f"{_feishu_metric_label('🤖', labels['model'], language)} {safe_model}"
+
+    components = [safe_model]
+    effort = ""
+    if reasoning_effort_display is not None:
+        effort = sanitize_for_progress(reasoning_effort_display).replace("\n", " ").strip()
+    if effort and "[REDACTED]" not in effort and not _FEISHU_UNSAFE_METADATA_LINE_RE.search(effort):
+        components.append(_feishu_escape_markdown_text(effort))
+    if str(service_tier_display or "").strip().lower() == "fast":
+        components.append("fast")
+
+    return f"{_feishu_metric_label('🤖', labels['model'], language)} {' · '.join(components)}"
 
 
 def _feishu_account_limit_detail(
