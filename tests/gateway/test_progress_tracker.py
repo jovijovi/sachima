@@ -21,6 +21,8 @@ def test_tracker_snapshot_is_transaction_dataclass_with_timestamps():
     assert snapshot.completed_at is None
     assert snapshot.recent_operations == ()
     assert snapshot.model_display is None
+    assert snapshot.reasoning_effort_display is None
+    assert snapshot.service_tier_display is None
     assert snapshot.account_limit_lines == ()
     assert snapshot.todo_items == ()
     assert isinstance(tracker._lock, type(threading.Lock()))
@@ -38,6 +40,8 @@ def test_update_display_metadata_sanitizes_model_and_account_limit_lines():
             "openrouter/anthropic/claude-sonnet-4.6-20260514 (2025-04-14) "
             f"knowledge cutoff: 2026-01-01 {unsafe_key}={unsafe_value}"
         ),
+        reasoning_effort_display="  custom-effort  ",
+        service_tier_display=" fast ",
         account_limit_lines=[
             "📈 **Account limits**",
             "Provider: openrouter",
@@ -50,6 +54,8 @@ def test_update_display_metadata_sanitizes_model_and_account_limit_lines():
     snapshot = tracker.snapshot()
 
     assert snapshot.model_display == "openrouter/anthropic/claude-sonnet-4.6"
+    assert snapshot.reasoning_effort_display == "custom-effort"
+    assert snapshot.service_tier_display == "fast"
     assert snapshot.account_limit_lines == (
         "Provider: openrouter",
         "Session: 74% remaining (26% used)",

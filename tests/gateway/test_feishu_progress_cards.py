@@ -64,6 +64,27 @@ def test_feishu_progress_card_renders_flat_todo_block_before_operations():
     assert "⏳ 提交 PR" in rendered  # pending → hourglass
     # The todo block precedes the recent-operations block.
     assert rendered.index("待办") < rendered.index("最近操作")
+    assert [element["tag"] for element in card["elements"]] == [
+        "markdown",
+        "hr",
+        "markdown",
+        "hr",
+        "markdown",
+    ]
+
+
+def test_feishu_progress_card_separates_only_present_sections():
+    from gateway.progress.renderers import render_feishu_progress_card
+
+    tracker = ProgressTracker(transaction_id="tx-sections")
+    tracker.record_tool_started("read_file", "a.py")
+
+    without_todos = render_feishu_progress_card(tracker.snapshot(), tool_progress_mode="all")
+    assert [element["tag"] for element in without_todos["elements"]] == ["markdown", "hr", "markdown"]
+
+    tracker.update_todo_items([{"id": "1", "content": "跑测试", "status": "in_progress"}])
+    without_operations = render_feishu_progress_card(tracker.snapshot(), tool_progress_mode="off")
+    assert [element["tag"] for element in without_operations["elements"]] == ["markdown", "hr", "markdown"]
 
 
 def test_feishu_progress_card_renders_todo_block_english_labels():
@@ -824,7 +845,8 @@ def test_feishu_progress_card_uses_task_workbench_copy_and_operation_timing():
     assert "耗时：" in rendered
     assert "上下文：" in rendered
     assert "自动压缩 4 次" in rendered
-    assert "最近操作：" in rendered
+    assert "**最近操作**" in rendered
+    assert "最近操作：" not in rendered
     assert "最近动作" not in rendered
     read_start = datetime.fromtimestamp(10.0).strftime("%H:%M:%S")
     read_end = datetime.fromtimestamp(12.5).strftime("%H:%M:%S")
@@ -880,7 +902,8 @@ def test_feishu_progress_card_supports_english_labels():
     assert "Task Workbench" in card["header"]["title"]["content"]
     assert "Task ID:" in rendered
     assert "Status:" in rendered
-    assert "Recent operations:" in rendered
+    assert "**Recent operations**" in rendered
+    assert "Recent operations:" not in rendered
     assert "任务工作台" not in rendered
     assert "最近操作" not in rendered
 
@@ -1030,23 +1053,60 @@ def test_feishu_progress_card_includes_sanitized_model_and_account_limits_in_ord
         ),
     )
 
-    card = render_feishu_progress_card(snapshot, tool_progress_mode="off")
-    details = card["elements"][0]["content"]
-    rendered = _rendered(card)
+    zh_card = render_feishu_progress_card(snapshot, tool_progress_mode="off")
+    zh_details = zh_card["elements"][0]["content"]
+    zh_rendered = _rendered(zh_card)
+    en_card = render_feishu_progress_card(snapshot, tool_progress_mode="off", language="en")
+    en_details = en_card["elements"][0]["content"]
 
-    assert "模型：" in rendered
-    assert "账户限额：" in rendered
-    assert "(Account limits)" not in rendered
-    assert details.index("任务") < details.index("状态")
-    assert details.index("状态") < details.index("耗时")
-    assert details.index("耗时") < details.index("模型")
-    assert details.index("模型") < details.index("上下文")
-    assert details.index("上下文") < details.index("账户限额")
-    assert "Provider: openrouter" in rendered
-    assert "Session: 74% remaining" in rendered
-    assert "**💳 账户限额：**\n- Provider: openrouter\n- Session: 74% remaining" in details
-    assert "账户限额：** Provider" not in details
-    assert "Provider: openrouter · Session" not in details
+    assert "模型：" in zh_rendered
+    assert "账户额度：" in zh_rendered
+    assert "账户限额" not in zh_rendered
+    assert "**💳 Account quota:**" in en_details
+    assert "Account limits" not in en_details
+    assert zh_details.index("任务") < zh_details.index("状态")
+    assert zh_details.index("状态") < zh_details.index("耗时")
+    assert zh_details.index("耗时") < zh_details.index("模型")
+    assert zh_details.index("模型") < zh_details.index("上下文")
+    assert zh_details.index("上下文") < zh_details.index("账户额度")
+    assert "Provider: openrouter" in zh_rendered
+    assert "Session: 74% remaining" in zh_rendered
+    assert "**💳 账户额度：**\n- Provider: openrouter\n- Session: 74% remaining" in zh_details
+    assert "账户额度：** Provider" not in zh_details
+    assert "Provider: openrouter · Session" not in zh_details
+
+
+@pytest.mark.parametrize(
+    ("reasoning_effort", "service_tier", "expected"),
+    [
+        ("xhigh", "fast", "gpt-5.6-terra · xhigh · fast"),
+        ("xhigh", "default", "gpt-5.6-terra · xhigh"),
+        ("custom-effort", "", "gpt-5.6-terra · custom-effort"),
+        (None, None, "gpt-5.6-terra"),
+    ],
+)
+def test_feishu_progress_card_appends_configured_reasoning_and_fast_mode(
+    reasoning_effort,
+    service_tier,
+    expected,
+):
+    from gateway.progress.events import TransactionSnapshot
+    from gateway.progress.renderers import render_feishu_progress_card
+
+    snapshot = TransactionSnapshot(
+        transaction_id="tx-model-config",
+        status="running",
+        started_at=10.0,
+        updated_at=11.0,
+        model_display="gpt-5.6-terra",
+        reasoning_effort_display=reasoning_effort,
+        service_tier_display=service_tier,
+    )
+
+    card = render_feishu_progress_card(snapshot, tool_progress_mode="off")
+    details = card["elements"][0]["content"].replace("\\", "")
+
+    assert expected in details
 
 
 def test_feishu_progress_card_omits_absent_model_and_account_limits():
@@ -1058,6 +1118,7 @@ def test_feishu_progress_card_omits_absent_model_and_account_limits():
     rendered = _rendered(card)
 
     assert "模型" not in rendered
+    assert "账户额度" not in rendered
     assert "账户限额" not in rendered
 
 
