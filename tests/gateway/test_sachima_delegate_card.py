@@ -55,6 +55,7 @@ from gateway.sachima_delegate_card import (
     projected_revision,
     render_delegation_card,
     render_delegation_markdown,
+    safe_card_display_text,
     sanitize_card_line,
 )
 
@@ -226,6 +227,44 @@ def test_new_projection_seals_identity_and_starts_empty():
     assert projection.pre_accept_status == "created"
     assert projection.rounds == ()
     assert projection.degraded_notice is False
+
+
+@pytest.mark.parametrize(
+    ("model", "effort"),
+    [
+        ("opus[1m]", "max"),
+        ("grok-4.6[effort=high,fast=true]", "high"),
+        ("claude-opus-5", "xhigh"),
+        ("glm-5.3", "max"),
+    ],
+)
+def test_projection_accepts_real_routed_model_display_values(model, effort):
+    projection = _projection(model=model, effort=effort)
+
+    assert projection.model == model
+    assert projection.effort == effort
+
+
+@pytest.mark.parametrize("field", ["model", "effort"])
+@pytest.mark.parametrize(
+    "value",
+    ["two\nlines", "tab\tvalue", "control\x07value", "dtask_" + "a" * 32],
+)
+def test_projection_refuses_unsafe_model_metadata(field, value):
+    with pytest.raises(DelegateCardError) as excinfo:
+        _projection(**{field: value})
+
+    assert str(excinfo.value) == SACHIMA_DELEGATE_CARD_INVALID
+
+
+def test_safe_card_display_text_sanitizes_and_escapes_plain_text_fallback_values():
+    assert safe_card_display_text("grok-4.6[effort=high,fast=true]") == (
+        r"grok-4.6\[effort=high,fast=true\]"
+    )
+    unsafe_model = "dtask_" + "a" * 32
+    rendered = safe_card_display_text(unsafe_model)
+    assert unsafe_model not in rendered
+    assert rendered
 
 
 def test_projection_roundtrips_through_its_document():

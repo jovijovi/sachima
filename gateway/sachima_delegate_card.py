@@ -119,6 +119,7 @@ __all__ = [
     "render_delegation_markdown",
     "safe_card_instant",
     "safe_card_task_ref",
+    "safe_card_display_text",
     "sanitize_card_line",
     "settle_card_sink",
 ]
@@ -346,6 +347,18 @@ def _optional_token(value: Any) -> str | None:
     return _safe_token(value)
 
 
+def _safe_display_text(value: Any, *, allow_empty: bool = False) -> str:
+    """One durable display value, without applying internal-token grammar."""
+
+    if type(value) is not str:
+        raise _invalid()
+    if not value:
+        if allow_empty:
+            return ""
+        raise _invalid()
+    return _visible_text(value) or ""
+
+
 def _member(value: Any, allowed: tuple[str, ...]) -> str:
     if type(value) is not str or value not in allowed:
         raise _invalid()
@@ -522,7 +535,7 @@ def _visible_text(value: Any) -> str | None:
         raise _invalid()
     if len(value) > CARD_TEXT_BUDGET_CHARS:
         raise _invalid()
-    if _CONTROL_CHARS_RE.search(value) or "\n" in value or "\r" in value:
+    if _CONTROL_CHARS_RE.search(value) or any(char in value for char in ("\t", "\n", "\r")):
         raise _invalid()
     if _INTERNAL_REF_RE.search(value):
         raise _invalid()
@@ -698,8 +711,8 @@ class DelegateCardProjection:
         _optional_private_text(self.origin_thread_id)
         _member(self.locale, CARD_LOCALES)
         _safe_token(self.agent_id, allow_empty=True)
-        _safe_token(self.model, allow_empty=True)
-        _safe_token(self.effort, allow_empty=True)
+        _safe_display_text(self.model, allow_empty=True)
+        _safe_display_text(self.effort, allow_empty=True)
         _visible_text(self.task_description)
         if self.card_message_id is not None and (
             type(self.card_message_id) is not str
@@ -1456,6 +1469,12 @@ def _plain(value: str) -> str:
             escaped.append("\\")
         escaped.append(char)
     return "".join(escaped)
+
+
+def safe_card_display_text(value: Any) -> str:
+    """Return one bounded, leak-free dynamic value for a Markdown text sink."""
+
+    return _plain(sanitize_card_line(value) or "")
 
 
 def _summary_lines(projection: DelegateCardProjection) -> list[str]:
