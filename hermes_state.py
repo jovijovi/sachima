@@ -1837,7 +1837,7 @@ class SessionDB:
         return cleaned
 
     def _is_compression_ancestor(
-        self, conn, *, ancestor_id: str, descendant_id: str
+        self, conn, *, ancestor_id: str, descendant_id: str, exclude_branches: bool = False
     ) -> bool:
         """Return True if *ancestor_id* is a compression predecessor of
         *descendant_id* (walking parent links up the continuation chain).
@@ -1850,12 +1850,25 @@ class SessionDB:
         from delegate subagents / branch children that also carry a
         ``parent_session_id``. Expressed as a single recursive CTE rather than a
         per-hop Python walk so the edge definition lives in exactly one place.
+
+        ``exclude_branches`` additionally refuses any hop that is a ``/branch``
+        (``_BRANCH_CHILD_SQL``). The edge above cannot recognise that case by
+        itself: ``/branch`` links to the session store's *current* entry, and
+        during a compression split — or after a restart between compression's
+        two writes — that entry still names the session compression has already
+        ended, so the branch child is born with a ``'compression'`` parent and a
+        later ``started_at`` and satisfies the edge on its facts alone. Only the
+        ``_branched_from`` marker tells them apart. Callers that grant something
+        on continuity (delegate control, result re-injection) must pass it; the
+        default stays off so the title-transfer heuristic keeps its behaviour.
         """
         if not ancestor_id or not descendant_id or ancestor_id == descendant_id:
             return False
         # Walk parent links up from the descendant, following only compression
         # continuation edges, and check whether ancestor_id is reached.
         edge = _COMPRESSION_CHILD_SQL.format(a="child")
+        if exclude_branches:
+            edge = f"({edge}) AND NOT ({_BRANCH_CHILD_SQL.format(a='child')})"
         row = conn.execute(
             f"""
             WITH RECURSIVE ancestors(id) AS (
@@ -1872,6 +1885,44 @@ class SessionDB:
             (descendant_id, ancestor_id, descendant_id),
         ).fetchone()
         return row is not None
+
+    def is_compression_continuation(
+        self, *, ancestor_session_id: str, descendant_session_id: str
+    ) -> bool:
+        """Is *descendant* the same logical conversation as *ancestor*?
+
+        Read-only, and the one persisted answer to that question. It is true
+        only when every hop from the descendant back to the ancestor is a
+        compression-continuation edge — the parent ended with
+        ``end_reason='compression'`` and the child started at or after that.
+        ``/new`` and auto-reset mint an unrelated root, and delegate subagent
+        runs carry a ``parent_session_id`` without satisfying the edge, so
+        neither inherits the ancestor's conversation. ``/branch`` children are
+        refused twice over: the ordinary one ends its parent ``'branched'``, and
+        the one taken while the parent was *already* compression-ended — which
+        does satisfy the edge on its facts — is caught by its ``_branched_from``
+        marker. The walk is forward-only: a parent never continues its own
+        continuation.
+
+        Consumers must not re-derive this from ``parent_session_id``,
+        ``end_reason``, or timestamps of their own — the edge lives here (and in
+        the ``_COMPRESSION_CHILD_SQL`` it shares with the rest of the lineage
+        queries) so there is exactly one definition of it.
+        """
+        if not ancestor_session_id or not descendant_session_id:
+            return False
+        if self._conn is None:
+            return False
+        with self._lock:
+            try:
+                return self._is_compression_ancestor(
+                    self._conn,
+                    ancestor_id=ancestor_session_id,
+                    descendant_id=descendant_session_id,
+                    exclude_branches=True,
+                )
+            except sqlite3.Error:
+                return False
 
     def set_session_title(self, session_id: str, title: str) -> bool:
         """Set or update a session's title.

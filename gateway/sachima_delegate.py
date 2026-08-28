@@ -351,6 +351,36 @@ def _utc_status_time() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def _claimed_by(recorded: Any, continuity: Any) -> bool:
+    """Does the caller's ``TrustedSession`` claim something recorded here?
+
+    The whole rule lives in ``gateway.session_continuity``; this is only the
+    fail-closed way to ask it. Nothing in this module re-derives Session
+    lineage, reads a Session store, or compares Session keys on its own.
+    """
+
+    if continuity is None:
+        return False
+    try:
+        return bool(continuity.claims(recorded))
+    except Exception:
+        logger.debug("session continuity check failed", exc_info=True)
+        return False
+
+
+def _same_conversation(origin: Any, recorded: Any, continuity: Any) -> bool:
+    """Is *origin* the conversation *recorded* belongs to?
+
+    The exact Session answers on its own, as it always has; anything else is
+    referred to the caller's ``TrustedSession``, and refused when there is none
+    to ask.
+    """
+
+    if getattr(origin, "session_id", None) == getattr(recorded, "session_id", None):
+        return True
+    return _claimed_by(recorded, continuity)
+
+
 def configured_running_patch_interval(config: Any = None) -> float:
     """This deployment's running-patch cadence, through the one validator.
 
@@ -813,6 +843,7 @@ class SachimaDelegateCoordinator:
         preset: AgentExecutionPreset | None = None,
         origin: DelegateOrigin | None = None,
         admitted_role: Any = None,
+        continuity: Any = None,
     ) -> DelegateOutcome:
         """Continue the same task, in the same Sessions, under the same AGENT.
 
@@ -828,6 +859,12 @@ class SachimaDelegateCoordinator:
         AGENT's creates a linked new task; omitting it resolves the task's own
         AGENT from the catalog, which is the path a caller that has already
         proven eligibility elsewhere takes.
+
+        ``continuity`` is the caller's ``TrustedSession`` from the Session/Gateway
+        authority. Only the AGENT switch consults it, and only to answer the one
+        question it already asked: is the caller's origin the same conversation
+        as the task's? Without one, that stays the exact-Session comparison it
+        has always been.
         """
 
         await self._ensure_restored()
@@ -866,8 +903,8 @@ class SachimaDelegateCoordinator:
                     diagnostic=SACHIMA_DELEGATE_INVALID_TARGET,
                 )
             if preset is not None and preset.agent_id != binding.agent_id:
-                if type(origin) is not DelegateOrigin or (
-                    origin.session_id != binding.origin.session_id
+                if type(origin) is not DelegateOrigin or not _same_conversation(
+                    origin, binding.origin, continuity
                 ):
                     return DelegateOutcome(
                         task_ref=binding.task_ref,
@@ -1689,7 +1726,37 @@ class SachimaDelegateCoordinator:
             )
 
     # -- Hermes sink (next ordinary turn only) ------------------------------ #
-    def pending_hermes_context(self, session_id: str) -> tuple[str, ...]:
+    def _owed_to(
+        self, event: DelegateResultEvent, session_id: str, continuity: Any
+    ) -> bool:
+        """Is this result owed to the turn asking, as *that* turn's own?
+
+        The Session the result was produced under answers on its own. Context
+        compression, though, can split the conversation before the user's next
+        message ever arrives, and the result would then be owed to a Session id
+        that no longer exists — so the caller's ``TrustedSession`` is asked
+        whether the producing turn's origin is the same conversation. That is the
+        Session/Gateway authority's one rule; nothing is re-derived here, and a
+        caller that brings none keeps the exact-Session behaviour.
+
+        The event is never re-bound. It keeps the Session it was produced under,
+        which is what makes ``confirm``/``release`` find the same record the
+        claim did, and what keeps old results auditable.
+        """
+
+        if event.session_id == session_id:
+            return True
+        if continuity is None:
+            return False
+        try:
+            turn = self._state.read_turn(event.turn_key)
+        except DelegateStateError:
+            return False
+        return turn is not None and _claimed_by(turn.origin, continuity)
+
+    def pending_hermes_context(
+        self, session_id: str, *, continuity: Any = None
+    ) -> tuple[str, ...]:
         """The result projections this Session's next ordinary turn should see.
 
         Marks each one ``in_flight`` and returns its bounded text: the control
@@ -1701,11 +1768,17 @@ class SachimaDelegateCoordinator:
         It never mutates a running turn, never injects a synthetic user message,
         and never touches the long-lived system-prompt prefix — the caller folds
         the text into the *next* real user turn's own context.
+
+        ``continuity`` is the caller's ``TrustedSession``. With one, a result
+        still owed to a Session this conversation was compressed out of is owed
+        to this turn as well; without one, only this exact Session's results are.
         """
 
         lines: list[str] = []
         for event in self._state.list_results():
-            if event.session_id != session_id or event.hermes_sink != "pending":
+            if event.hermes_sink != "pending" or not self._owed_to(
+                event, session_id, continuity
+            ):
                 continue
             summary = self._summary_for_event(event)
             if summary is None or not summary.settled:
@@ -1733,23 +1806,31 @@ class SachimaDelegateCoordinator:
             )
         return tuple(lines)
 
-    def confirm_hermes_context(self, session_id: str) -> int:
-        """Confirm the handoff **after** the next model turn consumed it."""
+    def confirm_hermes_context(self, session_id: str, *, continuity: Any = None) -> int:
+        """Confirm the handoff **after** the next model turn consumed it.
+
+        Settlement asks the same question the claim did, so a handoff a
+        compression continuation took is a handoff it can also settle.
+        """
 
         confirmed = 0
         for event in self._state.list_results():
-            if event.session_id != session_id or event.hermes_sink != "in_flight":
+            if event.hermes_sink != "in_flight" or not self._owed_to(
+                event, session_id, continuity
+            ):
                 continue
             self._state.update_result(event.event_id, hermes_sink="confirmed")
             confirmed += 1
         return confirmed
 
-    def release_hermes_context(self, session_id: str) -> int:
+    def release_hermes_context(self, session_id: str, *, continuity: Any = None) -> int:
         """Return an interrupted handoff to ``pending`` for a later turn."""
 
         released = 0
         for event in self._state.list_results():
-            if event.session_id != session_id or event.hermes_sink != "in_flight":
+            if event.hermes_sink != "in_flight" or not self._owed_to(
+                event, session_id, continuity
+            ):
                 continue
             self._state.update_result(event.event_id, hermes_sink="pending")
             released += 1

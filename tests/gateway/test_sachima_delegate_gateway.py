@@ -1262,9 +1262,9 @@ async def test_compression_replacing_the_session_id_still_settles_the_claimed_on
     settlements: list[tuple[str, bool]] = []
     _settle = runner._settle_delegate_result_context
 
-    def _record(session_id, *, consumed):
+    def _record(session_id, *, consumed, continuity=None):
         settlements.append((session_id, consumed))
-        return _settle(session_id, consumed=consumed)
+        return _settle(session_id, consumed=consumed, continuity=continuity)
 
     runner._settle_delegate_result_context = _record
 

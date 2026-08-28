@@ -1533,11 +1533,21 @@ class APIServerAdapter(BasePlatformAdapter):
         # create a child session that carries the transcript forward. This uses
         # SessionDB's native parent_session_id/end_reason visibility model rather
         # than inventing a parallel fork store.
+        #
+        # The child also carries its own stable ``_branched_from`` marker, as
+        # /branch does everywhere else. end_session() above is a statement about
+        # a row the child does not own, and the first end reason wins: a parent
+        # already ended by context compression keeps 'compression', leaving the
+        # fork with a compression-ended parent and a later started_at — which is
+        # what a compression continuation looks like. The marker is what keeps a
+        # branch a branch, so it neither vanishes from the session list nor
+        # inherits the conversation's delegate control grant.
         db.end_session(source_id, "branched")
         db.create_session(
             fork_id,
             "api_server",
             model=source.get("model"),
+            model_config={"_branched_from": source_id},
             system_prompt=source.get("system_prompt"),
             parent_session_id=source_id,
         )
