@@ -312,6 +312,15 @@ class DelegateTurnRecord:
     requested_effort: str
     origin: DelegateOrigin
     task_description: str | None = None
+    #: The one short line *this round* is displayed under in the card's
+    #: execution log, supplied explicitly with the create/continue that opened
+    #: the Turn and sealed here beside the complete ask above. It is per-Turn
+    #: because each round has its own goal, and it is never derived from
+    #: ``task_description``: clipping an execution prompt produces a sentence
+    #: the user never wrote. A Turn recorded before this field carries ``None``,
+    #: and the card then logs that round without a caption rather than reaching
+    #: for the instruction next to it.
+    round_title: str | None = None
     #: The AGENT role sealed into *this* Turn's admitted execution contract, or
     #: ``None`` when the AGENT was selected directly and no role was assigned.
     #: It comes from the validated role policy at admission time and is never
@@ -348,6 +357,7 @@ class DelegateTurnRecord:
         if type(self.origin) is not DelegateOrigin:
             raise _invalid()
         _optional_text(self.task_description)
+        _optional_text(self.round_title)
         if self.admitted_role is not None:
             _safe_text(self.admitted_role, maximum=64)
         _optional_text(self.accepted_at, maximum=64)
@@ -382,6 +392,7 @@ class DelegateTurnRecord:
             "requested_effort": self.requested_effort,
             "origin": self.origin.as_dict(),
             "task_description": self.task_description,
+            "round_title": self.round_title,
             "admitted_role": self.admitted_role,
             "accepted_at": self.accepted_at,
             "lifecycle": self.lifecycle,
@@ -416,6 +427,7 @@ class DelegateTurnRecord:
             requested_effort=document.get("requested_effort", ""),
             origin=DelegateOrigin.from_dict(document.get("origin")),
             task_description=document.get("task_description"),
+            round_title=document.get("round_title"),
             admitted_role=document.get("admitted_role"),
             accepted_at=document.get("accepted_at"),
             lifecycle=document.get("lifecycle", "prepared"),
@@ -646,13 +658,67 @@ class DelegateStateStore:
         except OSError:
             raise _unreadable() from None
 
-    def _write_document(self, path: Path, kind: str, document: Mapping[str, Any]) -> None:
-        payload = json.dumps(
+    def _serialized(self, kind: str, document: Mapping[str, Any]) -> bytes:
+        return json.dumps(
             {"version": DELEGATE_STATE_VERSION, "kind": kind, "record": dict(document)},
             sort_keys=True,
             separators=(",", ":"),
         ).encode("utf-8")
-        self._write_bytes(path, payload)
+
+    def _write_document(self, path: Path, kind: str, document: Mapping[str, Any]) -> None:
+        self._write_bytes(path, self._serialized(kind, document))
+
+    def _create_document(
+        self, path: Path, kind: str, document: Mapping[str, Any]
+    ) -> bool:
+        """Publish one record under a name nobody holds. ``False`` if taken.
+
+        The filesystem decides, not a prior read. ``os.link`` refuses an
+        existing name in one atomic step, which is the part
+        read-then-``os.replace`` cannot do: between those two calls a second
+        Store instance — or a second process over the same private root — can
+        create and publish the same key, and the writer that looked first then
+        lands last and silently replaces it. ``self._lock`` cannot close that
+        window because it guards one object, and the directory is shared.
+
+        The bytes still go to a temp sibling and are fsynced before the link,
+        so the name appears whole or not at all and a reader never sees a
+        half-record. The temp name carries a nonce, because two writers racing
+        for one key would otherwise stage over each other's file — the same
+        collision one directory away.
+
+        Crash boundaries: a crash before the link leaves only a temp, and a
+        crash between the link and its cleanup leaves the record plus a temp.
+        Both are inert — every reader addresses a record by its exact name, and
+        :meth:`_list` skips ``.tmp`` — so recovery finds a whole record or
+        none, never a partial one, and never adopts a staging file as a record.
+        """
+
+        temp = path.with_name(f"{path.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            with open(temp, "wb") as handle:
+                handle.write(self._serialized(kind, document))
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.chmod(temp, _FILE_MODE)
+            try:
+                os.link(temp, path)
+            except FileExistsError:
+                return False
+            finally:
+                os.unlink(temp)
+            directory = os.open(path.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
+            return True
+        except OSError:
+            try:
+                os.unlink(temp)
+            except OSError:
+                pass
+            raise _unreadable() from None
 
     def _read_document(self, path: Path, kind: str) -> Any:
         raw = self._read_bytes(path)
@@ -750,13 +816,45 @@ class DelegateStateStore:
 
     # -- turns -------------------------------------------------------------- #
     def put_turn(self, record: DelegateTurnRecord) -> DelegateTurnRecord:
+        """Create one Turn record, or replay the identical record already there.
+
+        Create-only, like the summary slot and the card projection, and for a
+        reason this record makes sharper than either: a Turn is opened once, by
+        the create or continue that sealed ``round_title`` beside the ask. That
+        seal is what :meth:`update_turn` refuses to rewrite — but a refusal only
+        guards the door it stands in. While this write was a plain overwrite,
+        the same ``turn_key`` written again with a different line replaced the
+        sealed one silently, which is the update path's substitution reached by
+        walking around it.
+
+        So the two doors now agree. Absent, this creates; identical, it replays,
+        because a retry that lost its answer must stay safe to repeat; different
+        in any field, it is a conflict and the record on disk keeps its bytes.
+        The mutable dimensions move through :meth:`update_turn`, which is the
+        only writer that was ever meant to move them.
+
+        The creation is attempted *before* anything is read, because the read is
+        not what makes it safe. Asking whether the key is free and then writing
+        is only create-only for a single Store instance holding a single lock;
+        the durable state is a directory, and the Gateway keeps more than one
+        Store over it. So :meth:`_create_document` puts the question to the
+        filesystem, which answers it atomically, and the read below only
+        classifies a loss that already happened — identical record, replay; a
+        different one, conflict.
+        """
+
         if type(record) is not DelegateTurnRecord:
             raise _invalid()
         with self._lock:
-            self._write_document(
+            created = self._create_document(
                 self._root / "turns" / record.turn_key, "turn", record.as_dict()
             )
-        return record
+            if created:
+                return record
+            existing = self.read_turn(record.turn_key)
+            if existing == record:
+                return existing
+            raise _conflict()
 
     def read_turn(self, turn_key: Any) -> DelegateTurnRecord | None:
         return self._read_document(self._root / "turns" / _safe_ref(turn_key), "turn")
@@ -769,6 +867,15 @@ class DelegateStateStore:
 
         Identity fields are not writable here — a turn that could change its
         ledger key is a turn whose durable classification means nothing.
+
+        ``round_title`` is refused for a different reason and on the same
+        terms. It is not identity; it is the one line this round is logged
+        under, sealed with the Turn that opened it. The card seals its copy
+        once — ``append_round`` never rewrites a caption — but a round row that
+        was lost and is later healed reads this field back and stamps what it
+        finds as an *authored* caption. A field an update could rewrite would
+        therefore let later text redefine what an earlier round was for, which
+        is precisely the substitution the row's provenance exists to prevent.
         """
 
         forbidden = {
@@ -780,6 +887,7 @@ class DelegateStateStore:
             "payload_ref",
             "spine_session_id",
             "launch_refs",
+            "round_title",
         }
         if set(fields) & forbidden:
             raise _conflict()

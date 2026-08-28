@@ -2591,14 +2591,34 @@ class _CardDelivery(_Delivery):
 
 
 def _card_text(card: dict) -> str:
-    return card["header"]["title"]["content"] + "\n\n" + card["elements"][0]["content"]
+    """The delivered card as one comparable block, divider written out.
+
+    The native card splits its body across the two markdown blocks its ``hr``
+    element separates, so this recomposes them the way the Markdown fallback
+    spells the same seam — which is what keeps the two surfaces assertable
+    against each other.
+    """
+
+    elements = card["elements"]
+    assert [element["tag"] for element in elements] == ["markdown", "hr", "markdown"]
+    return "\n\n".join(
+        (
+            card["header"]["title"]["content"],
+            elements[0]["content"],
+            "---",
+            elements[2]["content"],
+        )
+    )
+
+
+def _delivered(delivery: _CardDelivery) -> list[dict]:
+    """Every card this host issued for the Task, in issue order."""
+
+    return [*delivery.sent_cards, *(card for _mid, card in delivery.patched)]
 
 
 def _titles(delivery: _CardDelivery) -> list[str]:
-    return [
-        card["header"]["title"]["content"]
-        for card in [*delivery.sent_cards, *(card for _mid, card in delivery.patched)]
-    ]
+    return [card["header"]["title"]["content"] for card in _delivered(delivery)]
 
 
 def _sink_settled(coordinator, turn_key: str) -> bool:
@@ -2611,8 +2631,15 @@ def _sink_settled(coordinator, turn_key: str) -> bool:
     return event is not None and event.im_sink in {"confirmed", "failed", "uncertain"}
 
 
-async def _run_one_round(coordinator, facade, delivery, *, index: int, text: str):
-    """Drive one whole round to its settled terminal."""
+async def _run_one_round(
+    coordinator, facade, delivery, *, index: int, text: str, round_title: Any = None
+):
+    """Drive one whole round to its settled terminal.
+
+    ``round_title`` is the short line this round is logged under. It defaults to
+    ``text`` only because these rounds are already driven with one short
+    sentence apiece; a caller proving the split passes both explicitly.
+    """
 
     if index == 0:
         outcome = await coordinator.create(
@@ -2620,12 +2647,14 @@ async def _run_one_round(coordinator, facade, delivery, *, index: int, text: str
             preset=_preset(coordinator),
             origin=_origin(),
             delivery=delivery.channel(),
+            round_title=text if round_title is None else round_title,
         )
     else:
         outcome = await coordinator.continue_task(
             coordinator.state.list_tasks()[0].task_ref,
             text,
             delivery=delivery.channel(),
+            round_title=text if round_title is None else round_title,
         )
     assert outcome.lifecycle == "admitted", outcome
     facade.terminalize(index)
@@ -2681,7 +2710,7 @@ async def test_every_later_transition_patches_the_same_message(tmp_path):
     # The lifecycle text path is replaced, not doubled up.
     assert delivery.receipts == []
     assert delivery.terminals == []
-    assert _titles(delivery)[-1] == "委派任务 · 第 1 轮已完成"
+    assert _titles(delivery)[-1] == "委派任务 · 已完成"
 
 
 @pytest.mark.asyncio
@@ -2697,7 +2726,7 @@ async def test_a_continuation_patches_the_same_card_and_adds_exactly_one_round(t
     assert len(delivery.sent_cards) == 1
 
     final = _card_text(delivery.last_card)
-    assert final.startswith("委派任务 · 第 2 轮已完成")
+    assert final.startswith("委派任务 · 已完成")
     # Round 1 stays visible and independently terminal.
     assert "✅ 第 1 轮：建立上下文" in final
     assert "✅ 第 2 轮：验证上下文复用" in final
@@ -2892,7 +2921,7 @@ async def test_running_patches_are_coalesced_but_the_terminal_always_flushes(tmp
     facade.terminalize(0)
     assert await _until(lambda: _sink_settled(coordinator, outcome.turn_key))
     # The terminal is never paced away.
-    assert _titles(delivery)[-1] == "委派任务 · 第 1 轮已完成"
+    assert _titles(delivery)[-1] == "委派任务 · 已完成"
 
 
 @pytest.mark.asyncio
@@ -3007,7 +3036,7 @@ async def test_a_pre_accept_failure_keeps_a_terminal_card_and_the_task_identity(
     assert turn is not None and turn.lifecycle == "admission_failed"
     projection = coordinator.state.read_card(outcome.task_ref)
     assert projection is not None
-    assert _titles(delivery)[-1] == "委派任务 · 第 1 轮未受理"
+    assert _titles(delivery)[-1] == "委派任务 · 未受理"
 
 
 @pytest.mark.asyncio
@@ -3077,17 +3106,18 @@ async def test_the_card_walks_the_four_confirmed_snapshots_in_order(tmp_path):
 
     titles = _titles(delivery)
     assert titles[0] == "委派任务 · 已创建"
-    for expected in (
-        "委派任务 · 第 1 轮执行中",
-        "委派任务 · 第 2 轮执行中",
-        "委派任务 · 第 2 轮已完成",
-    ):
+    for expected in ("委派任务 · 执行中", "委派任务 · 已完成"):
         assert expected in titles, titles
-    # Monotonic: round 1 never reappears after round 2 opened.
-    assert titles.index("委派任务 · 第 1 轮执行中") < titles.index(
-        "委派任务 · 第 2 轮执行中"
-    )
-    assert titles[-1] == "委派任务 · 第 2 轮已完成"
+    assert titles[-1] == "委派任务 · 已完成"
+    # The header states how the Task is doing and nothing else; which round it
+    # is doing that in is the execution log's job, and it is monotonic there.
+    assert not any("轮" in title for title in titles), titles
+    logs = [_card_text(card) for card in _delivered(delivery)]
+    opened_first = next(index for index, log in enumerate(logs) if "第 1 轮" in log)
+    opened_second = next(index for index, log in enumerate(logs) if "第 2 轮" in log)
+    assert opened_first < opened_second
+    assert "✅ 第 1 轮：建立 Session 上下文" in logs[-1]
+    assert "✅ 第 2 轮：验证 Session 上下文复用" in logs[-1]
 
     # Persisted final state and visible final card state agree.
     task_ref = coordinator.state.list_tasks()[0].task_ref
@@ -3134,7 +3164,7 @@ async def test_the_card_reports_the_queue_wait_instead_of_a_second_message(tmp_p
     facade.terminalize(0)
     assert await _until(lambda: facade.submit_count() == 2, timeout=15.0)
     await second
-    assert "委派任务 · 第 1 轮提交中" in _titles(delivery)
+    assert "委派任务 · 提交中" in _titles(delivery)
 
 
 @pytest.mark.asyncio
@@ -3144,14 +3174,26 @@ async def test_a_legacy_task_without_a_card_gets_one_on_its_next_continuation(tm
     plain = _Delivery()
     coordinator, facade = _coordinator(tmp_path, delivery=plain)
     outcome = await _run_one_round(
-        coordinator, facade, plain, index=0, text="旧任务的第一轮"
+        coordinator,
+        facade,
+        plain,
+        index=0,
+        text="旧任务第一轮的完整执行指令，长到不该出现在卡片上",
+        round_title="旧任务的第一轮",
     )
     assert coordinator.state.read_card(outcome.task_ref) is None
 
     # The same host, now card-capable for this origin.
     cards = _CardDelivery()
     coordinator._delivery_factory = lambda _origin: cards.channel()
-    await _run_one_round(coordinator, facade, cards, index=1, text="继续这个旧任务")
+    await _run_one_round(
+        coordinator,
+        facade,
+        cards,
+        index=1,
+        text="继续这个旧任务的完整执行指令，同样不该出现在卡片上",
+        round_title="继续这个旧任务",
+    )
 
     projection = coordinator.state.read_card(outcome.task_ref)
     assert projection is not None
@@ -3161,6 +3203,9 @@ async def test_a_legacy_task_without_a_card_gets_one_on_its_next_continuation(tm
     # numbering is the durable ``turn_keys`` order under the Task binding, so
     # the continuation is the *second* round, not a fresh first one.
     assert [row.round_number for row in projection.rounds] == [1, 2]
+    # Each reconstructed row reads its *own* Turn's sealed line. Repairing a
+    # missing projection is the one moment the complete instruction is right
+    # there to borrow, and borrowing it is exactly what must not happen.
     assert projection.rounds[0].purpose == "旧任务的第一轮"
     assert projection.rounds[0].status == "completed"
     assert projection.rounds[1].purpose == "继续这个旧任务"
@@ -3176,13 +3221,209 @@ async def test_a_legacy_task_without_a_card_gets_one_on_its_next_continuation(tm
 
     final = _card_text(cards.last_card)
     assert outcome.task_ref in final
-    assert final.startswith("委派任务 · 第 2 轮已完成")
+    assert final.startswith("委派任务 · 已完成")
     assert "⏱️ **耗时**： 未知" in final
     assert "✅ 第 1 轮：旧任务的第一轮" in final
     assert "✅ 第 2 轮：继续这个旧任务" in final
+    assert "完整执行指令" not in final
 
 
 CARD_TITLE_CANARY = "核对交付卡文案"
+#: The short line one *round* is logged under. Deliberately unlike both the
+#: Task headline above and the execution prompt: three facts, three owners.
+ROUND_TITLE_CANARY = "核对第一轮的执行说明"
+
+
+@pytest.mark.asyncio
+async def test_a_round_is_logged_under_its_supplied_line_never_the_prompt(tmp_path):
+    """The log row is the sentence the caller wrote for *this* round.
+
+    The Turn still carries the complete instruction — the AGENT and the
+    summariser read it there — and the card reads the short line sealed beside
+    it. Clipping the instruction into the log is what this argument replaces.
+    """
+
+    delivery = _CardDelivery()
+    coordinator, facade = _coordinator(tmp_path, delivery=delivery)
+    outcome = await coordinator.create(
+        task_text=TASK_TEXT_CANARY,
+        preset=_preset(coordinator),
+        origin=_origin(),
+        delivery=delivery.channel(),
+        task_title=CARD_TITLE_CANARY,
+        round_title=ROUND_TITLE_CANARY,
+    )
+
+    turn = coordinator.state.read_turn(outcome.turn_key)
+    assert turn.round_title == ROUND_TITLE_CANARY
+    assert turn.task_description == TASK_TEXT_CANARY
+    projection = coordinator.state.read_card(outcome.task_ref)
+    assert projection.rounds[0].purpose == ROUND_TITLE_CANARY
+
+    body = _card_text(delivery.last_card)
+    assert f"第 1 轮：{ROUND_TITLE_CANARY}" in body
+    # Three separately owned facts, and only two of them are on the card.
+    assert TASK_TEXT_CANARY not in body
+    assert f"💡 **任务**： {CARD_TITLE_CANARY}" in body
+    facade.terminalize(0)
+
+
+@pytest.mark.asyncio
+async def test_each_round_keeps_the_line_it_was_opened_with_across_a_restart(tmp_path):
+    """A round's line is sealed with the round and survives a fresh reader.
+
+    Reusing the previous round's line, or the Task headline, would make the log
+    say a round did something it never claimed to do — and a restart is exactly
+    when a projection is tempted to reach for whatever is still in reach.
+    """
+
+    delivery = _CardDelivery()
+    coordinator, facade = _coordinator(tmp_path, delivery=delivery)
+    outcome = await coordinator.create(
+        task_text=TASK_TEXT_CANARY,
+        preset=_preset(coordinator),
+        origin=_origin(),
+        delivery=delivery.channel(),
+        task_title=CARD_TITLE_CANARY,
+        round_title=ROUND_TITLE_CANARY,
+    )
+    facade.terminalize(0)
+    assert await _until(lambda: _sink_settled(coordinator, outcome.turn_key))
+    second = await _run_one_round(
+        coordinator,
+        facade,
+        delivery,
+        index=1,
+        text="第二段的完整执行指令",
+        round_title="核对第二轮的执行说明",
+    )
+
+    from gateway.sachima_delegate_card import render_delegation_markdown
+    from gateway.sachima_delegate_state import DelegateStateStore
+
+    fresh = DelegateStateStore(coordinator.state.root)
+    assert fresh.read_turn(outcome.turn_key).round_title == ROUND_TITLE_CANARY
+    assert fresh.read_turn(second.turn_key).round_title == "核对第二轮的执行说明"
+    restored = render_delegation_markdown(fresh.read_card(outcome.task_ref))
+    assert f"第 1 轮：{ROUND_TITLE_CANARY}" in restored
+    assert "第 2 轮：核对第二轮的执行说明" in restored
+    assert TASK_TEXT_CANARY not in restored
+    assert "第二段的完整执行指令" not in restored
+
+
+@pytest.mark.asyncio
+async def test_a_round_with_no_sealed_line_is_logged_without_one(tmp_path):
+    """No line, no caption — and still never the prompt.
+
+    A Turn recorded before this argument existed carries none, and that is the
+    whole compatibility story: the row says which round it is and how it went,
+    which is true, rather than borrowing the instruction beside it.
+    """
+
+    delivery = _CardDelivery()
+    coordinator, facade = _coordinator(tmp_path, delivery=delivery)
+    outcome = await coordinator.create(
+        task_text=TASK_TEXT_CANARY,
+        preset=_preset(coordinator),
+        origin=_origin(),
+        delivery=delivery.channel(),
+        task_title=CARD_TITLE_CANARY,
+    )
+
+    assert coordinator.state.read_turn(outcome.turn_key).round_title is None
+    assert coordinator.state.read_card(outcome.task_ref).rounds[0].purpose is None
+    body = _card_text(delivery.last_card)
+    assert "▶️ 第 1 轮\n" in body
+    assert "第 1 轮：" not in body
+    assert TASK_TEXT_CANARY not in body
+    facade.terminalize(0)
+
+
+#: The caption a *shipped* host left in a round row: the Turn's execution
+#: prompt run through the card sanitizer, which clipped it at the display
+#: budget. Long and instruction-shaped on purpose — that is what made the row
+#: unreadable, and it is what must never come back.
+LEGACY_CLIPPED_ROUND_LINE = (
+    "请先阅读 gateway 下的委派卡片模块，弄清楚 round 行的渲染顺序，然后把执行记录"
+    "里的耗时口径与 ARS 的观测周期对齐，注意不要改动任何"
+)
+
+
+def _downgrade_card_rounds_to_the_shipped_shape(coordinator, task_ref: str) -> None:
+    """Rewrite this Task's card file the way the shipped release wrote it.
+
+    The host that ran before this change had no per-round line to seal, so it
+    filled the row's caption from the Turn's execution prompt and recorded
+    nothing about where that came from. Reproducing the file rather than the
+    record is the point: the upgraded host has to cope with bytes it did not
+    write, and a record built through the current class would only prove the
+    class agrees with itself.
+    """
+
+    path = coordinator.state.card_path(task_ref)
+    document = json.loads(path.read_text(encoding="utf-8"))
+    for row in document["record"]["rounds"]:
+        row["purpose"] = LEGACY_CLIPPED_ROUND_LINE
+        row.pop("purpose_origin", None)
+    path.write_text(json.dumps(document, ensure_ascii=False), encoding="utf-8")
+
+
+@pytest.mark.asyncio
+async def test_an_upgraded_host_patches_a_shipped_card_without_its_clipped_line(
+    tmp_path,
+):
+    """The upgrade case, end to end: same card, same message, no clipped prompt.
+
+    A Task whose card was written by the shipped host is still live. This host
+    must keep it — one card per Task means the binding is the only way that
+    message is ever patched again — while refusing the caption inside it, which
+    is an execution prompt cut at 200 characters and presented as round 1's
+    goal. Both at once: the row stays, numbered and settled as it was, and the
+    line goes.
+    """
+
+    delivery = _CardDelivery()
+    coordinator, facade = _coordinator(tmp_path, delivery=delivery)
+    first = await _run_one_round(
+        coordinator,
+        facade,
+        delivery,
+        index=0,
+        text="第一轮的完整执行指令，长到不该出现在卡片上",
+        round_title="核对第一轮的执行说明",
+    )
+    _downgrade_card_rounds_to_the_shipped_shape(coordinator, first.task_ref)
+
+    # The same Task, continued on the upgraded host with its own round line.
+    await _run_one_round(
+        coordinator,
+        facade,
+        delivery,
+        index=1,
+        text="第二轮的完整执行指令，同样不该出现在卡片上",
+        round_title="核对第二轮的执行说明",
+    )
+
+    projection = coordinator.state.read_card(first.task_ref)
+    # One card, one binding, patched in place — never a second card for the
+    # Task, which is what a refused-and-recreated projection would produce.
+    assert len(delivery.sent_cards) == 1
+    assert projection.card_message_id == "om_card"
+    assert {message_id for message_id, _card in delivery.patched} == {"om_card"}
+    assert [row.round_number for row in projection.rounds] == [1, 2]
+
+    final = _card_text(delivery.last_card)
+    assert "✅ 第 1 轮\n" in final
+    assert "✅ 第 2 轮：核对第二轮的执行说明" in final
+    assert LEGACY_CLIPPED_ROUND_LINE[:20] not in final
+    assert "完整执行指令" not in final
+    # The projection agrees with what was rendered, and the durable file no
+    # longer carries the clipped prompt at all.
+    assert projection.rounds[0].purpose is None
+    assert projection.rounds[1].purpose == "核对第二轮的执行说明"
+    assert LEGACY_CLIPPED_ROUND_LINE not in coordinator.state.card_path(
+        first.task_ref
+    ).read_text(encoding="utf-8")
 
 
 @pytest.mark.asyncio
@@ -3229,11 +3470,17 @@ async def test_a_continuation_adds_a_round_without_moving_the_card_title(tmp_pat
         origin=_origin(),
         delivery=delivery.channel(),
         task_title=CARD_TITLE_CANARY,
+        round_title=ROUND_TITLE_CANARY,
     )
     facade.terminalize(0)
     assert await _until(lambda: _sink_settled(coordinator, outcome.turn_key))
     await _run_one_round(
-        coordinator, facade, delivery, index=1, text="继续这个任务的第二段完整执行指令"
+        coordinator,
+        facade,
+        delivery,
+        index=1,
+        text="继续这个任务的第二段完整执行指令",
+        round_title="核对第二轮的执行说明",
     )
 
     projection = coordinator.state.read_card(outcome.task_ref)
@@ -3241,8 +3488,9 @@ async def test_a_continuation_adds_a_round_without_moving_the_card_title(tmp_pat
     assert len(projection.rounds) == 2
     final = _card_text(delivery.last_card)
     assert final.split("\n")[2] == f"💡 **任务**： {CARD_TITLE_CANARY}"
-    # The round row still states the continuation's own ask, from the Turn.
-    assert "第 2 轮：继续这个任务的第二段完整执行指令" in final
+    # The round row states this round's own supplied line, from its own Turn.
+    assert "✅ 第 2 轮：核对第二轮的执行说明" in final
+    assert "继续这个任务的第二段完整执行指令" not in final
 
 
 @pytest.mark.asyncio
@@ -3380,19 +3628,23 @@ async def test_a_card_whose_round_row_was_never_opened_heals_at_admission(tmp_pa
         preset=_preset(coordinator),
         origin=_origin(),
         delivery=delivery.channel(),
+        round_title=ROUND_TITLE_CANARY,
     )
     assert outcome.lifecycle == "admitted"
 
-    # Admission rebuilt the row from the same sealed Turn record.
+    # Admission rebuilt the row from the same sealed Turn record — including
+    # the round's own log line, which is what healing may read. The complete
+    # instruction sits on that same record and is still not what gets shown.
     projection = coordinator.state.read_card(outcome.task_ref)
     assert [row.turn_key for row in projection.rounds] == [outcome.turn_key]
-    assert projection.rounds[0].purpose == TASK_TEXT_CANARY
+    assert projection.rounds[0].purpose == ROUND_TITLE_CANARY
+    assert TASK_TEXT_CANARY not in _card_text(delivery.last_card)
 
     facade.terminalize(0)
     assert await _until(lambda: _sink_settled(coordinator, outcome.turn_key))
     event = coordinator.state.result_for_turn(outcome.turn_key)
     assert event.im_sink == "confirmed"
-    assert _titles(delivery)[-1] == "委派任务 · 第 1 轮已完成"
+    assert _titles(delivery)[-1] == "委派任务 · 已完成"
     assert delivery.notices == []
 
 
@@ -3508,7 +3760,7 @@ async def test_a_settled_rejection_keeps_its_frozen_duration_and_terminal(tmp_pa
     )
     sealed = coordinator.state.read_card(outcome.task_ref).rounds[0]
     frozen = _duration_line(delivery)
-    assert _titles(delivery)[-1] == "委派任务 · 第 1 轮未受理"
+    assert _titles(delivery)[-1] == "委派任务 · 未受理"
 
     await asyncio.sleep(1.1)
     for _ in range(2):
@@ -3525,7 +3777,7 @@ async def test_a_settled_rejection_keeps_its_frozen_duration_and_terminal(tmp_pa
     assert row.status == "rejected"
     assert row.settled_at == sealed.settled_at
     assert _duration_line(delivery) == frozen
-    assert _titles(delivery)[-1] == "委派任务 · 第 1 轮未受理"
+    assert _titles(delivery)[-1] == "委派任务 · 未受理"
 
     # The Task thread stays sealed to continuation under the existing contract.
     again = await coordinator.continue_task(
@@ -3602,7 +3854,7 @@ async def test_a_restart_reconciles_an_interrupted_card_delivery_once(tmp_path):
     assert len(delivery.sent_cards) == 1
     assert delivery.terminals == []
     assert facade.submit_count() == submits
-    assert _titles(delivery)[-1] == "委派任务 · 第 1 轮已完成"
+    assert _titles(delivery)[-1] == "委派任务 · 已完成"
 
 
 @pytest.mark.asyncio
@@ -3964,6 +4216,7 @@ class _GatedCardDelivery(_CardDelivery):
         self.applied: list[dict] = []
         self._holds: dict[str, asyncio.Event] = {}
         self._arrived: dict[str, asyncio.Event] = {}
+        self._parked: set[str] = set()
 
     def hold(self, marker: str) -> None:
         self._holds[marker] = asyncio.Event()
@@ -3982,9 +4235,17 @@ class _GatedCardDelivery(_CardDelivery):
         return len(self.sent_cards) + len(self.patched) - len(self.applied)
 
     async def _hold_open(self, card: dict) -> None:
+        """Park the *first* call whose card says the marker, and only that one.
+
+        A marker names one card state — "round 1 is complete" — and the rounds
+        that state describes stay on every later card, so a hold that matched
+        repeatedly would park the whole Task instead of the one call under test.
+        """
+
         text = _card_text(card)
         for marker, gate in list(self._holds.items()):
-            if marker in text:
+            if marker in text and marker not in self._parked:
+                self._parked.add(marker)
                 self._arrived[marker].set()
                 await gate.wait()
                 return
@@ -4012,12 +4273,17 @@ def _applied_titles(delivery: _GatedCardDelivery) -> list[str]:
     return [card["header"]["title"]["content"] for card in delivery.applied]
 
 
-def _visible_round(title: str) -> int:
-    """The round number a title projects, or ``0`` before any round exists."""
+def _visible_round(card: dict) -> int:
+    """The highest round a card actually shows, or ``0`` before any exists.
 
-    if "第 " not in title:
-        return 0
-    return int(title.split("第 ", 1)[1].split(" 轮", 1)[0])
+    The header states the Task's state and leaves the counting to the execution
+    log, so "which round is the user looking at" is read from the log rows —
+    which is where the number lives now.
+    """
+
+    rows = _card_text(card).split("第 ")[1:]
+    numbers = [int(row.split(" 轮", 1)[0]) for row in rows if " 轮" in row]
+    return max(numbers) if numbers else 0
 
 
 @pytest.mark.asyncio
@@ -4029,16 +4295,20 @@ async def test_a_late_older_card_patch_cannot_roll_the_card_backward(tmp_path):
 
     # Round 1 reaches its terminal, and its final patch is held *inside* the
     # adapter: this host has issued it, and the platform has not applied it.
-    delivery.hold("委派任务 · 第 1 轮已完成")
+    # The marker is the log row that round 1 just settled — the header no
+    # longer distinguishes one completed round from another.
+    settled_first = "✅ 第 1 轮：建立上下文"
+    delivery.hold(settled_first)
     first = await coordinator.create(
         task_text="建立上下文",
         preset=_preset(coordinator),
         origin=_origin(),
         delivery=delivery.channel(),
+        round_title="建立上下文",
     )
     assert first.lifecycle == "admitted"
     facade.terminalize(0)
-    assert await _until(lambda: delivery.held("委派任务 · 第 1 轮已完成"))
+    assert await _until(lambda: delivery.held(settled_first))
 
     task_ref = first.task_ref
     before = coordinator.state.read_card(task_ref).revision
@@ -4055,15 +4325,16 @@ async def test_a_late_older_card_patch_cannot_roll_the_card_backward(tmp_path):
     # is still parked; under the repair it waits for this Task's publication
     # boundary. Either way the older patch is released next.
     await _until(second.done, timeout=2.0)
-    delivery.release("委派任务 · 第 1 轮已完成")
+    delivery.release(settled_first)
     assert (await second).lifecycle == "admitted"
     assert await _until(lambda: delivery.in_flight == 0)
 
     # What the platform applied never goes backward, and the last thing it
     # applied is the newest round.
-    shown = [_visible_round(title) for title in _applied_titles(delivery)]
+    shown = [_visible_round(card) for card in delivery.applied]
     assert shown == sorted(shown), _applied_titles(delivery)
-    assert _applied_titles(delivery)[-1] == "委派任务 · 第 2 轮已完成"
+    assert _applied_titles(delivery)[-1] == "委派任务 · 已完成"
+    assert "✅ 第 2 轮：验证上下文复用" in _card_text(delivery.applied[-1])
 
     # Durable state stayed monotonic, and one Task still owns exactly one card.
     projection = coordinator.state.read_card(task_ref)

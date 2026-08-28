@@ -49,6 +49,7 @@ import hermes_state
 import tools.sachima_delegate_control_tool as control_mod
 from tests.gateway.test_sachima_delegate_coordinator import (
     CARD_TITLE_CANARY,
+    ROUND_TITLE_CANARY,
     TASK_TEXT_CANARY,
     _catalog,
     _config,
@@ -65,6 +66,13 @@ from tests.gateway.test_sachima_delegate_gateway import (
 )
 
 AGENT_ID = "codex"
+#: Every ``create``/``continue`` names the round it opens, so these tests supply
+#: one line per round rather than one line per task: the first round reuses the
+#: coordinator suite's canary, and each continuation below names its own. None
+#: of them is derived from the task text or from the round before it, which is
+#: exactly the contract the control surface enforces.
+CONTINUE_ROUND_CANARY = "核对压缩之后的第二轮执行"
+SWITCH_ROUND_CANARY = "核对换手之后的复核轮"
 
 
 # --------------------------------------------------------------------------- #
@@ -423,6 +431,7 @@ async def _terminal_task(bench, *, agent_id: str = AGENT_ID, index: int = 0) -> 
         agent_id=agent_id,
         task=TASK_TEXT_CANARY,
         task_title=CARD_TITLE_CANARY,
+        round_title=ROUND_TITLE_CANARY,
     )
     task_ref = created["result"]["task_ref"]
     bench.facade.terminalize(index)
@@ -456,7 +465,10 @@ async def test_every_control_action_answers_in_the_compression_child(
         result = await _call(action="result", task_ref=task_ref)
         recovered = await _call(action="recover", task_ref=task_ref)
         continued = await _call(
-            action="continue", task_ref=task_ref, task="carry on after compression"
+            action="continue",
+            task_ref=task_ref,
+            task="carry on after compression",
+            round_title=CONTINUE_ROUND_CANARY,
         )
         bench.facade.terminalize(1)
         second_key = bench.coordinator.state.read_task(task_ref).current_turn_key
@@ -521,6 +533,7 @@ async def test_a_switch_still_links_a_new_task_after_compression(
             task_ref=task_ref,
             agent_id="cursor",
             task="review the completed work",
+            round_title=SWITCH_ROUND_CANARY,
         )
 
     linked_ref = switched["result"]["task_ref"]
@@ -764,6 +777,7 @@ async def test_a_task_created_inside_the_window_belongs_to_the_continuation(
             agent_id=AGENT_ID,
             task=TASK_TEXT_CANARY,
             task_title=CARD_TITLE_CANARY,
+            round_title=ROUND_TITLE_CANARY,
         )
 
     task_ref = created["result"]["task_ref"]

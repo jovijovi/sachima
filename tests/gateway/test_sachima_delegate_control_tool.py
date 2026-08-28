@@ -76,6 +76,10 @@ TASK_TEXT_CANARY = "audit the sachima delegation canary payload body"
 #: The short TODO-style line the card shows; the AGENT still receives the full
 #: task text above, which is what makes "shown" and "executed" provably distinct.
 TASK_TITLE_CANARY = "核对委派卡展示标题"
+#: The short line one *round* is displayed under in the card's execution log.
+#: It is supplied per create/continue, so it is neither the Task's headline
+#: above nor the full task text the AGENT actually executes.
+ROUND_TITLE_CANARY = "核对第一轮的执行说明"
 LIVE_ROSTER = ("claude", "codex", "cursor", "oh-my-pi", "opencode")
 
 V3_OPERATIONS = [
@@ -364,21 +368,53 @@ def control(tmp_path, monkeypatch):
 
 
 def _call(**args) -> dict[str, Any]:
+    """One *well-formed* control call, as Hermes is required to make it.
+
+    ``create`` and ``continue`` both name the round they are opening, so this
+    helper supplies that line whenever a test is not itself about the argument.
+    A test that proves the argument is required calls the handler directly.
+    """
+
+    if args.get("action") in {"create", "continue"}:
+        args.setdefault("round_title", ROUND_TITLE_CANARY)
     return json.loads(control_mod._handle_delegate_control(dict(args)))
+
+
+def _durable_records(coordinator, folder: str) -> int:
+    """Records committed under one state folder, counted the store's own way.
+
+    Every write in ``DelegateStateStore`` is ``temp sibling → os.replace``, so a
+    ``<key>.tmp`` is visible for as long as one write is in flight — and the
+    lifecycle observer keeps rewriting a turn on its own loop thread after that
+    turn reads terminal. Counting raw directory entries therefore counts a
+    record twice whenever the observer happens to be mid-write, which is a fact
+    about timing rather than about what was committed. ``_list`` skips those
+    siblings for exactly this reason; a test that proves a refusal by absence
+    has to read the ledger by the same rule the ledger uses.
+    """
+
+    directory = Path(coordinator.state.root) / folder
+    if not directory.exists():
+        return 0
+    return len(
+        [
+            path
+            for path in directory.iterdir()
+            if path.is_file() and not path.name.endswith((".tmp", ".json"))
+        ]
+    )
 
 
 def _durable_counts(coordinator) -> tuple[int, int]:
     """(tasks, turns) actually on disk — a refusal is proven by absence."""
 
-    root = Path(coordinator.state.root)
+    return _durable_records(coordinator, "tasks"), _durable_records(coordinator, "turns")
 
-    def _count(folder: str) -> int:
-        directory = root / folder
-        if not directory.exists():
-            return 0
-        return len([path for path in directory.iterdir() if path.is_file()])
 
-    return _count("tasks"), _count("turns")
+def _payload_count(coordinator) -> int:
+    """Task bytes actually on disk — the first durable effect a create has."""
+
+    return _durable_records(coordinator, "payloads")
 
 
 # --------------------------------------------------------------------------- #
@@ -408,6 +444,25 @@ def test_the_schema_separates_the_displayed_title_from_the_executed_task() -> No
     assert "create" in title_description
     # The two descriptions must not read alike, or a model will fill them alike.
     assert title_description != properties["task"]["description"]
+
+
+def test_the_schema_asks_for_a_round_line_on_both_create_and_continue() -> None:
+    """Three arguments, three jobs: the Task's name, this round's, the work.
+
+    The execution log needs one short sentence per round, and the only honest
+    source for it is the caller that opened the round. Deriving it from ``task``
+    would put a clipped execution prompt in the log — the same defect the
+    Task-level title already exists to remove — so it is asked for explicitly,
+    under one name, on both actions that open a round.
+    """
+
+    properties = control_mod.DELEGATE_CONTROL_SCHEMA["parameters"]["properties"]
+    assert properties["round_title"]["type"] == "string"
+    description = properties["round_title"]["description"]
+    assert "create" in description and "continue" in description
+    # Three arguments a model must not fill alike.
+    assert description != properties["task"]["description"]
+    assert description != properties["task_title"]["description"]
 
 
 def test_the_registered_tool_is_still_the_one_default_off_control_surface() -> None:
@@ -620,6 +675,37 @@ def test_a_title_that_survives_nothing_visible_creates_nothing(control, title) -
     assert control.coordinator.state.list_tasks() == ()
 
 
+@pytest.mark.parametrize(
+    "round_title",
+    [None, "", "   ", 7, ["核对第一轮的执行说明"], "\x00\x07", "\x1b\x1b", "\x7f"],
+)
+def test_create_without_a_usable_round_line_creates_nothing(control, round_title) -> None:
+    """The log line is required input, decided on the line it would render.
+
+    A missing one, a wrongly typed one, and one that sanitizes away to nothing
+    are the same fact: there is no sentence to put in the execution log. The
+    refusal therefore lands before admission — nothing is asked of the roster,
+    no payload, Session, turn, task, or card is written, and nothing submits.
+    """
+
+    args = {
+        "action": "create",
+        "agent_id": "codex",
+        "task": TASK_TEXT_CANARY,
+        "task_title": TASK_TITLE_CANARY,
+    }
+    if round_title is not None:
+        args["round_title"] = round_title
+    answer = control_mod._handle_delegate_control(args)
+
+    assert json.loads(answer)["error"] == control_mod.SACHIMA_DELEGATE_CONTROL_INVALID
+    assert control.facade.calls.count("agent_list") == 0
+    assert control.facade.submit_count() == 0
+    assert _durable_counts(control.coordinator) == (0, 0)
+    assert control.coordinator.state.list_tasks() == ()
+    assert _payload_count(control.coordinator) == 0
+
+
 def test_a_title_that_still_renders_after_cleaning_is_created_from_that_line(
     control,
 ) -> None:
@@ -751,6 +837,69 @@ def test_continuation_restates_the_same_agent_without_forking_the_task(
     )
     assert answer["result"]["task_ref"] == task_ref
     assert len(control.coordinator.state.read_task(task_ref).turn_keys) == 2
+
+
+@pytest.mark.parametrize(
+    "round_title",
+    [None, "", "   ", 7, ["继续这个任务的第二段"], "\x00\x07", "\x7f"],
+)
+def test_continuation_without_a_usable_round_line_runs_nothing(
+    control, round_title
+) -> None:
+    """A continuation opens a round too, so it names one or it does not run.
+
+    The refusal lands before eligibility is re-proven and before the new turn
+    exists: the task keeps exactly the turns it already had, and no second Run
+    is submitted.
+    """
+
+    task_ref = _completed_task(control)
+    before = control.coordinator.state.read_task(task_ref)
+    submits = control.facade.submit_count()
+    turns = _durable_counts(control.coordinator)
+    payloads = _payload_count(control.coordinator)
+    roster_reads = control.facade.calls.count("agent_list")
+
+    args = {"action": "continue", "task_ref": task_ref, "task": "第二段的完整执行指令"}
+    if round_title is not None:
+        args["round_title"] = round_title
+    answer = control_mod._handle_delegate_control(args)
+
+    assert json.loads(answer)["error"] == control_mod.SACHIMA_DELEGATE_CONTROL_INVALID
+    assert control.facade.calls.count("agent_list") == roster_reads
+    assert control.facade.submit_count() == submits
+    assert _durable_counts(control.coordinator) == turns
+    assert _payload_count(control.coordinator) == payloads
+    assert control.coordinator.state.read_task(task_ref) == before
+
+
+def test_each_round_is_logged_under_the_line_that_opened_it(control) -> None:
+    """One round, one sealed sentence — never the prompt, never the last one.
+
+    The Turn keeps the complete instruction for the AGENT and the summariser;
+    what the card's execution log reads is the short line supplied with that
+    same call. The two are separately owned, and a later round supplies its own.
+    """
+
+    task_ref = _completed_task(control)
+    first_key = control.coordinator.state.read_task(task_ref).current_turn_key
+    _call(
+        action="continue",
+        task_ref=task_ref,
+        task="第二段的完整执行指令",
+        round_title="核对第二轮的执行说明",
+    )
+    second_key = control.coordinator.state.read_task(task_ref).current_turn_key
+
+    first = control.coordinator.state.read_turn(first_key)
+    second = control.coordinator.state.read_turn(second_key)
+    assert first.round_title == ROUND_TITLE_CANARY
+    assert second.round_title == "核对第二轮的执行说明"
+    # Each half stays what it is: the executed prompt, the Task's headline, and
+    # this round's own line are three different durable facts.
+    assert second.task_description == "第二段的完整执行指令"
+    assert second.round_title != second.task_description
+    assert second.round_title != control.coordinator.state.read_task(task_ref).task_title
 
 
 def test_a_continuation_never_rewrites_the_title_at_the_top_of_the_card(

@@ -73,6 +73,7 @@ from sachima_supervisor.runtime_spine.arsd_run_binding_ledger import ArsdRunBind
 from tests.gateway.test_sachima_delegate_coordinator import (
     CARD_TITLE_CANARY,
     FINAL_MESSAGE_CANARY,
+    ROUND_TITLE_CANARY,
     TASK_TEXT_CANARY,
     _catalog,
     _Facade,
@@ -803,6 +804,7 @@ async def test_tool_continuation_observer_stays_on_the_gateway_owned_loop(
                     "action": "continue",
                     "task_ref": first.task_ref,
                     "task": "continue from the tool",
+                    "round_title": "核对工具续跑这一轮",
                 },
             )
         )
@@ -856,6 +858,7 @@ async def test_natural_language_create_uses_the_hosts_trusted_origin(
                     "agent_id": AGENT_ID,
                     "task": TASK_TEXT_CANARY,
                     "task_title": CARD_TITLE_CANARY,
+                    "round_title": ROUND_TITLE_CANARY,
                 },
             )
         )
@@ -913,6 +916,7 @@ async def test_an_agent_switch_creates_a_linked_new_task(tmp_path, monkeypatch):
                     "agent_id": "codex",
                     "task": TASK_TEXT_CANARY,
                     "task_title": CARD_TITLE_CANARY,
+                    "round_title": ROUND_TITLE_CANARY,
                 },
             )
         )
@@ -933,6 +937,7 @@ async def test_an_agent_switch_creates_a_linked_new_task(tmp_path, monkeypatch):
                     "task_ref": created_ref,
                     "task": "review the completed work",
                     "agent_id": "cursor",
+                    "round_title": "核对换 AGENT 这一轮",
                 },
             )
         )
