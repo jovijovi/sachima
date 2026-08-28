@@ -1053,23 +1053,27 @@ def test_feishu_progress_card_includes_sanitized_model_and_account_limits_in_ord
         ),
     )
 
-    card = render_feishu_progress_card(snapshot, tool_progress_mode="off")
-    details = card["elements"][0]["content"]
-    rendered = _rendered(card)
+    zh_card = render_feishu_progress_card(snapshot, tool_progress_mode="off")
+    zh_details = zh_card["elements"][0]["content"]
+    zh_rendered = _rendered(zh_card)
+    en_card = render_feishu_progress_card(snapshot, tool_progress_mode="off", language="en")
+    en_details = en_card["elements"][0]["content"]
 
-    assert "模型：" in rendered
-    assert "账户限额：" in rendered
-    assert "(Account limits)" not in rendered
-    assert details.index("任务") < details.index("状态")
-    assert details.index("状态") < details.index("耗时")
-    assert details.index("耗时") < details.index("模型")
-    assert details.index("模型") < details.index("上下文")
-    assert details.index("上下文") < details.index("账户限额")
-    assert "Provider: openrouter" in rendered
-    assert "Session: 74% remaining" in rendered
-    assert "**💳 账户限额：**\n- Provider: openrouter\n- Session: 74% remaining" in details
-    assert "账户限额：** Provider" not in details
-    assert "Provider: openrouter · Session" not in details
+    assert "模型：" in zh_rendered
+    assert "账户额度：" in zh_rendered
+    assert "账户限额" not in zh_rendered
+    assert "**💳 Account quota:**" in en_details
+    assert "Account limits" not in en_details
+    assert zh_details.index("任务") < zh_details.index("状态")
+    assert zh_details.index("状态") < zh_details.index("耗时")
+    assert zh_details.index("耗时") < zh_details.index("模型")
+    assert zh_details.index("模型") < zh_details.index("上下文")
+    assert zh_details.index("上下文") < zh_details.index("账户额度")
+    assert "Provider: openrouter" in zh_rendered
+    assert "Session: 74% remaining" in zh_rendered
+    assert "**💳 账户额度：**\n- Provider: openrouter\n- Session: 74% remaining" in zh_details
+    assert "账户额度：** Provider" not in zh_details
+    assert "Provider: openrouter · Session" not in zh_details
 
 
 @pytest.mark.parametrize(
@@ -1114,6 +1118,7 @@ def test_feishu_progress_card_omits_absent_model_and_account_limits():
     rendered = _rendered(card)
 
     assert "模型" not in rendered
+    assert "账户额度" not in rendered
     assert "账户限额" not in rendered
 
 
