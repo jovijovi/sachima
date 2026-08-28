@@ -2699,6 +2699,44 @@ async def test_one_card_is_created_before_the_task_id_is_ever_exposed(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_card_construction_failure_falls_back_to_plain_accepted_receipt(
+    tmp_path, monkeypatch
+):
+    delivery = _CardDelivery()
+    coordinator, _facade = _coordinator(tmp_path, delivery=delivery)
+    unsafe_model = "dtask_" + "a" * 32
+
+    monkeypatch.setattr(
+        delegate_mod,
+        "requested_configuration",
+        lambda _config, _preset: ("codex", unsafe_model, "high"),
+    )
+
+    outcome = await coordinator.create(
+        task_text=TASK_TEXT_CANARY,
+        preset=_preset(coordinator),
+        origin=_origin(),
+        delivery=delivery.channel(),
+    )
+
+    assert outcome.lifecycle == "admitted"
+    assert outcome.receipt == "confirmed"
+    assert delivery.sent_cards == []
+    assert len(delivery.receipts) == 1
+    assert outcome.task_ref is not None
+    assert outcome.task_ref in delivery.receipts[0]
+    assert unsafe_model not in delivery.receipts[0]
+
+    _facade.terminalize(0)
+    assert await _until(lambda: len(delivery.terminals) == 1)
+    event = coordinator.state.result_for_turn(outcome.turn_key)
+    assert event is not None
+    assert event.im_sink == "confirmed"
+    assert outcome.task_ref in delivery.terminals[0]
+    assert unsafe_model not in delivery.terminals[0]
+
+
+@pytest.mark.asyncio
 async def test_every_later_transition_patches_the_same_message(tmp_path):
     delivery = _CardDelivery()
     coordinator, facade = _coordinator(tmp_path, delivery=delivery)

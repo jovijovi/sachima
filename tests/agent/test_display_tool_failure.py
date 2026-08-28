@@ -8,6 +8,8 @@ not a generic "[error]".
 
 import json
 
+import pytest
+
 from agent.display import (
     _detect_tool_failure,
     _trim_error,
@@ -132,6 +134,29 @@ class TestDetectToolFailureStructured:
         result = json.dumps({"data": "hello"})
         is_failure, _ = _detect_tool_failure("web_search", result)
         assert is_failure is False
+
+    def test_nested_failed_state_does_not_override_successful_tool_envelope(self):
+        result = json.dumps(
+            {
+                "task_ref": "dtask_0f3c9a11b2c34d5e6f708192a3b4c5d6",
+                "lifecycle": "admitted",
+                "receipt": "failed",
+            }
+        )
+
+        assert _detect_tool_failure("sachima_delegate_control", result) == (False, "")
+
+    @pytest.mark.parametrize(
+        "result",
+        [
+            '[{"receipt":"failed"}]',
+            '"Error is domain data"',
+            "null",
+            "false",
+        ],
+    )
+    def test_non_envelope_json_is_not_scanned_as_unstructured_failure_text(self, result):
+        assert _detect_tool_failure("generic_tool", result) == (False, "")
 
 
 class TestGetCuteToolMessageFailureSuffix:

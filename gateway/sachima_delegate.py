@@ -119,6 +119,7 @@ from gateway.sachima_delegate_card import (
     project_session_evidence,
     projected_revision,
     render_delegation_markdown,
+    safe_card_display_text,
     safe_card_instant,
     sanitize_card_line,
     settle_card_sink,
@@ -1054,7 +1055,10 @@ class SachimaDelegateCoordinator:
         """
 
         if self._capacity.would_wait() and not self._capacity.holds(turn.turn_key):
-            if self._card_channel(turn.origin, delivery) is not None:
+            if (
+                self._card_channel(turn.origin, delivery) is not None
+                and self._read_card(turn.task_ref) is not None
+            ):
                 await self._card_pre_accept(turn, "waiting", delivery)
             else:
                 await self._notify(
@@ -1289,6 +1293,23 @@ class SachimaDelegateCoordinator:
         )
 
     # -- receipts (I6, §5.4) ------------------------------------------------ #
+    async def _send_plain_accepted_receipt(
+        self, turn: DelegateTurnRecord, channel: DelegateDelivery
+    ) -> SendSettlement:
+        """Deliver the ordinary accepted receipt when no rich card exists."""
+
+        text = render_accepted_receipt(
+            DelegateAcceptedReceipt(
+                task_ref=turn.task_ref,
+                task_description=turn.task_description,
+                status_time=turn.accepted_at,
+                requested_agent=safe_card_display_text(turn.requested_agent),
+                requested_model=safe_card_display_text(turn.requested_model),
+                requested_effort=safe_card_display_text(turn.requested_effort),
+            )
+        )
+        return await perform_settled_send(lambda: channel.send_text(text))
+
     async def _settle_receipt(
         self, turn: DelegateTurnRecord, delivery: DelegateDelivery | None
     ) -> DelegateTurnRecord:
@@ -1320,21 +1341,23 @@ class SachimaDelegateCoordinator:
             elif channel.card_capable:
                 settlement = await self._flush_card(
                     turn.task_ref, turn.origin, channel, force=True
-                ) or SendSettlement(
+                )
+                if settlement is None:
+                    if self._read_card(turn.task_ref) is None:
+                        settlement = await self._send_plain_accepted_receipt(
+                            turn, channel
+                        )
+                    else:
+                        settlement = SendSettlement(
+                            state="failed",
+                            diagnostic=SACHIMA_DELEGATE_CARD_UNAVAILABLE,
+                        )
+            else:
+                settlement = await self._send_plain_accepted_receipt(turn, channel)
+            if settlement is None:
+                settlement = SendSettlement(
                     state="failed", diagnostic=SACHIMA_DELEGATE_CARD_UNAVAILABLE
                 )
-            else:
-                text = render_accepted_receipt(
-                    DelegateAcceptedReceipt(
-                        task_ref=turn.task_ref,
-                        task_description=turn.task_description,
-                        status_time=turn.accepted_at,
-                        requested_agent=turn.requested_agent,
-                        requested_model=turn.requested_model,
-                        requested_effort=turn.requested_effort,
-                    )
-                )
-                settlement = await perform_settled_send(lambda: channel.send_text(text))
         finally:
             # Seeded before the attempt and written in ``finally``: no valid
             # branch, and no cancellation, leaves a receipt ``in_flight``.
@@ -1390,7 +1413,10 @@ class SachimaDelegateCoordinator:
                 if failures >= _MAX_CONSECUTIVE_OBSERVE_FAILURES and not blindness_reported:
                     blindness_reported = True
                     logger.warning(SACHIMA_DELEGATE_OBSERVATION_LOST)
-                    if self._card_channel(turn.origin, None) is not None:
+                    if (
+                        self._card_channel(turn.origin, None) is not None
+                        and self._read_card(turn.task_ref) is not None
+                    ):
                         await self._card_round_state(turn, "recovering", None)
                     else:
                         await self._notify(
@@ -1685,7 +1711,7 @@ class SachimaDelegateCoordinator:
             )
             return
 
-        if channel.card_capable:
+        if channel.card_capable and self._read_card(turn.task_ref) is not None:
             # One Task, one surface: the terminal is the card's final projection
             # revision rather than another "same task completed" message. The
             # same durable ``im_sink`` settles from that one adapter call.
@@ -1728,9 +1754,9 @@ class SachimaDelegateCoordinator:
                 measure=channel.measure,
                 task_description=turn.task_description,
                 status_time=event.terminal_at,
-                requested_agent=turn.requested_agent,
-                requested_model=turn.requested_model,
-                requested_effort=turn.requested_effort,
+                requested_agent=safe_card_display_text(turn.requested_agent),
+                requested_model=safe_card_display_text(turn.requested_model),
+                requested_effort=safe_card_display_text(turn.requested_effort),
             )
             settlement = await perform_settled_send(
                 lambda: channel.send_plain_text_once(body)

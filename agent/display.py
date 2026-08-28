@@ -859,7 +859,8 @@ def _detect_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]
     if file_mutation_result_landed(tool_name, result):
         return False, ""
 
-    data = safe_json_loads(result)
+    unparsed = object()
+    data = safe_json_loads(result, default=unparsed)
 
     # Terminal: non-zero exit code is the canonical failure signal.
     if tool_name == "terminal":
@@ -878,15 +879,32 @@ def _detect_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]
             if data.get("success") is False and "exceed the limit" in data.get("error", ""):
                 return True, " [full]"
 
-    # Structured error in JSON result (any tool that surfaces {"error": ...}).
+    # Structured JSON is classified from its top-level tool envelope only.
+    # Nested domain state (for example ``receipt="failed"`` on an admitted
+    # delegation) describes the operation's payload, not whether the tool call
+    # itself executed successfully.
     if isinstance(data, dict):
         err = data.get("error") or data.get("message")
         if err and (data.get("success") is False or "error" in data):
             return True, f" [{_trim_error(str(err))}]"
+        status = data.get("status")
+        if (
+            data.get("success") is False
+            or data.get("ok") is False
+            or (isinstance(status, str) and status.lower() in {"error", "failed", "failure", "fatal"})
+        ):
+            return True, " [error]"
+        return False, ""
 
-    # Generic heuristic for non-terminal tools
-    # Multimodal tool results (dicts with _multimodal=True) are not strings —
-    # treat them as successes since failures would be JSON-encoded strings.
+    # Valid JSON without a top-level object has no tool-envelope failure
+    # semantics. Its nested/string values are domain payload, not unstructured
+    # stderr-like text for the heuristic below.
+    if data is not unparsed:
+        return False, ""
+
+    # Generic heuristic for non-JSON results. Multimodal tool results (dicts
+    # with _multimodal=True) are not strings and are treated as successes since
+    # failures would be JSON-encoded strings.
     if not isinstance(result, str):
         return False, ""
     lower = result[:500].lower()
