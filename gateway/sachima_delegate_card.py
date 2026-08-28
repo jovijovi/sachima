@@ -35,11 +35,32 @@ refused at the durable boundary.
 
 **Shown is not executed.** ``task_description`` holds the Task's one visible
 headline — the concise title supplied at creation and sealed there — while the
-execution prompt stays on the Turn. The persisted name predates that split and
-is kept: a card a shipped host already delivered must stay readable, or its one
-bound message can never be patched again. The renderer emphasises field *names*
-only; every value, including that headline, is host text and is rendered at
-plain weight after the same sanitization as any other visible line.
+execution prompt stays on the Turn. A round row's ``purpose`` is the same split
+one level down: the short line supplied with the create/continue that opened
+that round, never a clipping of what that round was asked to do. The persisted
+names predate both splits and are kept: a card a shipped host already delivered
+must stay readable, or its one bound message can never be patched again. The
+renderer emphasises *names* only — field labels and the execution log's header;
+every value, including that headline, is host text and is rendered at plain
+weight after the same sanitization as any other visible line.
+
+**Readable is not trusted.** A shipped host filled ``purpose`` from the Turn's
+execution prompt, clipped at the display budget, so a caption already on disk
+may be half an instruction presented as a round's goal — exactly what the split
+above forbids. The two cannot be told apart by value, so the record states
+where a caption came from: ``purpose_origin`` is written beside every caption
+this host seals, and reading a document that states none drops the caption and
+keeps everything else. Provenance is per *row*, because an old card gains its
+next round on the upgraded host and one document then holds both kinds. The
+drop lives at that read alone — in-process, an unattributed caption is refused
+outright — so an old row loses a line nobody wrote for it while a live card
+keeps every line it sealed.
+
+**One card, two halves.** The Task's fixed fields say what this is; the
+execution log says what has happened. A divider separates them on both
+surfaces — the platform's own element on the native card, ``---`` in the
+Markdown fallback — and the header names the Task's state without counting
+rounds, because the log already numbers every one of them.
 
 **Reuse is proven or it is not claimed.** ``Session：已确认复用`` requires the
 same Task, two *different* Run identities, one *same* ARS Session identity, a
@@ -67,6 +88,7 @@ __all__ = [
     "CARD_SINK_STATES",
     "CARD_TEXT_BUDGET_CHARS",
     "PRE_ACCEPT_STATES",
+    "PURPOSE_ORIGINS",
     "ROUND_STATES",
     "RUNNING_PATCH_INTERVAL_FLOOR_SECONDS",
     "RUNNING_PATCH_INTERVAL_MAX_SECONDS",
@@ -253,6 +275,16 @@ SESSION_PROJECTIONS = ("new", "reused", "pending", "unconfirmed", "omitted")
 #: or reused it. Never inferred from model output or from equal task refs.
 SESSION_ORIGINS = ("created", "loaded")
 
+#: Where a round row's caption came from. There is exactly one admissible
+#: answer and it names the durable field it was sealed from: the short line the
+#: caller supplied with the create/continue that opened the round, which lives
+#: on the Turn as ``round_title``. The vocabulary is closed and single-valued
+#: on purpose — it exists to distinguish "a line somebody wrote for this row"
+#: from "whatever an older host happened to put here", not to record a menu of
+#: sources. A second member would be a second way to get a caption onto the
+#: card, and the split this field defends is that there is only one.
+PURPOSE_ORIGINS = ("round_title",)
+
 
 # --------------------------------------------------------------------------- #
 # Validation primitives
@@ -431,6 +463,7 @@ _ROUND_KEYS = frozenset(
         "turn_key",
         "round_number",
         "purpose",
+        "purpose_origin",
         "admitted_role",
         "status",
         "session_projection",
@@ -507,11 +540,19 @@ class DelegateCardRound:
     — they are how "two different Runs on one Session" becomes provable across a
     restart — and they are never rendered. The row the user reads is the
     purpose, the Session conclusion, and one bounded result or status line.
+
+    A caption travels with its provenance or it does not travel: ``purpose``
+    and ``purpose_origin`` are present together or absent together, and a row
+    that claims one without the other is refused. That is what makes a caption
+    on disk attributable, and therefore what makes an unattributable one — the
+    clipped execution prompt a shipped host wrote here — droppable at the one
+    boundary that reads such documents, instead of rendered forever.
     """
 
     turn_key: str
     round_number: int
     purpose: str | None = None
+    purpose_origin: str | None = None
     admitted_role: str | None = None
     status: str = "submitting"
     session_projection: str = "omitted"
@@ -529,6 +570,13 @@ class DelegateCardRound:
         if self.round_number < 1:
             raise _invalid()
         _visible_text(self.purpose)
+        if self.purpose_origin is not None:
+            _member(self.purpose_origin, PURPOSE_ORIGINS)
+        if (self.purpose is None) != (self.purpose_origin is None):
+            # Neither half is meaningful alone: an unattributed caption is the
+            # defect this field exists to end, and an attribution with nothing
+            # to attribute is a claim about a line that is not there.
+            raise _invalid()
         _visible_text(self.admitted_role)
         _member(self.status, ROUND_STATES)
         _member(self.session_projection, SESSION_PROJECTIONS)
@@ -549,6 +597,7 @@ class DelegateCardRound:
             "turn_key": self.turn_key,
             "round_number": self.round_number,
             "purpose": self.purpose,
+            "purpose_origin": self.purpose_origin,
             "admitted_role": self.admitted_role,
             "status": self.status,
             "session_projection": self.session_projection,
@@ -562,11 +611,29 @@ class DelegateCardRound:
 
     @classmethod
     def from_dict(cls, document: Any) -> "DelegateCardRound":
+        """One persisted round row, with any unattributable caption dropped.
+
+        This read is the compatibility boundary, and it is the *only* place a
+        caption is ever discarded. A document that states no ``purpose_origin``
+        was written before captions had one, which means whatever is in
+        ``purpose`` came from the host that filled it with the Turn's execution
+        prompt cut at the display budget. That line is not restored: the row
+        keeps its number, its Run/Session evidence, its boundaries and its
+        terminal, and the execution log simply logs a round it has no caption
+        for — which is true, where the clipped instruction was not.
+
+        Nothing is repaired and nothing is migrated. The complete ask is still
+        on the Turn, and pulling it back in under a different name is the same
+        defect wearing a new key.
+        """
+
         _closed_document(document, _ROUND_KEYS)
+        purpose_origin = document.get("purpose_origin")
         return cls(
             turn_key=document.get("turn_key"),
             round_number=document.get("round_number"),
-            purpose=document.get("purpose"),
+            purpose=document.get("purpose") if purpose_origin is not None else None,
+            purpose_origin=purpose_origin,
             admitted_role=document.get("admitted_role"),
             status=document.get("status", "submitting"),
             session_projection=document.get("session_projection", "omitted"),
@@ -792,6 +859,12 @@ def append_round(
     nothing, including the purpose, which is sealed at Turn creation. A
     duplicate that could rewrite the purpose would let opaque later text
     redefine what an earlier round was for.
+
+    This is the one place a caption is sealed, so it is the one place its
+    provenance is stamped. The producer hands over the round's own supplied
+    line — the Turn's ``round_title`` — and the row records that it did, which
+    is what lets a later read tell this caption apart from one an older host
+    clipped out of the execution prompt.
     """
 
     if type(projection) is not DelegateCardProjection:
@@ -803,6 +876,7 @@ def append_round(
         turn_key=turn_key,
         round_number=len(projection.rounds) + 1,
         purpose=purpose,
+        purpose_origin=None if purpose is None else "round_title",
         admitted_role=admitted_role,
         started_at=started_at,
     )
@@ -1216,23 +1290,26 @@ def card_state(projection: DelegateCardProjection) -> tuple[str, int | None]:
 
 
 def card_title(state: str, round_number: int | None, *, locale: str = "zh") -> str:
-    """``card type · latest round state`` — the one title form, localized."""
+    """``card type · latest state`` — the one title form, localized.
+
+    The headline answers "what is this, and how is it going", and stops there.
+    It deliberately does *not* count rounds: the execution log below numbers
+    every round already, so a number here repeated that on the one line a person
+    reads at a glance, and moved it for a reason they had not asked about.
+
+    ``round_number`` still decides which vocabulary applies — a Task with no
+    round yet is ``已创建``/``等待执行槽位``, which are not round states — so it
+    is validated exactly as before and simply no longer rendered.
+    """
 
     _member(locale, CARD_LOCALES)
     if round_number is None:
         suffix = _TASKLESS_TITLE_STATE[locale].get(state)
-        if suffix is None:
-            raise _invalid()
     else:
         _non_negative_int(round_number)
-        word = _ROUND_TITLE_STATE[locale].get(state)
-        if word is None:
-            raise _invalid()
-        suffix = (
-            f"第 {round_number} 轮{word}"
-            if locale == "zh"
-            else f"Round {round_number} {word}"
-        )
+        suffix = _ROUND_TITLE_STATE[locale].get(state)
+    if suffix is None:
+        raise _invalid()
     return _TITLE_PREFIX[locale] + _TITLE_SEPARATOR + suffix
 
 
@@ -1314,17 +1391,26 @@ def _admitted_role(projection: DelegateCardProjection) -> str:
 # --------------------------------------------------------------------------- #
 # Rendering
 # --------------------------------------------------------------------------- #
-#: One emphasis rule, applied to field **names** only: the five summary labels
-#: and the round rows' ``Session`` / ``结果`` / ``状态`` keys. Values stay plain
-#: weight, because a bold value competes with the label it answers and a fully
-#: bold row reads as one shouted line instead of a label and a fact. It is
-#: applied to closed-vocabulary labels this module owns — never to host text,
-#: which would let a value inject emphasis into the card.
+#: One emphasis rule, applied to **names** only: the five summary labels, the
+#: round rows' ``Session`` / ``结果`` / ``状态`` keys, and the one section header
+#: that names the execution log. Values stay plain weight, because a bold value
+#: competes with the label it answers and a fully bold row reads as one shouted
+#: line instead of a label and a fact. It is applied to closed-vocabulary text
+#: this module owns — never to host text, which would let a value inject
+#: emphasis into the card.
 _EMPHASIS = "**"
 
 
 def _bold(label: str) -> str:
     return _EMPHASIS + label + _EMPHASIS
+
+
+#: The Markdown fallback's spelling of the one seam on this card: the Task's
+#: fixed fields above, its execution log below. The native card draws that same
+#: seam with the platform's own divider element instead. Both markers are the
+#: module's own text and are written *outside* the value escaping below, which
+#: is what keeps a value from ever forging either of them.
+_MARKDOWN_DIVIDER = "---"
 
 
 #: The characters that would otherwise let a *value* mean something instead of
@@ -1416,7 +1502,7 @@ def _round_block(row: DelegateCardRound, locale: str) -> list[str]:
 
 def _history_lines(projection: DelegateCardProjection, window: int) -> list[str]:
     locale = projection.locale
-    lines = [_HISTORY_HEADER[locale]]
+    lines = [_bold(_HISTORY_HEADER[locale])]
     if not projection.rounds:
         lines.append(_HISTORY_EMPTY[locale])
         return lines
@@ -1435,12 +1521,16 @@ def _history_lines(projection: DelegateCardProjection, window: int) -> list[str]
     return lines
 
 
-def _card_body(projection: DelegateCardProjection, window: int) -> str:
-    """Everything below the header title, as one markdown block."""
+def _fields_block(projection: DelegateCardProjection) -> str:
+    """The Task's fixed fields — what this is — as one markdown block."""
 
-    return "\n".join(
-        _summary_lines(projection) + [""] + _history_lines(projection, window)
-    )
+    return "\n".join(_summary_lines(projection))
+
+
+def _history_block(projection: DelegateCardProjection, window: int) -> str:
+    """The execution log — what has happened — as one markdown block."""
+
+    return "\n".join(_history_lines(projection, window))
 
 
 def render_delegation_card(
@@ -1450,6 +1540,11 @@ def render_delegation_card(
 
     Read-only by construction: the first slice emits no action element at all,
     so there is no button a stale round could carry.
+
+    The body is two blocks, not one. The Task's fixed fields answer "what is
+    this"; the execution log answers "what has happened"; and the seam between
+    them is the platform's own divider element rather than characters inside a
+    text block, so the native surface draws the break it means.
     """
 
     if type(projection) is not DelegateCardProjection:
@@ -1467,7 +1562,9 @@ def render_delegation_card(
             "template": card_header_template(state),
         },
         "elements": [
-            {"tag": "markdown", "content": _card_body(projection, window)},
+            {"tag": "markdown", "content": _fields_block(projection)},
+            {"tag": "hr"},
+            {"tag": "markdown", "content": _history_block(projection, window)},
         ],
     }
 
@@ -1479,14 +1576,22 @@ def render_delegation_markdown(
 
     Same wording, order, punctuation, duration semantics, and no-bullet layout
     as the native card — this is what a user sees when rich delivery failed, so
-    it has to carry the complete copyable ``dtask_*`` too.
+    it has to carry the complete copyable ``dtask_*`` too. The divider the
+    native card draws as an element is written here as the rule this surface
+    spells it with: one break, two surfaces, one meaning.
     """
 
     if type(projection) is not DelegateCardProjection:
         raise _invalid()
     state, round_number = card_state(projection)
-    title = card_title(state, round_number, locale=projection.locale)
-    return title + "\n\n" + _card_body(projection, window)
+    return "\n\n".join(
+        (
+            card_title(state, round_number, locale=projection.locale),
+            _fields_block(projection),
+            _MARKDOWN_DIVIDER,
+            _history_block(projection, window),
+        )
+    )
 
 
 def bounded_card_payload(

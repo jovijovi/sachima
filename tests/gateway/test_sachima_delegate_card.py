@@ -89,15 +89,30 @@ def _lines(text: str) -> list[str]:
 def _card_text(card: dict) -> str:
     """The whole card as one comparable block: header title, then its body.
 
-    The native card carries the state title exactly once, in the header, so the
-    markdown element holds everything below it. Recomposing the two here is what
-    lets a snapshot assertion read like the card the user actually sees.
+    The native card carries the state title exactly once, in the header, and
+    splits what follows into the Task's fixed fields and its execution log —
+    two markdown blocks with the platform's own divider element between them.
+    Recomposing the three here, writing that divider the way the Markdown
+    fallback writes it, is what lets a snapshot assertion read like the card the
+    user actually sees *and* stay comparable with the fallback.
     """
 
     elements = card["elements"]
-    assert len(elements) == 1, elements
-    assert elements[0]["tag"] == "markdown"
-    return card["header"]["title"]["content"] + "\n\n" + elements[0]["content"]
+    assert [element["tag"] for element in elements] == ["markdown", "hr", "markdown"]
+    return "\n\n".join(
+        (
+            card["header"]["title"]["content"],
+            elements[0]["content"],
+            "---",
+            elements[2]["content"],
+        )
+    )
+
+
+def _log_block(card: dict) -> str:
+    """Just the execution-log half of a native card."""
+
+    return card["elements"][2]["content"]
 
 
 # --------------------------------------------------------------------------- #
@@ -237,6 +252,16 @@ def test_projection_refuses_unsafe_material():
         _projection(locale="fr")
 
 
+#: What a *shipped* host actually put in a round row's ``purpose``: not a line
+#: anybody composed for the card, but ``sanitize_card_line`` over the Turn's
+#: execution prompt — the whole ask, clipped at the display budget. Spelled out
+#: in full because it is the exact string the compatibility boundary exists to
+#: keep off every rendered surface.
+_LEGACY_CLIPPED_PURPOSE = (
+    "请先阅读 gateway 下的委派卡片模块，弄清楚 round 行的渲染顺序，然后把执行记录"
+    "里的耗时口径与 ARS 的观测周期对齐，注意不要改动任何"
+)
+
 #: One card record exactly as the shipped release writes it. The visible task
 #: line has always been persisted under ``task_description``; what changed is
 #: only *what is put there* — a supplied display title instead of the ask — so
@@ -263,7 +288,7 @@ _SHIPPED_CARD_DOCUMENT = {
         {
             "turn_key": "dturn_a1",
             "round_number": 1,
-            "purpose": "建立 Session 上下文",
+            "purpose": _LEGACY_CLIPPED_PURPOSE,
             "admitted_role": None,
             "status": "running",
             "session_projection": "new",
@@ -283,8 +308,9 @@ def test_a_card_written_by_the_shipped_release_still_restores_and_renders():
 
     A projection this host cannot read is a card it can no longer patch: the
     Task's one bound message would freeze at whatever it last said. So the
-    persisted key stays exactly what the shipped release writes, and the only
-    thing that moved is which text a *new* Task puts there.
+    document is read as it stands — same keys, same Task headline, same
+    binding, same round numbering — and the only thing that moved is which text
+    a *new* Task puts there.
     """
 
     restored = DelegateCardProjection.from_dict(dict(_SHIPPED_CARD_DOCUMENT))
@@ -296,10 +322,134 @@ def test_a_card_written_by_the_shipped_release_still_restores_and_renders():
     assert "💡 **任务**： 验证 oh-my-pi 的 Session 复用" in _card_text(
         render_delegation_card(restored)
     )
-    # And what it writes back is byte-for-byte the shape it was read from: no
-    # new key, no renamed key, nothing for an older host to choke on.
-    assert restored.as_dict() == _SHIPPED_CARD_DOCUMENT
+    # The round itself is intact — number, Run/Session evidence, boundaries,
+    # state — because none of that was ever in doubt.
+    row = restored.rounds[0]
+    assert (row.turn_key, row.round_number, row.status) == ("dturn_a1", 1, "running")
+    assert (row.run_ref, row.session_ref, row.session_origin) == (
+        "run_one",
+        "sess_abcd1234",
+        "created",
+    )
+    assert row.started_at == "2026-08-26T09:00:05+00:00"
     assert "task_title" not in restored.as_dict()
+
+
+def test_a_caption_a_shipped_host_clipped_out_of_the_prompt_is_not_restored():
+    """The one thing an old card does not keep: a caption nobody wrote for it.
+
+    A shipped host filled ``purpose`` with the Turn's execution prompt cut at
+    the display budget, so what is on disk is half an instruction presented as
+    the round's goal. Reading it back is the compatibility boundary, and it is
+    where the untrusted line stops: the row is restored without a caption, the
+    log says which round it is and how it went, and nothing reaches for the
+    complete ask sitting next to it.
+    """
+
+    restored = DelegateCardProjection.from_dict(dict(_SHIPPED_CARD_DOCUMENT))
+
+    assert restored.rounds[0].purpose is None
+    log = _log_block(render_delegation_card(restored))
+    assert "▶️ 第 1 轮\n" in log
+    assert "第 1 轮：" not in log
+    assert _LEGACY_CLIPPED_PURPOSE[:20] not in _card_text(
+        render_delegation_card(restored)
+    )
+    assert _LEGACY_CLIPPED_PURPOSE[:20] not in render_delegation_markdown(restored)
+    # The row still says everything it can honestly say.
+    assert "**Session**：新建" in log
+    assert "**状态**：执行中" in log
+    # And the drop is durable: what this host writes back no longer carries the
+    # clipped prompt, so no later read can resurrect it.
+    assert _LEGACY_CLIPPED_PURPOSE not in json.dumps(
+        restored.as_dict(), ensure_ascii=False
+    )
+    # The write-back is that drop plus exactly one added key, and no other
+    # difference at all. The document a round row is stored as could not carry
+    # its own provenance before, so gaining ``purpose_origin`` is the whole
+    # migration — an old *reader* now refuses this row, which costs a rolled-back
+    # host the ability to patch this one card and is the price of being able to
+    # tell an authored caption from a clipped prompt at all.
+    written = restored.as_dict()["rounds"][0]
+    shipped = dict(_SHIPPED_CARD_DOCUMENT["rounds"][0])
+    assert set(written) - set(shipped) == {"purpose_origin"}
+    assert written["purpose_origin"] is None
+    assert {key: value for key, value in written.items() if key != "purpose_origin"} == {
+        **shipped,
+        "purpose": None,
+    }
+
+
+def test_a_round_line_this_host_sealed_survives_its_own_document():
+    """A caption with a stated provenance round-trips; that is the whole point.
+
+    Dropping every caption on read would be the easy way to obey the contract
+    and would silently blank the execution log of every live card after one
+    restart. The record therefore says where a caption came from, and a caption
+    that came from the round's own supplied line is kept.
+    """
+
+    sealed = append_round(_projection(), turn_key="dturn_a1", purpose="核对第一轮的说明")
+    document = sealed.as_dict()["rounds"][0]
+    assert document["purpose"] == "核对第一轮的说明"
+    assert document["purpose_origin"] == "round_title"
+
+    restored = DelegateCardProjection.from_dict(sealed.as_dict())
+    assert restored == sealed
+    assert restored.rounds[0].purpose == "核对第一轮的说明"
+    assert "第 1 轮：核对第一轮的说明" in _log_block(render_delegation_card(restored))
+
+
+def test_the_durable_record_refuses_a_caption_with_no_stated_provenance():
+    """Unattributed is refused, not quietly rendered.
+
+    Dropping happens at exactly one place — the read of an older document —
+    and nowhere else. Anywhere in-process, a caption whose origin the record
+    cannot state is corrupt state and fails closed with the stable code, so a
+    future writer cannot reintroduce the defect by omitting the provenance.
+    """
+
+    with pytest.raises(DelegateCardError) as excinfo:
+        DelegateCardRound(turn_key="dturn_a1", round_number=1, purpose="来路不明")
+    assert str(excinfo.value) == SACHIMA_DELEGATE_CARD_INVALID
+
+    with pytest.raises(DelegateCardError):
+        DelegateCardRound(
+            turn_key="dturn_a1",
+            round_number=1,
+            purpose="来路不明",
+            purpose_origin="task_description",
+        )
+    # A provenance with no caption is refused for the same reason: it claims an
+    # attribution for a line that is not there.
+    with pytest.raises(DelegateCardError):
+        DelegateCardRound(
+            turn_key="dturn_a1", round_number=1, purpose_origin="round_title"
+        )
+
+
+def test_one_card_can_hold_a_legacy_row_and_a_sealed_row_and_tell_them_apart():
+    """The mixed card is the case a card-wide version marker would get wrong.
+
+    An old card gains its next round on the upgraded host, so one document
+    holds a clipped caption written before the split and a supplied line
+    written after it. Provenance is per row because the difference is per row:
+    round 1 loses its caption, round 2 keeps its own, and writing the card back
+    does not bless the one it dropped.
+    """
+
+    restored = DelegateCardProjection.from_dict(dict(_SHIPPED_CARD_DOCUMENT))
+    continued = append_round(restored, turn_key="dturn_b2", purpose="核对第二轮的说明")
+
+    log = _log_block(render_delegation_card(continued))
+    assert "▶️ 第 1 轮\n" in log
+    assert "▶️ 第 2 轮：核对第二轮的说明" in log
+    assert _LEGACY_CLIPPED_PURPOSE[:20] not in log
+
+    rewritten = DelegateCardProjection.from_dict(continued.as_dict())
+    assert rewritten == continued
+    assert rewritten.rounds[0].purpose is None
+    assert rewritten.rounds[1].purpose == "核对第二轮的说明"
 
 
 @pytest.mark.parametrize(
@@ -706,24 +856,46 @@ def test_an_unsettled_continuation_projects_reuse_as_pending():
             "委派任务 · 等待执行槽位",
             "Delegated Task · Waiting for Execution Slot",
         ),
-        ("submitting", 1, "委派任务 · 第 1 轮提交中", "Delegated Task · Round 1 Submitting"),
-        ("rejected", 1, "委派任务 · 第 1 轮未受理", "Delegated Task · Round 1 Not Admitted"),
-        ("accepted", 2, "委派任务 · 第 2 轮已受理", "Delegated Task · Round 2 Admitted"),
-        ("running", 2, "委派任务 · 第 2 轮执行中", "Delegated Task · Round 2 Running"),
-        ("completed", 2, "委派任务 · 第 2 轮已完成", "Delegated Task · Round 2 Completed"),
-        ("failed", 2, "委派任务 · 第 2 轮已失败", "Delegated Task · Round 2 Failed"),
-        ("cancelled", 2, "委派任务 · 第 2 轮已取消", "Delegated Task · Round 2 Cancelled"),
+        ("submitting", 1, "委派任务 · 提交中", "Delegated Task · Submitting"),
+        ("rejected", 1, "委派任务 · 未受理", "Delegated Task · Not Admitted"),
+        ("accepted", 2, "委派任务 · 已受理", "Delegated Task · Admitted"),
+        ("running", 2, "委派任务 · 执行中", "Delegated Task · Running"),
+        ("completed", 2, "委派任务 · 已完成", "Delegated Task · Completed"),
+        ("failed", 2, "委派任务 · 已失败", "Delegated Task · Failed"),
+        ("cancelled", 2, "委派任务 · 已取消", "Delegated Task · Cancelled"),
         (
             "recovering",
             2,
-            "委派任务 · 第 2 轮状态待恢复",
-            "Delegated Task · Round 2 Recovery Pending",
+            "委派任务 · 状态待恢复",
+            "Delegated Task · Recovery Pending",
         ),
     ],
 )
 def test_every_required_title_state_renders_in_both_locales(state, round_number, zh, en):
     assert card_title(state, round_number, locale="zh") == zh
     assert card_title(state, round_number, locale="en") == en
+
+
+def test_the_title_states_the_state_and_leaves_counting_to_the_log():
+    """The headline names the Task and how it is doing — never which round.
+
+    A round number in the title made the one line a person reads change for a
+    reason they did not ask about, and said twice what the 执行记录 rows already
+    say round by round. The count still exists; it exists *there*.
+    """
+
+    for number in (1, 2, 7):
+        assert card_title("running", number, locale="zh") == "委派任务 · 执行中"
+        assert card_title("running", number, locale="en") == "Delegated Task · Running"
+    assert "轮" not in card_title("completed", 3, locale="zh")
+    assert "Round" not in card_title("completed", 3, locale="en")
+    # A round number is still the thing that says which vocabulary applies:
+    # ``已创建`` is a Task that has no round yet, not a round state.
+    assert card_title("created", None, locale="zh") == "委派任务 · 已创建"
+    with pytest.raises(DelegateCardError):
+        card_title("created", 1, locale="zh")
+    with pytest.raises(DelegateCardError):
+        card_title("running", None, locale="zh")
 
 
 def test_the_three_confirmed_header_templates_are_stable():
@@ -840,6 +1012,74 @@ def test_every_round_key_label_is_bold_and_its_value_is_not():
     assert "**Status**: Running" in body
     # The round heading is not a key/value field, so it keeps its plain weight.
     assert "▶️ Round 1: Establish context" in body
+
+
+def test_a_divider_separates_the_fixed_fields_from_the_execution_log():
+    """Two things are on this card, so the card says so once, structurally.
+
+    The Task's fixed fields answer "what is this"; the log answers "what has
+    happened". Running them together as one block made a reader find that seam
+    themselves on every glance. The native surface draws it with the platform's
+    own divider element rather than with characters inside a text block.
+    """
+
+    card = render_delegation_card(_projection())
+    assert [element["tag"] for element in card["elements"]] == [
+        "markdown",
+        "hr",
+        "markdown",
+    ]
+    fields, _divider, log = card["elements"]
+    assert fields["content"].startswith("💡 **任务**： ")
+    assert fields["content"].endswith("👤 **角色**： 未指定")
+    # The seam is the element boundary: neither half carries the other's text.
+    assert "执行记录" not in fields["content"]
+    assert "**任务**" not in log["content"]
+    assert log["content"].startswith("**执行记录**\n")
+
+
+def test_the_execution_log_header_is_bold_in_both_locales():
+    """``执行记录`` names a section, so it carries the same weight as a key."""
+
+    zh = _card_text(render_delegation_card(_projection()))
+    assert "**执行记录**" in zh
+    assert "\n执行记录\n" not in zh
+    english = _card_text(render_delegation_card(_projection(locale="en")))
+    assert "**Execution Log**" in english
+    assert "\nExecution Log\n" not in english
+
+
+def test_the_markdown_fallback_divides_and_emphasises_the_same_way():
+    """Same meaning on the degraded surface, in that surface's own spelling.
+
+    The fallback is plain text, so the divider is written rather than drawn.
+    What must not differ is the reading: fields, a break, then the log under a
+    heading of the same weight.
+    """
+
+    projection = _two_round_projection()
+    fallback = render_delegation_markdown(projection)
+
+    assert "\n\n---\n\n**执行记录**\n" in fallback
+    assert fallback == _card_text(render_delegation_card(projection))
+    english = render_delegation_markdown(_projection(locale="en"))
+    assert "\n\n---\n\n**Execution Log**\n" in english
+
+
+def test_a_value_can_neither_forge_the_log_header_nor_the_divider():
+    """The section markers are the module's own; a value only ever says them."""
+
+    projection = _projection(task_description="**执行记录**")
+    projection = append_round(projection, turn_key="dturn_a1", purpose="--- 分割")
+    body = _card_text(render_delegation_card(projection))
+
+    assert "💡 **任务**： \\*\\*执行记录\\*\\*" in body
+    # The module's own markers survive the pass that neutralised the value, and
+    # the value's copy of them does not: one real header, one inert lookalike.
+    assert body.count("\n\n---\n\n**执行记录**\n") == 1
+    assert body.count("**执行记录**") == 1
+    # ``---`` inside a value can never start a line, so it cannot rule either.
+    assert "▶️ 第 1 轮：--- 分割" in body
 
 
 def test_bold_field_names_never_leak_into_the_values_they_label():
@@ -962,6 +1202,7 @@ def test_every_dynamic_value_is_escaped_by_the_one_shared_rule():
         stripped = stripped.replace("**耗时**", "").replace("**执行**", "")
         stripped = stripped.replace("**角色**", "").replace("**Session**", "")
         stripped = stripped.replace("**结果**", "").replace("**状态**", "")
+        stripped = stripped.replace("**执行记录**", "")
         # Whatever emphasis, code, link or tag character survives in a value is
         # escaped: it is preceded by a backslash that is not itself escaped.
         for index, char in enumerate(stripped):
@@ -1094,7 +1335,9 @@ def test_snapshot_1_created():
         "🤖 **执行**： oh-my-pi · glm-5.3 · max\n"
         "👤 **角色**： 未指定\n"
         "\n"
-        "执行记录\n"
+        "---\n"
+        "\n"
+        "**执行记录**\n"
         "⏳ 尚未开始"
     )
 
@@ -1108,7 +1351,7 @@ def test_snapshot_2_round_1_running():
         projection, "dturn_a1", status="running", session_projection="new"
     )
     assert _card_text(render_delegation_card(projection)) == (
-        "委派任务 · 第 1 轮执行中\n"
+        "委派任务 · 执行中\n"
         "\n"
         "💡 **任务**： 验证 oh-my-pi 的 Session 复用\n"
         f"🆔 **编号**： {TASK_REF}\n"
@@ -1116,7 +1359,9 @@ def test_snapshot_2_round_1_running():
         "🤖 **执行**： oh-my-pi · glm-5.3 · max\n"
         "👤 **角色**： 未指定\n"
         "\n"
-        "执行记录\n"
+        "---\n"
+        "\n"
+        "**执行记录**\n"
         "▶️ 第 1 轮：建立 Session 上下文\n"
         "**Session**：新建\n"
         "**状态**：执行中"
@@ -1145,7 +1390,7 @@ def test_snapshot_3_round_2_running():
         projection, "dturn_b2", status="running", session_projection="pending"
     )
     assert _card_text(render_delegation_card(projection)) == (
-        "委派任务 · 第 2 轮执行中\n"
+        "委派任务 · 执行中\n"
         "\n"
         "💡 **任务**： 验证 oh-my-pi 的 Session 复用\n"
         f"🆔 **编号**： {TASK_REF}\n"
@@ -1153,7 +1398,9 @@ def test_snapshot_3_round_2_running():
         "🤖 **执行**： oh-my-pi · glm-5.3 · max\n"
         "👤 **角色**： 未指定\n"
         "\n"
-        "执行记录\n"
+        "---\n"
+        "\n"
+        "**执行记录**\n"
         "✅ 第 1 轮：建立 Session 上下文\n"
         "**Session**：新建\n"
         "**结果**：上下文已建立\n"
@@ -1175,7 +1422,7 @@ def test_snapshot_4_round_2_completed():
         settled_at="2026-08-26T09:01:20+00:00",
     )
     assert _card_text(render_delegation_card(projection)) == (
-        "委派任务 · 第 2 轮已完成\n"
+        "委派任务 · 已完成\n"
         "\n"
         "💡 **任务**： 验证 oh-my-pi 的 Session 复用\n"
         f"🆔 **编号**： {TASK_REF}\n"
@@ -1183,7 +1430,9 @@ def test_snapshot_4_round_2_completed():
         "🤖 **执行**： oh-my-pi · glm-5.3 · max\n"
         "👤 **角色**： 未指定\n"
         "\n"
-        "执行记录\n"
+        "---\n"
+        "\n"
+        "**执行记录**\n"
         "✅ 第 1 轮：建立 Session 上下文\n"
         "**Session**：新建\n"
         "**结果**：上下文已建立\n"
@@ -1349,12 +1598,12 @@ def test_payload_is_bounded_before_the_adapter_call():
 
     full, _ = bounded_card_payload(projection, limit=100_000)
     assert full is not None
-    assert full["elements"][0]["content"].count("轮：") == 3
+    assert _log_block(full).count("轮：") == 3
 
     # A limit that only the compacted card fits keeps the card and drops rows.
     compacted, markdown = bounded_card_payload(projection, limit=900)
     assert compacted is not None
-    assert compacted["elements"][0]["content"].count("轮：") < 3
+    assert _log_block(compacted).count("轮：") < 3
     assert len(json.dumps(compacted, ensure_ascii=False)) <= 900
     assert markdown
 
@@ -1409,7 +1658,7 @@ def test_the_payload_bound_is_the_adapters_own_one_message_limit():
         )
     card, _fallback = bounded_card_payload(projection, limit=limit)
     assert card is not None
-    assert card["elements"][0]["content"].count("轮：") == CARD_ROUND_WINDOW
+    assert _log_block(card).count("轮：") == CARD_ROUND_WINDOW
 
 
 def test_the_projection_layer_makes_one_adapter_call_per_revision():

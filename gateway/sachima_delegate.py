@@ -744,6 +744,7 @@ class SachimaDelegateCoordinator:
         linked_from: str | None = None,
         admitted_role: Any = None,
         task_title: Any = None,
+        round_title: Any = None,
     ) -> DelegateOutcome:
         """Register one delegated task and drive its first turn to a disposition.
 
@@ -753,13 +754,15 @@ class SachimaDelegateCoordinator:
         that point makes no ARS call at all, which is what makes the failure
         recoverable rather than merely reported.
 
-        ``task_title`` is the short line the Task's card is displayed under. It
-        is sanitized here, at the producer, and sealed into the Task binding —
-        ``task_text`` keeps going to the AGENT and to the Turn's own
-        description untouched, so what a person reads and what an AGENT
-        executes stay separately owned. A caller that has none passes ``None``
-        rather than a clipped prompt: the card says "not provided", which is
-        true, instead of showing half an instruction as if it were a sentence.
+        ``task_title`` is the short line the Task's card is displayed under and
+        ``round_title`` the short line *this round* is logged under. Both are
+        sanitized here, at the producer — the title into the Task binding, the
+        round line into this Turn — while ``task_text`` keeps going to the AGENT
+        and to the Turn's own description untouched, so what a person reads and
+        what an AGENT executes stay separately owned. A caller that has neither
+        passes ``None`` rather than a clipped prompt: the card says "not
+        provided" and logs the round without a caption, which is true, instead
+        of showing half an instruction as if it were a sentence.
         """
 
         await self._ensure_restored()
@@ -808,6 +811,9 @@ class SachimaDelegateCoordinator:
                 requested_effort=requested[2],
                 origin=origin,
                 task_description=sanitize_task_description(task_text),
+                # Sealed with the round it opens, never rewritten by a later
+                # one and never derived from the ask beside it.
+                round_title=sanitize_card_line(round_title),
                 admitted_role=self._sealed_role(preset.agent_id, admitted_role),
             )
         )
@@ -844,6 +850,7 @@ class SachimaDelegateCoordinator:
         origin: DelegateOrigin | None = None,
         admitted_role: Any = None,
         continuity: Any = None,
+        round_title: Any = None,
     ) -> DelegateOutcome:
         """Continue the same task, in the same Sessions, under the same AGENT.
 
@@ -865,6 +872,11 @@ class SachimaDelegateCoordinator:
         question it already asked: is the caller's origin the same conversation
         as the task's? Without one, that stays the exact-Session comparison it
         has always been.
+
+        ``round_title`` is this continuation's own short log line. It is sealed
+        into the new Turn exactly as creation seals the first round's, so the
+        log states what each round set out to do rather than repeating the
+        round before it or the Task headline above.
         """
 
         await self._ensure_restored()
@@ -936,6 +948,10 @@ class SachimaDelegateCoordinator:
                     linked_from=event.event_id,
                     admitted_role=admitted_role,
                     task_title=binding.task_title,
+                    # The round line belongs to *this* ask, so it crosses into
+                    # the linked Task with it — unlike the headline above, which
+                    # is the source Task's and is inherited verbatim.
+                    round_title=round_title,
                 )
             if preset is None:
                 preset = self._presets.preset(binding.agent_id)
@@ -963,10 +979,12 @@ class SachimaDelegateCoordinator:
                     requested_model=requested[1],
                     requested_effort=requested[2],
                     origin=binding.origin,
-                    # The round purpose is sealed at continuation time from the
-                    # continuation's own ask; it is never inferred later from
-                    # opaque result text.
                     task_description=sanitize_task_description(task_text),
+                    # The round's log line is sealed at continuation time from
+                    # the line supplied with this continuation; it is never
+                    # inferred later from opaque result text, carried over from
+                    # the round before, or clipped out of the ask above.
+                    round_title=sanitize_card_line(round_title),
                     admitted_role=self._sealed_role(binding.agent_id, admitted_role),
                 )
             )
@@ -2370,10 +2388,16 @@ class SachimaDelegateCoordinator:
         gains a card on its *next* continuation must still number that round by
         the durable ``turn_keys`` order — a continuation announced as ``第 1 轮``
         would be a plainly untrue header. Only persisted, already-sanitized
-        material is reconstructed: the sealed purpose, the sealed role, the
-        lifecycle boundaries, and the recorded terminal. Nothing about the
-        earlier Runs' ARS Sessions was persisted for the card, so those rows
+        material is reconstructed: each round's own sealed log line, the sealed
+        role, the lifecycle boundaries, and the recorded terminal. Nothing about
+        the earlier Runs' ARS Sessions was persisted for the card, so those rows
         make no Session claim at all and cannot become evidence later.
+
+        A Turn that never sealed a log line — one recorded before the argument
+        existed — reconstructs without one. That is deliberate and is the whole
+        compatibility strategy: the complete instruction is right there in
+        ``task_description``, and projecting it into the log would put a
+        sentence on the card that nobody wrote for the card.
         """
 
         rows: list[dict[str, Any]] = []
@@ -2403,7 +2427,7 @@ class SachimaDelegateCoordinator:
             rows.append(
                 {
                     "turn_key": turn_key,
-                    "purpose": sanitize_card_line(prior.task_description),
+                    "purpose": sanitize_card_line(prior.round_title),
                     "admitted_role": sanitize_card_line(prior.admitted_role),
                     "status": self._reconstructed_status(prior),
                     "started_at": safe_card_instant(prior.accepted_at),
@@ -2480,7 +2504,7 @@ class SachimaDelegateCoordinator:
             updated = append_round(
                 replace(projection, pre_accept_status="submitting"),
                 turn_key=turn.turn_key,
-                purpose=sanitize_card_line(turn.task_description),
+                purpose=sanitize_card_line(turn.round_title),
                 admitted_role=sanitize_card_line(turn.admitted_role),
                 started_at=_utc_status_time(),
             )
@@ -2540,7 +2564,7 @@ class SachimaDelegateCoordinator:
         return append_round(
             projection,
             turn_key=turn.turn_key,
-            purpose=sanitize_card_line(turn.task_description),
+            purpose=sanitize_card_line(turn.round_title),
             admitted_role=sanitize_card_line(turn.admitted_role),
             started_at=safe_card_instant(turn.accepted_at),
         )

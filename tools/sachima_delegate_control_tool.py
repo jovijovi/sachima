@@ -57,12 +57,15 @@ model-invoked control surface safe:
   and stable codes. ``result`` is the one action that returns agent output, and
   it returns the durable result the user already received a bounded copy of.
 
-Creation also states the two halves separately. ``task`` is the complete
+Creation also states the halves separately. ``task`` is the complete
 instruction the AGENT executes; ``task_title`` is the one short line the status
-card is displayed under. Both are required, because the alternative to a
-supplied title is a clipped execution prompt — a sentence the user never wrote,
-presented as the thing they asked for. The title is sealed with the Task: a
-continuation adds a round, never a new headline.
+card is displayed under; ``round_title`` is the one short line the round being
+opened is logged under. All are required, because the alternative to a supplied
+line is a clipped execution prompt — a sentence the user never wrote, presented
+as the thing they asked for. They are sealed at different scopes and that is the
+point: the title belongs to the Task, so a continuation adds a round and never a
+new headline, while the round line belongs to the Turn, so every continuation
+names its own and none inherits the last one's.
 """
 
 from __future__ import annotations
@@ -244,6 +247,7 @@ def _handle_delegate_control(args: dict, **kw) -> str:
         SACHIMA_AGENT_ROSTER_UNAVAILABLE,
     )
     from gateway.sachima_delegate import bound_delegate_coordinator
+    from gateway.sachima_delegate_card import sanitize_card_line
 
     coordinator = bound_delegate_coordinator()
     if coordinator is None:
@@ -308,29 +312,33 @@ def _handle_delegate_control(args: dict, **kw) -> str:
                     ),
                 }
         elif action == "create":
-            from gateway.sachima_delegate_card import sanitize_card_line
-
             task_text = args.get("task")
-            # The title is judged as the line it will actually render, using
-            # the card layer's own sanitizer rather than a second rule that
-            # could disagree with it. A value that survives only as control
-            # characters is empty for display purposes, and calling it present
-            # would submit a Run whose card then says nothing was provided.
+            # Both displayed lines are judged as the lines they will actually
+            # render, using the card layer's own sanitizer rather than a second
+            # rule that could disagree with it. A value that survives only as
+            # control characters is empty for display purposes, and calling it
+            # present would submit a Run whose card then says nothing was
+            # provided. A wrong type sanitizes to nothing for the same reason.
             task_title = sanitize_card_line(args.get("task_title"))
+            round_title = sanitize_card_line(args.get("round_title"))
             origin = _trusted_origin(trusted)
             if (
                 type(task_text) is not str
                 or not task_text.strip()
                 or not task_title
+                or not round_title
                 or agent_id is None
                 or origin is None
             ):
                 # Creation names its AGENT. There is no default to fall back
                 # to, so an omitted id is invalid input rather than an
-                # invitation to choose one. The displayed title is required for
-                # the same reason: with none supplied the only alternatives are
-                # a blank headline or a clipped execution prompt, and neither
-                # is a sentence the user wrote.
+                # invitation to choose one. Both displayed lines are required
+                # for the same reason: with none supplied the only alternatives
+                # are a blank headline, an unexplained round, or a clipped
+                # execution prompt, and none of those is a sentence the user
+                # wrote. Refusing here is refusing before the roster is asked
+                # anything and before any payload, Session, turn, task, or card
+                # exists, so nothing durable survives the refusal.
                 return tool_error(SACHIMA_DELEGATE_CONTROL_INVALID)
             admission = coordinator.admit_agent(
                 agent_id, task_text=task_text.strip()
@@ -348,6 +356,7 @@ def _handle_delegate_control(args: dict, **kw) -> str:
                         # task carries none and the status card says so.
                         admitted_role=args.get("role"),
                         task_title=task_title,
+                        round_title=round_title,
                     )
                 ).as_dict()
         elif action == "status":
@@ -364,7 +373,11 @@ def _handle_delegate_control(args: dict, **kw) -> str:
             ).as_dict()
         elif action == "continue":
             task_text = args.get("task")
-            if type(task_text) is not str or not task_text.strip():
+            # A continuation opens a round, so it names that round on the same
+            # terms creation does — and the refusal lands before eligibility is
+            # re-proven, so an unusable line costs no roster read and no turn.
+            round_title = sanitize_card_line(args.get("round_title"))
+            if type(task_text) is not str or not task_text.strip() or not round_title:
                 return tool_error(SACHIMA_DELEGATE_CONTROL_INVALID)
             # A continuation submits a Run, so it proves eligibility again —
             # for the task's own AGENT when the caller kept it, and for the
@@ -393,6 +406,7 @@ def _handle_delegate_control(args: dict, **kw) -> str:
                         # It gets the same proven answer this surface used, not
                         # a second rule of its own.
                         continuity=trusted,
+                        round_title=round_title,
                     )
                 ).as_dict()
         else:
@@ -453,6 +467,18 @@ DELEGATE_CONTROL_SCHEMA = {
                     "'continue' cannot change it and supplying one there does "
                     "nothing; switching AGENT carries this same title into the "
                     "linked task."
+                ),
+            },
+            "round_title": {
+                "type": "string",
+                "description": (
+                    "Required for 'create' and 'continue': one short sentence "
+                    "saying what THIS round is doing, for its row in the card's "
+                    "执行记录/Execution Log. Write a fresh one every time in the "
+                    "user's own terms — never a clipped copy of 'task', never a "
+                    "repeat of 'task_title', and never the previous round's "
+                    "line. It is sealed with the round it opens, so it is what "
+                    "that row keeps saying afterwards."
                 ),
             },
             "role": {

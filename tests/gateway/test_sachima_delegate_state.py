@@ -342,6 +342,7 @@ def _turn(store: DelegateStateStore, task_ref: str, payload_ref: str) -> Delegat
         requested_model="claude-opus-5",
         requested_effort="xhigh",
         task_description="do the thing",
+        round_title="核对这一轮的短标题",
         accepted_at="2026-08-19T04:05:06+00:00",
         origin=_origin(),
     )
@@ -417,6 +418,11 @@ def test_task_turn_and_result_records_round_trip_through_a_fresh_store(tmp_path)
     assert fresh.read_task(task_ref).task_title == "核对交付卡文案"
     assert fresh.read_turn(turn.turn_key) == turn
     assert fresh.read_turn(turn.turn_key).task_description == "do the thing"
+    # The round's own short line is durable and per-Turn: the card's execution
+    # log is rebuilt from these records, so a title that lived only in memory
+    # would leave a restarted round captionless — or, worse, tempt the rebuild
+    # into re-projecting the complete instruction above.
+    assert fresh.read_turn(turn.turn_key).round_title == "核对这一轮的短标题"
     assert fresh.read_turn(turn.turn_key).accepted_at == "2026-08-19T04:05:06+00:00"
     assert fresh.read_turn(turn.turn_key).ledger_key == (TASK_ID, HANDLE, payload_ref)
     assert [record.turn_key for record in fresh.list_turns()] == [turn.turn_key]
@@ -483,6 +489,181 @@ def test_a_turns_identity_cannot_be_rewritten_by_an_update(tmp_path):
         store.update_turn(turn.turn_key, dispatch_ref="dlg_" + "f" * 32)
     assert str(excinfo.value) == SACHIMA_DELEGATE_STATE_CONFLICT
     assert store.read_turn(turn.turn_key).ledger_key == turn.ledger_key
+
+
+def test_a_turns_sealed_round_line_cannot_be_rewritten_by_an_update(tmp_path):
+    """The round's log line is sealed with the Turn, and the store enforces it.
+
+    The card layer seals a caption once — ``append_round`` never rewrites one,
+    and the row records that the line came from this Turn's ``round_title`` —
+    but that seal is only as strong as the weakest writer behind it. Healing a
+    missing row reads ``round_title`` straight off the record and stamps
+    whatever it finds as a *trusted* caption, so a store that let an update
+    rewrite the field would let later opaque text redefine what an earlier
+    round was for: exactly the substitution the provenance marker exists to
+    make impossible.
+
+    So it joins the fields an update may not touch. Unlike the ledger key
+    beside it this is not an identity — it is sealed evidence — but the refusal
+    is the same one for the same reason: a durable fact that can be rewritten
+    afterwards was never a fact.
+    """
+
+    root = str(tmp_path / "state")
+    store = DelegateStateStore(root)
+    payload_ref = store.put_payload("do the thing")
+    turn = store.put_turn(_turn(store, store.new_task_ref(), payload_ref))
+    assert turn.round_title == "核对这一轮的短标题"
+
+    with pytest.raises(DelegateStateError) as excinfo:
+        store.update_turn(turn.turn_key, round_title="已改写")
+    assert str(excinfo.value) == SACHIMA_DELEGATE_STATE_CONFLICT
+    assert store.read_turn(turn.turn_key).round_title == "核对这一轮的短标题"
+    assert "已改写" not in (Path(root) / "turns" / turn.turn_key).read_text(
+        encoding="utf-8"
+    )
+
+    # Refused even when it rides along with a dimension that *is* writable, and
+    # refused before anything is written: a rejected update leaves the whole
+    # record where it was rather than landing the half of it that was allowed.
+    with pytest.raises(DelegateStateError) as excinfo:
+        store.update_turn(turn.turn_key, lifecycle="admitted", round_title="已改写")
+    assert str(excinfo.value) == SACHIMA_DELEGATE_STATE_CONFLICT
+    reread = store.read_turn(turn.turn_key)
+    assert reread.lifecycle == turn.lifecycle
+    assert reread.round_title == "核对这一轮的短标题"
+
+    # And the ordinary mutable dimensions still move, carrying the sealed line.
+    updated = store.update_turn(turn.turn_key, lifecycle="admitted", receipt="confirmed")
+    assert (updated.lifecycle, updated.receipt) == ("admitted", "confirmed")
+    assert updated.round_title == "核对这一轮的短标题"
+
+
+def test_a_turn_record_is_create_only_and_replays_identically(tmp_path):
+    """The sealed round line survives the *writing* door as well as the update one.
+
+    ``update_turn`` already refuses ``round_title``, but that refusal only
+    covers the door it guards. ``put_turn`` was a plain overwrite, so the same
+    ``turn_key`` written a second time with a different line replaced the
+    sealed one on disk without a word — the identical substitution the update
+    path exists to prevent, reached by walking around it. Healing a missing
+    round row reads ``round_title`` straight off the record and stamps it as an
+    *authored* caption, so whichever door the rewrite came through, the result
+    is later text redefining what an earlier round was for.
+
+    So the write is create-only, on the same terms as the summary slot and the
+    card projection beside it: absent, it creates; identical, it replays, so a
+    legitimate retry stays safe; different in *any* field, it is the existing
+    stable conflict and the record already on disk keeps its exact bytes.
+    """
+
+    root = str(tmp_path / "state")
+    store = DelegateStateStore(root)
+    payload_ref = store.put_payload("do the thing")
+    turn = store.put_turn(_turn(store, store.new_task_ref(), payload_ref))
+    path = Path(root) / "turns" / turn.turn_key
+    original = path.read_bytes()
+    assert turn.round_title == "核对这一轮的短标题"
+
+    # The identical record replays: a retried write is a no-op, not a rewrite.
+    assert store.put_turn(turn) == turn
+    assert path.read_bytes() == original
+
+    # A different round line under the same key is the conflict, and the line
+    # sealed with the round that opened it is still the one on disk.
+    with pytest.raises(DelegateStateError) as excinfo:
+        store.put_turn(replace(turn, round_title="已改写"))
+    assert str(excinfo.value) == SACHIMA_DELEGATE_STATE_CONFLICT
+    assert store.read_turn(turn.turn_key).round_title == "核对这一轮的短标题"
+    assert path.read_bytes() == original
+    assert json.loads(original)["record"]["round_title"] == "核对这一轮的短标题"
+
+    # Any other difference is refused on the same terms: the mutable dimensions
+    # move through ``update_turn``, and a second write is never a back door to
+    # them.
+    with pytest.raises(DelegateStateError) as excinfo:
+        store.put_turn(replace(turn, lifecycle="admitted"))
+    assert str(excinfo.value) == SACHIMA_DELEGATE_STATE_CONFLICT
+    assert store.read_turn(turn.turn_key).lifecycle == turn.lifecycle
+    assert path.read_bytes() == original
+
+
+def test_two_store_instances_racing_one_turn_key_create_it_exactly_once(
+    tmp_path, monkeypatch
+):
+    """Create-only has to hold between two Stores, not just inside one.
+
+    The first cut asked ``read_turn`` whether the key was free and then wrote.
+    Between those two calls the answer can stop being true: a Store is one
+    object over a shared directory, its lock guards that object only, and the
+    Gateway keeps more than one — so a second instance, or a second process
+    over the same private root, can create and publish the same ``turn_key``
+    in the gap. Both writers then return success and the one that looked first
+    lands last, silently replacing a sealed ``round_title`` it never read. The
+    guarantee was never "create-only"; it was "create-only if nobody else is
+    writing", which is the assumption the record exists to stop making.
+
+    The race here is forced rather than hoped for: B's whole write is run at
+    the instant A begins putting bytes down for the same key, which is exactly
+    the window the old order left open. Both orderings of the pair are then
+    checked, so the contract holds for whichever writer arrives second rather
+    than for one lucky arrangement.
+    """
+
+    import gateway.sachima_delegate_state as state_module
+
+    def _race(root: str, first_title: str, second_title: str) -> tuple:
+        """Run one forced interleaving; return the loser's error and the winner."""
+
+        slow, quick = DelegateStateStore(root), DelegateStateStore(root)
+        payload_ref = slow.put_payload("do the thing")
+        shared_key = slow.new_turn_key()
+        template = _turn(slow, slow.new_task_ref(), payload_ref)
+        slow_record = replace(template, turn_key=shared_key, round_title=first_title)
+        quick_record = replace(template, turn_key=shared_key, round_title=second_title)
+        path = Path(root) / "turns" / shared_key
+
+        landed: dict[str, Any] = {}
+        fired: list[bool] = []
+        real_open = open
+
+        def _gated_open(file, *args, **kwargs):
+            # Fires once, when the slow writer starts materialising bytes for
+            # this key — before any implementation can have published them, and
+            # after any implementation has decided the name was free. Disarmed
+            # before the quick writer runs, since it opens the same key.
+            if not fired and str(file).startswith(str(path)):
+                fired.append(True)
+                landed["written"] = quick.put_turn(quick_record)
+                landed["bytes"] = path.read_bytes()
+            return real_open(file, *args, **kwargs)
+
+        monkeypatch.setattr(state_module, "open", _gated_open, raising=False)
+        try:
+            with pytest.raises(DelegateStateError) as excinfo:
+                slow.put_turn(slow_record)
+        finally:
+            monkeypatch.undo()
+
+        # Exactly one creation: the writer that got there first owns the key,
+        # and the one that lost is told so with the existing stable code.
+        assert str(excinfo.value) == SACHIMA_DELEGATE_STATE_CONFLICT
+        assert landed["written"] == quick_record
+        # The winner's bytes are the bytes still on disk. Not "a record with
+        # the right title" — the same bytes, unrewritten, because a loser that
+        # re-published an identical-looking record would still have raced.
+        assert path.read_bytes() == landed["bytes"]
+        assert DelegateStateStore(root).read_turn(shared_key) == quick_record
+        assert json.loads(landed["bytes"])["record"]["round_title"] == second_title
+        # One key, one record, and no staging file left behind by either writer.
+        assert [record.turn_key for record in slow.list_turns()] == [shared_key]
+        assert list(Path(root).glob("**/*.tmp")) == []
+        return excinfo.value, quick_record
+
+    _race(str(tmp_path / "a"), "A 写的这一轮", "B 写的这一轮")
+    # And with the roles swapped, so the refusal belongs to whichever writer
+    # arrives second rather than to one fixed instance.
+    _race(str(tmp_path / "b"), "B 写的这一轮", "A 写的这一轮")
 
 
 def test_a_damaged_record_is_a_stable_failure_that_keeps_its_bytes(tmp_path):
@@ -655,6 +836,12 @@ def test_a_record_written_before_the_rename_is_still_readable(tmp_path):
     assert turn.agent_id == "default"
     assert binding.turn_keys == (turn_key,)
     assert turn.terminal_status == "completed"
+    # A Turn recorded before the per-round title existed simply carries none.
+    # That is the whole compatibility strategy: the card's execution log shows
+    # such a round without a caption rather than reaching for the complete
+    # instruction the record still holds, and nothing is migrated to pretend
+    # otherwise.
+    assert turn.round_title is None
 
     # Rewritten under the current key, with no second copy of the old one.
     fresh.put_task(binding)
@@ -938,6 +1125,17 @@ def test_a_card_projection_survives_a_fresh_store(tmp_path):
     assert fresh.list_cards() == (projection,)
 
 
+#: The caption a *shipped* host wrote into a round row: not a line anybody
+#: composed for the card, but ``sanitize_card_line(turn.task_description)`` —
+#: the execution prompt, clipped at the display budget. It is spelled out in
+#: full here because the whole point of the compatibility boundary is that this
+#: exact kind of string must never reach a rendered surface again.
+LEGACY_CLIPPED_PURPOSE = (
+    "请先阅读 gateway 下的委派卡片模块，弄清楚 round 行的渲染顺序，然后把执行记录"
+    "里的耗时口径与 ARS 的观测周期对齐，注意不要改动任何"
+)
+
+
 def test_a_card_file_written_by_the_shipped_release_is_read_and_patched(tmp_path):
     """A card already on disk keeps its message binding across this change.
 
@@ -946,6 +1144,11 @@ def test_a_card_file_written_by_the_shipped_release_is_read_and_patched(tmp_path
     itself. A record this host refused to read would be a Task whose one bound
     Feishu message could never be patched again, so the durable key is frozen
     and the projection moves forward from what was already there.
+
+    Readable is not the same as trusted. The round captions in such a file were
+    clipped out of the execution prompt, and this host does not put clipped
+    prompts in the execution log — so the row survives, its numbering survives,
+    its terminal survives, and the untrusted caption does not.
     """
 
     import json
@@ -981,7 +1184,7 @@ def test_a_card_file_written_by_the_shipped_release_is_read_and_patched(tmp_path
             {
                 "turn_key": "dturn_one",
                 "round_number": 1,
-                "purpose": "建立 Session 上下文",
+                "purpose": LEGACY_CLIPPED_PURPOSE,
                 "admitted_role": None,
                 "status": "running",
                 "session_projection": "new",
@@ -1002,18 +1205,34 @@ def test_a_card_file_written_by_the_shipped_release_is_read_and_patched(tmp_path
     restored = store.read_card(CARD_TASK_REF)
     assert type(restored) is DelegateCardProjection
     assert restored.card_message_id == "om_shipped"
-    assert "💡 **任务**： 验证 Session 复用" in (
-        render_delegation_card(restored)["elements"][0]["content"]
-    )
+    fields, divider, log = render_delegation_card(restored)["elements"]
+    assert "💡 **任务**： 验证 Session 复用" in fields["content"]
+    assert divider == {"tag": "hr"}
+    # The row keeps its number, its Session line and its state; what it does
+    # not keep is a caption this host cannot attribute to anyone. An
+    # unexplained round is true; a clipped instruction presented as the round's
+    # goal is not.
+    assert "▶️ 第 1 轮\n" in log["content"]
+    assert "第 1 轮：" not in log["content"]
+    assert LEGACY_CLIPPED_PURPOSE[:20] not in log["content"]
+    assert "**Session**：新建" in log["content"]
+    assert "**状态**：执行中" in log["content"]
+    assert restored.rounds[0].purpose is None
 
     # The next projection is a patch of that same card, not a second one.
     moved = store.advance_card(next_projection_revision(restored))
     assert moved.revision == 5
     assert moved.card_message_id == "om_shipped"
+    assert moved.rounds[0].purpose is None
     assert store.read_card(CARD_TASK_REF) == moved
-    assert "task_title" not in json.loads(
+    written = json.loads(
         (root / "cards" / (CARD_TASK_REF + ".json")).read_text(encoding="utf-8")
     )["record"]
+    assert "task_title" not in written
+    # And the patch is what settles it: the untrusted caption is gone from disk
+    # too, so no later reader can find it and no later writer can bless it.
+    assert LEGACY_CLIPPED_PURPOSE not in json.dumps(written, ensure_ascii=False)
+    assert store.read_card(CARD_TASK_REF).rounds[0].purpose is None
 
 
 def test_a_card_record_is_create_only_and_replays_identically(tmp_path):
