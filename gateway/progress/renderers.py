@@ -408,7 +408,7 @@ def _feishu_suspended_hint_element(hint: Any, *, language: str) -> dict | None:
             detail += f"，另有 {overflow} 项"
         detail += "）"
     else:
-        label = "Suspended work"
+        label = "Suspended Work"
         detail = f"{title} ({remaining} remaining"
         if overflow:
             detail += f", +{overflow} more"
@@ -799,8 +799,8 @@ def _feishu_labels(language: str) -> dict[str, str]:
             "model": "Model",
             "context": "Context",
             "rounds": "Rounds",
-            "account_limits": "Account quota",
-            "recent_operations": "Recent operations",
+            "account_limits": "Account Quota",
+            "recent_operations": "Recent Operations",
             "todos": "TODO",
             "running": "running",
             "tool": "Tool",

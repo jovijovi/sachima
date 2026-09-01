@@ -759,6 +759,10 @@ def test_task_card_hides_archived_todos_and_shows_suspended_hint():
 
     card = render_feishu_progress_card(tracker.snapshot(), tool_progress_mode="off")
     rendered = _rendered(card)
+    en_card = render_feishu_progress_card(
+        tracker.snapshot(), tool_progress_mode="off", language="en"
+    )
+    en_rendered = _rendered(en_card)
 
     assert "待办" not in rendered
     assert "旧待办" not in rendered
@@ -767,6 +771,8 @@ def test_task_card_hides_archived_todos_and_shows_suspended_hint():
     assert "/data/agents/workspace/report.md" in rendered
     assert "/api/progress" in rendered
     assert fake_key not in rendered
+    assert "**Suspended Work**" in en_rendered
+    assert "Suspended work" not in en_rendered
 
 
 def test_feishu_progress_card_running_shape_uses_safe_operation_labels():
@@ -902,8 +908,8 @@ def test_feishu_progress_card_supports_english_labels():
     assert "Task Workbench" in card["header"]["title"]["content"]
     assert "Task ID:" in rendered
     assert "Status:" in rendered
-    assert "**Recent operations**" in rendered
-    assert "Recent operations:" not in rendered
+    assert "**Recent Operations**" in rendered
+    assert "Recent operations" not in rendered
     assert "任务工作台" not in rendered
     assert "最近操作" not in rendered
 
@@ -1062,7 +1068,8 @@ def test_feishu_progress_card_includes_sanitized_model_and_account_limits_in_ord
     assert "模型：" in zh_rendered
     assert "账户额度：" in zh_rendered
     assert "账户限额" not in zh_rendered
-    assert "**💳 Account quota:**" in en_details
+    assert "**💳 Account Quota:**" in en_details
+    assert "Account quota" not in en_details
     assert "Account limits" not in en_details
     assert zh_details.index("任务") < zh_details.index("状态")
     assert zh_details.index("状态") < zh_details.index("耗时")
