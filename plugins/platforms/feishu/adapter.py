@@ -99,6 +99,8 @@ GetChatRequest = None  # type: ignore[assignment]
 GetMessageRequest = None  # type: ignore[assignment]
 GetMessageResourceRequest = None  # type: ignore[assignment]
 P2ImMessageMessageReadV1 = None  # type: ignore[assignment]
+PatchMessageRequest = None  # type: ignore[assignment]
+PatchMessageRequestBody = None  # type: ignore[assignment]
 ReplyMessageRequest = None  # type: ignore[assignment]
 ReplyMessageRequestBody = None  # type: ignore[assignment]
 UpdateMessageRequest = None  # type: ignore[assignment]
@@ -1402,6 +1404,7 @@ def _load_lark_oapi() -> bool:
                 CreateMessageRequest, CreateMessageRequestBody,
                 GetChatRequest, GetMessageRequest, GetMessageResourceRequest,
                 P2ImMessageMessageReadV1,
+                PatchMessageRequest, PatchMessageRequestBody,
                 ReplyMessageRequest, ReplyMessageRequestBody,
                 UpdateMessageRequest, UpdateMessageRequestBody,
             )
@@ -1429,6 +1432,8 @@ def _load_lark_oapi() -> bool:
             "GetMessageRequest": GetMessageRequest,
             "GetMessageResourceRequest": GetMessageResourceRequest,
             "P2ImMessageMessageReadV1": P2ImMessageMessageReadV1,
+            "PatchMessageRequest": PatchMessageRequest,
+            "PatchMessageRequestBody": PatchMessageRequestBody,
             "ReplyMessageRequest": ReplyMessageRequest,
             "ReplyMessageRequestBody": ReplyMessageRequestBody,
             "UpdateMessageRequest": UpdateMessageRequest,
@@ -2047,6 +2052,146 @@ class FeishuAdapter(BasePlatformAdapter):
             return result
         except Exception as exc:
             logger.error("[Feishu] Failed to edit message %s: %s", message_id, exc, exc_info=True)
+            return SendResult(success=False, error=str(exc))
+
+    async def send_interactive_card(
+        self,
+        chat_id: str,
+        card: Dict[str, Any],
+        *,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a Feishu interactive card without routing through text formatting.
+
+        Reuses the adapter's ordinary send path (``_feishu_send_with_retry``)
+        so the card inherits the same transport retry and reply fallback as
+        every other outbound message — only the payload shape differs.  The
+        same ``msg_type="interactive"`` frame ``send_exec_approval`` and
+        ``send_update_prompt`` already use, with the card supplied by the
+        caller instead of built here.
+        """
+        if not self._client:
+            return SendResult(success=False, error="Not connected")
+
+        try:
+            payload = json.dumps(card, ensure_ascii=False)
+            response = await self._feishu_send_with_retry(
+                chat_id=chat_id,
+                msg_type="interactive",
+                payload=payload,
+                reply_to=reply_to,
+                metadata=metadata,
+            )
+            return self._finalize_send_result(response, "interactive card send failed")
+        except Exception as exc:
+            logger.error("[Feishu] Failed to send interactive card: %s", exc, exc_info=True)
+            return SendResult(success=False, error=str(exc))
+
+    async def patch_interactive_card(
+        self,
+        chat_id: str,
+        message_id: str,
+        card: Dict[str, Any],
+        *,
+        finalize: bool = False,
+    ) -> SendResult:
+        """Patch a sent Feishu interactive card via ``im.v1.message.patch``.
+
+        Deliberately not ``edit_message``: Feishu rejects interactive-card
+        revisions sent through ``im.v1.message.update``, so a card lifecycle
+        needs the card-patch API.  A card that is revised repeatedly also
+        meets the per-message frequency limit that a one-shot edit never
+        does, so a transient refusal is retried here with the same bounded
+        backoff ``_feishu_send_with_retry`` uses, and a refusal that outlives
+        those attempts comes back ``retryable`` instead of as a hard failure.
+        """
+        if not self._client:
+            return SendResult(success=False, error="Not connected")
+
+        payload = json.dumps(card, ensure_ascii=False)
+        body = self._build_patch_message_body(content=payload)
+        request = self._build_patch_message_request(message_id=message_id, request_body=body)
+        last_error: Optional[Exception] = None
+        last_result: Optional[SendResult] = None
+        for attempt in range(_FEISHU_SEND_ATTEMPTS):
+            try:
+                response = await self._run_blocking(self._client.im.v1.message.patch, request)
+                result = self._finalize_send_result(response, "interactive card patch failed")
+                if result.success:
+                    result.message_id = message_id
+                    return result
+                last_result = result
+                if not self._is_transient_feishu_response(response):
+                    return result
+                if attempt >= _FEISHU_SEND_ATTEMPTS - 1:
+                    result.retryable = True
+                    return result
+                wait_seconds = 2 ** attempt
+                logger.warning(
+                    "[Feishu] Patch interactive card attempt %d/%d failed transiently; retrying in %ds: %s",
+                    attempt + 1,
+                    _FEISHU_SEND_ATTEMPTS,
+                    wait_seconds,
+                    result.error or "unknown error",
+                )
+                await asyncio.sleep(wait_seconds)
+            except Exception as exc:
+                last_error = exc
+                if not self._is_transient_feishu_exception(exc):
+                    logger.error("[Feishu] Failed to patch interactive card %s: %s", message_id, exc, exc_info=True)
+                    return SendResult(success=False, error=str(exc))
+                if attempt >= _FEISHU_SEND_ATTEMPTS - 1:
+                    logger.warning(
+                        "[Feishu] Patch interactive card %s exhausted transient retries: %s",
+                        message_id,
+                        exc,
+                    )
+                    return SendResult(success=False, error=str(exc), retryable=True)
+                wait_seconds = 2 ** attempt
+                logger.warning(
+                    "[Feishu] Patch interactive card attempt %d/%d raised transiently; retrying in %ds: %s",
+                    attempt + 1,
+                    _FEISHU_SEND_ATTEMPTS,
+                    wait_seconds,
+                    exc,
+                )
+                await asyncio.sleep(wait_seconds)
+        if last_result is not None:
+            return last_result
+        return SendResult(success=False, error=str(last_error or "interactive card patch failed"))
+
+    async def send_plain_text_once(
+        self,
+        chat_id: str,
+        text: str,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send one already-bounded body as exactly one ``msg_type="text"``.
+
+        Deliberately not ``send()``. That path formats the body, splits an
+        oversized one across several platform messages, and can select a
+        ``post`` payload — and every one of those turns "one card fell back
+        to one message" into something else. Here the body is taken as
+        given and sent once through the same low-level send path, so it
+        still inherits the adapter's transport retry for a single frame.
+        No chunking, no post selection, no markdown promotion.
+        """
+        if not self._client:
+            return SendResult(success=False, error="Not connected")
+
+        try:
+            response = await self._feishu_send_with_retry(
+                chat_id=chat_id,
+                msg_type="text",
+                payload=json.dumps({"text": text or ""}, ensure_ascii=False),
+                reply_to=reply_to,
+                metadata=metadata,
+            )
+            return self._finalize_send_result(response, "send failed")
+        except Exception as exc:
+            logger.error("[Feishu] Plain-text send error: %s", exc, exc_info=True)
             return SendResult(success=False, error=str(exc))
 
     # Template attrs for the shared _format_exec_approval core. The card
@@ -4889,6 +5034,73 @@ class FeishuAdapter(BasePlatformAdapter):
         return bool(response and getattr(response, "success", lambda: False)())
 
     @staticmethod
+    def _is_transient_feishu_exception(exc: Exception) -> bool:
+        """Is this raised failure worth another attempt?
+
+        Used by ``patch_interactive_card``, which repeats against one card and
+        so meets the per-message frequency limit that a one-shot send does not.
+        """
+        if isinstance(exc, json.JSONDecodeError):
+            return True
+        if isinstance(exc, (ConnectionError, OSError, TimeoutError)):
+            return True
+        text = str(exc).lower()
+        return any(
+            marker in text
+            for marker in (
+                "timeout",
+                "timed out",
+                "temporar",
+                "rate limit",
+                "frequency limit",
+                "retry after",
+                "too many requests",
+                "too frequent",
+                "single messages too frequently",
+                "connection reset",
+                "connection aborted",
+                "server error",
+                "internal error",
+                "bad gateway",
+                "service unavailable",
+            )
+        )
+
+    @staticmethod
+    def _is_transient_feishu_response(response: Any) -> bool:
+        """Is this refusal by the API worth another attempt?
+
+        ``230020`` is Feishu's "single messages too frequently" code, the one
+        a repeatedly patched card actually hits.
+        """
+        code = getattr(response, "code", None)
+        try:
+            code_int = int(code)
+        except (TypeError, ValueError):
+            code_int = None
+        if code_int in {429, 230020} or (code_int is not None and 500 <= code_int < 600):
+            return True
+        msg = str(getattr(response, "msg", "") or "").lower()
+        return any(
+            marker in msg
+            for marker in (
+                "timeout",
+                "timed out",
+                "temporar",
+                "rate limit",
+                "frequency limit",
+                "retry after",
+                "too many requests",
+                "too frequent",
+                "single messages too frequently",
+                "server error",
+                "internal error",
+                "bad gateway",
+                "service unavailable",
+            )
+        )
+
+    @staticmethod
     def _extract_response_field(response: Any, field_name: str) -> Any:
         if not FeishuAdapter._response_succeeded(response):
             return None
@@ -5169,6 +5381,27 @@ class FeishuAdapter(BasePlatformAdapter):
         if UpdateMessageRequest is not None:
             return (
                 UpdateMessageRequest.builder()
+                .message_id(message_id)
+                .request_body(request_body)
+                .build()
+            )
+        return SimpleNamespace(message_id=message_id, request_body=request_body)
+
+    @staticmethod
+    def _build_patch_message_body(*, content: str) -> Any:
+        if PatchMessageRequestBody is not None:
+            return (
+                PatchMessageRequestBody.builder()
+                .content(content)
+                .build()
+            )
+        return SimpleNamespace(content=content)
+
+    @staticmethod
+    def _build_patch_message_request(message_id: str, request_body: Any) -> Any:
+        if PatchMessageRequest is not None:
+            return (
+                PatchMessageRequest.builder()
                 .message_id(message_id)
                 .request_body(request_body)
                 .build()

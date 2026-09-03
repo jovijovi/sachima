@@ -447,6 +447,8 @@ from hermes_cli.subcommands.gateway import build_gateway_parser
 from hermes_cli.subcommands.profile import build_profile_parser
 from hermes_cli.subcommands.model import build_model_parser
 from hermes_cli.subcommands.setup import build_setup_parser
+from hermes_cli.subcommands.postinstall import build_postinstall_parser
+from hermes_cli.postinstall_cmd import cmd_postinstall
 
 from hermes_cli.subcommands.whatsapp import build_whatsapp_parser
 from hermes_cli.subcommands.slack import build_slack_parser
@@ -12410,7 +12412,8 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "dump", "egress", "fallback", "gateway", "hooks", "import", "import-agent", "insights",
         "gui", "desktop", "kanban", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate", "moa",
         "journey", "memory-graph", "learning",
-        "model", "monitoring", "pairing", "pause", "peer", "pets", "plugins", "portal", "profile",
+        "model", "monitoring", "pairing", "pause", "peer", "pets", "plugins", "portal",
+        "postinstall", "profile",
         "project", "proxy",
         "prompt-size",
         "resume",
@@ -13518,6 +13521,13 @@ def main():
     # setup command  (parser built in hermes_cli/subcommands/setup.py)
     # =========================================================================
     build_setup_parser(subparsers, cmd_setup=cmd_setup)
+
+    # =========================================================================
+    # postinstall command  (parser built in hermes_cli/subcommands/postinstall.py;
+    # handler in hermes_cli/postinstall_cmd.py).  Registered next to setup
+    # because it hands over to it when the install has no provider yet.
+    # =========================================================================
+    build_postinstall_parser(subparsers, cmd_postinstall=cmd_postinstall)
 
 
     # =========================================================================

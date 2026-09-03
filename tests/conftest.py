@@ -139,8 +139,10 @@ HERMES_HOME_AT_CONFTEST_IMPORT = os.environ.get("HERMES_HOME", "")
 
 _CREDENTIAL_SUFFIXES = (
     "_API_KEY",
+    "_OPENAPI_KEY",
     "_TOKEN",
     "_SECRET",
+    "_SECRET_KEY",
     "_PASSWORD",
     "_CREDENTIALS",
     "_ACCESS_KEY",

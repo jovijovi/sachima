@@ -4266,6 +4266,71 @@ class BasePlatformAdapter(ABC):
         """
         return SendResult(success=False, error="Not supported")
 
+    async def send_interactive_card(
+        self,
+        chat_id: str,
+        card: Dict[str, Any],
+        *,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """
+        Post a platform-native interactive card as its own message.
+        Optional — platforms without a card surface return success=False and
+        callers fall back to ``send_plain_text_once``.
+
+        ``card`` is the platform's own card document.  It is delivered as
+        given: this method never runs it through the text formatting,
+        markdown promotion, or chunking that ``send`` applies, because a
+        card is a single indivisible payload.
+        """
+        return SendResult(success=False, error="Not supported")
+
+    async def patch_interactive_card(
+        self,
+        chat_id: str,
+        message_id: str,
+        card: Dict[str, Any],
+        *,
+        finalize: bool = False,
+    ) -> SendResult:
+        """
+        Revise a card already on screen, in place, so a long-running
+        activity keeps one card instead of posting a new one per update.
+        Optional — platforms without a card surface return success=False.
+
+        This is deliberately separate from ``edit_message``: several
+        platforms (Feishu among them) reject a card revision sent through
+        the ordinary message-update API and require their card-patch API
+        instead.  ``finalize`` carries the same meaning as it does on
+        ``edit_message`` — this is the last revision in the sequence.
+
+        On success ``message_id`` is echoed back, so the caller keeps
+        addressing the same card.  A transient refusal (rate limit,
+        temporary server error) that outlives the adapter's own retries
+        comes back with ``retryable=True`` rather than as a hard failure.
+        """
+        return SendResult(success=False, error="Not supported")
+
+    async def send_plain_text_once(
+        self,
+        chat_id: str,
+        text: str,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """
+        Deliver one already-bounded plain-text body as a single message —
+        the fallback when a card cannot be sent or the platform has none.
+
+        The default is an ordinary ``send()``, which is correct for adapters
+        whose send is already one plain-text message and whose formatting is
+        a no-op for plain bodies.  Adapters with a chunking or rich-format
+        path override this to bypass it.  Callers must bound ``text`` to the
+        platform's own limit first: this method never splits.
+        """
+        return await self.send(chat_id, text, reply_to=reply_to, metadata=metadata)
+
     async def delete_message(
         self,
         chat_id: str,

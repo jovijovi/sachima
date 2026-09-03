@@ -434,3 +434,88 @@ def test_security_pins_present_in_mirrored_lazy_features():
         "pyproject extras — the lazy install path would not enforce the "
         "CVE-patched floor:\n  " + "\n  ".join(problems)
     )
+
+
+# ===========================================================================
+# agent-run-supervisor — one pin, three places
+# ===========================================================================
+
+def test_agent_run_supervisor_pin_consistent_across_pyproject_and_checker():
+    """The agent-run-supervisor pin has exactly one source of truth.
+
+    The external agent-run-supervisor AGENT execution/event-stream subsystem is
+    consumed only as an exact-pinned PyPI distribution: declared in the
+    dedicated ``agent-run-supervisor`` extra (opt-in provisioning) and mirrored
+    into ``dev`` (so a ``--extra dev`` sync installs the distribution and the
+    offline contract drift locks run against it instead of skipping). The
+    runtime checker constant ``EXPECTED_AGENT_RUN_SUPERVISOR_VERSION`` must
+    equal that pin, and the package must stay out of core dependencies and out
+    of ``[all]``. A bump that misses any of these places fails here instead of
+    drifting.
+    """
+    from sachima_supervisor import EXPECTED_AGENT_RUN_SUPERVISOR_VERSION
+
+    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    extras = data["project"]["optional-dependencies"]
+    pin = f"agent-run-supervisor=={EXPECTED_AGENT_RUN_SUPERVISOR_VERSION}"
+
+    assert extras.get("agent-run-supervisor") == [pin], (
+        "pyproject must declare the dedicated extra "
+        f"agent-run-supervisor = [{pin!r}] (exact pin, no ranges)"
+    )
+    assert pin in extras.get("dev", []), (
+        f"dev extra must mirror {pin!r} so a dev sync installs the distribution"
+    )
+
+    core_names = {_distribution_name(dep) for dep in data["project"]["dependencies"]}
+    assert "agent-run-supervisor" not in core_names, (
+        "agent-run-supervisor is opt-in (default-off supervisor spine) and "
+        "must never be a core dependency"
+    )
+    assert not any(
+        "agent-run-supervisor" in spec for spec in extras.get("all", [])
+    ), "agent-run-supervisor must stay out of the [all] extra"
+
+
+def test_locked_agent_run_supervisor_matches_expected_pin():
+    """The committed uv.lock must resolve agent-run-supervisor to the exact pin.
+
+    pyproject declares the pin, but hash-verified installs (``uv sync
+    --locked`` / ``--frozen``) pull what the lockfile resolved. A pin bump (or
+    the initial extra introduction) without a matching lock entry fails here
+    instead of shipping a stale or missing resolution.
+    """
+    from sachima_supervisor import EXPECTED_AGENT_RUN_SUPERVISOR_VERSION
+
+    assert _locked_versions("agent-run-supervisor") == {
+        EXPECTED_AGENT_RUN_SUPERVISOR_VERSION
+    }, (
+        "uv.lock must resolve agent-run-supervisor to exactly "
+        f"{EXPECTED_AGENT_RUN_SUPERVISOR_VERSION} (found "
+        f"{sorted(_locked_versions('agent-run-supervisor')) or 'nothing'})"
+    )
+
+
+def test_agent_run_supervisor_exclude_newer_cutoff_admits_the_locked_release():
+    """The date policy must actually admit the pinned release.
+
+    agent-run-supervisor pin advances have landed inside the relative
+    ``exclude-newer`` window before, so the pin was installable only while the
+    per-package cutoff admitted it. On this baseline the repo already exempts
+    every exact pin outright (``exclude-newer-package`` set to ``false``),
+    which admits the reviewed release unconditionally — a strictly wider
+    admission than a dated cutoff, and the convention
+    ``test_exact_pinned_deps_exempt_from_exclude_newer`` enforces repo-wide.
+    Assert it explicitly here so the one pin Sachima owns cannot regress to a
+    stale date, or to no entry at all, without a named failure.
+    """
+    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    uv_cfg = data["tool"]["uv"]
+    if "exclude-newer" not in uv_cfg:
+        pytest.skip("no exclude-newer cutoff configured — nothing to exempt")
+
+    assert uv_cfg["exclude-newer-package"].get("agent-run-supervisor") is False, (
+        "[tool.uv].exclude-newer-package must exempt agent-run-supervisor "
+        "(set it to false, as every other exact pin is) so the reviewed pin "
+        "stays installable inside the relative window"
+    )

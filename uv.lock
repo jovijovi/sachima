@@ -12,6 +12,7 @@ exclude-newer = "0001-01-01T00:00:00Z" # This has no effect and is included for 
 exclude-newer-span = "P14D"
 
 [options.exclude-newer-package]
+agent-run-supervisor = false
 elevenlabs = false
 setuptools = false
 modal = false
@@ -127,6 +128,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/eb/13/3b893421369767e7043cc115d6ef0df417c298b84563be3a12df0416158d/agent_client_protocol-0.9.0.tar.gz", hash = "sha256:f744c48ab9af0f0b4452e5ab5498d61bcab97c26dbe7d6feec5fd36de49be30b", size = 71853, upload-time = "2026-03-26T01:21:00.379Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/8f/ed/c284543c08aa443a4ef2c8bd120be51da8433dd174c01749b5d87c333f22/agent_client_protocol-0.9.0-py3-none-any.whl", hash = "sha256:06911500b51d8cb69112544e2be01fc5e7db39ef88fecbc3848c5c6f194798ee", size = 56850, upload-time = "2026-03-26T01:20:59.252Z" },
+]
+
+[[package]]
+name = "agent-run-supervisor"
+version = "0.7.8"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/fc/76/f4500f8e92f297fdb7f93a8a1838a3041cd6e245c63dcc6b734119964036/agent_run_supervisor-0.7.8.tar.gz", hash = "sha256:6099c28cd7edd30d24da4113dd179d5bd9e1f9725eccaf6ef808a752f0c136d9", size = 288728, upload-time = "2026-08-22T05:41:10.316Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/42/ac/a1da12d7a0a7770ef2f0601cedf15bb05f41b02ec98370f5fd88fc8ffcfa/agent_run_supervisor-0.7.8-py3-none-any.whl", hash = "sha256:5b02460acfb78f0ac359ed90f20d827946a7c5ae475010e6e1ffce239e1caf2e", size = 242571, upload-time = "2026-08-22T05:41:08.873Z" },
 ]
 
 [[package]]
@@ -1713,6 +1723,9 @@ dependencies = [
 acp = [
     { name = "agent-client-protocol" },
 ]
+agent-run-supervisor = [
+    { name = "agent-run-supervisor" },
+]
 all = [
     { name = "agent-client-protocol" },
     { name = "aiohttp" },
@@ -1748,6 +1761,7 @@ daytona = [
     { name = "daytona" },
 ]
 dev = [
+    { name = "agent-run-supervisor" },
     { name = "debugpy" },
     { name = "httpx2" },
     { name = "mcp" },
@@ -1914,6 +1928,8 @@ youtube = [
 [package.metadata]
 requires-dist = [
     { name = "agent-client-protocol", marker = "extra == 'acp'", specifier = "==0.9.0" },
+    { name = "agent-run-supervisor", marker = "extra == 'agent-run-supervisor'", specifier = "==0.7.8" },
+    { name = "agent-run-supervisor", marker = "extra == 'dev'", specifier = "==0.7.8" },
     { name = "ai-edge-litert", marker = "sys_platform == 'darwin' and extra == 'wake'", specifier = "==2.1.6" },
     { name = "aiohttp", marker = "extra == 'homeassistant'", specifier = "==3.14.3" },
     { name = "aiohttp", marker = "extra == 'matrix'", specifier = "==3.14.3" },
@@ -2051,7 +2067,7 @@ requires-dist = [
     { name = "websockets", specifier = "==15.0.1" },
     { name = "youtube-transcript-api", marker = "extra == 'youtube'", specifier = "==1.2.4" },
 ]
-provides-extras = ["anthropic", "exa", "firecrawl", "parallel-web", "fal", "edge-tts", "modal", "daytona", "vercel", "hindsight", "dev", "messaging", "cron", "slack", "matrix", "wecom", "tts-premium", "voice", "wake", "honcho", "supermemory", "mem0", "vision", "pty", "mcp", "nemo-relay", "homeassistant", "sms", "teams", "computer-use", "acp", "mistral", "otlp", "bedrock", "vertex", "azure-identity", "termux", "termux-all", "dingtalk", "feishu", "google", "youtube", "web", "all"]
+provides-extras = ["anthropic", "exa", "firecrawl", "parallel-web", "fal", "edge-tts", "modal", "daytona", "vercel", "hindsight", "agent-run-supervisor", "dev", "messaging", "cron", "slack", "matrix", "wecom", "tts-premium", "voice", "wake", "honcho", "supermemory", "mem0", "vision", "pty", "mcp", "nemo-relay", "homeassistant", "sms", "teams", "computer-use", "acp", "mistral", "otlp", "bedrock", "vertex", "azure-identity", "termux", "termux-all", "dingtalk", "feishu", "google", "youtube", "web", "all"]
 
 [[package]]
 name = "hf-xet"
