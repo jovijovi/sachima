@@ -1,6 +1,12 @@
 """Sachima supervisor package root.
 
-Right now this holds exactly one thing: the version of the external
+The runtime spine itself lives in :mod:`sachima_supervisor.runtime_spine` and
+is imported from there. This module deliberately re-exports none of it: a
+package root that mirrors its subpackage's surface gives every symbol two
+import paths and one of them always drifts, and importing the root would then
+drag the whole spine in for callers that wanted one constant.
+
+So the root holds exactly one thing: the version of the external
 ``agent-run-supervisor`` distribution this repository is calibrated against.
 
 It lives here, and not in ``pyproject.toml`` alone, because the value is read
