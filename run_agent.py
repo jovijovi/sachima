@@ -8687,6 +8687,44 @@ class AIAgent:
                 logger.debug("Conversation root lineage walk failed", exc_info=True)
         return start
 
+    def _activate_provider_dispatch_lease(self, lease: Optional[Any]) -> bool:
+        """Make *lease* the lease of the turn starting on this context.
+
+        The Gateway reuses one cached agent across turns, so activating a new
+        lease is also what retires the old one: any predecessor is revoked
+        here, which is what stops a worker the Gateway has already abandoned
+        from putting a request on the wire at all.
+
+        The lease is bound to this turn's *context*, not to the agent. The
+        agent attribute below is bookkeeping for that revocation and nothing
+        else — a dispatch that read it would be asking which turn owns the
+        agent now, when the question is which turn owns the worker asking.
+        Contexts answer that: a worker inherits a copy taken when it was
+        spawned, so a newer turn's binding is invisible to it.
+
+        Returns True when a lease is now active. ``None`` deactivates — the
+        ordinary case for every caller that is not a Gateway turn, and it must
+        still be bound so a pooled thread cannot inherit a stale lease.
+        """
+        previous = getattr(self, "_provider_dispatch_lease", None)
+        if previous is not None and previous is not lease:
+            try:
+                previous.revoke()
+            except Exception:
+                logger.debug("provider dispatch lease revoke failed", exc_info=True)
+        self._provider_dispatch_lease = lease
+        try:
+            from agent.chat_completion_helpers import bind_provider_dispatch_lease
+
+            bind_provider_dispatch_lease(lease)
+        except Exception:
+            logger.debug("provider dispatch lease bind failed", exc_info=True)
+        # Counts requests this agent actually admitted to a provider, so a
+        # refused stale dispatch is visibly distinct from one that went out.
+        if not hasattr(self, "_provider_attempts"):
+            self._provider_attempts = 0
+        return lease is not None
+
     def run_conversation(
         self,
         user_message: Any,
@@ -8699,8 +8737,20 @@ class AIAgent:
         persist_user_display_kind: Optional[str] = None,
         persist_user_display_metadata: Optional[Dict[str, Any]] = None,
         moa_config: Optional[dict[str, Any]] = None,
+        _provider_dispatch_lease: Optional[Any] = None,
     ) -> Dict[str, Any]:
-        """Forwarder — see ``agent.conversation_loop.run_conversation``."""
+        """Forwarder — see ``agent.conversation_loop.run_conversation``.
+
+        ``_provider_dispatch_lease`` is private to the Gateway's cached-agent
+        reuse seam: it names the turn this executor belongs to, so a worker the
+        Gateway has abandoned dispatches nothing when it finally wakes. Leading
+        underscore and keyword-only in practice — callers that are not the
+        Gateway (CLI, TUI, subagents, evals) omit it and are unaffected. See
+        ``agent.chat_completion_helpers.ProviderDispatchLease``.
+        """
+        # Bound before any provider work is scheduled: after the executor is
+        # running it is too late to decide whose turn a request belongs to.
+        self._activate_provider_dispatch_lease(_provider_dispatch_lease)
         # A review deliberately shares this agent's session_id for prompt-cache
         # parity. Fence review startup or interrupt an admitted request, then
         # await that request's exit before opening any live-turn Relay or task

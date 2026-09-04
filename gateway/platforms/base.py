@@ -4312,6 +4312,31 @@ class BasePlatformAdapter(ABC):
         """
         return SendResult(success=False, error="Not supported")
 
+    def single_message_text_limit(self) -> int:
+        """The platform's own one-message text bound, in ``measure_text`` units.
+
+        Companion to :meth:`send_plain_text_once`, which never splits: a caller
+        that owes the user exactly one message has to bound the body itself,
+        and this is the number to bound it by. Derived from the adapter's own
+        ``MAX_MESSAGE_LENGTH``, so no adapter has to declare it twice.
+        """
+        try:
+            return int(getattr(self, "MAX_MESSAGE_LENGTH", 4096) or 4096)
+        except (TypeError, ValueError):
+            return 4096
+
+    def measure_text(self, text: str) -> int:
+        """The platform's own length metric for a text body.
+
+        Separate from ``len`` so an adapter whose bound is counted in bytes,
+        code points, or some platform-specific unit can say so, and the caller
+        can bound the body by what the platform actually enforces. Reads the
+        same ``message_len_fn`` the adapter already splits by, so the unit a
+        caller bounds in is the unit the platform counts (Telegram: UTF-16
+        code units, where one emoji costs two).
+        """
+        return self.message_len_fn(text or "")
+
     async def send_plain_text_once(
         self,
         chat_id: str,

@@ -3789,10 +3789,41 @@ def _abandon_timed_out_gateway_turn(
     cleanup_lock: threading.Lock,
     is_still_current: Optional[Callable[[], bool]] = None,
 ) -> bool:
-    """Interrupt one timed-out turn and reap only processes it created."""
+    """Interrupt one timed-out turn and reap only processes it created.
+
+    The dispatch fence closes *before* the timeout is published. Publication is
+    what releases settlement and lets the next turn rebind the shared cached
+    agent, so a lease read afterwards may already belong to the successor —
+    cancelling that one would kill a live turn instead of the abandoned one.
+    Inside ``cleanup_lock`` and ahead of the flag, the only lease reachable is
+    the originating turn's, and it is fenced before anything can observe that
+    this turn timed out.
+    """
+    _abandoned_lease = None
     with cleanup_lock:
         if worker_done.is_set() or timeout_fired.is_set():
             return False
+        _fencing_agent = agent_holder[0] if agent_holder else None
+        if _fencing_agent is not None:
+            # Bind to this turn's identity rather than trusting whatever the
+            # cached agent currently points at. An agent already republished
+            # under a different turn id is not ours to fence; "" is our own
+            # turn clearing its ownership markers as it finishes.
+            _owner = getattr(_fencing_agent, "_gateway_turn_process_task_id", "")
+            if _owner in ("", task_id):
+                _abandoned_lease = getattr(
+                    _fencing_agent, "_provider_dispatch_lease", None
+                )
+        if _abandoned_lease is not None:
+            # A worker parked just short of its provider call has not observed
+            # the interrupt yet; without this it could still wake and confirm a
+            # claim for a turn the Gateway has already settled.
+            try:
+                _abandoned_lease.cancel()
+            except Exception:
+                logger.debug(
+                    "Timed-out turn dispatch lease cancel failed", exc_info=True
+                )
         timeout_fired.set()
 
     # Capture the wedged worker's stack BEFORE interrupting it — the
@@ -3802,6 +3833,8 @@ def _abandon_timed_out_gateway_turn(
 
     agent = agent_holder[0] if agent_holder else None
     if agent is not None:
+        # The lease was already fenced under the lock above, before the
+        # timeout became observable; the interrupt is the coarse follow-up.
         try:
             request_hard_interrupt(agent, _INTERRUPT_REASON_TIMEOUT)
         except Exception:
@@ -6249,6 +6282,17 @@ class TurnRunner:
         # tool_progress/thinking off — the None gate was exactly why a dead
         # subagent vanished silently there.
         agent.tool_progress_callback = ctx.progress_callback
+        # This turn's delegate claim, rebound with the other per-message state.
+        # Always assigned, including to None: the agent is cached per session
+        # and a binding left over from a previous turn would let that turn's
+        # claim be confirmed by a turn that was never handed it. Set here, at
+        # the one point the create and reuse branches have converged, so a
+        # fresh and a reused agent carry exactly the same claim.
+        agent.provider_attempt_callback = (
+            ctx.delegate_handoff.mark_provider_attempt
+            if ctx.delegate_handoff is not None
+            else None
+        )
         # Compose ID-bearing lifecycle consumers: Discord's one-time voice
         # ack and Slack's native task cards both ride the authoritative
         # start callback, so neither has to infer identity from tool names.
@@ -6963,6 +7007,28 @@ class TurnRunner:
                 _conversation_kwargs["moa_config"] = ctx.moa_config
             if _persist_user_timestamp_override is not None:
                 _conversation_kwargs["persist_user_timestamp"] = _persist_user_timestamp_override
+            if ctx.delegate_handoff is not None:
+                # Hand this turn its private right to dispatch. The claim's
+                # marker is captured here, at claim time, rather than read off
+                # the agent when a request finally goes out: by then the cached
+                # agent may have been rebound to a later turn, and the question
+                # this answers is whose turn the request belongs to.  Passed
+                # through the signature probe so old shims and suite doubles,
+                # which never declared the private argument, still take the
+                # request and nothing else.
+                from agent.chat_completion_helpers import (
+                    ProviderDispatchLease,
+                    provider_dispatch_lease_kwargs,
+                )
+
+                _conversation_kwargs.update(
+                    provider_dispatch_lease_kwargs(
+                        agent.run_conversation,
+                        ProviderDispatchLease(
+                            ctx.delegate_handoff.mark_provider_attempt
+                        ),
+                    )
+                )
             result = agent.run_conversation(_api_run_message, **_conversation_kwargs)
         finally:
             unregister_gateway_notify(_approval_session_key)
@@ -7284,6 +7350,60 @@ class TurnRunner:
 # DB-backed commands and is how many suites construct a bare runner).  A plain
 # ``None`` cannot express both.  Mirrors ``gateway.session._DB_UNPINNED``.
 _SESSION_DB_UNPINNED = object()
+
+
+class _DelegateResultHandoff:
+    """One turn's claim over the delegate results it was handed.
+
+    The gateway takes a finished delegate result out of ``pending`` before the
+    turn runs, which leaves exactly one question to answer afterwards: did this
+    turn actually get the result in front of a model, or must it go back so the
+    next turn can have it?
+
+    The result shape cannot answer it. ``agent/conversation_loop.py`` increments
+    ``api_calls`` before the iteration budget is admitted, so a turn that never
+    spoke to a provider still reports ``api_calls == 1``; and an attempt that
+    *did* reach the provider and was then interrupted returns a zero-call
+    follow-up. Only a signal raised at the provider boundary itself can tell
+    those apart, so that is the signal this carries — monotonically, because a
+    turn that once reached the model cannot later un-reach it.
+
+    Both edges are one-way and both are safe to race. ``mark_provider_attempt``
+    is fired from agent worker threads, possibly several at once on a retry;
+    ``take_for_settlement`` is what makes exactly one caller responsible for
+    settling, so a claim is never settled twice.
+
+    ``session_id`` is the Session the claim was made against, captured at claim
+    time: compression can rotate the live entry's id mid-turn, and settling
+    against the rotated one would strand the consumed result ``in_flight``.
+    """
+
+    __slots__ = ("session_id", "_consumed", "_settled", "_lock")
+
+    def __init__(self, session_id: str) -> None:
+        self.session_id = session_id
+        self._consumed = False
+        self._settled = False
+        self._lock = threading.Lock()
+
+    @property
+    def consumed(self) -> bool:
+        """Has an attempt carrying this claim reached the provider boundary?"""
+        with self._lock:
+            return self._consumed
+
+    def mark_provider_attempt(self) -> None:
+        """Latch "this turn reached a model". Idempotent, thread-safe."""
+        with self._lock:
+            self._consumed = True
+
+    def take_for_settlement(self) -> bool:
+        """True for the one caller that owns settling this claim."""
+        with self._lock:
+            if self._settled:
+                return False
+            self._settled = True
+            return True
 
 
 class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, GatewaySlashCommandsMixin):
@@ -7834,6 +7954,82 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # One-shot: log the "platform owns the suspend" notice once, not per tick.
         self._scale_to_zero_no_suspend_logged: bool = False
 
+        # Sachima delegate host bindings (default-off in effect: with no
+        # coordinator bound and the control tool's env gate unset, both of
+        # these are inert).  Register the adapter-backed delivery factory here,
+        # BEFORE anything composes, so a coordinator restored at startup can
+        # settle the sends its durable records still owe — composition reads
+        # env only, while delivery needs the adapter registry, which is why the
+        # two are separate.  The control tool resolves a caller's Session from
+        # trusted gateway context, and its key->id fallback needs this host's
+        # own store.  Guarded so an import failure cannot touch startup.
+        try:
+            from gateway.sachima_delegate import set_delegate_delivery_factory
+            from tools.sachima_delegate_control_tool import (
+                bind_delegate_control_session_store,
+            )
+
+            set_delegate_delivery_factory(self._delegate_delivery_from_origin)
+            bind_delegate_control_session_store(self.session_store)
+        except Exception:
+            logger.debug("sachima delegate host binding skipped", exc_info=True)
+
+
+    async def _retire_owned_delegate_coordinator(self) -> bool:
+        """Retire the coordinator this runner composed, if it still owns one.
+
+        Returns True when something was retired. Shutdown must be able to run
+        twice and on a runner that never composed anything, so every branch
+        here is a no-op rather than an error.
+
+        Ownership is the whole condition. A coordinator bound from outside
+        this runner — an embedding application, a test that composed its own
+        graph — is borrowed: retiring it would tear down a bundle whose
+        lifetime this runner does not control. Even a coordinator this runner
+        *did* compose is left alone once something else has rebound the
+        global, because unbinding then would drop the newer owner's graph.
+        """
+
+        owned = getattr(self, "_owned_delegate_coordinator", None)
+        if owned is None:
+            return False
+        self._owned_delegate_coordinator = None
+        try:
+            from gateway.sachima_delegate import (
+                bound_delegate_coordinator,
+                set_delegate_delivery_factory,
+                unbind_delegate_coordinator,
+            )
+
+            # Retire the graph first: its observers must stop polling before
+            # the transport and delivery they poll through are taken away.
+            await owned.close()
+
+            if bound_delegate_coordinator() is not owned:
+                # Someone rebound the global after we composed. Ours is
+                # retired; theirs is not ours to unbind.
+                return True
+
+            unbind_delegate_coordinator()
+            # Drop the host hooks this runner registered, so a later start in
+            # the same process cannot deliver through a dead runner's adapters
+            # or resolve sessions from its closed store.
+            set_delegate_delivery_factory(None)
+            try:
+                from tools.sachima_delegate_control_tool import (
+                    bind_delegate_control_session_store,
+                )
+
+                bind_delegate_control_session_store(None)
+            except Exception:
+                logger.debug(
+                    "delegate control session store unbind skipped", exc_info=True
+                )
+        except Exception:
+            logger.warning(
+                "Sachima delegate coordinator retirement failed", exc_info=True
+            )
+        return True
 
     def _open_session_db_for_active_scope(self, raise_on_error: bool = False) -> Any:
         """Return the AsyncSessionDB for the profile scope active on this task.
@@ -14191,6 +14387,62 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self.delivery_router.adapters = self.adapters
         self._wire_teams_pipeline_runtime()
 
+        # Delegate restoration is a real startup barrier, not lazy work left
+        # for the first unrelated slash command or model tool.  Bind the
+        # coordinator to this long-lived Gateway loop before restoring so every
+        # observer armed by restoration or a later sync tool remains runnable.
+        try:
+            from gateway.sachima_delegate import (
+                bound_delegate_coordinator,
+                compose_delegate_coordinator,
+            )
+
+            # A fresh runner has nothing bound yet, so restoring alone would
+            # leave resident delegation permanently unavailable in production:
+            # the only thing that ever bound a coordinator was a test. Compose
+            # first — default off, and a no-op for every host that did not
+            # declare it — then restore whatever is now bound, composed here
+            # or already present from an earlier bind.
+            #
+            # Only what this runner composed is remembered as its own. A
+            # coordinator an application or a test bound from outside is
+            # borrowed, not owned, and shutdown must leave it exactly as it
+            # found it.
+            self._owned_delegate_coordinator = compose_delegate_coordinator()
+
+            _delegate_coordinator = bound_delegate_coordinator()
+            if _delegate_coordinator is not None:
+                _delegate_coordinator.bind_lifecycle_loop(
+                    asyncio.get_running_loop()
+                )
+                await _delegate_coordinator.restore()
+        except Exception:
+            # Optional composition still cannot crash Gateway startup, but a
+            # graph that did not finish restoration must admit no new work.
+            #
+            # Restoration arms owned work as it goes, so a failure partway
+            # through can leave observers and owner tasks already running.
+            # Unbinding alone only hides the coordinator from new callers —
+            # those tasks would keep driving a half-restored graph on the
+            # Gateway loop. Retire what this runner composed: close it (which
+            # fences admission, then cancels and awaits its owned work) and
+            # clear the host bindings it registered.
+            logger.warning("Sachima delegate startup restoration failed")
+            try:
+                if getattr(self, "_owned_delegate_coordinator", None) is not None:
+                    await self._retire_owned_delegate_coordinator()
+                else:
+                    # Borrowed graphs are not ours to close. Unbinding still
+                    # keeps a half-restored one from admitting new work, which
+                    # is the pre-existing fail-closed behavior.
+                    from gateway.sachima_delegate import unbind_delegate_coordinator
+
+                    unbind_delegate_coordinator()
+            except Exception:
+                logger.debug(
+                    "Sachima delegate startup cleanup incomplete", exc_info=True
+                )
+
         self._running = True
         self._install_plugin_message_injector()
         self._update_runtime_status("running")
@@ -16063,6 +16315,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             self._running = False
             self._clear_plugin_message_injector()
             self._draining = True
+
+            # Retire the delegate graph early, while delivery and adapters are
+            # still up: its observers settle through them, and stopping them
+            # first would strand a Run mid-observation.
+            try:
+                await self._retire_owned_delegate_coordinator()
+            except Exception:
+                logger.debug(
+                    "Sachima delegate coordinator retirement skipped", exc_info=True
+                )
 
             stop_room_worker = getattr(self, "_stop_hosted_room_worker", None)
             if callable(stop_room_worker):
@@ -22144,6 +22406,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             run_generation,
         )
 
+        # External AGENT results owed to this Session's next ordinary turn.
+        # Taken before the turn runs so the text can ride the user message the
+        # model is about to be sent, and claimed against the Session id trusted
+        # at this instant: compression can rotate ``session_entry.session_id``
+        # mid-turn, and settling against the rotated id would strand the
+        # consumed result ``in_flight`` forever.
+        _delegate_continuity = self._delegate_result_continuity(session_entry)
+        _delegate_claim_session_id = session_entry.session_id
+        _delegate_handoff = None
+        _delegate_result_text = self._consume_delegate_result_context(
+            _delegate_claim_session_id, continuity=_delegate_continuity
+        )
+        if _delegate_result_text:
+            # Folded into the user turn that is about to be sent, exactly like
+            # history backfill context — never the long-lived system prompt,
+            # never a synthetic user turn, and never a mutation of a running
+            # one. The marker keeps the user's own words identifiable as the
+            # new message rather than part of the delegate report.
+            _delegate_handoff = _DelegateResultHandoff(_delegate_claim_session_id)
+            message_text = f"{_delegate_result_text}\n\n[New message] {message_text}"
+
         try:
             # Emit agent:start hook
             hook_ctx = {
@@ -22178,6 +22461,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 persist_user_timestamp=persist_user_timestamp,
                 persist_user_display_kind=persist_user_display_kind,
                 message_type=event.message_type,
+                delegate_handoff=_delegate_handoff,
             )
             _turn_seconds = time.monotonic() - _turn_started_monotonic
 
@@ -22918,6 +23202,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "Try again or use /reset to start a fresh session."
             )
         finally:
+            # Settle this turn's claim exactly once, whatever ended the turn.
+            # A failure before the model — a refused hook, a raised guard — is
+            # precisely the case this exists for: the result was already taken
+            # out of pending, and only settling here returns it so the next
+            # ordinary turn can have it. ``take_for_settlement`` is what keeps
+            # one claim from being settled twice.
+            if (
+                _delegate_handoff is not None
+                and _delegate_handoff.take_for_settlement()
+            ):
+                self._settle_delegate_result_context(
+                    _delegate_handoff.session_id,
+                    consumed=_delegate_handoff.consumed,
+                    continuity=_delegate_continuity,
+                )
             # Restore session context variables to their pre-handler state
             self._clear_session_env(_session_env_tokens)
 
@@ -25785,6 +26084,210 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """Return the platform-specific reply anchor for GatewayRunner sends."""
         return _reply_anchor_for_event(event)
 
+    @staticmethod
+    def _is_telegram_private_chat_id(chat_id: Optional[str]) -> bool:
+        """Return True for a Telegram private chat's durable numeric chat id.
+
+        Telegram private chats carry a positive user id; groups, supergroups
+        and channels are negative.  Mirrors the adapter's own test so a durable
+        origin can be classified without persisting a chat type.
+        """
+        try:
+            return int(str(chat_id)) > 0
+        except (TypeError, ValueError):
+            return False
+
+    @staticmethod
+    def _overridden_adapter_capability(adapter, name: str):
+        """The adapter's own bound ``name``, or ``None`` if it only inherits it.
+
+        ``BasePlatformAdapter`` declares its optional surfaces as refusals
+        rather than omitting them, so ``hasattr`` answers "the method exists",
+        not "this platform supports it".  Resolving on the adapter's class and
+        rejecting the base declaration turns that back into a capability
+        question, without asking any adapter to declare a new flag.
+        """
+        own = getattr(type(adapter), name, None)
+        if not callable(own):
+            return None
+        if own is getattr(BasePlatformAdapter, name, None):
+            return None
+        return getattr(adapter, name)
+
+    def _delegate_delivery_from_origin(self, origin):
+        """Rebuild a delegate delivery capability from a durable origin.
+
+        Used by restoration and by the observer's terminal delivery, where the
+        original event is long gone: only the origin survived. Returns ``None``
+        when the platform has no live adapter, and the coordinator records the
+        delivery as failed rather than claiming it happened.
+        """
+
+        try:
+            from gateway.sachima_delegate import DelegateDelivery
+
+            platform = Platform(origin.platform)
+            adapter = self.adapters.get(platform)
+            if adapter is None:
+                return None
+            metadata = {}
+            if origin.thread_id:
+                metadata["thread_id"] = origin.thread_id
+            if origin.reply_anchor:
+                metadata["reply_to_message_id"] = origin.reply_anchor
+
+            # A Telegram private chat reads the anchor in shapes of its own,
+            # and the generic key is not one of them: an ordinary DM needs the
+            # explicit ``reply_to`` argument, and a durable private topic needs
+            # DM-topic metadata — without a recognized anchor that path refuses
+            # to send at all rather than land the result outside the topic it
+            # was asked for.  A positive numeric chat id is what makes a
+            # Telegram chat private, so nothing new is persisted for this.
+            # Every other platform keeps the generic metadata it already had
+            # and gains no new argument.
+            reply_to = None
+            if platform == Platform.TELEGRAM and self._is_telegram_private_chat_id(
+                origin.chat_id
+            ):
+                reply_to = origin.reply_anchor
+                if origin.thread_id:
+                    topic_metadata = self._thread_metadata_for_target(
+                        platform,
+                        origin.chat_id,
+                        origin.thread_id,
+                        chat_type="dm",
+                        reply_to_message_id=origin.reply_anchor,
+                    )
+                    if topic_metadata:
+                        metadata.update(topic_metadata)
+            anchor_kwargs = {"reply_to": reply_to} if reply_to else {}
+
+            async def _send_text(text: str):
+                return await adapter.send(
+                    origin.chat_id, text, metadata=metadata, **anchor_kwargs
+                )
+
+            async def _send_once(text: str):
+                return await adapter.send_plain_text_once(
+                    origin.chat_id, text, metadata=metadata, **anchor_kwargs
+                )
+
+            # The delegation status card is offered only where the adapter can
+            # both send an interactive card and patch that same message in
+            # place.  Half the pair would turn one Task's card into a new
+            # message per transition, which is the behavior it exists to
+            # retire, so a partial capability declines rather than degrades —
+            # and every other platform keeps the plain lifecycle unchanged.
+            #
+            # ``BasePlatformAdapter`` declares both seams as refusals
+            # (``success=False, error="Not supported"``), so *presence* no
+            # longer distinguishes a card platform from one without a card
+            # surface — every adapter has the attribute.  The capability is the
+            # override, so both are resolved on the adapter's own class and
+            # compared against the base declaration.  A test double or plugin
+            # that never inherits from the base simply has no attribute and
+            # stays on the plain path.
+            send_card_fn = self._overridden_adapter_capability(
+                adapter, "send_interactive_card"
+            )
+            patch_card_fn = self._overridden_adapter_capability(
+                adapter, "patch_interactive_card"
+            )
+            send_card = None
+            patch_card = None
+            if send_card_fn is not None and patch_card_fn is not None:
+
+                async def send_card(card):  # noqa: F811 - capability, not a redefinition
+                    return await send_card_fn(
+                        origin.chat_id, card, metadata=metadata, **anchor_kwargs
+                    )
+
+                async def patch_card(message_id, card):  # noqa: F811
+                    return await patch_card_fn(origin.chat_id, message_id, card)
+
+            return DelegateDelivery(
+                send_text=_send_text,
+                send_plain_text_once=_send_once,
+                limit=adapter.single_message_text_limit(),
+                measure=adapter.measure_text,
+                send_card=send_card,
+                patch_card=patch_card,
+            )
+        except Exception:
+            logger.debug("delegate delivery unavailable", exc_info=True)
+            return None
+
+    def _delegate_result_continuity(self, session_entry) -> Any:
+        """This turn's proven claim over its own conversation, or ``None``.
+
+        A delegated task can finish while the user is away, and the
+        conversation can be compressed before their next message arrives —
+        which forks a new physical ``session_id`` and would strand a result
+        bound to the previous one. The Session/Gateway authority resolves that
+        once, here, from the persisted Session lineage; the coordinator is
+        handed the answer rather than a second copy of the rule.
+        """
+
+        try:
+            from gateway.session_context import resolve_trusted_session
+
+            return resolve_trusted_session(
+                self.session_store,
+                session_id=getattr(session_entry, "session_id", "") or "",
+                session_key=getattr(session_entry, "session_key", "") or "",
+            )
+        except Exception:
+            logger.debug("delegate result continuity unavailable", exc_info=True)
+            return None
+
+    def _consume_delegate_result_context(
+        self, session_id: str, *, continuity: Any = None
+    ) -> str:
+        """External AGENT results owed to this Session's **next** ordinary turn.
+
+        Returns the bounded projection text (or ``""``), marking each result's
+        Hermes sink ``in_flight``. It never mutates a running turn, never
+        injects a synthetic user message, and never touches the long-lived
+        system-prompt prefix — the caller folds this into the user turn that is
+        about to be sent, exactly like history backfill context.
+        """
+
+        try:
+            from gateway.sachima_delegate import bound_delegate_coordinator
+
+            coordinator = bound_delegate_coordinator()
+            if coordinator is None or not session_id:
+                return ""
+            lines = coordinator.pending_hermes_context(
+                session_id, continuity=continuity
+            )
+            return "\n\n".join(lines) if lines else ""
+        except Exception:
+            logger.debug("delegate result context skipped", exc_info=True)
+            return ""
+
+    def _settle_delegate_result_context(
+        self, session_id: str, *, consumed: bool, continuity: Any = None
+    ) -> None:
+        """Confirm a consumed handoff, or return an interrupted one to pending.
+
+        Settlement carries the *same* continuity the claim was made with, so a
+        handoff the compression continuation took is one it can also settle.
+        """
+
+        try:
+            from gateway.sachima_delegate import bound_delegate_coordinator
+
+            coordinator = bound_delegate_coordinator()
+            if coordinator is None or not session_id:
+                return
+            if consumed:
+                coordinator.confirm_hermes_context(session_id, continuity=continuity)
+            else:
+                coordinator.release_hermes_context(session_id, continuity=continuity)
+        except Exception:
+            logger.debug("delegate result context settlement skipped", exc_info=True)
+
 
     # ------------------------------------------------------------------
     # /approve & /deny — explicit dangerous-command approval
@@ -26472,6 +26975,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             user_name=str(context.source.user_name) if context.source.user_name else "",
             scope_id=str(getattr(context.source, "scope_id", "") or ""),
             session_key=context.session_key,
+            # Both halves of the caller's Session identity, not just the key: a
+            # key outlives ``/new``, reset and a compression split, so it cannot
+            # name the Session this turn is actually on.
+            session_id=context.session_id,
             message_id=str(context.source.message_id) if context.source.message_id else "",
             profile=getattr(context.source, "profile", "") or "",
             async_delivery=_async_delivery,
@@ -29100,6 +29607,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # cause `_flush_messages_to_session_db` to skip new rows (#44327).
             if hasattr(agent, "_last_flushed_db_idx"):
                 agent._last_flushed_db_idx = 0
+            # A fresh external turn is exactly the moment the previous turn's
+            # ownership ends. Revoke its dispatch lease here, while rebinding
+            # the cached instance — an executor the gateway abandoned is still
+            # a live daemon thread inside this same object, and without this it
+            # would wake up and dispatch under the new turn's identity
+            # (interrupt-recursive turns keep theirs: same turn, same claim).
+            _lease = getattr(agent, "_provider_dispatch_lease", None)
+            if _lease is not None:
+                try:
+                    _lease.revoke()
+                except Exception:
+                    logger.debug("provider dispatch lease revoke failed", exc_info=True)
+            agent._provider_attempts = 0
         agent._api_call_count = 0
 
     def _commit_memory_before_soft_evict(self, agent: Any, key: str) -> None:
@@ -29958,6 +30478,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         persist_user_timestamp: Optional[float] = None,
         persist_user_display_kind: Optional[str] = None,
         message_type: Optional[str] = None,
+        delegate_handoff: Optional["_DelegateResultHandoff"] = None,
     ) -> Dict[str, Any]:
         """Profile-scoping wrapper around the agent run.
 
@@ -29978,6 +30499,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 persist_user_timestamp=persist_user_timestamp,
                 persist_user_display_kind=persist_user_display_kind,
                 message_type=message_type,
+                delegate_handoff=delegate_handoff,
             )
 
         profile_home = self._resolve_profile_home_for_source(source)
@@ -29991,6 +30513,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 persist_user_timestamp=persist_user_timestamp,
                 persist_user_display_kind=persist_user_display_kind,
                 message_type=message_type,
+                delegate_handoff=delegate_handoff,
             )
 
     def _profile_name_for_source(self, source: SessionSource) -> Optional[str]:
@@ -30134,6 +30657,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         persist_user_timestamp: Optional[float] = None,
         persist_user_display_kind: Optional[str] = None,
         message_type: Optional[str] = None,
+        delegate_handoff: Optional["_DelegateResultHandoff"] = None,
     ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
@@ -30148,6 +30672,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         Supports interruption via new messages.
         """
         # ---- Proxy mode: delegate to remote API server ----
+        # ``delegate_handoff`` is deliberately not forwarded: no local agent
+        # runs here, so nothing on this path can witness a provider attempt.
+        # The claim stays unconsumed and settles back to pending, which is what
+        # lets the next ordinary turn have the result instead of losing it.
         if self._get_proxy_url():
             return await self._run_agent_via_proxy(
                 message=message,
@@ -30443,6 +30971,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             persist_user_message=persist_user_message,
             persist_user_timestamp=persist_user_timestamp,
             persist_user_display_kind=persist_user_display_kind,
+            delegate_handoff=delegate_handoff,
         )
         turn_runner = TurnRunner(self, turn_ctx)
         # Callback invoked by agent on tool lifecycle events — extracted to
@@ -31695,6 +32224,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     event_message_id=next_message_id,
                     channel_prompt=next_channel_prompt,
                     message_type=next_message_type,
+                    # The attempt that was interrupted may never have reached a
+                    # provider; the follow-up is the one that does. The claim
+                    # has to ride into it, or the turn that really called the
+                    # model would leave no trace and the result would be
+                    # released as if nothing had been shown to anyone.
+                    delegate_handoff=delegate_handoff,
                 )
                 return _preserve_queued_followup_history_offset(result, followup_result)
         finally:

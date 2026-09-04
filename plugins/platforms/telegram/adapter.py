@@ -2231,6 +2231,64 @@ class TelegramAdapter(BasePlatformAdapter):
                 return None
         return reply_to_id, thread_kwargs
 
+    async def send_plain_text_once(
+        self,
+        chat_id: str,
+        text: str,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send one already-bounded body as exactly one plain ``sendMessage``.
+
+        Deliberately not the inherited default, which is ``send()``. That path
+        escapes the body to MarkdownV2 — which can double its UTF-16 length, so
+        a body bounded to the advertised 4,096 arrives as three messages — may
+        promote it to a Bot API rich message, and splits whatever is left.
+        Every one of those turns "one terminal, one message" into something
+        else. The body is sent as given, unescaped, in a single frame, with no
+        chunk suffix and no retry loop.
+
+        Routing is *not* formatting, so thread and reply placement is resolved
+        through :meth:`_compute_single_send_routing`, exactly as the rich path
+        resolves it for a single send — including the private DM-topic refusal,
+        where sending without a recognized anchor would land the message
+        outside the topic the caller asked for.
+        """
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+
+        thread_id = self._metadata_thread_id(metadata)
+        routing = self._compute_single_send_routing(
+            chat_id, reply_to, metadata, thread_id
+        )
+        if routing is None:
+            return SendResult(
+                success=False,
+                error=self._dm_topic_missing_anchor_error(),
+                retryable=False,
+            )
+        reply_to_id, thread_kwargs = routing
+
+        try:
+            msg = await self._bot.send_message(
+                chat_id=normalize_telegram_chat_id(chat_id),
+                text=text,
+                parse_mode=None,
+                reply_to_message_id=reply_to_id,
+                **thread_kwargs,
+                **self._link_preview_kwargs(),
+                **self._notification_kwargs(metadata),
+            )
+            return SendResult(success=True, message_id=str(msg.message_id))
+        except Exception as exc:
+            # A Telegram transport error can carry the bot token in the URL it
+            # failed on, and this one is both logged and returned, so it goes
+            # through the adapter's own redactor exactly like every other
+            # send-path failure here.
+            safe_error = _redact_telegram_error_text(exc)
+            logger.error("[%s] Plain-text send error: %s", self.name, safe_error)
+            return SendResult(success=False, error=safe_error)
+
     async def _try_send_rich(
         self,
         chat_id: str,

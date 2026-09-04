@@ -16,6 +16,7 @@ sites unchanged.  Symbols that tests patch on ``run_agent`` (e.g.
 from __future__ import annotations
 
 import contextvars
+import inspect
 import json
 import logging
 import math
@@ -25,7 +26,7 @@ import threading
 import time
 import uuid
 from types import SimpleNamespace
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 from hermes_cli.timeouts import get_provider_request_timeout, get_provider_stale_timeout
 from hermes_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
@@ -110,6 +111,219 @@ def _ra():
     """
     import run_agent
     return run_agent
+
+
+class ProviderDispatchLease:
+    """One turn's private right to dispatch a provider request.
+
+    The Gateway caches one ``AIAgent`` per session and rebinds its per-turn
+    callbacks in place, so an executor the Gateway has already given up on is
+    still a live daemon thread inside that same object. "Which turn does this
+    request belong to?" therefore cannot be answered by reading the agent when
+    the request finally goes out — by then the agent may belong to a newer
+    turn. It has to be decided before the executor is scheduled, and revoked
+    when the executor is abandoned.
+
+    A lease is that decision, handed to exactly one turn. It carries the
+    callback that turn wants fired if — and only if — a request of its own
+    reaches the provider, captured at claim time rather than read from the
+    agent at dispatch time. A stale worker's lease is revoked, so it dispatches
+    nothing and confirms neither its own claim nor the turn that replaced it.
+
+    Both terminal edges are one-way. ``commit`` is monotonic (an attempt that
+    started cannot un-start), and ``cancel``/``revoke`` after a commit cannot
+    take the commit back: the request really did go out.
+    """
+
+    __slots__ = ("_callback", "_cancelled", "_revoked", "_committed", "_lock")
+
+    def __init__(self, callback: Optional[Callable[[], None]]) -> None:
+        self._callback = callback
+        self._cancelled = False
+        self._revoked = False
+        self._committed = False
+        self._lock = threading.Lock()
+
+    @property
+    def revoked(self) -> bool:
+        """True once the Gateway rebound this agent to a different turn."""
+        with self._lock:
+            return self._revoked
+
+    @property
+    def cancelled(self) -> bool:
+        with self._lock:
+            return self._cancelled
+
+    @property
+    def committed(self) -> bool:
+        """True once a request under this lease started reaching a provider."""
+        with self._lock:
+            return self._committed
+
+    def cancel(self) -> None:
+        """This turn is over; no further request may go out under it."""
+        with self._lock:
+            self._cancelled = True
+
+    def revoke(self) -> None:
+        """The agent now belongs to another turn; this lease owns nothing."""
+        with self._lock:
+            self._revoked = True
+
+    def gate(self, agent: Any) -> "_ProviderDispatchGate":
+        """The dispatch gate this lease admits requests through."""
+        return _ProviderDispatchGate(self, agent)
+
+    def _check(self) -> None:
+        """Refuse a dispatch this turn no longer owns. Consumes nothing.
+
+        This is the safety half and it runs *before* the provider call, so an
+        abandoned worker never issues a request at all — not merely has its
+        answer discarded.
+        """
+        with self._lock:
+            if self._cancelled or self._revoked:
+                raise InterruptedError(
+                    "provider dispatch lease is no longer valid for this turn"
+                )
+
+    def _commit(self, agent: Any) -> None:
+        """Confirm that a dispatch was actually established. Idempotent.
+
+        Establishment — not intent — is what the claim may be spent on. A call
+        that raised on its way out reached no model, so consuming there would
+        retire a delegate result nothing ever saw. Once a dispatch *is*
+        established the commit is monotonic and unconditional: the request is
+        on the wire, so a cancellation that lands during it cannot un-send it,
+        and a retry under the same lease confirms nothing a second time.
+        """
+        with self._lock:
+            first = not self._committed
+            self._committed = True
+            callback = self._callback
+        if first:
+            if agent is not None:
+                try:
+                    agent._provider_attempts = (
+                        getattr(agent, "_provider_attempts", 0) + 1
+                    )
+                except Exception:
+                    pass
+            if callback is not None:
+                callback()
+
+
+class _ProviderDispatchGate:
+    """Admission control around one provider call, bound to one lease."""
+
+    __slots__ = ("_lease", "_agent")
+
+    def __init__(self, lease: ProviderDispatchLease, agent: Any) -> None:
+        self._lease = lease
+        self._agent = agent
+
+    def invoke(self, dispatch: Callable[..., Any], /, *args: Any, **kwargs: Any) -> Any:
+        """Establish one provider dispatch under this lease, then confirm it.
+
+        Two boundaries, deliberately not one. ``_check`` refuses without ever
+        touching ``dispatch`` when the turn has been abandoned — an abandoned
+        worker must not put a request on the wire at all. ``_commit`` runs only
+        once ``dispatch`` has returned, because that return is the first thing
+        that proves a dispatch was *established*: a synchronous failure on the
+        way out (bad request, refused connection, a client that cannot open a
+        stream) reached no provider, and spending the turn's claim on it would
+        retire a delegate result no model ever saw.
+        """
+        self._lease._check()
+        result = dispatch(*args, **kwargs)
+        self._lease._commit(self._agent)
+        return result
+
+
+def provider_dispatch_lease_kwargs(
+    run_conversation: Any, lease: Optional[ProviderDispatchLease]
+) -> Dict[str, Any]:
+    """The lease kwarg for ``run_conversation``, or nothing at all.
+
+    The lease is private to the real agent's signature. Old shims, plugin
+    wrappers, and suite doubles implement ``run_conversation(message,
+    conversation_history=..., task_id=...)`` and would raise ``TypeError`` on
+    an argument they never declared, so they are handed the request and nothing
+    else. Absent a lease there is nothing to pass either.
+    """
+    if lease is None or run_conversation is None:
+        return {}
+    try:
+        parameters = inspect.signature(run_conversation).parameters
+    except (TypeError, ValueError):
+        return {}
+    accepts = "_provider_dispatch_lease" in parameters or any(
+        p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters.values()
+    )
+    return {"_provider_dispatch_lease": lease} if accepts else {}
+
+
+#: Sentinel for "no lease was passed" — distinct from an explicit ``None``,
+#: which means "this turn deliberately holds no lease".
+_NO_LEASE_ARGUMENT = object()
+
+#: The lease belonging to the turn running on *this* context.
+#:
+#: Turn-locality is the entire point. The Gateway caches one ``AIAgent`` per
+#: session and rebinds it turn after turn, so an attribute on the agent can
+#: only ever answer "which turn owns the agent *now*?" — never "which turn is
+#: this worker?". A worker that paused before its request and woke after a
+#: rebind would read the *successor's* lease off the agent and commit a claim
+#: that was never its own, consuming a delegate result for a turn that did not
+#: dispatch it.
+#:
+#: A ContextVar cannot be read across turns that way. Each turn runs its
+#: conversation loop on its own thread with its own context, and the interrupt
+#: worker inherits a *copy* taken when it is spawned
+#: (``_context_thread_target``), so a later ``set`` by a newer turn is
+#: invisible to a worker that is already running.
+_ACTIVE_PROVIDER_DISPATCH_LEASE: "contextvars.ContextVar[Optional[ProviderDispatchLease]]" = (
+    contextvars.ContextVar("hermes_provider_dispatch_lease", default=None)
+)
+
+
+def bind_provider_dispatch_lease(lease: Optional[ProviderDispatchLease]) -> None:
+    """Make *lease* the lease of the turn running on this context.
+
+    Called once per turn as the conversation loop starts, before any provider
+    work is scheduled. ``None`` is the ordinary case and still has to be
+    bound: a pooled thread that carried an earlier turn's lease must be
+    cleared, or a CLI / subagent turn would inherit a lease it never owned.
+    """
+    _ACTIVE_PROVIDER_DISPATCH_LEASE.set(lease)
+
+
+def capture_provider_dispatch_lease() -> Optional[ProviderDispatchLease]:
+    """This context's lease, captured now for a dispatch that happens later."""
+    return _ACTIVE_PROVIDER_DISPATCH_LEASE.get()
+
+
+def active_provider_dispatch_gate(
+    agent: Any, lease: Any = _NO_LEASE_ARGUMENT
+) -> Optional[_ProviderDispatchGate]:
+    """The gate for the turn that owns this context, or ``None``.
+
+    ``None`` means "no Gateway turn claimed this dispatch" — the CLI, the TUI,
+    subagents, evals — and those dispatch exactly as they always did.
+
+    Pass ``lease`` to gate against one captured earlier. Reading it off
+    ``agent`` is precisely the cross-turn read this seam exists to prevent, so
+    the agent is used only as the attempt counter's owner.
+    """
+    resolved = (
+        capture_provider_dispatch_lease()
+        if lease is _NO_LEASE_ARGUMENT
+        else lease
+    )
+    if resolved is None:
+        return None
+    return resolved.gate(agent)
 
 
 class ProviderStreamError(Exception):
@@ -917,7 +1131,9 @@ def _bedrock_reasoning_stale_floor(model_id: object) -> "float | None":
     return None
 
 
-def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
+def _dispatch_nonstreaming_api_request(
+    agent, api_kwargs: dict, *, make_client, lease: Any = _NO_LEASE_ARGUMENT
+):
     """Run one non-streaming LLM request for the active api_mode and return it.
 
     Shared by the interrupt-worker path (``interruptible_api_call``) and the
@@ -932,10 +1148,29 @@ def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
     bedrock / MoA branches manage their own clients and never call it. All
     interrupt, abort, cancellation, and close semantics stay in the callers —
     this helper only issues the request.
+
+    Every api_mode leaves through here, which is why the turn's dispatch lease
+    is admitted here: a request that a revoked lease refuses must never reach
+    any provider, whichever branch would have carried it. Turns with no lease
+    (CLI, TUI, subagents, evals) dispatch unchanged.
+
+    Admission is per-branch and lands *after* that branch's client is built,
+    never before. Building a client is not reaching a model: a turn whose
+    client construction fails put no request on the wire, and admitting it up
+    front would consume a delegate result that no provider ever saw.
     """
+    _gate = active_provider_dispatch_gate(agent, lease)
+
+    def _admit(dispatch, /, *args, **kwargs):
+        """Issue one real provider call under this turn's lease, if it has one."""
+        if _gate is None:
+            return dispatch(*args, **kwargs)
+        return _gate.invoke(dispatch, *args, **kwargs)
+
     if agent.api_mode == "codex_responses":
         request_client = make_client("codex_stream_request")
-        return agent._run_codex_stream(
+        return _admit(
+            agent._run_codex_stream,
             api_kwargs,
             client=request_client,
             on_first_delta=getattr(agent, "_codex_on_first_delta", None),
@@ -947,7 +1182,9 @@ def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
         request_client = make_client(
             "anthropic_messages_request", kind="anthropic_messages"
         )
-        return agent._anthropic_messages_create(api_kwargs, client=request_client)
+        return _admit(
+            agent._anthropic_messages_create, api_kwargs, client=request_client
+        )
     if agent.api_mode == "bedrock_converse":
         # Bedrock uses boto3 directly — no OpenAI client needed.
         # normalize_converse_response produces an OpenAI-compatible
@@ -964,7 +1201,7 @@ def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
         api_kwargs.pop("__bedrock_converse__", None)
         client = _get_bedrock_runtime_client(region)
         try:
-            raw_response = client.converse(**api_kwargs)
+            raw_response = _admit(client.converse, **api_kwargs)
         except Exception as _bedrock_exc:
             # A model that refuses cachePoint in one section (Nova rejects it
             # inside toolConfig.tools, #97281) fails every turn otherwise —
@@ -973,7 +1210,7 @@ def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
                 _bedrock_exc, api_kwargs
             )
             if _retry_kwargs is not None:
-                raw_response = client.converse(**_retry_kwargs)
+                raw_response = _admit(client.converse, **_retry_kwargs)
                 return normalize_converse_response(raw_response)
             # Evict the cached client on stale-connection failures
             # so the outer retry loop builds a fresh client/pool.
@@ -998,9 +1235,9 @@ def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
         _completions = getattr(getattr(agent.client, "chat", None), "completions", None)
         if not callable(getattr(_completions, "prepare", None)):
             api_kwargs.pop("_moa_prepared_request", None)
-        return agent.client.chat.completions.create(**api_kwargs)
+        return _admit(agent.client.chat.completions.create, **api_kwargs)
     request_client = make_client("chat_completion_request")
-    return request_client.chat.completions.create(**api_kwargs)
+    return _admit(request_client.chat.completions.create, **api_kwargs)
 
 
 def should_use_direct_api_call(agent) -> bool:
@@ -3571,8 +3808,17 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                     region = final_kwargs.pop("__bedrock_region__", "us-east-1")
                     final_kwargs.pop("__bedrock_converse__", None)
                     client = _get_bedrock_runtime_client(region)
+                    _bedrock_gate = active_provider_dispatch_gate(agent)
+
+                    def _bedrock_admit(dispatch, /, *args, **kwargs):
+                        if _bedrock_gate is None:
+                            return dispatch(*args, **kwargs)
+                        return _bedrock_gate.invoke(dispatch, *args, **kwargs)
+
                     try:
-                        raw_response = client.converse_stream(**final_kwargs)
+                        raw_response = _bedrock_admit(
+                            client.converse_stream, **final_kwargs
+                        )
                     except Exception as _bedrock_exc:
                         # Bedrock refuses a cachePoint block in one section for
                         # some families (Nova: toolConfig.tools, #97281) and
@@ -3582,9 +3828,9 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                             _bedrock_exc, final_kwargs
                         )
                         if _retry_kwargs is not None:
-                            return client.converse_stream(**_retry_kwargs).get(
-                                "stream", []
-                            )
+                            return _bedrock_admit(
+                                client.converse_stream, **_retry_kwargs
+                            ).get("stream", [])
                         # InvokeModel-only policies cannot open a stream. Keep
                         # the fallback inside the same managed Relay attempt so
                         # the real provider request and terminal response still
@@ -3601,8 +3847,16 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                                 "using non-streaming converse() for this session.",
                                 type(_bedrock_exc).__name__,
                             )
+                            # The IAM fallback is a *second* real dispatch, not
+                            # a continuation of the refused one: it opens a
+                            # fresh InvokeModel request. It answers to the same
+                            # captured gate so a turn revoked between the two
+                            # cannot slip a request out through the fallback,
+                            # and so a fallback that does establish confirms
+                            # the claim — exactly once, since the stream
+                            # attempt that preceded it established nothing.
                             return normalize_converse_response(
-                                client.converse(**final_kwargs)
+                                _bedrock_admit(client.converse, **final_kwargs)
                             )
                         if is_stale_connection_error(_bedrock_exc):
                             invalidate_runtime_client(region)
@@ -4102,7 +4356,17 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             attempt_request_client["value"] = request_client
             last_chunk_time["t"] = time.time()
             agent._touch_activity("waiting for provider response (streaming)")
-            return request_client.chat.completions.create(**stream_kwargs)
+            # Opening a stream is this turn reaching a provider exactly as a
+            # non-streaming request is, so it is admitted under the same lease
+            # and after the same client construction. A Gateway turn is
+            # normally streamed: leaving this ungated would let the common
+            # path dispatch without ever confirming the claim it folded in.
+            _stream_gate = active_provider_dispatch_gate(agent)
+            if _stream_gate is None:
+                return request_client.chat.completions.create(**stream_kwargs)
+            return _stream_gate.invoke(
+                request_client.chat.completions.create, **stream_kwargs
+            )
 
         def _stream_created(raw_stream: Any) -> None:
             response = getattr(raw_stream, "response", None)
@@ -4687,9 +4951,24 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 final_kwargs,
                 log_prefix=getattr(agent, "log_prefix", ""),
             )
-            manager = request_client.messages.stream(**final_kwargs)
-            _stream_context["manager"] = manager
-            return manager.__enter__()
+
+            def _establish():
+                # ``stream()`` builds the manager; ``__enter__`` is what opens
+                # the connection. Both are inside the admission because the
+                # pair is one establishment — gating only the first would let
+                # a refused turn still open a socket.
+                manager = request_client.messages.stream(**final_kwargs)
+                _stream_context["manager"] = manager
+                return manager.__enter__()
+
+            # Native Anthropic streaming is a production Gateway path, so it
+            # answers to the same turn-local lease as every other provider
+            # branch. ``relay_llm.stream`` may reopen this attempt; the lease
+            # re-checks each time and confirms the claim only once.
+            _anthropic_gate = active_provider_dispatch_gate(agent)
+            if _anthropic_gate is None:
+                return _establish()
+            return _anthropic_gate.invoke(_establish)
 
         def _anthropic_stream_created(raw_stream: Any) -> None:
             _stream_context["stream"] = raw_stream

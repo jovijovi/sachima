@@ -96,6 +96,11 @@ class TurnContext:
     # "internal_notification" for async-delegation/background notifications
     # (#82888). DB-only presentation metadata; never sent to the provider.
     persist_user_display_kind: Optional[str] = None
+    # This turn's claim over the delegate results folded into its message, or
+    # None. Carried down to the agent binding so the provider boundary can
+    # latch it (``gateway.run._DelegateResultHandoff``); the settling caller
+    # is the one that created it, never this context.
+    delegate_handoff: Any = None
     user_config: Any = None
     enabled_toolsets: Any = None
     disabled_toolsets: Any = None
