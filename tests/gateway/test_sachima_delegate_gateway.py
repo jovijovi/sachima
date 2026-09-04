@@ -781,7 +781,7 @@ async def test_gateway_start_awaits_delegate_restore_before_admissions(
     assert await asyncio.wait_for(starting, timeout=10) is True
     assert (await _await_composed(admission)).lifecycle == "admitted"
     assert coordinator.lifecycle_loop is asyncio.get_running_loop()
-    assert coordinator._restored is True
+    assert coordinator.restored is True
     assert facade.submit_count() == 1
     facade.terminalize(0)
 
@@ -2102,7 +2102,7 @@ async def test_a_fresh_runner_composes_the_coordinator_during_startup(
 
     coordinator = delegate_mod.bound_delegate_coordinator()
     assert coordinator is not None
-    assert coordinator._restored is True
+    assert coordinator.restored is True
     assert coordinator.lifecycle_loop is asyncio.get_running_loop()
     assert runner._running is True
 
@@ -3245,7 +3245,7 @@ async def test_closing_a_coordinator_fences_admission_and_owns_no_orphan(
 
     assert coordinator.closed is True
     # The in-flight owner was drained, not orphaned.
-    assert coordinator._owned == set()
+    assert coordinator._lifecycle.tasks == frozenset()
     assert coordinator._observers == {}
     with pytest.raises((asyncio.CancelledError, RuntimeError)):
         await admitted
@@ -3254,7 +3254,7 @@ async def test_closing_a_coordinator_fences_admission_and_owns_no_orphan(
     for _ in range(8):
         with pytest.raises(RuntimeError):
             await coordinator._exclusive("turn-2", _slow)
-    assert coordinator._owned == set()
+    assert coordinator._lifecycle.tasks == frozenset()
 
 
 @pytest.mark.asyncio
@@ -3307,7 +3307,7 @@ async def test_an_unreadable_turn_ledger_fails_restoration_closed(tmp_path, _unb
     with pytest.raises(DelegateStateError):
         await coordinator.restore()
 
-    assert coordinator._restored is False
+    assert coordinator.restored is False
 
 
 @pytest.mark.asyncio
@@ -3338,9 +3338,7 @@ async def test_a_partial_restore_failure_retires_the_composed_coordinator(
         async def _parked():
             await asyncio.Event().wait()
 
-        with self._guard:
-            task = asyncio.create_task(_parked())
-            self._owned.add(task)
+        task = self._lifecycle.spawn(_parked)
         armed["task"] = task
         armed["coordinator"] = self
         raise DelegateStateError("sachima_delegate_state_unreadable")
@@ -3359,7 +3357,7 @@ async def test_a_partial_restore_failure_retires_the_composed_coordinator(
     composed = armed["coordinator"]
     assert composed.closed is True
     assert armed["task"].done() is True
-    assert composed._owned == set()
+    assert composed._lifecycle.tasks == frozenset()
     assert delegate_mod.bound_delegate_coordinator() is None
     assert delegate_mod._delivery_factory_hook is None
     assert control_tool._bound_session_store() is None

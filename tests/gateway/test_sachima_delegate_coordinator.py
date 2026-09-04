@@ -1801,6 +1801,173 @@ async def test_the_graph_lifecycle_restores_once_and_never_after_closing():
 
 
 # --------------------------------------------------------------------------- #
+# M. Coordinator admission and close, through the lifecycle
+# --------------------------------------------------------------------------- #
+def _gated_card_delivery(gate: asyncio.Event) -> DelegateDelivery:
+    """A card-capable origin whose card *send* parks until the gate opens."""
+
+    async def _send_text(text: str) -> Any:
+        return SendResult(success=True, message_id="om_text")
+
+    async def _send_card(payload: dict) -> Any:
+        await gate.wait()
+        return SendResult(success=True, message_id="om_card")
+
+    async def _patch_card(message_id: str, payload: dict) -> Any:
+        return SendResult(success=True, message_id=message_id)
+
+    return DelegateDelivery(
+        send_text=_send_text,
+        send_plain_text_once=_send_text,
+        send_card=_send_card,
+        patch_card=_patch_card,
+    )
+
+
+def _state_files(coordinator) -> frozenset[str]:
+    root = Path(coordinator.state.root)
+    return frozenset(
+        str(path.relative_to(root)) for path in root.rglob("*") if path.is_file()
+    )
+
+
+@pytest.mark.asyncio
+async def test_close_joins_an_admission_parked_in_its_durable_prefix(tmp_path):
+    """Schedule 3a: the admission was accepted before closing began, so close
+    waits for it — CLOSED is not published over its head — and the admission
+    starts no dispatch into the closing graph."""
+
+    from gateway.sachima_delegate import SACHIMA_DELEGATE_UNBOUND
+
+    gate = asyncio.Event()
+    delivery = _gated_card_delivery(gate)
+    coordinator, facade = _coordinator(tmp_path, delivery=None)
+
+    created = asyncio.create_task(
+        coordinator.create(
+            task_text=TASK_TEXT_CANARY,
+            preset=_preset(coordinator),
+            origin=_origin(),
+            delivery=delivery,
+        )
+    )
+    # Parked inside the card send, with the identity already durable.
+    assert await _until(lambda: len(coordinator.state.list_tasks()) == 1)
+    await asyncio.sleep(0.02)
+    assert created.done() is False
+
+    closing = asyncio.create_task(coordinator.close())
+    await asyncio.sleep(0.05)
+    assert closing.done() is False
+    assert coordinator.closed is False
+
+    gate.set()
+    with pytest.raises(RuntimeError) as refused:
+        await asyncio.wait_for(created, timeout=5)
+    assert str(refused.value) == SACHIMA_DELEGATE_UNBOUND
+    await asyncio.wait_for(closing, timeout=5)
+
+    assert coordinator.closed is True
+    assert facade.submit_count() == 0
+    # The crash shape a restart restores from: identity durable, no submit.
+    (turn,) = coordinator.state.list_turns()
+    assert turn.lifecycle == "prepared"
+
+
+@pytest.mark.asyncio
+async def test_an_entry_after_close_began_is_refused_before_it_writes(tmp_path):
+    """Schedule 3b: every public entry is admitted before any durable or card
+    side effect, so a refusal leaves the store byte-for-byte as it was."""
+
+    from gateway.sachima_delegate import SACHIMA_DELEGATE_UNBOUND
+
+    delivery = _Delivery()
+    coordinator, facade = _coordinator(tmp_path, delivery=delivery)
+    await coordinator.close()
+    assert coordinator.closed is True
+    before = _state_files(coordinator)
+    calls_before = list(facade.calls)
+    session_id = _origin().session_id
+
+    entries = {
+        "create": lambda: coordinator.create(
+            task_text=TASK_TEXT_CANARY,
+            preset=_preset(coordinator),
+            origin=_origin(),
+            delivery=delivery.channel(),
+        ),
+        "continue_task": lambda: coordinator.continue_task(
+            "dtask_" + "a" * 32, TASK_TEXT_CANARY, delivery=delivery.channel()
+        ),
+        "status": lambda: coordinator.status("dtask_" + "a" * 32),
+        "cancel": lambda: coordinator.cancel("dtask_" + "a" * 32),
+        "recover": lambda: coordinator.recover("dtask_" + "a" * 32),
+        "restore": lambda: coordinator.restore(),
+    }
+    for name, entry in entries.items():
+        with pytest.raises(RuntimeError) as refused:
+            await entry()
+        assert str(refused.value) == SACHIMA_DELEGATE_UNBOUND, name
+
+    for name, entry in {
+        "pending_hermes_context": lambda: coordinator.pending_hermes_context(session_id),
+        "confirm_hermes_context": lambda: coordinator.confirm_hermes_context(session_id),
+        "release_hermes_context": lambda: coordinator.release_hermes_context(session_id),
+    }.items():
+        with pytest.raises(RuntimeError) as refused:
+            entry()
+        assert str(refused.value) == SACHIMA_DELEGATE_UNBOUND, name
+
+    assert _state_files(coordinator) == before
+    assert len(coordinator.state.list_turns()) == 0
+    assert len(coordinator.state.list_tasks()) == 0
+    assert facade.calls == calls_before
+    assert delivery.receipts == []
+    assert delivery.notices == []
+
+
+@pytest.mark.asyncio
+async def test_a_second_concurrent_close_waits_for_the_first_drain(tmp_path):
+    """Schedule 4: repeated close joins the one drain; nobody returns from
+    close while an owned task is still retiring, and CLOSED is published once."""
+
+    coordinator, _facade = _coordinator(tmp_path)
+    started = asyncio.Event()
+    parked = asyncio.Event()
+    release = asyncio.Event()
+
+    async def _slow_to_cancel():
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            parked.set()
+            await release.wait()
+
+    owner = asyncio.create_task(
+        coordinator._exclusive("dturn_" + "a" * 32, _slow_to_cancel)
+    )
+    await asyncio.wait_for(started.wait(), timeout=5)
+
+    first = asyncio.create_task(coordinator.close())
+    second = asyncio.create_task(coordinator.close())
+    await asyncio.wait_for(parked.wait(), timeout=5)
+    await asyncio.sleep(0.02)
+
+    assert first.done() is False
+    assert second.done() is False
+    assert coordinator.closed is False
+
+    release.set()
+    await asyncio.wait_for(asyncio.gather(first, second), timeout=5)
+    assert coordinator.closed is True
+    with pytest.raises(asyncio.CancelledError):
+        await owner
+    with pytest.raises(RuntimeError):
+        await coordinator._exclusive("dturn_" + "b" * 32, _slow_to_cancel)
+
+
+# --------------------------------------------------------------------------- #
 # K. The derived summary: one attempt per terminal, and no sink before it (S2)
 # --------------------------------------------------------------------------- #
 async def _settled_terminal(coordinator, facade, delivery, **terminalize):

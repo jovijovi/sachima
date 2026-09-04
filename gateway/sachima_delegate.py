@@ -50,6 +50,8 @@ behavior.
 from __future__ import annotations
 
 import asyncio
+import functools
+import inspect
 import logging
 import os
 import threading
@@ -136,6 +138,7 @@ from gateway.sachima_delegate_state import (
     DelegateTurnRecord,
     delegate_state_root,
 )
+from gateway.sachima_delegate_lifecycle import OPEN, GraphLifecycle, LifecycleRefused
 
 logger = logging.getLogger(__name__)
 
@@ -416,6 +419,30 @@ def configured_running_patch_interval(config: Any = None) -> float:
     return normalize_running_patch_interval(declared)
 
 
+def _lifecycle_admitted(method: Any) -> Any:
+    """Admit one public coordinator entry into the graph before it runs.
+
+    Admission is the first thing a public operation does — before any durable
+    or card side effect — and it is released when the operation returns,
+    however it returns. An entry that arrives after closing has begun is
+    refused with ``sachima_delegate_unbound`` and has written nothing.
+    """
+
+    if inspect.iscoroutinefunction(method):
+
+        @functools.wraps(method)
+        async def _admitted_async(self: Any, *args: Any, **kwargs: Any) -> Any:
+            with self._lifecycle.admission():
+                return await method(self, *args, **kwargs)
+
+        return _admitted_async
+
+    @functools.wraps(method)
+    def _admitted_sync(self: Any, *args: Any, **kwargs: Any) -> Any:
+        with self._lifecycle.admission():
+            return method(self, *args, **kwargs)
+
+    return _admitted_sync
 
 
 class SachimaDelegateCoordinator:
@@ -479,14 +506,16 @@ class SachimaDelegateCoordinator:
         self._turn_locks: dict[str, asyncio.Lock] = {}
         self._task_gates: dict[str, asyncio.Lock] = {}
         self._card_publications: dict[str, asyncio.Lock] = {}
-        self._owned: set[asyncio.Task] = set()
         self._observers: dict[str, asyncio.Task] = {}
-        # Only a genuinely fresh composition graph may reclassify a found
-        # ``in_flight`` to ``uncertain``, and only while it is restoring. The
-        # authority is internal to composition and cannot be requested.
-        self._fresh_graph = True
-        self._restored = False
-        self._closed = False
+        # The one owner of "may this graph still take work, and when has it
+        # really stopped": admission, owned tasks, registered synchronous
+        # calls, restoration, and the single close/drain all live here. Only a
+        # genuinely fresh graph — one that has not completed restoration — may
+        # reclassify a found ``in_flight`` to ``uncertain``; that authority is
+        # internal to composition and cannot be requested.
+        self._lifecycle = GraphLifecycle(
+            SACHIMA_DELEGATE_UNBOUND, SACHIMA_DELEGATE_INVARIANT
+        )
         self._restore_lock = asyncio.Lock()
         self._lifecycle_loop: asyncio.AbstractEventLoop | None = None
 
@@ -559,10 +588,10 @@ class SachimaDelegateCoordinator:
         with self._guard:
             # A worker thread can hold a reference to this coordinator from
             # before retirement — the global unbind does not reach into it.
-            # Reading the loop without the closed check is what lets such a
-            # caller submit fresh control work into a graph that has already
-            # been drained and unbound.
-            if self._closed:
+            # Reading the loop without the closing check is what lets such a
+            # caller submit fresh control work into a graph that is being
+            # drained and unbound.
+            if self._lifecycle.closing:
                 raise RuntimeError(SACHIMA_DELEGATE_UNBOUND)
             loop = self._lifecycle_loop
         if loop is None or loop.is_closed() or not loop.is_running():
@@ -638,66 +667,48 @@ class SachimaDelegateCoordinator:
             async with lock:
                 return await factory()
 
-        # Creating the task and registering it as owned is one step under the
-        # guard, and it is the same guard ``close`` flips ``_closed`` behind.
-        # Split apart, a task created just before closure and registered just
-        # after would never appear in the drain's snapshot: it would outlive
-        # the retirement, still holding the turn lock and still driving a
-        # bundle whose transport is being torn down. Either this registers
-        # before the fence closes and the drain owns it, or the fence is
-        # already closed and no task is created at all.
-        with self._guard:
-            if self._closed:
-                raise RuntimeError(SACHIMA_DELEGATE_UNBOUND)
-            task = asyncio.create_task(_owner())
-            self._owned.add(task)
-        task.add_done_callback(self._forget_owner)
+        # The lifecycle creates and registers the owner task atomically with
+        # its own closing check, so the task is either owned by the drain or
+        # never created; a graph that has begun closing refuses with
+        # ``sachima_delegate_unbound``.
+        task = self._lifecycle.spawn(_owner)
         return await asyncio.shield(task)
-
-    def _forget_owner(self, task: asyncio.Task) -> None:
-        with self._guard:
-            self._owned.discard(task)
 
     # -- retirement --------------------------------------------------------- #
     @property
     def closed(self) -> bool:
-        """True once this coordinator has been retired and owns nothing."""
+        """True once this coordinator has been retired and owns nothing.
 
-        with self._guard:
-            return self._closed
-
-    async def close(self) -> None:
-        """Retire this coordinator: stop observing, and own no live task.
-
-        Idempotent, and safe to call on a coordinator that never restored.
-        Cancelling is not enough on its own — an observer cancelled but never
-        awaited is still scheduled on a loop the Gateway is about to drop, and
-        it would run its next poll against a bundle whose transport is gone.
-        So every owned task is cancelled *and* awaited to completion here.
-
-        Retirement is one-way. A retired coordinator arms no new observer, so
-        a restart composes a new graph rather than reviving this one over a
-        ledger it no longer holds the daemon connection for.
+        Published only when every admitted operation has released, every
+        owned task has finished and every registered synchronous call has
+        returned — never merely when closing began.
         """
 
-        with self._guard:
-            if self._closed:
-                return
-            self._closed = True
-            pending = list(self._observers.values()) + list(self._owned)
-            self._observers.clear()
-            self._owned.clear()
+        return self._lifecycle.closed
 
-        for task in pending:
-            task.cancel()
-        for task in pending:
-            try:
-                await task
-            except (asyncio.CancelledError, Exception):
-                # A retiring task's outcome settles nothing: the turn it was
-                # observing keeps whatever durable state it already had, and
-                # a shutdown must not be the thing that raises.
-                pass
+    @property
+    def restored(self) -> bool:
+        """True once the startup barrier has completed for this graph."""
+
+        return not self._lifecycle.fresh
+
+    async def close(self) -> None:
+        """Retire this coordinator: admit nothing further, and own no live work.
+
+        The first call flips the graph to closing; every call, including a
+        concurrent or repeated one, awaits the same drain. The drain cancels
+        the observers and owner tasks and awaits them — a task cancelled but
+        never awaited is still scheduled on a loop the Gateway is about to
+        drop — and it joins, never interrupts, any synchronous daemon call
+        still running on a worker thread. No deadline is added here: the
+        drain is bounded by the bounds of the calls it waits on.
+
+        Retirement is one-way. A retired coordinator admits no entry and arms
+        no observer, so a restart composes a new graph rather than reviving
+        this one over a ledger it no longer holds the daemon connection for.
+        """
+
+        await self._lifecycle.close()
 
     # -- classification (§5.2) ---------------------------------------------- #
     def _classify(self, turn: DelegateTurnRecord) -> tuple[str, Any, str | None]:
@@ -804,6 +815,7 @@ class SachimaDelegateCoordinator:
         )
 
     # -- creation (§5.3, I4) ------------------------------------------------ #
+    @_lifecycle_admitted
     async def create(
         self,
         *,
@@ -910,6 +922,7 @@ class SachimaDelegateCoordinator:
             lambda: self._drive(turn.turn_key, mode="dispatch", delivery=delivery),
         )
 
+    @_lifecycle_admitted
     async def continue_task(
         self,
         task_ref: str,
@@ -1395,7 +1408,7 @@ class SachimaDelegateCoordinator:
         """
 
         if turn.receipt != "pending":
-            if turn.receipt == "in_flight" and not self._fresh_graph:
+            if turn.receipt == "in_flight" and not self._lifecycle.fresh:
                 logger.warning(SACHIMA_DELEGATE_INVARIANT)
             return turn
 
@@ -1442,13 +1455,16 @@ class SachimaDelegateCoordinator:
         """Arm exactly one observer for this turn. A second call does nothing."""
 
         with self._guard:
-            # A retired coordinator observes nothing further: its bundle's
+            # A closing coordinator observes nothing further: its bundle's
             # transport is being dropped, so an observer armed now would poll
             # a connection that no longer exists.
-            if self._closed or turn_key in self._observers:
+            if self._lifecycle.closing or turn_key in self._observers:
                 return
             self._state.update_turn(turn_key, observation="armed")
-            task = asyncio.create_task(self._observe_loop(turn_key))
+            try:
+                task = self._lifecycle.spawn(lambda: self._observe_loop(turn_key))
+            except LifecycleRefused:
+                return
             self._observers[turn_key] = task
         task.add_done_callback(lambda _t: self._forget_observer(turn_key))
 
@@ -1669,7 +1685,7 @@ class SachimaDelegateCoordinator:
             # A claimed attempt this frame did not make. Whether the provider
             # was actually called is unknowable from here, so it fails closed
             # rather than being replayed at a second real cost.
-            if not self._fresh_graph:
+            if not self._lifecycle.fresh:
                 logger.warning(SACHIMA_DELEGATE_INVARIANT)
             return self._settle_unavailable(existing, SUMMARY_REASON_ATTEMPT_ABANDONED)
 
@@ -1870,6 +1886,7 @@ class SachimaDelegateCoordinator:
             return False
         return turn is not None and _claimed_by(turn.origin, continuity)
 
+    @_lifecycle_admitted
     def pending_hermes_context(
         self, session_id: str, *, continuity: Any = None
     ) -> tuple[str, ...]:
@@ -1922,6 +1939,7 @@ class SachimaDelegateCoordinator:
             )
         return tuple(lines)
 
+    @_lifecycle_admitted
     def confirm_hermes_context(self, session_id: str, *, continuity: Any = None) -> int:
         """Confirm the handoff **after** the next model turn consumed it.
 
@@ -1939,6 +1957,7 @@ class SachimaDelegateCoordinator:
             confirmed += 1
         return confirmed
 
+    @_lifecycle_admitted
     def release_hermes_context(self, session_id: str, *, continuity: Any = None) -> int:
         """Return an interrupted handoff to ``pending`` for a later turn."""
 
@@ -1953,6 +1972,7 @@ class SachimaDelegateCoordinator:
         return released
 
     # -- control operations (§5.3) ------------------------------------------ #
+    @_lifecycle_admitted
     async def status(self, task_ref: str) -> DelegateOutcome:
         """Reconcile the current turn's evidence and report the durable state."""
 
@@ -1964,6 +1984,7 @@ class SachimaDelegateCoordinator:
             turn.turn_key, lambda: self._reconcile(turn.turn_key)
         )
 
+    @_lifecycle_admitted
     async def cancel(self, task_ref: str) -> DelegateOutcome:
         """Cancel this task's Run — never the task, never either Session."""
 
@@ -1975,6 +1996,7 @@ class SachimaDelegateCoordinator:
             turn.turn_key, lambda: self._cancel_turn(turn.turn_key)
         )
 
+    @_lifecycle_admitted
     async def recover(
         self, task_ref: str, *, delivery: DelegateDelivery | None = None
     ) -> DelegateOutcome:
@@ -2098,19 +2120,27 @@ class SachimaDelegateCoordinator:
     # -- startup restoration (I7, §5.3) ------------------------------------- #
     async def _ensure_restored(self) -> None:
         async with self._restore_lock:
-            if self._restored:
+            if self._lifecycle.state == OPEN:
                 return
             await self._restore_locked()
 
+    @_lifecycle_admitted
     async def restore(self) -> dict[str, Any]:
         """Complete the startup barrier before any new admission is allowed."""
 
         async with self._restore_lock:
-            if self._restored:
+            if self._lifecycle.state == OPEN:
                 return {"restored": 0, "already": True}
             return await self._restore_locked()
 
     async def _restore_locked(self) -> dict[str, Any]:
+        # The lifecycle is RESTORING for exactly the span of this body: a
+        # failure returns the graph to COMPOSED so a later caller restores
+        # again, and only a completed body publishes OPEN.
+        with self._lifecycle.restoring():
+            return await self._restore_body()
+
+    async def _restore_body(self) -> dict[str, Any]:
         execution = 0
         identities = 0
         sinks = 0
@@ -2120,9 +2150,9 @@ class SachimaDelegateCoordinator:
             # Fail closed. An unreadable turn ledger is not an empty one: the
             # durable record may hold in-flight Runs this coordinator would
             # then never observe, and treating it as empty would declare the
-            # barrier complete and start admitting new work beside them.
-            # ``_restored`` stays False, so nothing downstream mistakes this
-            # for a finished restoration.
+            # barrier complete and start admitting new work beside them. The
+            # graph stays fresh, so nothing downstream mistakes this for a
+            # finished restoration.
             logger.warning(SACHIMA_DELEGATE_BLOCKED)
             raise
 
@@ -2156,8 +2186,6 @@ class SachimaDelegateCoordinator:
 
         summaries = await self._restore_summaries()
         sinks = await self._restore_sinks()
-        self._restored = True
-        self._fresh_graph = False
         return {
             "restored": execution,
             "identities": identities,
