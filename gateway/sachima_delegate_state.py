@@ -1287,12 +1287,25 @@ class DelegateCapacity:
             return True
 
     async def acquire(self, turn_key: Any) -> None:
-        """Wait for a free slot, then take it. Idempotent per turn."""
+        """Wait for a free slot, then take it. Idempotent per turn.
 
-        while not self.try_acquire(turn_key):
-            loop = asyncio.get_running_loop()
-            waiter = loop.create_future()
+        The free/held check and the waiter registration are one lock hold. A
+        release that lands between a failed check and the registration would
+        find no waiter to wake, and the admitting turn would then wait forever
+        on a slot that is free; registering under the same hold means such a
+        release either finds the slot already taken here or finds this waiter.
+        """
+
+        key = _safe_ref(turn_key)
+        loop = asyncio.get_running_loop()
+        while True:
             with self._lock:
+                if key in self._held:
+                    return
+                if len(self._held) < self._capacity:
+                    self._held.add(key)
+                    return
+                waiter = loop.create_future()
                 self._waiters.append(waiter)
             try:
                 await waiter
