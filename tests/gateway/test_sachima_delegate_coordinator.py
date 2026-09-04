@@ -1968,6 +1968,162 @@ async def test_a_second_concurrent_close_waits_for_the_first_drain(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
+# N. Synchronous daemon work: registered before submission, joined by close
+# --------------------------------------------------------------------------- #
+def _parked_submit(facade: _Facade) -> threading.Event:
+    """Park the daemon's submit on its worker thread until the gate opens,
+    and record the instant the call actually returns."""
+
+    facade.submit_gate = threading.Event()
+    returned = threading.Event()
+    real_submit = facade.submit
+
+    def _submit(**kwargs):
+        try:
+            return real_submit(**kwargs)
+        finally:
+            returned.set()
+
+    facade.submit = _submit  # type: ignore[method-assign]
+    return returned
+
+
+@pytest.mark.asyncio
+async def test_close_waits_until_running_synchronous_backend_work_returns(tmp_path):
+    """Schedule 5: a dispatch is inside the daemon on a worker thread. Close
+    must not publish CLOSED until that call has actually returned — the
+    thread is joined, never interrupted, and never resubmitted."""
+
+    facade = _Facade()
+    returned = _parked_submit(facade)
+    coordinator, _ = _coordinator(tmp_path, facade=facade)
+
+    created = asyncio.create_task(
+        coordinator.create(
+            task_text=TASK_TEXT_CANARY,
+            preset=_preset(coordinator),
+            origin=_origin(),
+        )
+    )
+    assert await _until(lambda: facade.submit_count() == 1)
+
+    closing = asyncio.create_task(coordinator.close())
+    await asyncio.sleep(0.05)
+    assert closing.done() is False
+    assert coordinator.closed is False
+    assert returned.is_set() is False
+
+    facade.submit_gate.set()
+    await asyncio.wait_for(closing, timeout=5)
+
+    assert returned.is_set() is True
+    assert coordinator.closed is True
+    assert facade.submit_count() == 1
+    with pytest.raises((asyncio.CancelledError, RuntimeError)):
+        await created
+
+
+@pytest.mark.asyncio
+async def test_a_queued_synchronous_call_cancelled_before_start_is_released(tmp_path):
+    """Schedule 6: with one worker busy inside the daemon, a second dispatch
+    is registered but queued. Close cancels it before it ever starts; its own
+    terminal callback releases the registration; the drain completes once
+    the running call returns; the queued call never reaches the daemon."""
+
+    from concurrent.futures import ThreadPoolExecutor
+
+    asyncio.get_running_loop().set_default_executor(ThreadPoolExecutor(max_workers=1))
+    facade = _Facade()
+    _parked_submit(facade)
+    coordinator, _ = _coordinator(tmp_path, facade=facade)
+
+    running = asyncio.create_task(
+        coordinator.create(
+            task_text="first task", preset=_preset(coordinator), origin=_origin()
+        )
+    )
+    assert await _until(lambda: facade.submit_count() == 1)
+    queued = asyncio.create_task(
+        coordinator.create(
+            task_text="second task", preset=_preset(coordinator), origin=_origin()
+        )
+    )
+    # Registered before submission: the second call is owned while queued.
+    assert await _until(lambda: len(coordinator._lifecycle.futures) == 2)
+
+    closing = asyncio.create_task(coordinator.close())
+    await asyncio.sleep(0.05)
+    assert closing.done() is False
+    assert len(coordinator._lifecycle.futures) == 1
+
+    facade.submit_gate.set()
+    await asyncio.wait_for(closing, timeout=5)
+
+    assert coordinator.closed is True
+    assert coordinator._lifecycle.futures == frozenset()
+    assert facade.submit_count() == 1
+    for task in (running, queued):
+        with pytest.raises((asyncio.CancelledError, RuntimeError)):
+            await task
+
+
+@pytest.mark.asyncio
+async def test_closing_mid_dispatch_leaves_the_durable_shape_a_crash_leaves(tmp_path):
+    """Close while the submit is inside the daemon, then recompose over the
+    same durable state: restoration finds exactly what a process crash after
+    the submit returned would have left — a prepared turn over an accepted
+    ledger record — and restores it to ``admitted`` without submitting again."""
+
+    facade = _Facade()
+    _parked_submit(facade)
+    delivery = _Delivery()
+    coordinator, _ = _coordinator(tmp_path, facade=facade, delivery=delivery)
+
+    created = asyncio.create_task(
+        coordinator.create(
+            task_text=TASK_TEXT_CANARY,
+            preset=_preset(coordinator),
+            origin=_origin(),
+            delivery=delivery.channel(),
+        )
+    )
+    assert await _until(lambda: facade.submit_count() == 1)
+
+    closing = asyncio.create_task(coordinator.close())
+    await asyncio.sleep(0.05)
+    assert closing.done() is False
+    facade.submit_gate.set()
+    await asyncio.wait_for(closing, timeout=5)
+    with pytest.raises((asyncio.CancelledError, RuntimeError)):
+        await created
+
+    # The crash shape: identity durable, the daemon's acceptance recorded by
+    # the joined call, and no post-dispatch classification ever written.
+    (turn,) = coordinator.state.list_turns()
+    assert turn.lifecycle == "prepared"
+    record = coordinator.ledger.snapshot_exact(
+        turn.task_id, turn.backend_handle, turn.dispatch_ref
+    )
+    assert record is not None and record.state == "accepted"
+    assert coordinator.state.result_for_turn(turn.turn_key) is None
+    assert delivery.receipts == []
+
+    fresh_facade = _Facade()
+    fresh_facade.run_ids = list(facade.run_ids)
+    fresh = _recompose(tmp_path, facade=fresh_facade, delivery=delivery)
+    report = await fresh.restore()
+
+    assert report["restored"] == 1
+    assert fresh_facade.submit_count() == 0
+    restored = fresh.state.read_turn(turn.turn_key)
+    assert restored.lifecycle == "admitted"
+    assert restored.turn_ref == record.run_ref
+    assert fresh.capacity.holds(turn.turn_key)
+    assert len(delivery.receipts) == 1
+    await fresh.close()
+
+
+# --------------------------------------------------------------------------- #
 # K. The derived summary: one attempt per terminal, and no sink before it (S2)
 # --------------------------------------------------------------------------- #
 async def _settled_terminal(coordinator, facade, delivery, **terminalize):

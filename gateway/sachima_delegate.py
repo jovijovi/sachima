@@ -50,6 +50,8 @@ behavior.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
+import contextvars
 import functools
 import inspect
 import logging
@@ -1167,13 +1169,58 @@ class SachimaDelegateCoordinator:
 
     async def _spine_call(self, call: Callable[[], Any]) -> None:
         try:
-            await asyncio.to_thread(call)
+            await self._sync(call)
         except asyncio.CancelledError:
             raise
         except BaseException:
             # One stable code only — never the offending value or exception
             # text, both of which can carry private config refs.
             logger.warning(SACHIMA_DELEGATE_DISPATCH_FAILED)
+
+    async def _sync(self, call: Callable[[], Any]) -> Any:
+        """Run one synchronous daemon/spine call on a worker thread, owned.
+
+        This is the only place coordinator work leaves the event loop. The
+        call's future is registered with the lifecycle *before* it is
+        submitted, and its registration is released only by the future's own
+        terminal callback — so a call the drain cancels while it is still
+        queued never starts and is accounted for exactly like one that ran,
+        and a call already running is joined by close rather than abandoned.
+
+        The wait is shielded: cancelling the coroutine that waits (an owner
+        or observer task the drain cancels) must not cancel the call. A
+        thread inside daemon code cannot be interrupted, and pretending it was
+        is what let close finish while the daemon was still being spoken to.
+        """
+
+        loop = asyncio.get_running_loop()
+        future: concurrent.futures.Future = concurrent.futures.Future()
+        self._lifecycle.register_future(future)
+        context = contextvars.copy_context()
+
+        def _run() -> None:
+            # A future the drain cancelled while it was still queued must not
+            # start; its terminal callback has already released it.
+            if not future.set_running_or_notify_cancel():
+                return
+            try:
+                result = context.run(call)
+            except BaseException as exc:
+                future.set_exception(exc)
+            else:
+                future.set_result(result)
+
+        try:
+            loop.run_in_executor(None, _run)
+        except BaseException:
+            # Nothing was submitted, so the registration is released here.
+            future.cancel()
+            raise
+        wrapped = asyncio.wrap_future(future, loop=loop)
+        # A waiter that was cancelled never reads the outcome; retrieving it
+        # keeps a raise on the worker thread from being reported as lost.
+        wrapped.add_done_callback(lambda done: done.cancelled() or done.exception())
+        return await asyncio.shield(wrapped)
 
     def _dispatch_request(self, turn: DelegateTurnRecord) -> Any:
         from sachima_supervisor.runtime_spine.agent_run_supervisor_turn_dispatcher import (
@@ -1491,8 +1538,8 @@ class SachimaDelegateCoordinator:
         blindness_reported = False
         while True:
             try:
-                result = await asyncio.to_thread(
-                    self._binding.backend.observe_run_result, turn.backend_handle
+                result = await self._sync(
+                    lambda: self._binding.backend.observe_run_result(turn.backend_handle)
                 )
             except asyncio.CancelledError:
                 raise
@@ -2069,8 +2116,8 @@ class SachimaDelegateCoordinator:
 
     async def _observe_once(self, turn: DelegateTurnRecord) -> Any:
         try:
-            return await asyncio.to_thread(
-                self._binding.backend.observe_run_result, turn.backend_handle
+            return await self._sync(
+                lambda: self._binding.backend.observe_run_result(turn.backend_handle)
             )
         except asyncio.CancelledError:
             raise
@@ -2101,8 +2148,8 @@ class SachimaDelegateCoordinator:
 
         turn = self._state.update_turn(turn_key, cancellation="in_flight")
         try:
-            outcome = await asyncio.to_thread(
-                self._binding.backend.cancel_run, turn.backend_handle
+            outcome = await self._sync(
+                lambda: self._binding.backend.cancel_run(turn.backend_handle)
             )
         except asyncio.CancelledError:
             raise
