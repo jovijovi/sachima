@@ -1597,6 +1597,210 @@ async def test_capacity_bounds_admissions_and_says_so_only_when_it_waits(tmp_pat
 
 
 # --------------------------------------------------------------------------- #
+# L. The graph lifecycle primitive
+#
+# One owner for "may this graph still admit work, and when is it really
+# retired": admitted public operations, owned tasks and registered
+# synchronous futures are all drained through one shared close future.
+# --------------------------------------------------------------------------- #
+LIFECYCLE_REFUSAL = "sachima_delegate_unbound"
+
+
+def _lifecycle():
+    from gateway.sachima_delegate_lifecycle import GraphLifecycle
+
+    return GraphLifecycle(LIFECYCLE_REFUSAL)
+
+
+@pytest.mark.asyncio
+async def test_the_graph_lifecycle_joins_concurrent_closers_on_one_drain():
+    """Two closers, one drain: the second waits for the first's drain and
+    only one of them turns CLOSING into CLOSED."""
+
+    from gateway.sachima_delegate_lifecycle import CLOSED, CLOSING, OPEN
+
+    lifecycle = _lifecycle()
+    with lifecycle.restoring():
+        pass
+    assert lifecycle.state == OPEN
+
+    parked = asyncio.Event()
+    release = asyncio.Event()
+
+    async def _slow_to_cancel():
+        try:
+            await asyncio.Event().wait()
+        finally:
+            parked.set()
+            await release.wait()
+
+    task = lifecycle.spawn(_slow_to_cancel)
+    drains = 0
+    real_drain = lifecycle._drain_work
+
+    async def _counted_drain():
+        nonlocal drains
+        drains += 1
+        await real_drain()
+
+    lifecycle._drain_work = _counted_drain  # type: ignore[method-assign]
+
+    first = asyncio.create_task(lifecycle.close())
+    second = asyncio.create_task(lifecycle.close())
+    assert await _until(parked.is_set)
+    await asyncio.sleep(0.01)
+
+    assert lifecycle.state == CLOSING
+    assert lifecycle.closed is False
+    assert first.done() is False
+    assert second.done() is False
+
+    release.set()
+    await asyncio.wait_for(asyncio.gather(first, second), timeout=5)
+
+    assert lifecycle.state == CLOSED
+    assert lifecycle.closed is True
+    assert task.done() is True
+    assert lifecycle.tasks == frozenset()
+    assert drains == 1
+    # A later closer joins the finished drain and changes nothing.
+    await asyncio.wait_for(lifecycle.close(), timeout=5)
+    assert drains == 1
+
+
+@pytest.mark.asyncio
+async def test_the_graph_lifecycle_releases_a_queued_future_cancelled_before_start():
+    """A registered future that never started is cancelled by the drain, its
+    registration is released by its own terminal callback, and the drain
+    completes without anyone ever running it."""
+
+    import concurrent.futures
+
+    from gateway.sachima_delegate_lifecycle import CLOSED
+
+    lifecycle = _lifecycle()
+    queued = concurrent.futures.Future()
+    lifecycle.register_future(queued)
+    assert lifecycle.futures == frozenset({queued})
+
+    await asyncio.wait_for(lifecycle.close(), timeout=5)
+
+    assert queued.cancelled() is True
+    # The runner that would have executed it learns it must not start.
+    assert queued.set_running_or_notify_cancel() is False
+    assert lifecycle.futures == frozenset()
+    assert lifecycle.state == CLOSED
+
+
+@pytest.mark.asyncio
+async def test_the_graph_lifecycle_joins_a_running_future_instead_of_killing_it():
+    """A future already running cannot be cancelled; close waits for it."""
+
+    import concurrent.futures
+
+    from gateway.sachima_delegate_lifecycle import CLOSED, CLOSING
+
+    lifecycle = _lifecycle()
+    running = concurrent.futures.Future()
+    lifecycle.register_future(running)
+    assert running.set_running_or_notify_cancel() is True
+
+    closing = asyncio.create_task(lifecycle.close())
+    await asyncio.sleep(0.05)
+    assert closing.done() is False
+    assert lifecycle.state == CLOSING
+    assert running.cancelled() is False
+
+    # The call returns on its worker thread, as a daemon call really would.
+    threading.Thread(target=running.set_result, args=("done",), daemon=True).start()
+    await asyncio.wait_for(closing, timeout=5)
+
+    assert lifecycle.futures == frozenset()
+    assert lifecycle.state == CLOSED
+
+
+@pytest.mark.asyncio
+async def test_the_graph_lifecycle_publishes_closed_only_after_admitted_work_releases():
+    """An admitted operation holds CLOSED back; a new admission is refused
+    with the stable code the moment closing begins."""
+
+    from gateway.sachima_delegate_lifecycle import (
+        CLOSED,
+        CLOSING,
+        LifecycleRefused,
+    )
+
+    lifecycle = _lifecycle()
+    admission = lifecycle.admission()
+    admission.__enter__()
+    assert lifecycle.admitted == 1
+
+    closing = asyncio.create_task(lifecycle.close())
+    await asyncio.sleep(0.01)
+    assert lifecycle.state == CLOSING
+    assert lifecycle.closed is False
+    assert closing.done() is False
+
+    with pytest.raises(LifecycleRefused) as refused:
+        with lifecycle.admission():
+            pass
+    assert str(refused.value) == LIFECYCLE_REFUSAL
+    assert isinstance(refused.value, RuntimeError)
+    with pytest.raises(LifecycleRefused):
+        lifecycle.spawn(lambda: asyncio.sleep(0))
+    with pytest.raises(LifecycleRefused):
+        import concurrent.futures
+
+        lifecycle.register_future(concurrent.futures.Future())
+    assert lifecycle.tasks == frozenset()
+    assert lifecycle.futures == frozenset()
+
+    # Released from a worker thread, as a synchronous public entry would.
+    threading.Thread(target=admission.__exit__, args=(None, None, None)).start()
+    await asyncio.wait_for(closing, timeout=5)
+
+    assert lifecycle.admitted == 0
+    assert lifecycle.state == CLOSED
+    with pytest.raises(LifecycleRefused):
+        with lifecycle.admission():
+            pass
+
+
+@pytest.mark.asyncio
+async def test_the_graph_lifecycle_restores_once_and_never_after_closing():
+    from gateway.sachima_delegate_lifecycle import (
+        CLOSED,
+        COMPOSED,
+        OPEN,
+        RESTORING,
+        LifecycleRefused,
+    )
+
+    lifecycle = _lifecycle()
+    assert lifecycle.state == COMPOSED
+    assert lifecycle.fresh is True
+
+    with pytest.raises(RuntimeError, match="restore failed"):
+        with lifecycle.restoring():
+            assert lifecycle.state == RESTORING
+            raise RuntimeError("restore failed")
+    # A failed restoration is retried later, from the same fresh graph.
+    assert lifecycle.state == COMPOSED
+    assert lifecycle.fresh is True
+
+    with lifecycle.restoring():
+        assert lifecycle.fresh is True
+    assert lifecycle.state == OPEN
+    assert lifecycle.fresh is False
+
+    await asyncio.wait_for(lifecycle.close(), timeout=5)
+    assert lifecycle.state == CLOSED
+    with pytest.raises(LifecycleRefused):
+        with lifecycle.restoring():
+            pass
+
+
+# --------------------------------------------------------------------------- #
 # K. The derived summary: one attempt per terminal, and no sink before it (S2)
 # --------------------------------------------------------------------------- #
 async def _settled_terminal(coordinator, facade, delivery, **terminalize):
