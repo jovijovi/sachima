@@ -2955,6 +2955,7 @@ def test_abandoning_a_timed_out_turn_retires_its_lease_immediately(monkeypatch):
         worker_done=threading.Event(),
         timeout_fired=threading.Event(),
         cleanup_lock=threading.Lock(),
+        dispatch_lease=lease,
     )
 
     assert abandoned is True
@@ -3155,6 +3156,7 @@ def test_the_timeout_fence_closes_before_the_timeout_becomes_observable(
         worker_done=threading.Event(),
         timeout_fired=witness,
         cleanup_lock=threading.Lock(),
+        dispatch_lease=lease,
     )
 
     assert witness.is_set() is True
@@ -3176,6 +3178,8 @@ def test_abandonment_never_cancels_a_successor_turns_lease(monkeypatch):
     from gateway.run import _DelegateResultHandoff, _abandon_timed_out_gateway_turn
 
     agent = _provider_agent()
+    abandoned_claim = _DelegateResultHandoff("session-abandoned")
+    abandoned_lease = ProviderDispatchLease(abandoned_claim.mark_provider_attempt)
     successor_claim = _DelegateResultHandoff("session-successor")
     successor_lease = ProviderDispatchLease(successor_claim.mark_provider_attempt)
 
@@ -3201,14 +3205,207 @@ def test_abandonment_never_cancels_a_successor_turns_lease(monkeypatch):
         worker_done=threading.Event(),
         timeout_fired=threading.Event(),
         cleanup_lock=threading.Lock(),
+        dispatch_lease=abandoned_lease,
     )
 
-    # The successor is untouched and can still dispatch and confirm.
+    # The abandoned turn's own lease is fenced; the successor is untouched
+    # and can still dispatch and confirm.
+    assert abandoned_lease.cancelled is True
     assert successor_lease.cancelled is False
     gate = successor_lease.gate(agent)
     sdk = MagicMock(return_value="ok")
     assert gate.invoke(sdk, model="test/model") == "ok"
     assert successor_claim.consumed is True
+
+
+def test_a_same_session_predecessor_reaper_fences_only_its_own_lease(monkeypatch):
+    """Schedule 1: the reaper fences exactly the lease handed to it.
+
+    Two turns of the *same* session share one cached agent and one
+    session-scoped task id, so no ownership marker on the agent can tell the
+    predecessor's reaper apart from the successor's live lease. The reaper
+    must cancel L1 — the object it was constructed with — and never L2.
+    """
+
+    from agent.chat_completion_helpers import ProviderDispatchLease
+    from gateway.run import (
+        GatewayRunner,
+        _DelegateResultHandoff,
+        _abandon_timed_out_gateway_turn,
+    )
+
+    agent = _provider_agent()
+    predecessor_claim = _DelegateResultHandoff("session-1")
+    successor_claim = _DelegateResultHandoff("session-1")
+    l1 = ProviderDispatchLease(predecessor_claim.mark_provider_attempt)
+    l2 = ProviderDispatchLease(successor_claim.mark_provider_attempt)
+
+    # Turn one binds L1; the Gateway then starts turn two of the same session
+    # on the same cached agent, under the same session-scoped task id.
+    agent._gateway_turn_process_task_id = "session-1"
+    agent._activate_provider_dispatch_lease(l1)
+    GatewayRunner._init_cached_agent_for_turn(agent, 0)
+    agent._activate_provider_dispatch_lease(l2)
+
+    monkeypatch.setattr(
+        "gateway.run.request_hard_interrupt", lambda *a, **k: None, raising=False
+    )
+    monkeypatch.setattr(
+        "gateway.run._dump_wedged_turn_stacks", lambda *a, **k: None, raising=False
+    )
+    monkeypatch.setattr(
+        "gateway.run._reap_gateway_turn_processes", lambda *a, **k: None, raising=False
+    )
+
+    # Turn one's reaper finally fires, carrying turn one's lease.
+    abandoned = _abandon_timed_out_gateway_turn(
+        agent_holder=[agent],
+        task_id="session-1",
+        process_baseline=None,
+        worker_done=threading.Event(),
+        timeout_fired=threading.Event(),
+        cleanup_lock=threading.Lock(),
+        dispatch_lease=l1,
+    )
+
+    assert abandoned is True
+    assert l1.cancelled is True
+    assert l2.cancelled is False
+    assert l2.revoked is False
+    gate = l2.gate(agent)
+    sdk = MagicMock(return_value="ok")
+    assert gate.invoke(sdk, model="test/model") == "ok"
+    assert successor_claim.consumed is True
+    assert predecessor_claim.consumed is False
+
+
+def test_a_lease_abandoned_before_worker_publication_binds_dead(monkeypatch):
+    """Schedule 2: the lease exists before the worker is scheduled, so the
+    reaper can fence it before the worker has published its agent at all.
+    When the worker finally binds that lease it is already dead: the provider
+    SDK is never called and the claim stays unconsumed for settlement."""
+
+    from agent.chat_completion_helpers import ProviderDispatchLease
+    from gateway.run import _DelegateResultHandoff, _abandon_timed_out_gateway_turn
+
+    agent = _provider_agent()
+    claim = _DelegateResultHandoff("session-1")
+    lease = ProviderDispatchLease(claim.mark_provider_attempt)
+    # Nothing published yet: the worker has not reached agent binding.
+    agent_holder: list[Any] = [None]
+
+    monkeypatch.setattr(
+        "gateway.run.request_hard_interrupt", lambda *a, **k: None, raising=False
+    )
+    monkeypatch.setattr(
+        "gateway.run._dump_wedged_turn_stacks", lambda *a, **k: None, raising=False
+    )
+    monkeypatch.setattr(
+        "gateway.run._reap_gateway_turn_processes", lambda *a, **k: None, raising=False
+    )
+
+    abandoned = _abandon_timed_out_gateway_turn(
+        agent_holder=agent_holder,
+        task_id="session-1",
+        process_baseline=None,
+        worker_done=threading.Event(),
+        timeout_fired=threading.Event(),
+        cleanup_lock=threading.Lock(),
+        dispatch_lease=lease,
+    )
+    assert abandoned is True
+    assert lease.cancelled is True
+
+    # The worker wakes late, publishes its agent and binds the turn's lease.
+    agent_holder[0] = agent
+    assert agent._activate_provider_dispatch_lease(lease) is True
+    gate = lease.gate(agent)
+    sdk = MagicMock()
+    with pytest.raises(InterruptedError):
+        gate.invoke(sdk, model="test/model")
+
+    assert sdk.call_count == 0
+    assert lease.committed is False
+    assert claim.consumed is False
+    assert claim.take_for_settlement() is True
+
+
+class _LeaseWitnessAgent(_InterruptThenProviderAgent):
+    """A fake agent that records the lease each turn was handed."""
+
+    leases: list[Any] = []
+
+    def run_conversation(self, user_message, **kwargs):
+        type(self).leases.append(kwargs.get("_provider_dispatch_lease"))
+        self.turns.append(user_message)
+        lease = kwargs.get("_provider_dispatch_lease")
+        if lease is not None:
+            lease.gate(self).invoke(lambda: "ok")
+        return {"final_response": "done", "messages": [], "api_calls": 1}
+
+
+@pytest.mark.asyncio
+async def test_the_turns_lease_is_built_before_scheduling_and_shared_with_the_reaper(
+    monkeypatch,
+):
+    """The turn owns one lease: built beside the timeout machinery before the
+    worker is scheduled, handed to the watchdog reaper explicitly, and the
+    very object the worker dispatches under."""
+
+    import sys
+    import types
+
+    from agent.chat_completion_helpers import ProviderDispatchLease
+    from gateway.config import Platform
+    from gateway.run import _DelegateResultHandoff
+    from gateway.session import SessionSource
+
+    _LeaseWitnessAgent.leases = []
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = _LeaseWitnessAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "off")
+    monkeypatch.setenv("HERMES_AGENT_TIMEOUT", "1800")
+    monkeypatch.setattr("gateway.run._load_gateway_config", lambda: {})
+
+    import hermes_cli.tools_config as tools_config
+
+    monkeypatch.setattr(
+        tools_config, "_get_platform_tools", lambda *_args, **_kwargs: {"core"}
+    )
+
+    watchdog: dict[str, Any] = {}
+
+    def _watchdog(**kwargs):
+        watchdog.update(kwargs)
+
+    monkeypatch.setattr("gateway.run._watch_gateway_turn_inactivity", _watchdog)
+
+    runner = _run_agent_runner("session-1")
+    source = SessionSource(
+        platform=Platform.TELEGRAM, chat_id="12345", chat_type="dm", user_id="user-1"
+    )
+    handoff = _DelegateResultHandoff("session-1")
+
+    await asyncio.wait_for(
+        runner._run_agent(
+            message="what happened?",
+            context_prompt="",
+            history=[],
+            source=source,
+            session_id="session-1",
+            session_key="agent:main:telegram:dm:12345",
+            delegate_handoff=handoff,
+        ),
+        timeout=10,
+    )
+
+    (lease,) = _LeaseWitnessAgent.leases
+    assert isinstance(lease, ProviderDispatchLease)
+    assert "dispatch_lease" in watchdog
+    assert watchdog["dispatch_lease"] is lease
+    assert lease.committed is True
+    assert handoff.consumed is True
 
 
 @pytest.mark.asyncio

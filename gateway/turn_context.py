@@ -101,6 +101,12 @@ class TurnContext:
     # latch it (``gateway.run._DelegateResultHandoff``); the settling caller
     # is the one that created it, never this context.
     delegate_handoff: Any = None
+    # This turn's own ``ProviderDispatchLease``, constructed by
+    # ``_run_agent_inner`` beside the timeout machinery before the worker is
+    # scheduled. ``TurnRunner`` hands exactly this object to
+    # ``run_conversation`` and both reaper paths fence exactly this object;
+    # nothing reads a lease off the cached agent.
+    dispatch_lease: Any = None
     user_config: Any = None
     enabled_toolsets: Any = None
     disabled_toolsets: Any = None

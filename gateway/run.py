@@ -3787,39 +3787,34 @@ def _abandon_timed_out_gateway_turn(
     worker_done: threading.Event,
     timeout_fired: threading.Event,
     cleanup_lock: threading.Lock,
+    dispatch_lease=None,
     is_still_current: Optional[Callable[[], bool]] = None,
 ) -> bool:
     """Interrupt one timed-out turn and reap only processes it created.
 
-    The dispatch fence closes *before* the timeout is published. Publication is
-    what releases settlement and lets the next turn rebind the shared cached
-    agent, so a lease read afterwards may already belong to the successor —
-    cancelling that one would kill a live turn instead of the abandoned one.
-    Inside ``cleanup_lock`` and ahead of the flag, the only lease reachable is
-    the originating turn's, and it is fenced before anything can observe that
-    this turn timed out.
+    ``dispatch_lease`` is the turn's own ``ProviderDispatchLease``, constructed
+    by ``_run_agent_inner`` before the worker was scheduled and handed here
+    explicitly. It is the only lease this reaper ever fences. The shared
+    cached agent may already carry a successor turn's lease — even a
+    same-session successor under the same session-scoped task id — and
+    reading one off the agent would cancel a live turn instead of the
+    abandoned one.
+
+    The fence closes *before* the timeout is published. Publication is what
+    releases settlement and lets the next turn rebind the cached agent, so
+    the lease is cancelled inside ``cleanup_lock`` and ahead of the flag. A
+    worker that has not yet published its agent, or not yet bound this lease,
+    binds it already dead.
     """
-    _abandoned_lease = None
     with cleanup_lock:
         if worker_done.is_set() or timeout_fired.is_set():
             return False
-        _fencing_agent = agent_holder[0] if agent_holder else None
-        if _fencing_agent is not None:
-            # Bind to this turn's identity rather than trusting whatever the
-            # cached agent currently points at. An agent already republished
-            # under a different turn id is not ours to fence; "" is our own
-            # turn clearing its ownership markers as it finishes.
-            _owner = getattr(_fencing_agent, "_gateway_turn_process_task_id", "")
-            if _owner in ("", task_id):
-                _abandoned_lease = getattr(
-                    _fencing_agent, "_provider_dispatch_lease", None
-                )
-        if _abandoned_lease is not None:
+        if dispatch_lease is not None:
             # A worker parked just short of its provider call has not observed
             # the interrupt yet; without this it could still wake and confirm a
             # claim for a turn the Gateway has already settled.
             try:
-                _abandoned_lease.cancel()
+                dispatch_lease.cancel()
             except Exception:
                 logger.debug(
                     "Timed-out turn dispatch lease cancel failed", exc_info=True
@@ -3865,6 +3860,7 @@ def _watch_gateway_turn_inactivity(
     worker_done: threading.Event,
     timeout_fired: threading.Event,
     cleanup_lock: threading.Lock,
+    dispatch_lease=None,
     poll_interval: float = 5.0,
     is_still_current: Optional[Callable[[], bool]] = None,
 ) -> None:
@@ -3888,6 +3884,7 @@ def _watch_gateway_turn_inactivity(
             worker_done=worker_done,
             timeout_fired=timeout_fired,
             cleanup_lock=cleanup_lock,
+            dispatch_lease=dispatch_lease,
             is_still_current=is_still_current,
         )
         return
@@ -7007,26 +7004,23 @@ class TurnRunner:
                 _conversation_kwargs["moa_config"] = ctx.moa_config
             if _persist_user_timestamp_override is not None:
                 _conversation_kwargs["persist_user_timestamp"] = _persist_user_timestamp_override
-            if ctx.delegate_handoff is not None:
-                # Hand this turn its private right to dispatch. The claim's
-                # marker is captured here, at claim time, rather than read off
-                # the agent when a request finally goes out: by then the cached
-                # agent may have been rebound to a later turn, and the question
-                # this answers is whose turn the request belongs to.  Passed
-                # through the signature probe so old shims and suite doubles,
-                # which never declared the private argument, still take the
-                # request and nothing else.
+            if ctx.dispatch_lease is not None:
+                # Hand this turn its private right to dispatch: the one lease
+                # ``_run_agent_inner`` constructed before this worker was
+                # scheduled, and the same object its reaper holds. Nothing
+                # here reads a lease off the agent — by now the cached agent
+                # may have been rebound to a later turn, and the question this
+                # answers is whose turn the request belongs to. Passed through
+                # the signature probe so old shims and suite doubles, which
+                # never declared the private argument, still take the request
+                # and nothing else.
                 from agent.chat_completion_helpers import (
-                    ProviderDispatchLease,
                     provider_dispatch_lease_kwargs,
                 )
 
                 _conversation_kwargs.update(
                     provider_dispatch_lease_kwargs(
-                        agent.run_conversation,
-                        ProviderDispatchLease(
-                            ctx.delegate_handoff.mark_provider_attempt
-                        ),
+                        agent.run_conversation, ctx.dispatch_lease
                     )
                 )
             result = agent.run_conversation(_api_run_message, **_conversation_kwargs)
@@ -31580,6 +31574,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _turn_worker_done = threading.Event()
             _turn_timeout_fired = threading.Event()
             _turn_cleanup_lock = threading.Lock()
+            # The turn's own dispatch lease, constructed here beside the
+            # timeout machinery — before the worker is scheduled — so it
+            # exists to be fenced before the worker has published its agent,
+            # and so both reaper paths and the worker's own dispatch answer to
+            # exactly one object. A lease cancelled and then bound is dead by
+            # construction; a successor turn's lease is a different object the
+            # reaper never sees.
+            from agent.chat_completion_helpers import ProviderDispatchLease
+
+            _turn_dispatch_lease = ProviderDispatchLease(
+                delegate_handoff.mark_provider_attempt
+                if delegate_handoff is not None
+                else None
+            )
+            turn_ctx.dispatch_lease = _turn_dispatch_lease
             # task_id above is session-scoped, not turn-scoped (#76115
             # review): gate the eventual reap on this exact claim still
             # being current, so a replacement turn that starts on the same
@@ -31624,6 +31633,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         "worker_done": _turn_worker_done,
                         "timeout_fired": _turn_timeout_fired,
                         "cleanup_lock": _turn_cleanup_lock,
+                        "dispatch_lease": _turn_dispatch_lease,
                         "poll_interval": 5.0,
                         "is_still_current": _turn_is_current,
                     },
@@ -31745,6 +31755,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 "worker_done": _turn_worker_done,
                                 "timeout_fired": _turn_timeout_fired,
                                 "cleanup_lock": _turn_cleanup_lock,
+                                "dispatch_lease": _turn_dispatch_lease,
                                 "is_still_current": _turn_is_current,
                             },
                             name=f"gateway-turn-reaper-{_turn_task_id[:12]}",
