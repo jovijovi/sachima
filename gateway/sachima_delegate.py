@@ -30,6 +30,14 @@ coordinator-owned task that waiters join through cancellation shielding: an IM
 caller that gives up cannot cancel the spine work it started or release the
 exclusion that is supposed to cover it.
 
+**One lifecycle owner.** Whether this graph may still take work, and when it
+has really stopped, is decided in one place — the private
+:class:`~gateway.sachima_delegate_lifecycle.GraphLifecycle`. Every public entry
+is admitted there before any durable or card side effect; every owner task,
+observer, and synchronous daemon call is registered there; and ``close`` is
+one drain that every closer joins, publishing ``closed`` only when all of that
+has finished. A thread inside daemon code is joined, never interrupted.
+
 **Identity before any possible submit.** Payload, task binding, turn record, and
 the exact ledger key are on disk before anything that could reach the daemon. A
 record with no submit is recoverable; a submit with no record is not.
@@ -1156,10 +1164,11 @@ class SachimaDelegateCoordinator:
         """Drive one turn through the bundle's dispatcher, off the event loop.
 
         The dispatcher is synchronous spine code that talks to a socket, so it
-        runs on a worker thread: inline, it would freeze every other
-        conversation in the gateway for the length of an admission. Its return
-        value is deliberately discarded — the snapshot that follows is what
-        decides — and a raise is a diagnostic, never a disposition.
+        runs on a worker thread through :meth:`_sync`: inline, it would freeze
+        every other conversation in the gateway for the length of an
+        admission. Its return value is deliberately discarded — the snapshot
+        that follows is what decides — and a raise is a diagnostic, never a
+        disposition.
         """
 
         await self._spine_call(lambda: self._dispatch_request(turn))
