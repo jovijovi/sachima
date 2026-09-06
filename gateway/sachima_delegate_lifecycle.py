@@ -18,18 +18,35 @@ that has begun closing.
 Three kinds of work are accounted for under one guard:
 
 * **admissions** — public coordinator operations, admitted before any durable
-  or card side effect and released when they return, however they return;
+  or card side effect and released when they return, however they return.
+  Each admission knows its owner (the loop it runs on, or a worker thread),
+  so one whose owner loop has terminated — and therefore can never release —
+  is retired by a later closer instead of holding the graph in ``CLOSING``;
 * **tasks** — owner and observer tasks the graph spawned on its own loop;
 * **futures** — synchronous daemon/spine calls registered *before* they are
   submitted to a worker thread, released by their own terminal callback.
 
 ``close`` is the one drain. The first closer flips the graph to ``CLOSING`` and
-starts the drain; every closer, including that first one, awaits the same
-drain future. The drain cancels owned tasks and any registered future that has
-not started, then waits until every admission has released, every task has
-finished and every future has settled — a running thread is joined, never
-interrupted — and only then publishes ``CLOSED``. No deadline is imposed here:
-the drain is bounded by whatever bounds the calls it is waiting on.
+claims the drain start; every closer, including that first one, awaits the
+same completion. The drain runs on the graph's home loop — the bound lifecycle
+loop, or the loop that first owned work here — because that is where the
+owned tasks live; a closer on any other loop hands the start there and joins
+through a loop-local bridge, never through a future attached to a foreign
+loop. A hand-off is only a *claim* until the home loop acknowledges it by
+creating the drain task. If the home loop stops before the drain has run to
+completion — whether it never acknowledged the start, or acknowledged it and
+then stopped before the drain task could run or finish — a repeated closer
+reclaims the drain under the guard with a new generation; a stale hand-off or
+a stale drain task checks that generation and no-ops if its loop ever runs
+again, so there is never a second drain owner and the shared completion is
+settled exactly once. The drain cancels owned tasks and any
+registered future that has not started, then waits until every admission has
+released, every task has finished and every future has settled — a running
+thread is joined, never interrupted — and only then publishes ``CLOSED``. Work
+owned by a loop that has terminated can never finish: it is asked to unwind
+and released, so the completion settles instead of stranding every waiter. No
+deadline is imposed here: the drain is bounded by whatever bounds the calls it
+is waiting on.
 
 Pure local on import: no loop, thread, socket, or daemon is touched here.
 """
@@ -60,6 +77,12 @@ CLOSED = "closed"
 _ADMITTING = frozenset({COMPOSED, RESTORING, OPEN})
 
 
+def _alive(loop: asyncio.AbstractEventLoop | None) -> bool:
+    """Can *loop* still run a callback handed to it?"""
+
+    return loop is not None and not loop.is_closed() and loop.is_running()
+
+
 class LifecycleRefused(RuntimeError):
     """Work offered to a graph that has begun closing.
 
@@ -69,24 +92,43 @@ class LifecycleRefused(RuntimeError):
 
 
 class _Admission:
-    """One public operation's stay inside the graph, released exactly once."""
+    """One public operation's stay inside the graph, released exactly once.
 
-    __slots__ = ("_lifecycle", "_held")
+    An admission knows its owner: the event loop the entry runs on, or no
+    loop at all for a synchronous entry on a worker thread. A thread always
+    leaves its ``with`` block, so a thread-owned admission always releases; a
+    loop-owned one can only release while its loop keeps running, which is
+    what lets a later closer retire it once that loop has terminated.
+    """
+
+    __slots__ = ("_lifecycle", "_owner", "_held")
 
     def __init__(self, lifecycle: "GraphLifecycle") -> None:
         self._lifecycle = lifecycle
+        self._owner: asyncio.AbstractEventLoop | None = None
         self._held = False
 
     def __enter__(self) -> "_Admission":
-        self._lifecycle._admit()
+        try:
+            owner: asyncio.AbstractEventLoop | None = asyncio.get_running_loop()
+        except RuntimeError:
+            owner = None
+        self._owner = owner
+        self._lifecycle._admit(self)
         self._held = True
         return self
 
     def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> bool:
         if self._held:
             self._held = False
-            self._lifecycle._release()
+            self._lifecycle._release(self)
         return False
+
+    @property
+    def dead(self) -> bool:
+        """True once the loop that owns this admission can no longer run it."""
+
+        return self._owner is not None and not _alive(self._owner)
 
 
 class _Restoration:
@@ -114,12 +156,21 @@ class GraphLifecycle:
         self._invariant = str(invariant)
         self._guard = threading.RLock()
         self._state = COMPOSED
-        self._admitted = 0
+        self._admissions: set[_Admission] = set()
         self._tasks: set[asyncio.Task] = set()
         self._futures: set[concurrent.futures.Future] = set()
+        # The home loop: bound by the host, or adopted from the first owned
+        # work. Owned tasks live there, so the drain must run there.
+        self._home_loop: asyncio.AbstractEventLoop | None = None
+        # The loop the drain is actually running on, and its wait.
         self._loop: asyncio.AbstractEventLoop | None = None
         self._quiescent: asyncio.Future | None = None
-        self._drain: asyncio.Task | None = None
+        # The drain-start claim: a generation per claim, acknowledged only
+        # when the loop it was handed to creates the drain task.
+        self._drain_generation = 0
+        self._drain_task: asyncio.Task | None = None
+        # The one loop-agnostic completion every closer joins.
+        self._drain_done: concurrent.futures.Future | None = None
 
     # -- observation -------------------------------------------------------- #
     @property
@@ -156,7 +207,7 @@ class GraphLifecycle:
     @property
     def admitted(self) -> int:
         with self._guard:
-            return self._admitted
+            return len(self._admissions)
 
     @property
     def tasks(self) -> frozenset[asyncio.Task]:
@@ -167,6 +218,13 @@ class GraphLifecycle:
     def futures(self) -> frozenset[concurrent.futures.Future]:
         with self._guard:
             return frozenset(self._futures)
+
+    # -- the home loop ------------------------------------------------------ #
+    def bind_loop(self, loop: asyncio.AbstractEventLoop) -> None:
+        """Name the loop this graph's work and its drain belong to."""
+
+        with self._guard:
+            self._home_loop = loop
 
     # -- admission ---------------------------------------------------------- #
     def admission(self) -> _Admission:
@@ -187,15 +245,30 @@ class GraphLifecycle:
         if self._state not in _ADMITTING:
             raise LifecycleRefused(self._refusal)
 
-    def _admit(self) -> None:
+    def _admit(self, admission: _Admission) -> None:
         with self._guard:
             self._refuse_if_closing()
-            self._admitted += 1
+            self._admissions.add(admission)
 
-    def _release(self) -> None:
+    def _release(self, admission: _Admission) -> None:
         with self._guard:
-            self._admitted -= 1
+            # An admission retired earlier — its loop terminated and a closer
+            # gave up on it — releasing late because that loop ran again is
+            # a no-op: it changes nothing about the graph's accounting.
+            self._admissions.discard(admission)
         self._notify()
+
+    def _retire_dead_admissions_locked(self) -> None:
+        """Under the guard: drop every admission whose owner loop terminated.
+
+        Such an admission can never release on its own, so keeping it would
+        hold the graph in ``CLOSING`` forever. Thread-owned admissions and
+        admissions on loops that are still running are untouched: they will
+        release, and the drain waits for them.
+        """
+
+        for admission in [entry for entry in self._admissions if entry.dead]:
+            self._admissions.discard(admission)
 
     def _begin_restore(self) -> None:
         with self._guard:
@@ -223,7 +296,10 @@ class GraphLifecycle:
 
         with self._guard:
             self._refuse_if_closing()
-            task = asyncio.get_running_loop().create_task(factory())
+            loop = asyncio.get_running_loop()
+            if self._home_loop is None:
+                self._home_loop = loop
+            task = loop.create_task(factory())
             self._tasks.add(task)
         task.add_done_callback(self._forget_task)
         return task
@@ -255,45 +331,181 @@ class GraphLifecycle:
     async def close(self) -> None:
         """Begin closing, or join the closing already under way.
 
-        The first caller flips the graph to ``CLOSING`` and starts the drain on
-        its own loop; every caller awaits that same drain, shielded, so a
-        closer that gives up cannot cancel the retirement it started.
+        The first caller flips the graph to ``CLOSING`` and claims the drain
+        start for the home loop — handed there when the caller is on another
+        loop. The claim is acknowledged only when the home loop actually
+        creates the drain task, and the drain owns the retirement only while
+        that loop keeps running. A repeated closer that finds the home loop
+        no longer running before the completion has settled — the start never
+        acknowledged, or acknowledged and then stranded — reclaims the drain
+        under the guard with a new generation, so a stale hand-off or drain
+        task can never become a second owner. Every caller then awaits the
+        same completion through a bridge local to its own loop, and that
+        completion cannot be cancelled through the bridge: a closer that
+        gives up cannot cancel the retirement it started.
+        """
+
+        current = asyncio.get_running_loop()
+        with self._guard:
+            claim = None
+            if self._drain_done is None:
+                self._state = CLOSING
+                done: concurrent.futures.Future = concurrent.futures.Future()
+                # Running from the outset: a bridge that is cancelled cannot
+                # cancel the drain behind it.
+                done.set_running_or_notify_cancel()
+                self._drain_done = done
+                claim = self._claim_drain_start(current)
+            elif not self._drain_done.done() and not _alive(self._home_loop):
+                # The drain belongs to a home loop that terminated — whether
+                # it never acknowledged the start, or acknowledged it and then
+                # stopped before the drain task could run or finish. Nothing
+                # can complete it there: take it over here.
+                claim = self._claim_drain_start(current)
+            # A closer is the one thing that can notice an owner loop has
+            # died while the drain waits on that loop's admission.
+            self._retire_dead_admissions_locked()
+            done = self._drain_done
+            assert done is not None
+        if claim is not None:
+            self._start_drain(*claim, current=current)
+        self._notify()
+        await asyncio.wrap_future(done, loop=current)
+
+    def _claim_drain_start(
+        self, current: asyncio.AbstractEventLoop
+    ) -> tuple[asyncio.AbstractEventLoop, int]:
+        """Under the guard: claim the drain start for a loop that can run it.
+
+        Each claim is a new generation. The acknowledgement that creates the
+        drain task must carry the same generation, which is what makes a
+        hand-off left queued on an earlier, stopped loop recognisably stale.
+        """
+
+        self._drain_generation += 1
+        # Whatever task an earlier generation created belongs to a loop that
+        # can no longer run it; the new generation acknowledges afresh.
+        self._drain_task = None
+        home = self._home_loop
+        if not _alive(home):
+            home = self._home_loop = current
+        return home, self._drain_generation
+
+    def _start_drain(
+        self,
+        home: asyncio.AbstractEventLoop,
+        generation: int,
+        *,
+        current: asyncio.AbstractEventLoop,
+    ) -> None:
+        """Hand the claimed start to the home loop, or take it right here."""
+
+        if home is current:
+            self._acknowledge_drain_start(generation)
+            return
+
+        def _on_home() -> None:
+            self._acknowledge_drain_start(generation)
+
+        try:
+            home.call_soon_threadsafe(_on_home)
+        except RuntimeError:
+            # The home loop closed between the check and the hand-off. The
+            # only loop left that can run the drain is this one — unless a
+            # later closer has already reclaimed the start.
+            with self._guard:
+                if generation != self._drain_generation:
+                    return
+                _home, generation = self._claim_drain_start(current)
+            self._acknowledge_drain_start(generation)
+
+    def _acknowledge_drain_start(self, generation: int) -> None:
+        """Create the drain task for *this* generation's claim, exactly once.
+
+        Runs on the loop the start was handed to. A stale hand-off — an
+        older generation, or a claim already acknowledged — no-ops here
+        instead of becoming a second drain owner.
         """
 
         with self._guard:
-            if self._drain is None:
-                loop = asyncio.get_running_loop()
-                self._state = CLOSING
-                self._loop = loop
-                self._quiescent = loop.create_future()
-                self._drain = loop.create_task(self._drain_work())
-            drain = self._drain
-        await asyncio.shield(drain)
+            if generation != self._drain_generation or self._drain_task is not None:
+                return
+            self._drain_task = asyncio.get_running_loop().create_task(
+                self._drain_work(generation)
+            )
 
-    async def _drain_work(self) -> None:
+    async def _drain_work(self, generation: int) -> None:
+        loop = asyncio.get_running_loop()
         with self._guard:
+            if generation != self._drain_generation:
+                # A stale drain: its loop stopped before it could run and a
+                # later closer reclaimed the retirement. It owns nothing here
+                # and settles nothing.
+                return
+            self._loop = loop
+            self._quiescent = loop.create_future()
+            self._retire_dead_admissions_locked()
             tasks = list(self._tasks)
             futures = list(self._futures)
             quiescent = self._quiescent
-        for task in tasks:
-            task.cancel()
-        for future in futures:
-            # Only a future that has not started can be cancelled. A running
-            # one is a thread inside daemon/spine code: it is joined below,
-            # never interrupted.
-            future.cancel()
-        if tasks:
-            done, _pending = await asyncio.wait(tasks)
-            for task in done:
-                # A retiring task's outcome settles nothing; retrieving it
-                # only keeps the loop from reporting it as never retrieved.
-                if not task.cancelled():
-                    task.exception()
-        self._notify()
-        assert quiescent is not None
-        await quiescent
-        with self._guard:
-            self._state = CLOSED
+            done = self._drain_done
+        assert done is not None
+        try:
+            local: list[asyncio.Task] = []
+            for task in tasks:
+                if task.get_loop() is loop:
+                    task.cancel()
+                    local.append(task)
+                    continue
+                # Owned by a loop this drain is not running on — which only
+                # happens once that loop terminated and a closer reclaimed
+                # the start. The task can never finish there, so it is asked
+                # to unwind should its loop ever run again, and it stops
+                # being owned: nothing can drain it, and keeping it
+                # registered would strand every closer instead.
+                try:
+                    task.cancel()
+                except RuntimeError:
+                    pass
+                self._forget_task(task)
+            for future in futures:
+                # Only a future that has not started can be cancelled. A
+                # running one is a thread inside daemon/spine code: it is
+                # joined below, never interrupted.
+                future.cancel()
+            if local:
+                finished, _pending = await asyncio.wait(local)
+                for task in finished:
+                    # A retiring task's outcome settles nothing; retrieving
+                    # it only keeps the loop from reporting it as never
+                    # retrieved.
+                    if not task.cancelled():
+                        task.exception()
+            self._notify()
+            await quiescent
+            with self._guard:
+                if generation != self._drain_generation:
+                    # Reclaimed while this drain waited: the newer owner
+                    # publishes CLOSED and settles the completion, not this.
+                    return
+                self._state = CLOSED
+        except asyncio.CancelledError:
+            # Loop shutdown cancels this generation's task, not the graph's
+            # retirement. Leave the shared completion pending so a later
+            # closer can reclaim after the home loop stops, and still join
+            # any running work before publishing CLOSED.
+            raise
+        except BaseException as exc:
+            # Non-cancellation failures still answer every closer, unless a
+            # later generation already took the retirement over.
+            with self._guard:
+                owner = generation == self._drain_generation
+            if owner and not done.done():
+                done.set_exception(exc)
+            raise
+        else:
+            if not done.done():
+                done.set_result(None)
 
     def _notify(self) -> None:
         """Wake the drain once nothing admitted, owned, or registered remains."""
@@ -301,7 +513,7 @@ class GraphLifecycle:
         with self._guard:
             if (
                 self._quiescent is None
-                or self._admitted
+                or self._admissions
                 or self._tasks
                 or self._futures
             ):

@@ -445,6 +445,7 @@ def _lifecycle_admitted(method: Any) -> Any:
             with self._lifecycle.admission():
                 return await method(self, *args, **kwargs)
 
+        _admitted_async.__lifecycle_admitted__ = True  # type: ignore[attr-defined]
         return _admitted_async
 
     @functools.wraps(method)
@@ -452,6 +453,9 @@ def _lifecycle_admitted(method: Any) -> Any:
         with self._lifecycle.admission():
             return method(self, *args, **kwargs)
 
+    # The marker the surface audit reads: a public control entry either
+    # carries it or is explicitly listed as not being a control entry.
+    _admitted_sync.__lifecycle_admitted__ = True  # type: ignore[attr-defined]
     return _admitted_sync
 
 
@@ -585,6 +589,9 @@ class SachimaDelegateCoordinator:
             if existing is not None and existing is not loop:
                 raise RuntimeError(SACHIMA_DELEGATE_INVARIANT)
             self._lifecycle_loop = loop
+        # The drain runs on this loop whichever loop asks for it: the owned
+        # tasks live here, and a closer elsewhere joins through a bridge.
+        self._lifecycle.bind_loop(loop)
 
     def run_on_lifecycle_loop(self, factory: Callable[[], Awaitable[Any]]) -> Any:
         """Run one synchronous control request on the Gateway-owned loop.
@@ -706,12 +713,15 @@ class SachimaDelegateCoordinator:
         """Retire this coordinator: admit nothing further, and own no live work.
 
         The first call flips the graph to closing; every call, including a
-        concurrent or repeated one, awaits the same drain. The drain cancels
-        the observers and owner tasks and awaits them — a task cancelled but
-        never awaited is still scheduled on a loop the Gateway is about to
-        drop — and it joins, never interrupts, any synchronous daemon call
-        still running on a worker thread. No deadline is added here: the
-        drain is bounded by the bounds of the calls it waits on.
+        concurrent or repeated one, awaits the same drain. The drain runs on
+        the bound lifecycle loop whichever loop asked for it, and a closer on
+        another loop joins it through a loop-local bridge rather than a
+        future attached to the wrong loop. The drain cancels the observers
+        and owner tasks and awaits them — a task cancelled but never awaited
+        is still scheduled on a loop the Gateway is about to drop — and it
+        joins, never interrupts, any synchronous daemon call still running on
+        a worker thread. No deadline is added here: the drain is bounded by
+        the bounds of the calls it waits on.
 
         Retirement is one-way. A retired coordinator admits no entry and arms
         no observer, so a restart composes a new graph rather than reviving
@@ -757,6 +767,7 @@ class SachimaDelegateCoordinator:
         return _DISPOSITION_ACCEPTED, record, None
 
     # -- eligibility: live roster ∩ valid execution preset ------------------ #
+    @_lifecycle_admitted
     def registered_agent_ids(self) -> tuple[str, ...]:
         """The connected daemon's live roster of canonical agent ids.
 
@@ -764,8 +775,14 @@ class SachimaDelegateCoordinator:
         backend, which validates the reply before it becomes an answer.
         """
 
+        return self._registered_agent_ids()
+
+    def _registered_agent_ids(self) -> tuple[str, ...]:
+        """The roster read itself, for entries that are already admitted."""
+
         return self._binding.backend.list_registered_agents()
 
+    @_lifecycle_admitted
     def admit_agent(self, agent_id: Any, *, task_text: str = "") -> AgentAdmission:
         """Decide whether one canonical ``agent_id`` may execute here.
 
@@ -780,7 +797,12 @@ class SachimaDelegateCoordinator:
         """
 
         try:
-            roster = self.registered_agent_ids()
+            roster = self._registered_agent_ids()
+        except LifecycleRefused:
+            # A graph that has begun closing is not an unreadable roster: the
+            # refusal keeps its own code rather than becoming a live graph's
+            # "try again later".
+            raise
         except Exception:
             # One stable code only — never the raised text, which can carry
             # private socket paths or remote error bodies.
@@ -793,6 +815,7 @@ class SachimaDelegateCoordinator:
             task_text=task_text,
         )
 
+    @_lifecycle_admitted
     def agent_eligibility(
         self, *, role: Any = None, division: Any = None
     ) -> tuple[tuple[Any, ...], AgentRoleSelection | None]:
@@ -808,7 +831,7 @@ class SachimaDelegateCoordinator:
         unreadable roster means for the answer it is composing.
         """
 
-        roster = self.registered_agent_ids()
+        roster = self._registered_agent_ids()
         view = build_agent_eligibility_view(
             registered_agent_ids=roster,
             presets=self._presets,
@@ -855,6 +878,35 @@ class SachimaDelegateCoordinator:
         passes ``None`` rather than a clipped prompt: the card says "not
         provided" and logs the round without a caption, which is true, instead
         of showing half an instruction as if it were a sentence.
+        """
+
+        return await self._create(
+            task_text=task_text,
+            preset=preset,
+            origin=origin,
+            delivery=delivery,
+            linked_from=linked_from,
+            admitted_role=admitted_role,
+            task_title=task_title,
+            round_title=round_title,
+        )
+
+    async def _create(
+        self,
+        *,
+        task_text: str,
+        preset: AgentExecutionPreset,
+        origin: DelegateOrigin,
+        delivery: DelegateDelivery | None,
+        linked_from: str | None,
+        admitted_role: Any,
+        task_title: Any,
+        round_title: Any,
+    ) -> DelegateOutcome:
+        """The body of :meth:`create`, for an entry that is already admitted.
+
+        An AGENT switch inside :meth:`continue_task` lands here rather than on
+        the public entry, so one admitted operation is admitted once.
         """
 
         await self._ensure_restored()
@@ -1033,7 +1085,7 @@ class SachimaDelegateCoordinator:
                 # how two cards of one piece of work start disagreeing about
                 # what that work is. A source Task that retains none passes
                 # none on, and the new card says so.
-                return await self.create(
+                return await self._create(
                     task_text=task_text,
                     preset=preset,
                     origin=origin,
@@ -2069,6 +2121,7 @@ class SachimaDelegateCoordinator:
             lambda: self._drive(turn.turn_key, mode="recover", delivery=delivery),
         )
 
+    @_lifecycle_admitted
     def result(self, task_ref: str) -> dict[str, Any] | None:
         """The durable result of this task's latest settled terminal."""
 
