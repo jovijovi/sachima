@@ -12,9 +12,12 @@ from typing import Any, Dict, List, Optional
 
 try:
     from aiohttp import web
-    from aiohttp.web_request import RequestKey
 except ImportError:
     web = None  # type: ignore[assignment]
+
+try:
+    from aiohttp.web_request import RequestKey
+except ImportError:
     RequestKey = None  # type: ignore[assignment,misc]
 
 

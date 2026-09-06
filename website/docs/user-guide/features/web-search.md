@@ -25,6 +25,7 @@ Both are configured through a single backend selection. Providers are chosen via
 | **Exa** | `EXA_API_KEY` (optional) | ✔ | ✔ | ✔ Keyless ring member · 1 000 searches/mo with key |
 | **Parallel** | `PARALLEL_API_KEY` (optional) | ✔ | ✔ | ✔ Keyless ring member · paid with key |
 | **Keenable** | `KEENABLE_API_KEY` (optional) | ✔ | ✔ | ✔ Keyless ring member · paid with key |
+| **Tavily** | `TAVILY_API_KEY` | ✔ | ✔ | 1 000 credits/mo free plan |
 | **xAI (Grok)** | `XAI_API_KEY` or `hermes auth add xai-oauth` | ✔ | — | Paid (SuperGrok or per-token) |
 
 Brave Search, DDGS, and xAI are **search-only** — pair any of them with Firecrawl/Keenable/Exa/Parallel when you also need `web_extract`. DDGS uses the [`ddgs` Python package](https://pypi.org/project/ddgs/) under the hood; if it isn't already installed, run `pip install ddgs` (or let Hermes lazy-install it on first use). xAI runs Grok's server-side `web_search` tool on the Responses API — results are LLM-generated rather than index-backed, so titles, descriptions, and URL choice are all model output (see the [trust-model caveat](#xai-grok) below).
@@ -299,6 +300,30 @@ Get access at [parallel.ai](https://parallel.ai).
 
 ---
 
+### Tavily
+
+Tavily provides both ranked search results and full-page extraction through
+the same API key. Add the secret through `hermes tools` or `~/.hermes/.env`,
+then select Tavily explicitly:
+
+```bash
+# ~/.hermes/.env
+TAVILY_API_KEY=tvly-your-key-here
+```
+
+```yaml
+# ~/.hermes/config.yaml
+web:
+  backend: "tavily"
+```
+
+Hermes sends the key in Tavily's documented Bearer authorization header and
+does not include it in the JSON body or logs. See Tavily's official
+[API introduction](https://docs.tavily.com/documentation/api-reference/introduction)
+and [Extract endpoint](https://docs.tavily.com/documentation/api-reference/endpoint/extract).
+
+---
+
 ### xAI (Grok) {#xai-grok}
 
 Routes `web_search` through Grok's server-side [web_search tool](https://docs.x.ai/developers/tools/web-search) on the Responses API. Grok runs the actual searching and returns the top results as structured JSON.
@@ -355,7 +380,7 @@ Set one provider for all web capabilities:
 ```yaml
 # ~/.hermes/config.yaml
 web:
-  backend: "searxng"   # firecrawl | searxng | brave-free | ddgs | keenable | exa | parallel | xai
+  backend: "searxng"   # firecrawl | searxng | brave-free | ddgs | keenable | exa | parallel | tavily | xai
 ```
 
 ### Per-capability configuration

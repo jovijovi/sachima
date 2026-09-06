@@ -92,6 +92,7 @@ class _FakeAgent:
         self._invalid_tool_retries = -1
         self._vision_supported = None
         self._persist_calls = 0
+        self._hydrate_todo_calls = []
         self._session_messages = []
         self._pending_cli_user_message = None
         self._session_persist_lock = threading.RLock()
@@ -130,8 +131,11 @@ class _FakeAgent:
     def _replay_compression_warning(self):
         pass
 
-    def _hydrate_todo_store(self, *_a, **_k):
-        pass
+    def _hydrate_todo_store(self, *args, **kwargs):
+        self._hydrate_todo_calls.append((args, kwargs))
+
+    def _todo_owner_scope_ref(self):
+        return {"profile": "default", "platform": "test", "conversation": "conversation:abc123abc123", "user": "user:abc123abc123"}
 
     def _safe_print(self, *_a, **_k):
         pass
@@ -199,6 +203,28 @@ def _build(agent, **overrides):
     )
     kwargs.update(overrides)
     return build_turn_context(**kwargs)
+
+
+def test_todo_hydration_runs_for_every_history_backed_turn_with_owner_scope():
+    agent = _FakeAgent()
+    history = [{"role": "user", "content": "previous"}]
+
+    _build(agent, user_message="new task", conversation_history=history)
+
+    assert agent._hydrate_todo_calls == [
+        (
+            (history,),
+            {
+                "current_user_message": "new task",
+                "owner_scope_ref": {
+                    "profile": "default",
+                    "platform": "test",
+                    "conversation": "conversation:abc123abc123",
+                    "user": "user:abc123abc123",
+                },
+            },
+        )
+    ]
 
 
 def test_returns_turn_context_with_user_message_appended():

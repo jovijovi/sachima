@@ -775,9 +775,20 @@ def build_turn_context(
     # event time. Preserve either value and cover any legacy unstamped handoff.
     stamp_message_timestamp(user_msg, timestamp=persist_user_timestamp)
 
-    # Hydrate todo store from conversation history.
-    if conversation_history and not agent._todo_store.has_items():
-        agent._hydrate_todo_store(conversation_history)
+    # Hydrate todo store from conversation history. This must run even when a
+    # cached agent already has items, because lifecycle hydration is also the
+    # fail-closed boundary that clears prior-transaction TODOs for unrelated
+    # new turns.
+    if conversation_history:
+        owner_scope_ref = None
+        owner_scope_fn = getattr(agent, "_todo_owner_scope_ref", None)
+        if callable(owner_scope_fn):
+            owner_scope_ref = owner_scope_fn()
+        agent._hydrate_todo_store(
+            conversation_history,
+            current_user_message=user_message,
+            owner_scope_ref=owner_scope_ref,
+        )
 
     # Hydrate per-session nudge counters from persisted history (issue #22357).
     if conversation_history and agent._user_turn_count == 0:

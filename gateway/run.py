@@ -41,6 +41,7 @@ import signal
 import threading
 import time
 import traceback
+import uuid
 from collections import OrderedDict
 from contextvars import Context, copy_context
 from pathlib import Path
@@ -587,6 +588,15 @@ _GATEWAY_PROVIDER_ERROR_RE = re.compile(
     r")",
     re.IGNORECASE,
 )
+
+
+def _copy_agent_todo_progress(progress_tracker: Any, agent_obj: Any) -> None:
+    """Project structured TodoStore state into a progress snapshot."""
+
+    from gateway.progress.runtime import copy_agent_todo_progress
+
+    copy_agent_todo_progress(progress_tracker, agent_obj)
+
 
 _GATEWAY_PROVIDER_POLICY_RE = re.compile(
     r"("  # raw provider policy/safety bodies are noisy and may be sensitive
@@ -4725,6 +4735,22 @@ class TurnRunner:
     def progress_callback(self, event_type: str, tool_name: str = None, preview: str = None, args: dict = None, **kwargs):
         """Callback invoked by agent on tool lifecycle events."""
         ctx = self._ctx
+        if ctx.task_workbench is not None and ctx._run_still_current():
+            try:
+                agent_obj = ctx.agent_holder[0] if ctx.agent_holder else None
+                ctx.task_workbench.record_callback_event(
+                    agent_obj,
+                    event_type,
+                    tool_name=tool_name,
+                    preview=preview,
+                    args=args,
+                    **kwargs,
+                )
+            except Exception:
+                logger.debug(
+                    "Task Workbench progress callback failed",
+                    exc_info=True,
+                )
         # Failed subagent → one clean user-facing notice. Handled FIRST,
         # before every progress-queue gate: platforms that keep
         # tool_progress off (Telegram, Slack, ...) must still hear about a
@@ -4791,6 +4817,11 @@ class TurnRunner:
                 ctx.log_queue.put(f"{ts}  {tool_name}:{preview_str}".rstrip())
             if not ctx.progress_queue:
                 return
+        # The opt-in Workbench is the progress projection for this turn. Its
+        # coalesced render signals replace raw per-tool chat lines, while the
+        # live-status and log rails above remain independent.
+        if ctx.task_workbench is not None:
+            return
         if not ctx.progress_queue or not ctx._run_still_current():
             return
 
@@ -5241,6 +5272,17 @@ class TurnRunner:
 
         adapter = self._runner._adapter_for_source(ctx.source)
         if not adapter:
+            return
+
+        if ctx.task_workbench is not None:
+            await ctx.task_workbench.send_progress_messages(
+                adapter=adapter,
+                chat_id=ctx.source.chat_id,
+                reply_to=ctx._progress_reply_to,
+                metadata=ctx._progress_metadata,
+                cleanup_message_ids=ctx._cleanup_msg_ids,
+                is_current=ctx._run_still_current,
+            )
             return
 
         if ctx._native_slack_task_cards and hasattr(
@@ -6265,6 +6307,9 @@ class TurnRunner:
 
         # Per-message state — callbacks and reasoning config change every
         # turn and must not be baked into the cached agent constructor.
+        # TODO lifecycle identity is turn-scoped even though the generic
+        # tool/process task_id remains session-scoped for compatibility.
+        agent._todo_transaction_id = ctx.task_transaction_id
         # Gate on needs_progress_queue (tool_progress OR thinking_progress)
         # rather than tool_progress alone: the progress_callback also relays
         # _thinking assistant scratch text, which is gated on
@@ -7998,6 +8043,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Retire the graph first: its observers must stop polling before
             # the transport and delivery they poll through are taken away.
             await owned.close()
+
+            try:
+                from gateway.sachima_live_progress_binding import (
+                    release_live_progress_execution_binding,
+                )
+
+                release_live_progress_execution_binding(owned.binding)
+            except Exception:
+                logger.debug(
+                    "Sachima live-progress execution unbind skipped", exc_info=True
+                )
 
             if bound_delegate_coordinator() is not owned:
                 # Someone rebound the global after we composed. Ours is
@@ -10216,6 +10272,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return prompt
         cfg = _load_gateway_runtime_config()
         return resolve_ephemeral_system_prompt_from_config(cfg)
+
+    @staticmethod
+    def _load_progress_model_config_display() -> tuple[str | None, str | None]:
+        """Load configured model suffixes displayed by the task workbench."""
+        cfg = _load_gateway_runtime_config()
+        reasoning_effort = str(
+            cfg_get(cfg, "agent", "reasoning_effort", default="") or ""
+        ).strip()
+        service_tier = str(
+            cfg_get(cfg, "agent", "service_tier", default="") or ""
+        ).strip()
+        return reasoning_effort or None, service_tier or None
 
     def _resolve_model_for_channel(
         self,
@@ -14390,6 +14458,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 bound_delegate_coordinator,
                 compose_delegate_coordinator,
             )
+            from gateway.sachima_live_progress_binding import (
+                bind_live_progress_display_from_env,
+                gateway_live_progress_source_bindings,
+            )
 
             # A fresh runner has nothing bound yet, so restoring alone would
             # leave resident delegation permanently unavailable in production:
@@ -14402,9 +14474,31 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # coordinator an application or a test bound from outside is
             # borrowed, not owned, and shutdown must leave it exactly as it
             # found it.
-            self._owned_delegate_coordinator = compose_delegate_coordinator()
+            borrowed_before = bound_delegate_coordinator()
+            self._owned_delegate_coordinator = compose_delegate_coordinator(
+                bindings=gateway_live_progress_source_bindings()
+            )
 
             _delegate_coordinator = bound_delegate_coordinator()
+            bind_live_progress_display_from_env(
+                execution_binding=(
+                    _delegate_coordinator.binding
+                    if _delegate_coordinator is not None
+                    else None
+                )
+            )
+            rebound_coordinator = bound_delegate_coordinator()
+            if (
+                self._owned_delegate_coordinator is None
+                and borrowed_before is None
+                and rebound_coordinator is not None
+            ):
+                # Live-progress-only ARSD composition created the resident
+                # graph. This runner owns it just as surely as one created by
+                # the delegation composition root, so restoration and shutdown
+                # must use the same lifecycle.
+                self._owned_delegate_coordinator = rebound_coordinator
+            _delegate_coordinator = rebound_coordinator
             if _delegate_coordinator is not None:
                 _delegate_coordinator.bind_lifecycle_loop(
                     asyncio.get_running_loop()
@@ -14430,6 +14524,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # keeps a half-restored one from admitting new work, which
                     # is the pre-existing fail-closed behavior.
                     from gateway.sachima_delegate import unbind_delegate_coordinator
+
+                    try:
+                        from gateway.sachima_live_progress_binding import (
+                            release_live_progress_execution_binding,
+                        )
+
+                        release_live_progress_execution_binding(
+                            _delegate_coordinator.binding
+                        )
+                    except Exception:
+                        logger.debug(
+                            "Sachima live-progress startup cleanup skipped",
+                            exc_info=True,
+                        )
 
                     unbind_delegate_coordinator()
             except Exception:
@@ -30473,6 +30581,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         persist_user_display_kind: Optional[str] = None,
         message_type: Optional[str] = None,
         delegate_handoff: Optional["_DelegateResultHandoff"] = None,
+        _progress_transaction: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Profile-scoping wrapper around the agent run.
 
@@ -30494,6 +30603,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 persist_user_display_kind=persist_user_display_kind,
                 message_type=message_type,
                 delegate_handoff=delegate_handoff,
+                _progress_transaction=_progress_transaction,
             )
 
         profile_home = self._resolve_profile_home_for_source(source)
@@ -30508,6 +30618,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 persist_user_display_kind=persist_user_display_kind,
                 message_type=message_type,
                 delegate_handoff=delegate_handoff,
+                _progress_transaction=_progress_transaction,
             )
 
     def _profile_name_for_source(self, source: SessionSource) -> Optional[str]:
@@ -30652,6 +30763,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         persist_user_display_kind: Optional[str] = None,
         message_type: Optional[str] = None,
         delegate_handoff: Optional["_DelegateResultHandoff"] = None,
+        _progress_transaction: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
@@ -30795,6 +30907,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Disable tool progress for webhooks - they don't support message editing,
         # so each progress line would be sent as a separate message.
         from gateway.config import Platform
+
+        task_tracker_config = display_config.get("task_tracker")
+        if not isinstance(task_tracker_config, dict):
+            task_tracker_config = {}
+        task_tracker_mode = str(
+            task_tracker_config.get("mode", "text") or "text"
+        ).strip().lower()
+        if task_tracker_mode == "feishu_card" and source.platform != Platform.FEISHU:
+            task_tracker_mode = "text"
+        task_tracker_enabled = (
+            source.platform != Platform.WEBHOOK
+            and is_truthy_value(task_tracker_config.get("enabled"), default=False)
+            and task_tracker_mode in {"text", "feishu_card"}
+        )
         tool_progress_enabled = progress_mode not in {"off", "log"} and source.platform != Platform.WEBHOOK
         # Live working-state status for text-rendering typing indicators
         # (Slack's assistant status line). Independent of tool_progress —
@@ -30855,13 +30981,64 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
             except Exception:
                 logger.debug("Slack native task-card config check failed", exc_info=True)
+        if task_tracker_enabled:
+            # The explicitly configured Workbench owns the visible progress
+            # projection, avoiding a second Slack-native card stream.
+            _native_slack_task_cards = False
         needs_progress_queue = (
-            tool_progress_enabled or _thinking_enabled or _native_slack_task_cards
+            tool_progress_enabled
+            or _thinking_enabled
+            or _native_slack_task_cards
+            or task_tracker_enabled
         )
 
 
-        # Queue for progress messages (thread-safe)
-        progress_queue = queue.Queue() if needs_progress_queue else None
+        # A logical transaction spans queued follow-up recursion. Always mint
+        # its identity even when the visible Workbench is off so TodoStore can
+        # bind lifecycle state to the actual task rather than the whole session.
+        progress_transaction_owner = not isinstance(_progress_transaction, dict)
+        progress_transaction = (
+            _progress_transaction
+            if isinstance(_progress_transaction, dict)
+            else {"transaction_id": f"task-{uuid.uuid4().hex}"}
+        )
+        progress_transaction.setdefault(
+            "transaction_id", f"task-{uuid.uuid4().hex}"
+        )
+        progress_queue = progress_transaction.get("queue")
+        if progress_queue is None and needs_progress_queue:
+            progress_queue = queue.Queue()
+            progress_transaction["queue"] = progress_queue
+
+        task_workbench = None
+        if task_tracker_enabled:
+            try:
+                from gateway.progress.runtime import TaskWorkbenchRuntime
+
+                runtime_config = dict(task_tracker_config)
+                runtime_config["mode"] = task_tracker_mode
+                runtime_config["tool_progress_mode"] = progress_mode
+                task_workbench = TaskWorkbenchRuntime.get_or_create(
+                    progress_transaction,
+                    runtime_config,
+                    platform=source.platform,
+                    message=message,
+                    history=history,
+                )
+                reasoning_display, tier_display = (
+                    self._load_progress_model_config_display()
+                )
+                task_workbench.set_model_config_display(
+                    reasoning_display,
+                    tier_display,
+                )
+            except Exception:
+                logger.debug(
+                    "Task Workbench disabled after setup error",
+                    exc_info=True,
+                )
+                task_tracker_enabled = False
+                task_workbench = None
         last_tool = [None]  # Mutable container for tracking in closure
         last_progress_msg = [None]  # Track last message for dedup
         repeat_count = [0]  # How many times the same message repeated
@@ -30932,6 +31109,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             tool_progress_enabled=tool_progress_enabled,
             progress_queue=progress_queue,
             log_queue=log_queue,
+            task_workbench=task_workbench,
+            progress_transaction=progress_transaction,
+            progress_transaction_owner=progress_transaction_owner,
+            task_transaction_id=str(progress_transaction["transaction_id"]),
             last_progress_msg=last_progress_msg,
             last_tool=last_tool,
             last_was_terminal_block=last_was_terminal_block,
@@ -31277,7 +31458,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # tool_progress:off user had the callback queue _thinking messages that
         # no task ever drained — so they silently never appeared.
         progress_task = None
-        if needs_progress_queue:
+        if needs_progress_queue and progress_transaction_owner:
             progress_task = asyncio.create_task(send_progress_messages())
 
         # Start the tool-call log writer when tool_progress == "log".
@@ -32241,10 +32422,42 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # model would leave no trace and the result would be
                     # released as if nothing had been shown to anyone.
                     delegate_handoff=delegate_handoff,
+                    _progress_transaction=progress_transaction,
                 )
                 return _preserve_queued_followup_history_offset(result, followup_result)
         finally:
             # Stop progress sender, interrupt monitor, and notification task
+            if task_workbench is not None and progress_transaction_owner:
+                progress_result = result_holder[0]
+                progress_failed = sys.exc_info()[0] is not None
+                for candidate in (
+                    progress_result,
+                    locals().get("response"),
+                    locals().get("followup_result"),
+                ):
+                    if isinstance(candidate, dict) and candidate.get("failed"):
+                        progress_failed = True
+                try:
+                    await task_workbench.finalize(
+                        agent_holder[0] if agent_holder else None,
+                        result=progress_result,
+                        is_error=progress_failed,
+                        visible=(
+                            progress_task is not None
+                            and not progress_task.done()
+                            and _run_still_current()
+                        ),
+                        timeout=(
+                            6.0
+                            if task_workbench.mode == "feishu_card"
+                            else 3.0
+                        ),
+                    )
+                except Exception:
+                    logger.debug(
+                        "Task Workbench finalization failed",
+                        exc_info=True,
+                    )
             if progress_task:
                 progress_task.cancel()
             if log_task:

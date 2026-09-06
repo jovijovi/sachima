@@ -58,6 +58,9 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     # live, just cleaned up after success so the chat doesn't fill up with
     # stale breadcrumbs. Failed runs leave bubbles in place as breadcrumbs.
     "cleanup_progress": False,
+    # Rich weather delivery is production behaviour, so it remains off until
+    # the user explicitly selects text/card/auto rendering.
+    "rich_result_weather": "off",  # off | auto | text | card
     # Live working-state status on platforms whose typing indicator renders
     # text (Slack's assistant status line). Values:
     #   "full" / true  -> verb + argument preview ("is running pytest…")
@@ -319,4 +322,13 @@ def _normalise(setting: str, value: Any) -> Any:
             return int(value)
         except (TypeError, ValueError):
             return 0
+    if setting == "rich_result_weather":
+        if value is False:
+            return "off"
+        if value is True:
+            return "auto"
+        normalized = str(value).strip().lower()
+        if normalized in {"off", "auto", "text", "card"}:
+            return normalized
+        return "off"
     return value

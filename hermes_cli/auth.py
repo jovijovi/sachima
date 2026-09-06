@@ -134,6 +134,7 @@ MINIMAX_OAUTH_REFRESH_SKEW_SECONDS = 60
 DEFAULT_QWEN_BASE_URL = "https://portal.qwen.ai/v1"
 DEFAULT_GITHUB_MODELS_BASE_URL = "https://api.githubcopilot.com"
 DEFAULT_COPILOT_ACP_BASE_URL = "acp://copilot"
+DEFAULT_GEMINI_CLI_ACP_BASE_URL = "acp://gemini"
 DEFAULT_OLLAMA_CLOUD_BASE_URL = "https://ollama.com/v1"
 DEFAULT_ACTUAL_BASE_URL = "https://api.actual.inc/v1"
 DEFAULT_ACTUAL_LOCAL_BASE_URL = "http://127.0.0.1:8080/v1"
@@ -304,6 +305,12 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         auth_type="external_process",
         inference_base_url=DEFAULT_COPILOT_ACP_BASE_URL,
         base_url_env_var="COPILOT_ACP_BASE_URL",
+    ),
+    "google-gemini-cli": ProviderConfig(
+        id="google-gemini-cli",
+        name="Google Gemini CLI",
+        auth_type="external_process",
+        inference_base_url=DEFAULT_GEMINI_CLI_ACP_BASE_URL,
     ),
     "gemini": ProviderConfig(
         id="gemini",
@@ -2232,6 +2239,7 @@ def resolve_provider(
     _PROVIDER_ALIASES = {
         "glm": "zai", "z-ai": "zai", "z.ai": "zai", "zhipu": "zai",
         "google": "gemini", "google-gemini": "gemini", "google-ai-studio": "gemini",
+        "gemini-cli": "google-gemini-cli", "gemini-oauth": "google-gemini-cli",
         "x-ai": "xai", "x.ai": "xai", "grok": "xai",
         "xai-oauth": "xai-oauth", "x-ai-oauth": "xai-oauth",
         "grok-oauth": "xai-oauth", "xai-grok-oauth": "xai-oauth",
@@ -7287,13 +7295,22 @@ def get_external_process_provider_status(provider_id: str) -> Dict[str, Any]:
     if not pconfig or pconfig.auth_type != "external_process":
         return {"configured": False}
 
-    command = (
-        os.getenv("HERMES_COPILOT_ACP_COMMAND", "").strip()
-        or os.getenv("COPILOT_CLI_PATH", "").strip()
-        or "copilot"
-    )
-    raw_args = os.getenv("HERMES_COPILOT_ACP_ARGS", "").strip()
-    args = shlex.split(raw_args) if raw_args else ["--acp", "--stdio"]
+    if provider_id == "google-gemini-cli":
+        command = "gemini"
+        args = ["--acp"]
+        login_hint = (
+            "Run `gemini` and choose \"Sign in with Google\". Authentication "
+            "is stored and refreshed by the official Gemini CLI."
+        )
+    else:
+        command = (
+            os.getenv("HERMES_COPILOT_ACP_COMMAND", "").strip()
+            or os.getenv("COPILOT_CLI_PATH", "").strip()
+            or "copilot"
+        )
+        raw_args = os.getenv("HERMES_COPILOT_ACP_ARGS", "").strip()
+        args = shlex.split(raw_args) if raw_args else ["--acp", "--stdio"]
+        login_hint = "Authentication is managed by the external CLI."
     base_url = os.getenv(pconfig.base_url_env_var, "").strip() if pconfig.base_url_env_var else ""
     if not base_url:
         base_url = pconfig.inference_base_url
@@ -7308,6 +7325,8 @@ def get_external_process_provider_status(provider_id: str) -> Dict[str, Any]:
         "resolved_command": resolved_command,
         "base_url": base_url,
         "logged_in": bool(resolved_command or base_url.startswith("acp+tcp://")),
+        "login_verified": False,
+        "login_hint": login_hint,
     }
 
 
@@ -7328,7 +7347,8 @@ def get_auth_status(provider_id: Optional[str] = None) -> Dict[str, Any]:
         return get_qwen_auth_status()
     if target == "minimax-oauth":
         return get_minimax_oauth_auth_status()
-    if target == "copilot-acp":
+    pconfig = PROVIDER_REGISTRY.get(target)
+    if pconfig and pconfig.auth_type == "external_process":
         return get_external_process_provider_status(target)
     if target == "azure-foundry":
         return _get_azure_foundry_auth_status()
@@ -7518,15 +7538,29 @@ def resolve_external_process_provider_credentials(provider_id: str) -> Dict[str,
     if not base_url:
         base_url = pconfig.inference_base_url
 
-    command = (
-        os.getenv("HERMES_COPILOT_ACP_COMMAND", "").strip()
-        or os.getenv("COPILOT_CLI_PATH", "").strip()
-        or "copilot"
-    )
-    raw_args = os.getenv("HERMES_COPILOT_ACP_ARGS", "").strip()
-    args = shlex.split(raw_args) if raw_args else ["--acp", "--stdio"]
+    if provider_id == "google-gemini-cli":
+        command = "gemini"
+        args = ["--acp"]
+        sentinel_api_key = "gemini-cli-acp"
+    else:
+        command = (
+            os.getenv("HERMES_COPILOT_ACP_COMMAND", "").strip()
+            or os.getenv("COPILOT_CLI_PATH", "").strip()
+            or "copilot"
+        )
+        raw_args = os.getenv("HERMES_COPILOT_ACP_ARGS", "").strip()
+        args = shlex.split(raw_args) if raw_args else ["--acp", "--stdio"]
+        sentinel_api_key = "copilot-acp"
     resolved_command = shutil.which(command) if command else None
     if not resolved_command and not base_url.startswith("acp+tcp://"):
+        if provider_id == "google-gemini-cli":
+            raise AuthError(
+                "Could not find the official Gemini CLI command 'gemini'. "
+                "Install it with `npm install -g @google/gemini-cli`, then "
+                "run `gemini` and choose \"Sign in with Google\".",
+                provider=provider_id,
+                code="missing_gemini_cli",
+            )
         raise AuthError(
             f"Could not find the Copilot CLI command '{command}'. "
             "Install GitHub Copilot CLI or set HERMES_COPILOT_ACP_COMMAND/COPILOT_CLI_PATH.",
@@ -7536,7 +7570,7 @@ def resolve_external_process_provider_credentials(provider_id: str) -> Dict[str,
 
     return {
         "provider": provider_id,
-        "api_key": "copilot-acp",
+        "api_key": sentinel_api_key,
         "base_url": base_url.rstrip("/"),
         "command": resolved_command or command,
         "args": args,

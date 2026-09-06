@@ -71,6 +71,7 @@ const PROFILE_SCOPED_PREFIXES = [
   "/api/status",
   "/api/gateway",
   "/api/analytics",
+  "/api/progress",
   "/api/skills",
   "/api/tools/toolsets",
   "/api/config",
@@ -511,6 +512,22 @@ export const api = {
     if (params.component && params.component !== "all") qs.set("component", params.component);
     return fetchJSON<LogsResponse>(`/api/logs?${qs.toString()}`);
   },
+  getProgressTransactions: (
+    params: { limit?: number; status?: string } = {},
+  ) => {
+    const qs = new URLSearchParams();
+    qs.set("limit", String(params.limit ?? 50));
+    if (params.status && params.status !== "all") {
+      qs.set("status", params.status);
+    }
+    return fetchJSON<ProgressTransactionsResponse>(
+      `/api/progress/transactions?${qs.toString()}`,
+    );
+  },
+  getProgressTransactionEvents: (id: string, limit = 200) =>
+    fetchJSON<ProgressTransactionEventsResponse>(
+      `/api/progress/transactions/${encodeURIComponent(id)}/events?limit=${limit}`,
+    ),
   getAnalytics: (days: number, profile = getManagementProfile()) =>
     fetchJSON<AnalyticsResponse>(
       appendProfileParam(`/api/analytics/usage?days=${days}`, profile),
@@ -1852,6 +1869,114 @@ export interface ActionStatusResponse {
   name: string;
   pid: number | null;
   running: boolean;
+}
+
+export interface ProgressOperationSummary {
+  event_type: string;
+  tool_name: string | null;
+  status: string;
+  preview: string | null;
+  duration: number | null;
+  is_error: boolean;
+}
+
+export interface ProgressIterationUsage {
+  current: number;
+  maximum: number;
+}
+
+export interface ProgressTodoItem {
+  id: string;
+  content: string;
+  status: string;
+  parent_id?: string | null;
+  depth: number;
+  source: string;
+  executor?: string | null;
+}
+
+export interface ProgressOwnerScopeRef {
+  profile: string;
+  platform: string;
+  conversation: string;
+  user: string;
+}
+
+export interface ProgressTodoLifecycle {
+  state: string;
+  suspension_reason?: string | null;
+  completed_count: number;
+  remaining_count: number;
+  next_action?: string | null;
+  owner_scope_ref?: ProgressOwnerScopeRef | null;
+}
+
+export interface ProgressSuspendedTodoHint {
+  transaction_id: string;
+  title: string;
+  reason: string;
+  remaining_count: number;
+  next_action?: string | null;
+  overflow_count?: number;
+  owner_scope_ref?: ProgressOwnerScopeRef | null;
+}
+
+export interface ProgressTransactionSummary {
+  id: string;
+  title: string;
+  status: string;
+  started_at: number | null;
+  updated_at: number | null;
+  completed_at: number | null;
+  operation_count: number;
+  last_operation: ProgressOperationSummary | null;
+  iteration_usage?: ProgressIterationUsage | null;
+  todo_items?: ProgressTodoItem[] | null;
+  todo_lifecycle?: ProgressTodoLifecycle | null;
+  suspended_todo_hint?: ProgressSuspendedTodoHint | null;
+}
+
+export interface ProgressOperationEvent extends ProgressOperationSummary {
+  id: string;
+  args_preview: string | null;
+  started_at: number | null;
+  updated_at: number | null;
+  completed_at: number | null;
+  metadata: Record<string, string>;
+}
+
+export interface ProgressTransactionRecord {
+  id: string;
+  title: string;
+  status: string;
+  started_at: number | null;
+  updated_at: number | null;
+  completed_at: number | null;
+  iteration_usage?: ProgressIterationUsage | null;
+  todo_items?: ProgressTodoItem[] | null;
+  todo_lifecycle?: ProgressTodoLifecycle | null;
+  suspended_todo_hint?: ProgressSuspendedTodoHint | null;
+}
+
+export interface ProgressEventRecord {
+  schema_version: number;
+  record_type: "progress.operation" | "progress.snapshot";
+  written_at: number | null;
+  transaction: ProgressTransactionRecord;
+  operation?: ProgressOperationEvent;
+}
+
+export interface ProgressTransactionsResponse {
+  enabled: boolean;
+  transactions: ProgressTransactionSummary[];
+  skipped_lines: number;
+}
+
+export interface ProgressTransactionEventsResponse {
+  enabled: boolean;
+  transaction: ProgressTransactionSummary | null;
+  events: ProgressEventRecord[];
+  skipped_lines: number;
 }
 
 export interface PlatformStatus {

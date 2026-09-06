@@ -74,6 +74,9 @@ def _supports_same_provider_pool_setup(provider: str) -> bool:
 # Default model lists per provider — used as fallback when the live
 # /models endpoint can't be reached.
 _DEFAULT_PROVIDER_MODELS = {
+    "google-gemini-cli": [
+        "gemini-cli",
+    ],
     "copilot-acp": [
         "copilot-acp",
     ],

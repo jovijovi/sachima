@@ -259,6 +259,190 @@ class TestWebServerEndpoints:
         self.client = TestClient(app)
         self.client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
 
+    @staticmethod
+    def _write_progress_record(path: Path, record: dict) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+    @staticmethod
+    def _progress_record(transaction_id: str, *, written_at: int = 10) -> dict:
+        return {
+            "schema_version": 1,
+            "record_type": "progress.operation",
+            "written_at": written_at,
+            "transaction": {
+                "id": transaction_id,
+                "title": "Dashboard task",
+                "status": "running",
+                "started_at": 1,
+                "updated_at": written_at,
+                "completed_at": None,
+                "iteration_usage": {"current": 2, "maximum": 12},
+                "todo_items": [
+                    {
+                        "id": "implement",
+                        "content": "Implement the dashboard",
+                        "status": "in_progress",
+                        "depth": 0,
+                        "source": "todo_tool",
+                        "executor": "hermes-agent",
+                    }
+                ],
+                "todo_lifecycle": {
+                    "state": "active",
+                    "completed_count": 0,
+                    "remaining_count": 1,
+                },
+            },
+            "operation": {
+                "id": f"op-{written_at}",
+                "event_type": "tool_call",
+                "tool_name": "terminal",
+                "status": "completed",
+                "preview": "run focused tests",
+                "args_preview": "scripts/run_tests.sh",
+                "started_at": 2,
+                "updated_at": written_at,
+                "completed_at": written_at,
+                "duration": written_at - 2,
+                "is_error": False,
+                "metadata": {},
+            },
+        }
+
+    def test_progress_transactions_requires_session_token(self):
+        from starlette.testclient import TestClient
+        from hermes_cli.web_server import app
+
+        assert TestClient(app).get("/api/progress/transactions").status_code == 401
+
+    def test_get_progress_transactions_reads_configured_jsonl_store(
+        self, monkeypatch, tmp_path
+    ):
+        import hermes_cli.web_server as web_server
+
+        event_path = tmp_path / "progress" / "events.jsonl"
+        self._write_progress_record(event_path, self._progress_record("tx-web"))
+        monkeypatch.setattr(
+            web_server,
+            "load_config",
+            lambda: {
+                "display": {
+                    "task_tracker": {
+                        "persist_events": True,
+                        "event_store": "jsonl",
+                        "event_store_path": str(event_path),
+                    }
+                }
+            },
+        )
+
+        response = self.client.get("/api/progress/transactions?limit=10")
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["enabled"] is True
+        transaction = payload["transactions"][0]
+        assert transaction["id"] == "tx-web"
+        assert transaction["iteration_usage"] == {"current": 2, "maximum": 12}
+        assert transaction["todo_items"][0]["executor"] == "hermes"
+        assert transaction["todo_lifecycle"]["state"] == "active"
+
+    def test_progress_transactions_follow_selected_management_profile(self):
+        from hermes_constants import get_hermes_home
+
+        profile_home = get_hermes_home() / "profiles" / "worker"
+        event_path = profile_home / "progress" / "events.jsonl"
+        self._write_progress_record(
+            event_path,
+            self._progress_record("tx-worker"),
+        )
+        profile_home.mkdir(parents=True, exist_ok=True)
+        (profile_home / "config.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "display": {
+                        "task_tracker": {
+                            "persist_events": True,
+                            "event_store": "jsonl",
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        own_response = self.client.get("/api/progress/transactions")
+        profile_response = self.client.get(
+            "/api/progress/transactions?profile=worker"
+        )
+
+        assert own_response.status_code == 200
+        assert own_response.json()["enabled"] is False
+        assert profile_response.status_code == 200
+        assert [
+            transaction["id"]
+            for transaction in profile_response.json()["transactions"]
+        ] == ["tx-worker"]
+
+    def test_get_progress_transaction_events_returns_bounded_timeline(
+        self, monkeypatch, tmp_path
+    ):
+        import hermes_cli.web_server as web_server
+
+        event_path = tmp_path / "progress" / "events.jsonl"
+        for written_at in range(1, 4):
+            self._write_progress_record(
+                event_path,
+                self._progress_record("tx-detail", written_at=written_at),
+            )
+        monkeypatch.setattr(
+            web_server,
+            "load_config",
+            lambda: {
+                "display": {
+                    "task_tracker": {
+                        "persist_events": True,
+                        "event_store": "jsonl",
+                        "event_store_path": str(event_path),
+                    }
+                }
+            },
+        )
+
+        response = self.client.get(
+            "/api/progress/transactions/tx-detail/events?limit=2"
+        )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["transaction"]["id"] == "tx-detail"
+        assert [event["operation"]["id"] for event in payload["events"]] == [
+            "op-2",
+            "op-3",
+        ]
+
+    def test_progress_transactions_return_empty_when_persistence_disabled(
+        self, monkeypatch
+    ):
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.setattr(
+            web_server,
+            "load_config",
+            lambda: {"display": {"task_tracker": {"persist_events": False}}},
+        )
+
+        response = self.client.get("/api/progress/transactions")
+
+        assert response.status_code == 200
+        assert response.json() == {
+            "enabled": False,
+            "transactions": [],
+            "skipped_lines": 0,
+        }
+
     @pytest.mark.requires_wal
     def test_get_sessions_poll_preserves_pending_wal(self):
         """Repeated GET-only polls must not checkpoint another writer's WAL."""

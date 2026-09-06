@@ -141,7 +141,16 @@ TOOLSETS = {
     
     "image_gen": {
         "description": "Creative generation tools (images)",
-        "tools": ["image_generate"],
+        "tools": ["image_generate", "image_edit", "image_history"],
+        "includes": []
+    },
+
+    "media_fetch": {
+        "description": (
+            "Restricted profile-scoped HTTPS media import and cache tools "
+            "for images and videos"
+        ),
+        "tools": ["media_fetch_url", "media_list", "media_delete"],
         "includes": []
     },
 
@@ -219,6 +228,61 @@ TOOLSETS = {
     "memory": {
         "description": "Persistent memory across sessions (personal notes + user profile)",
         "tools": ["memory"],
+        "includes": []
+    },
+
+    "memory_palace": {
+        "description": "Profile-scoped Markdown notes under the active Hermes home",
+        "tools": [
+            "palace_list", "palace_read", "palace_search",
+            "palace_write", "palace_patch",
+        ],
+        "includes": []
+    },
+
+    "workspace_file": {
+        "description": "Restricted text files under the active profile workspace",
+        "tools": [
+            "workspace_list", "workspace_read", "workspace_search",
+            "workspace_write", "workspace_patch",
+        ],
+        "includes": []
+    },
+
+    "sachima_live_progress": {
+        "description": (
+            "Sachima ARS live-progress display (default-off, internal). "
+            "Renders a refs/counts/status-only view of one supervised "
+            "session; hidden unless SACHIMA_LIVE_PROGRESS_DISPLAY_SURFACE "
+            "is set to an approved local/offline surface and the host has "
+            "bound a display service. Not part of any platform default "
+            "toolset — enable explicitly via config."
+        ),
+        "tools": ["sachima_live_progress_display"],
+        "includes": []
+    },
+
+    "clock": {
+        "description": "Read-only current time and date lookup",
+        "tools": ["clock_now"],
+        "includes": []
+    },
+
+    "calendar": {
+        "description": "Chinese lunar and common Western holiday lookup",
+        "tools": ["calendar_lookup"],
+        "includes": []
+    },
+
+    "weather": {
+        "description": "Narrow weather lookup with rich-result output",
+        "tools": ["weather_query"],
+        "includes": []
+    },
+
+    "journal": {
+        "description": "Profile-scoped journal appends through the memory palace",
+        "tools": ["journal_write"],
         "includes": []
     },
 
@@ -569,6 +633,7 @@ TOOLSETS = {
             "feishu_drive_list_comment_replies",
             "feishu_drive_reply_comment",
             "feishu_drive_add_comment",
+            "github_pr_approval_card",
         ],
         "includes": []
     },

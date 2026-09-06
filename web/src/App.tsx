@@ -82,6 +82,7 @@ const DocsPage = lazy(() => import("@/pages/DocsPage"));
 const EnvPage = lazy(() => import("@/pages/EnvPage"));
 const FilesPage = lazy(() => import("@/pages/FilesPage"));
 const SessionsPage = lazy(() => import("@/pages/SessionsPage"));
+const ProgressPage = lazy(() => import("@/pages/ProgressPage"));
 const LogsPage = lazy(() => import("@/pages/LogsPage"));
 const AnalyticsPage = lazy(() => import("@/pages/AnalyticsPage"));
 const ModelsPage = lazy(() => import("@/pages/ModelsPage"));
@@ -157,6 +158,7 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/": RootRedirect,
   "/sessions": SessionsPage,
   "/files": FilesPage,
+  "/progress": ProgressPage,
   "/analytics": AnalyticsPage,
   "/models": ModelsPage,
   "/logs": LogsPage,
@@ -191,6 +193,7 @@ const BUILTIN_NAV_REST: NavItem[] = [
     icon: MessageSquare,
   },
   { path: "/files", label: "Files", icon: FolderOpen },
+  { path: "/progress", label: "Progress", icon: Activity },
   {
     path: "/analytics",
     labelKey: "analytics",

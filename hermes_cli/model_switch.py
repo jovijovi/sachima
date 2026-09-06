@@ -3198,6 +3198,25 @@ def list_authenticated_providers(
             has_creds = True
         elif overlay.auth_type == "aws_sdk":
             has_creds = _has_aws_sdk_creds_for_listing(hermes_slug)
+        elif overlay.auth_type == "external_process":
+            # Process-backed providers own their credentials outside Hermes.
+            # Presence of the supported CLI/transport is the only safe local
+            # availability signal; status deliberately does not inspect the
+            # external tool's credential files or attempt an interactive login.
+            try:
+                from hermes_cli.auth import get_external_process_provider_status
+
+                has_creds = bool(
+                    get_external_process_provider_status(hermes_slug).get(
+                        "configured"
+                    )
+                )
+            except Exception as exc:
+                logger.debug(
+                    "External-process provider check failed for %s: %s",
+                    hermes_slug,
+                    exc,
+                )
         elif overlay.auth_type == "vertex":
             # Vertex authenticates via OAuth2 (service-account JSON / ADC),
             # not an API key — mirror the aws_sdk gate above, otherwise the
@@ -3278,7 +3297,9 @@ def list_authenticated_providers(
         if not has_creds:
             continue
 
-        if hermes_slug in {"openai-codex", "copilot", "copilot-acp"}:
+        if hermes_slug in {"openai-codex", "copilot"} or (
+            overlay.auth_type == "external_process"
+        ):
             # Use live OAuth-backed discovery so the gateway /model picker
             # matches what the user's authenticated Codex/Copilot backend
             # actually serves — including ChatGPT-Pro-only Codex slugs

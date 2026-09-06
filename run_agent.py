@@ -4794,26 +4794,129 @@ class AIAgent:
         except Exception:
             pass
 
-    def _hydrate_todo_store(self, history: List[Dict[str, Any]]) -> None:
-        """
-        Recover todo state from conversation history.
-        
-        The gateway creates a fresh AIAgent per message, so the in-memory
-        TodoStore is empty. We scan the history for the most recent todo
-        tool response and replay it to reconstruct the state.
+    def _todo_owner_scope_ref(self) -> Dict[str, str] | None:
+        """Build a privacy-safe owner scope for lifecycle TODO resume."""
 
-        Hydration is restricted to tool results that are paired with an
-        earlier assistant ``todo`` tool call. The gateway/API server accepts
-        caller-supplied ``conversation_history``, so a forged bare
-        ``role: tool`` message carrying a ``todos`` array must not be able to
-        seed the store without a matching canonical tool call
-        (GHSA-5g4g-6jrg-mw3g).
+        conversation_id = (
+            getattr(self, "_gateway_session_key", None)
+            or getattr(self, "_chat_id", None)
+            or getattr(self, "session_id", None)
+        )
+        user_id = getattr(self, "_user_id_alt", None) or getattr(
+            self, "_user_id", None
+        )
+        if not conversation_id or not user_id:
+            return None
+        try:
+            from hermes_cli.profiles import get_active_profile_name
+
+            profile = get_active_profile_name() or "default"
+        except Exception:
+            profile = "default"
+        try:
+            from gateway.progress.todo_lifecycle import make_owner_scope_ref
+
+            owner = make_owner_scope_ref(
+                profile=profile,
+                platform=getattr(self, "platform", None) or "cli",
+                conversation_id=conversation_id,
+                user_id=user_id,
+                thread_id=getattr(self, "_thread_id", None),
+            )
+            return owner.__dict__.copy()
+        except Exception:
+            return None
+
+    def _hydrate_todo_store(
+        self,
+        history: List[Dict[str, Any]],
+        *,
+        current_user_message: str = "",
+        owner_scope_ref: Dict[str, Any] | None = None,
+    ) -> None:
+        """Recover TODO state while isolating unrelated logical tasks.
+
+        Direct callers that omit lifecycle context retain the upstream
+        revision-aware behavior. New gateway turns restore lifecycle-aware
+        TODOs only for one deterministic same-owner resume request; all other
+        new turns clear prior task state. Every accepted result must remain
+        paired with a real assistant ``todo`` call.
         """
         from tools.todo_tool import MAX_TODO_RESULT_CHARS
 
-        # Walk history backwards to find the most recent todo tool response
-        last_todo_response = None
-        last_todo_revision = 0
+        # Preserve the upstream API for direct hydration and existing callers.
+        # Lifecycle isolation activates only when the caller supplies turn
+        # context, as build_turn_context does for every history-backed turn.
+        if not current_user_message and owner_scope_ref is None:
+            last_todo_response = None
+            last_todo_revision = 0
+            for idx in range(len(history) - 1, -1, -1):
+                msg = history[idx]
+                if msg.get("role") != "tool":
+                    continue
+                content = msg.get("content", "")
+                if not isinstance(content, str):
+                    continue
+                if not self._tool_response_matches_todo_call(history, idx):
+                    continue
+                if len(content) > MAX_TODO_RESULT_CHARS:
+                    logger.warning(
+                        "Skipping oversized todo tool response during hydration: "
+                        "session=%s chars=%d",
+                        self.session_id or "none",
+                        len(content),
+                    )
+                    continue
+                if '"todos"' not in content:
+                    continue
+                try:
+                    data = json.loads(content)
+                except (json.JSONDecodeError, TypeError):
+                    continue
+                if "todos" in data and isinstance(data["todos"], list):
+                    last_todo_response = data["todos"]
+                    last_todo_revision = data.get("revision", 1)
+                    break
+
+            if last_todo_response is not None:
+                current_revision = int(
+                    self._todo_store.snapshot().get("revision", 0) or 0
+                )
+                try:
+                    history_revision = max(0, int(last_todo_revision or 0))
+                except (TypeError, ValueError):
+                    history_revision = 1
+                if history_revision > current_revision:
+                    self._todo_store.restore(
+                        last_todo_response,
+                        revision=history_revision,
+                    )
+                    if not self.quiet_mode:
+                        self._vprint(
+                            f"{self.log_prefix}📋 Restored "
+                            f"{len(last_todo_response)} todo item(s) from history"
+                        )
+            _set_interrupt(False)
+            return
+
+        from gateway.progress.todo_lifecycle import (
+            SuspendedTodoHint,
+            normalize_owner_scope_ref,
+            normalize_todo_lifecycle,
+            select_resume_candidate,
+        )
+
+        requester_scope = normalize_owner_scope_ref(
+            owner_scope_ref or self._todo_owner_scope_ref()
+        )
+        candidates: list[
+            tuple[SuspendedTodoHint, list[dict[str, Any]], int]
+        ] = []
+        seen_transaction_ids: set[str] = set()
+
+        # The first record encountered for a transaction is authoritative.
+        # This makes a newer terminal record a tombstone for older active
+        # snapshots and prevents many writes from counting as many tasks.
         for idx in range(len(history) - 1, -1, -1):
             msg = history[idx]
             if msg.get("role") != "tool":
@@ -4821,50 +4924,101 @@ class AIAgent:
             content = msg.get("content", "")
             if not isinstance(content, str):
                 continue
-            # Only accept tool results paired with a prior assistant todo call.
             if not self._tool_response_matches_todo_call(history, idx):
                 continue
             if len(content) > MAX_TODO_RESULT_CHARS:
                 logger.warning(
-                    "Skipping oversized todo tool response during hydration: "
+                    "Skipping oversized todo tool response during lifecycle hydration: "
                     "session=%s chars=%d",
                     self.session_id or "none",
                     len(content),
                 )
                 continue
-            # Quick check: todo responses contain "todos" key
             if '"todos"' not in content:
                 continue
             try:
                 data = json.loads(content)
-                if "todos" in data and isinstance(data["todos"], list):
-                    last_todo_response = data["todos"]
-                    last_todo_revision = data.get("revision", 1)
-                    break
             except (json.JSONDecodeError, TypeError):
                 continue
-
-        if last_todo_response is not None:
-            # Restore only when history carries a newer revision than the
-            # store already holds (a live store re-hydrated in place must not
-            # be rolled back by older history). Sessions that predate
-            # revisions default to 1 so they still hydrate. Empty lists
-            # matter: they are an authoritative clear after an earlier
-            # non-empty plan.
-            current_revision = int(
-                self._todo_store.snapshot().get("revision", 0) or 0
-            )
+            todos = data.get("todos")
+            lifecycle_raw = data.get("todo_lifecycle")
+            if not isinstance(todos, list) or not isinstance(lifecycle_raw, dict):
+                continue
+            tx_id = str(lifecycle_raw.get("transaction_id") or "").strip()
+            if not tx_id or tx_id in seen_transaction_ids:
+                continue
+            seen_transaction_ids.add(tx_id)
+            lifecycle = normalize_todo_lifecycle(lifecycle_raw)
+            if lifecycle is None or lifecycle.state in {
+                "completed",
+                "cancelled",
+                "archived",
+            }:
+                continue
+            if (
+                lifecycle.state
+                not in {"created", "active", "resumed", "suspended"}
+                or lifecycle.owner_scope_ref is None
+            ):
+                continue
+            remaining = [
+                item
+                for item in todos
+                if isinstance(item, dict)
+                and str(item.get("status", "")).strip().lower()
+                in {"pending", "in_progress"}
+            ]
+            if not remaining:
+                continue
             try:
-                history_revision = max(0, int(last_todo_revision or 0))
+                revision = max(0, int(data.get("revision", 0) or 0))
             except (TypeError, ValueError):
-                history_revision = 1
-            if history_revision > current_revision:
-                self._todo_store.restore(
-                    last_todo_response,
-                    revision=history_revision,
+                revision = 0
+            title = str(remaining[0].get("content") or tx_id).strip() or tx_id
+            candidates.append(
+                (
+                    SuspendedTodoHint(
+                        transaction_id=tx_id,
+                        title=title,
+                        reason=lifecycle.suspension_reason or "paused",
+                        remaining_count=len(remaining),
+                        next_action=lifecycle.next_action,
+                        owner_scope_ref=lifecycle.owner_scope_ref,
+                    ),
+                    todos,
+                    revision,
                 )
-                if not self.quiet_mode:
-                    self._vprint(f"{self.log_prefix}📋 Restored {len(last_todo_response)} todo item(s) from history")
+            )
+
+        selected = select_resume_candidate(
+            current_user_message,
+            [hint for hint, _todos, _revision in candidates],
+            requester_scope,
+        )
+        if selected is None:
+            self._todo_store.clear_for_new_transaction()
+            _set_interrupt(False)
+            return
+
+        for hint, todos, revision in candidates:
+            if hint.transaction_id != selected.transaction_id:
+                continue
+            self._todo_store.restore(todos, revision=revision)
+            self._todo_store.bind_transaction(
+                hint.transaction_id,
+                owner_scope_ref=(
+                    hint.owner_scope_ref.__dict__.copy()
+                    if hint.owner_scope_ref is not None
+                    else None
+                ),
+            )
+            self._todo_store.mark_lifecycle("resumed")
+            if not self.quiet_mode:
+                self._vprint(
+                    f"{self.log_prefix}📋 Restored {len(todos)} todo item(s) "
+                    "from suspended history"
+                )
+            break
         _set_interrupt(False)
 
     @classmethod
@@ -8750,7 +8904,19 @@ class AIAgent:
         """
         # Bound before any provider work is scheduled: after the executor is
         # running it is too late to decide whose turn a request belongs to.
-        self._activate_provider_dispatch_lease(_provider_dispatch_lease)
+        activate_dispatch_lease = getattr(
+            self, "_activate_provider_dispatch_lease", None
+        )
+        if activate_dispatch_lease is None:
+            # Some narrow integration tests and legacy adapters call the
+            # unbound forwarder with an AIAgent-shaped object. Preserve that
+            # supported seam without bypassing per-instance test/adaptor
+            # overrides on real AIAgent instances.
+            AIAgent._activate_provider_dispatch_lease(
+                self, _provider_dispatch_lease
+            )
+        else:
+            activate_dispatch_lease(_provider_dispatch_lease)
         # A review deliberately shares this agent's session_id for prompt-cache
         # parity. Fence review startup or interrupt an admitted request, then
         # await that request's exit before opening any live-turn Relay or task

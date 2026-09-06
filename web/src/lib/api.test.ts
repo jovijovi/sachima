@@ -119,6 +119,28 @@ describe("api.getModelOptions", () => {
   });
 });
 
+describe("api progress helpers", () => {
+  it("keeps progress reads on the selected management profile", async () => {
+    const fetchMock = jsonFetchMock({ enabled: true, transactions: [] });
+    vi.stubGlobal("fetch", fetchMock);
+    setManagementProfile("worker");
+
+    await api.getProgressTransactions({ limit: 25, status: "running" });
+    await api.getProgressTransactionEvents("tx / one", 80);
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "/api/progress/transactions?limit=25&status=running&profile=worker",
+      expect.objectContaining({ credentials: "include" }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "/api/progress/transactions/tx%20%2F%20one/events?limit=80&profile=worker",
+      expect.objectContaining({ credentials: "include" }),
+    );
+  });
+});
+
 describe("api OAuth helpers", () => {
   it("starts OAuth login in gated mode without requiring an injected session token", async () => {
     vi.stubGlobal("window", { __HERMES_AUTH_REQUIRED__: true });

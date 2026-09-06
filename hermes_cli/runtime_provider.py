@@ -2264,10 +2264,11 @@ def resolve_runtime_provider(
                 "requested_provider": requested_provider,
             }
 
-    if provider == "copilot-acp":
+    pconfig = PROVIDER_REGISTRY.get(provider)
+    if pconfig and pconfig.auth_type == "external_process":
         creds = resolve_external_process_provider_credentials(provider)
         return {
-            "provider": "copilot-acp",
+            "provider": provider,
             "api_mode": "chat_completions",
             "base_url": creds.get("base_url", "").rstrip("/"),
             "api_key": creds.get("api_key", ""),

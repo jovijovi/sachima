@@ -46,6 +46,13 @@ class TurnContext:
     # --- queues ----------------------------------------------------------
     progress_queue: Any = None
     log_queue: Any = None
+    # Optional task-workbench projection. The transaction/runtime are shared
+    # across recursive queued-follow-up frames so one logical task keeps one
+    # card identity and one terminal flush owner.
+    task_workbench: Any = None
+    progress_transaction: Optional[dict] = None
+    progress_transaction_owner: bool = True
+    task_transaction_id: Optional[str] = None
 
     # --- mutable single-element containers (shared with the outer body) --
     last_progress_msg: list = field(default_factory=lambda: [None])

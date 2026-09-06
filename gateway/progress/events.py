@@ -1,0 +1,99 @@
+"""Dataclasses used by pure gateway progress tracking."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any
+
+from gateway.progress.todo_lifecycle import SuspendedTodoHint, TodoLifecycleSnapshot
+
+
+@dataclass
+class ProgressOperation:
+    """A sanitized, display-ready progress operation snapshot."""
+
+    id: str
+    event_type: str
+    tool_name: str | None
+    status: str
+    preview: str | None = None
+    args_preview: str | None = None
+    started_at: float = 0.0
+    updated_at: float = 0.0
+    completed_at: float | None = None
+    duration: float | None = None
+    is_error: bool = False
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class ContextUsageSnapshot:
+    """Sanitized context-pressure counters for one transaction."""
+
+    current_tokens: int = 0
+    context_window: int = 0
+    peak_tokens: int = 0
+    compression_count: int = 0
+    threshold_tokens: int = 0
+
+
+@dataclass
+class TodoItemSnapshot:
+    """A sanitized, display-ready snapshot of one structured todo item.
+
+    The todo list comes exclusively from explicit structured state (Hermes
+    :class:`tools.todo_tool.TodoStore`), never from natural-language inference.
+    Display supports at most two levels: a top-level item (``depth == 0``) and
+    its direct children (``depth == 1``); deeper nesting is clamped by the
+    tracker. ``parent_id`` is present only for children and always points at a
+    sibling top-level item.
+
+    ``executor`` is an optional validated lowercase agent label (e.g.
+    ``codex``); it comes only from the structured field, never from content
+    text. It is display-only metadata — it must never feed lifecycle
+    derivation, resume eligibility, or ``owner_scope_ref`` matching. It is
+    distinct from ``source``, which records which tool produced the item.
+    """
+
+    id: str
+    content: str
+    status: str
+    parent_id: str | None = None
+    depth: int = 0
+    source: str = "todo_tool"
+    executor: str | None = None
+
+
+@dataclass
+class IterationUsageSnapshot:
+    """Sanitized agent work-round counters for one transaction.
+
+    ``current`` is the number of agent API calls (work rounds) used this user
+    turn; ``maximum`` is the configured iteration budget (``max_iterations``).
+    Both are non-negative; a ``maximum`` of 0 means "no meaningful budget" and
+    callers should omit display rather than render ``0 / 0``.
+    """
+
+    current: int = 0
+    maximum: int = 0
+
+
+@dataclass
+class TransactionSnapshot:
+    """A sanitized, display-ready snapshot of one running transaction."""
+
+    transaction_id: str
+    status: str
+    started_at: float
+    updated_at: float
+    completed_at: float | None = None
+    recent_operations: tuple[ProgressOperation, ...] = ()
+    context_usage: ContextUsageSnapshot | None = None
+    iteration_usage: IterationUsageSnapshot | None = None
+    model_display: str | None = None
+    account_limit_lines: tuple[str, ...] = ()
+    todo_items: tuple[TodoItemSnapshot, ...] = ()
+    todo_lifecycle: TodoLifecycleSnapshot | None = None
+    suspended_todo_hint: SuspendedTodoHint | None = None
+    reasoning_effort_display: str | None = None
+    service_tier_display: str | None = None

@@ -2113,6 +2113,69 @@ def _model_flow_copilot_acp(config, current_model=""):
 
     print(f"Default model set to: {selected} (via {pconfig.name})")
 
+
+def _model_flow_google_gemini_cli(config, current_model=""):
+    """Google-account flow through the official Gemini CLI's ACP mode."""
+    from hermes_cli.auth import (
+        PROVIDER_REGISTRY,
+        _prompt_model_selection,
+        _save_model_choice,
+        deactivate_provider,
+        get_external_process_provider_status,
+        resolve_external_process_provider_credentials,
+    )
+    from hermes_cli.config import load_config, save_config
+    from hermes_cli.models import _PROVIDER_MODELS
+
+    del config
+
+    provider_id = "google-gemini-cli"
+    pconfig = PROVIDER_REGISTRY[provider_id]
+    status = get_external_process_provider_status(provider_id)
+    resolved_command = (
+        status.get("resolved_command") or status.get("command") or "gemini"
+    )
+
+    print("  Hermes delegates turns to Google's official `gemini --acp` process.")
+    print("  OAuth remains owned by Gemini CLI; Hermes does not read or store its tokens.")
+    print("  First run `gemini` and choose \"Sign in with Google\", then exit the CLI.")
+    print(f"  Command: {resolved_command}")
+    print()
+
+    try:
+        creds = resolve_external_process_provider_credentials(provider_id)
+    except Exception as exc:
+        print(f"  ⚠ {exc}")
+        return
+
+    selected = _prompt_model_selection(
+        list(_PROVIDER_MODELS[provider_id]),
+        current_model=current_model,
+        confirm_provider=provider_id,
+        confirm_base_url=creds["base_url"],
+        confirm_api_key=creds["api_key"],
+    )
+    if not selected:
+        print("No change.")
+        return
+
+    _save_model_choice(selected)
+    cfg = load_config()
+    model = cfg.get("model")
+    if not isinstance(model, dict):
+        model = {"default": model} if model else {}
+        cfg["model"] = model
+    model["provider"] = provider_id
+    # Replace the retired direct Cloud Code Assist marker in legacy configs.
+    model["base_url"] = pconfig.inference_base_url
+    model["api_mode"] = "chat_completions"
+    clear_model_endpoint_credentials(model, clear_api_mode=False)
+    save_config(cfg)
+    deactivate_provider()
+
+    print(f"Default model set to: {selected} (via {pconfig.name})")
+
+
 def _model_flow_kimi(config, current_model=""):
     """Kimi / Moonshot model selection with automatic endpoint routing.
 

@@ -147,6 +147,9 @@ def test_direct_session_db_flushes_share_marker_claim(agent):
                 self.rows.append(m["content"])
             return list(range(1, len(messages) + 1))
 
+        def flush_token_counts(self):
+            """Match the SessionDB persist contract exercised by this test."""
+
     db = _BarrierDB()
     agent._session_db = db
     agent._session_db_created = True
@@ -953,6 +956,105 @@ class TestHydrateTodoStore:
 
         assert agent._todo_store.snapshot()["revision"] == 2
         assert agent._todo_store.read()[0]["id"] == "new"
+
+    @staticmethod
+    def _owner(conversation_id="chat-a", user_id="user-a"):
+        from gateway.progress.todo_lifecycle import make_owner_scope_ref
+
+        return make_owner_scope_ref(
+            profile="default",
+            platform="feishu",
+            conversation_id=conversation_id,
+            user_id=user_id,
+        ).__dict__.copy()
+
+    def _lifecycle_history(self, *, owner, state="suspended", tx_id="tx-old"):
+        return [
+            self._assistant_todo_call(),
+            {
+                "role": "tool",
+                "tool_call_id": "c1",
+                "content": json.dumps(
+                    {
+                        "todos": [
+                            {
+                                "id": "old",
+                                "content": "Wait for CI",
+                                "status": "pending",
+                            }
+                        ],
+                        "revision": 4,
+                        "todo_lifecycle": {
+                            "state": state,
+                            "transaction_id": tx_id,
+                            "suspension_reason": "waiting_external",
+                            "remaining_count": 1,
+                            "owner_scope_ref": owner,
+                        },
+                    }
+                ),
+            },
+        ]
+
+    def test_unrelated_new_turn_clears_prior_transaction_todos(self, agent):
+        owner = self._owner()
+        agent._todo_store.write(
+            [{"id": "cached", "content": "Cached old task", "status": "pending"}]
+        )
+
+        with patch("run_agent._set_interrupt"):
+            agent._hydrate_todo_store(
+                self._lifecycle_history(owner=owner),
+                current_user_message="Start a different task",
+                owner_scope_ref=owner,
+            )
+
+        assert not agent._todo_store.has_items()
+
+    def test_explicit_resume_restores_one_same_owner_transaction(self, agent):
+        owner = self._owner()
+
+        with patch("run_agent._set_interrupt"):
+            agent._hydrate_todo_store(
+                self._lifecycle_history(owner=owner),
+                current_user_message="resume previous task",
+                owner_scope_ref=owner,
+            )
+
+        assert agent._todo_store.read()[0]["content"] == "Wait for CI"
+        lifecycle = agent._todo_store.read_lifecycle()
+        assert lifecycle["transaction_id"] == "tx-old"
+        assert lifecycle["state"] == "resumed"
+
+    def test_explicit_resume_does_not_cross_owner_scope(self, agent):
+        original_owner = self._owner(conversation_id="chat-a")
+        requester = self._owner(conversation_id="chat-b")
+
+        with patch("run_agent._set_interrupt"):
+            agent._hydrate_todo_store(
+                self._lifecycle_history(owner=original_owner),
+                current_user_message="resume previous task",
+                owner_scope_ref=requester,
+            )
+
+        assert not agent._todo_store.has_items()
+
+    def test_terminal_lifecycle_tombstones_prior_transaction(self, agent):
+        owner = self._owner()
+        active = self._lifecycle_history(owner=owner, state="active")
+        terminal = self._lifecycle_history(owner=owner, state="completed")
+        terminal[0]["tool_calls"][0]["id"] = "c2"
+        terminal[1]["tool_call_id"] = "c2"
+        history = active + terminal
+
+        with patch("run_agent._set_interrupt"):
+            agent._hydrate_todo_store(
+                history,
+                current_user_message="resume previous task",
+                owner_scope_ref=owner,
+            )
+
+        assert not agent._todo_store.has_items()
 
 
 
@@ -5895,6 +5997,36 @@ def test_aiagent_uses_copilot_acp_client():
     assert mock_acp_client.call_args.kwargs["api_key"] == "copilot-acp"
     assert mock_acp_client.call_args.kwargs["command"] == "/usr/local/bin/copilot"
     assert mock_acp_client.call_args.kwargs["args"] == ["--acp", "--stdio"]
+
+
+def test_aiagent_uses_gemini_cli_acp_client():
+    with (
+        patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI") as mock_openai,
+        patch("agent.gemini_acp_client.GeminiCLIACPClient") as mock_acp_client,
+    ):
+        acp_client = MagicMock()
+        mock_acp_client.return_value = acp_client
+
+        agent = AIAgent(
+            api_key="gemini-cli-acp",
+            base_url="acp://gemini",
+            provider="google-gemini-cli",
+            acp_command="/opt/google/bin/gemini",
+            acp_args=["--acp"],
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+
+    assert agent.client is acp_client
+    mock_openai.assert_not_called()
+    mock_acp_client.assert_called_once()
+    assert mock_acp_client.call_args.kwargs["base_url"] == "acp://gemini"
+    assert mock_acp_client.call_args.kwargs["api_key"] == "gemini-cli-acp"
+    assert mock_acp_client.call_args.kwargs["command"] == "/opt/google/bin/gemini"
+    assert mock_acp_client.call_args.kwargs["args"] == ["--acp"]
 
 
 def test_quiet_spinner_allowed_with_explicit_print_fn(agent):

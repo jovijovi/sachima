@@ -2,6 +2,7 @@
 
 import asyncio
 import importlib
+import json
 import sys
 import time
 import types
@@ -1936,3 +1937,185 @@ class TestSlackReplyInThreadProgressRouting:
             event_message_id="evt-trigger-001",
             reply_in_thread=True,
         ) == "evt-trigger-001"
+
+
+class TaskWorkbenchGatewayAgent:
+    """Exercise the real gateway callback/config/final-flush path."""
+
+    def __init__(self, **kwargs):
+        from tools.todo_tool import TodoStore
+
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+        self.model = "test/model"
+        self.max_iterations = 20
+        self._api_call_count = 0
+        self._todo_store = TodoStore()
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        self._todo_store.bind_transaction(self._todo_transaction_id)
+        self._todo_store.write(
+            [
+                {
+                    "id": "release",
+                    "content": "Release candidate",
+                    "status": "in_progress",
+                    "executor": "codex",
+                }
+            ]
+        )
+        self.tool_progress_callback(
+            "tool.started", "terminal", "run release checks", {"command": "tests"}
+        )
+        time.sleep(0.1)
+        self._api_call_count = 2
+        self._todo_store.write(
+            [
+                {
+                    "id": "release",
+                    "content": "Release candidate",
+                    "status": "completed",
+                    "executor": "codex",
+                }
+            ]
+        )
+        self.tool_progress_callback(
+            "tool.completed", "terminal", "checks passed", {}, duration=0.1
+        )
+        return {
+            "final_response": "done",
+            "messages": [],
+            "api_calls": 2,
+        }
+
+
+class TaskWorkbenchFeishuAdapter(ProgressCaptureAdapter):
+    def __init__(self, platform=Platform.FEISHU):
+        super().__init__(platform=platform)
+        self.cards_sent = []
+        self.cards_patched = []
+
+    async def send_interactive_card(
+        self, chat_id, card, *, reply_to=None, metadata=None
+    ) -> SendResult:
+        self.cards_sent.append(
+            {
+                "chat_id": chat_id,
+                "card": card,
+                "reply_to": reply_to,
+                "metadata": metadata,
+            }
+        )
+        return SendResult(success=True, message_id="workbench-card-1")
+
+    async def patch_interactive_card(
+        self, chat_id, message_id, card, *, finalize=False
+    ) -> SendResult:
+        self.cards_patched.append(
+            {
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "card": card,
+                "finalize": finalize,
+            }
+        )
+        return SendResult(success=True, message_id=message_id)
+
+
+@pytest.mark.asyncio
+async def test_task_workbench_replaces_raw_progress_and_flushes_final_panel(
+    monkeypatch, tmp_path
+):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        TaskWorkbenchGatewayAgent,
+        session_id="persistent-session",
+        config_data={
+            "display": {
+                "tool_progress": "off",
+                "task_tracker": {"enabled": True, "mode": "text"},
+            }
+        },
+    )
+
+    assert result["final_response"] == "done"
+    assert len(adapter.sent) == 1
+    assert adapter.edits
+    final = adapter.edits[-1]["content"]
+    assert "**Status:** Completed" in final
+    assert "persistent-session" not in final
+    assert "Release candidate" in final
+    assert "[codex]" in final
+    assert "💻 Running" not in "\n".join(
+        entry["content"] for entry in adapter.sent + adapter.edits
+    )
+
+
+@pytest.mark.asyncio
+async def test_feishu_task_workbench_keeps_one_card_identity(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        TaskWorkbenchGatewayAgent,
+        session_id="persistent-session",
+        config_data={
+            "display": {
+                "tool_progress": "off",
+                "task_tracker": {
+                    "enabled": True,
+                    "mode": "feishu_card",
+                    "language": "zh",
+                },
+            }
+        },
+        platform=Platform.FEISHU,
+        adapter_cls=TaskWorkbenchFeishuAdapter,
+    )
+
+    assert result["final_response"] == "done"
+    assert len(adapter.cards_sent) == 1
+    assert adapter.cards_patched
+    assert {item["message_id"] for item in adapter.cards_patched} == {
+        "workbench-card-1"
+    }
+    assert adapter.cards_patched[-1]["finalize"] is True
+    rendered = json.dumps(adapter.cards_patched[-1]["card"], ensure_ascii=False)
+    assert "已完成" in rendered
+    assert "Release candidate" in rendered
+
+
+@pytest.mark.asyncio
+async def test_task_workbench_persists_real_gateway_transaction(monkeypatch, tmp_path):
+    event_path = tmp_path / "progress" / "events.jsonl"
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        TaskWorkbenchGatewayAgent,
+        session_id="persistent-session",
+        config_data={
+            "display": {
+                "tool_progress": "off",
+                "task_tracker": {
+                    "enabled": True,
+                    "mode": "text",
+                    "persist_events": True,
+                    "event_store": "jsonl",
+                    "event_store_path": str(event_path),
+                },
+            }
+        },
+    )
+
+    assert result["final_response"] == "done"
+    records = [
+        json.loads(line)
+        for line in event_path.read_text(encoding="utf-8").splitlines()
+    ]
+    transaction_ids = {record["transaction"]["id"] for record in records}
+    assert len(transaction_ids) == 1
+    transaction_id = transaction_ids.pop()
+    assert transaction_id.startswith("task-")
+    assert transaction_id != "persistent-session"
+    assert records[-1]["record_type"] == "progress.snapshot"
+    assert records[-1]["transaction"]["status"] == "completed"

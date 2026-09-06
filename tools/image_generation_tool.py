@@ -27,6 +27,7 @@ import logging
 import os
 import datetime
 import threading
+import time
 import uuid
 from typing import Any, Dict, Optional
 
@@ -1912,7 +1913,8 @@ def _confine_source_images(
     return image_url, reference_image_urls, None
 
 
-def _handle_image_generate(args, **kw):
+def _execute_image_generate(args, **kw):
+    """Run the upstream-native generation/edit pipeline without bookkeeping."""
     prompt = args.get("prompt", "")
     if not prompt:
         return tool_error("prompt is required for image generation")
@@ -1967,6 +1969,40 @@ def _handle_image_generate(args, **kw):
         upscale=upscale,
     )
     return _postprocess_image_generate_result(raw, task_id=task_id)
+
+
+def _handle_image_generate(args, **kw):
+    """Run image generation/edit and append one sanitized history record."""
+    from tools.image_manifest import append_image_manifest_record
+
+    started_at = time.perf_counter()
+    source_images = []
+    image_url = args.get("image_url")
+    if isinstance(image_url, str) and image_url.strip():
+        source_images.append(image_url.strip())
+    references = args.get("reference_image_urls")
+    if isinstance(references, (list, tuple)):
+        source_images.extend(
+            ref.strip()
+            for ref in references
+            if isinstance(ref, str) and ref.strip()
+        )
+
+    result = _execute_image_generate(args, **kw)
+    info = _active_image_capabilities()
+    manifest_args = dict(args)
+    if info.get("model") and not manifest_args.get("model"):
+        manifest_args["model"] = info["model"]
+    append_image_manifest_record(
+        tool="image_generate",
+        operation="edit" if source_images else "generate",
+        backend=info.get("provider"),
+        args=manifest_args,
+        input_images=source_images,
+        response_text=result,
+        duration_ms=(time.perf_counter() - started_at) * 1000,
+    )
+    return result
 
 
 # ---------------------------------------------------------------------------

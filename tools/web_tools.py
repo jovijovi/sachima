@@ -790,7 +790,7 @@ def _ensure_web_plugins_loaded() -> None:
     """Idempotently trigger plugin discovery so the web registry is populated.
 
     Every bundled web provider (brave-free, ddgs, searxng, exa, parallel,
-    firecrawl, keenable) registers itself via ``plugins/web/<vendor>/__init__.py``
+    firecrawl, keenable, tavily) registers itself via ``plugins/web/<vendor>/__init__.py``
     during plugin discovery. Tool dispatch can be reached from contexts that
     haven't already triggered discovery — subprocess agent runs, delegate
     children, standalone scripts, certain test paths — and without it the

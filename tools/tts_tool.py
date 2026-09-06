@@ -279,6 +279,7 @@ PROVIDER_MAX_TEXT_LENGTH: Dict[str, int] = {
     "openai": 4096,       # https://platform.openai.com/docs/guides/text-to-speech
     "xai": 15000,         # https://docs.x.ai/developers/model-capabilities/audio/text-to-speech
     "minimax": 10000,     # https://platform.minimax.io/docs/api-reference/speech-t2a-http (sync)
+    "minimax-cn": 10000,  # legacy name mapped to the unified MiniMax region model
     "mistral": 4000,      # conservative; no published per-request cap
     "gemini": 32000,      # Gemini TTS has a 32k-token context window; char cap is conservative
     "elevenlabs": 10000,  # fallback when model-aware lookup can't resolve (multilingual_v2)
@@ -664,6 +665,37 @@ def _get_provider(tts_config: Dict[str, Any]) -> str:
     return provider
 
 
+def _get_minimax_config(tts_config: Dict[str, Any]) -> Dict[str, Any]:
+    """Return MiniMax settings, translating the legacy CN provider shape.
+
+    ``provider: minimax-cn`` and ``tts.minimax-cn`` predate the unified
+    ``tts.minimax.region`` model. Keep that user configuration working while
+    routing it through the single current MiniMax implementation.
+    """
+    canonical = tts_config.get("minimax", {})
+    if not isinstance(canonical, dict):
+        canonical = {}
+
+    provider = str(tts_config.get("provider") or "").strip().lower()
+    if provider != "minimax-cn":
+        return dict(canonical)
+
+    configured_region = str(canonical.get("region") or "").strip().lower()
+    if configured_region and configured_region != "cn":
+        raise ValueError(
+            "tts.provider 'minimax-cn' conflicts with "
+            f"tts.minimax.region {configured_region!r}; use region 'cn'"
+        )
+
+    legacy = tts_config.get("minimax-cn", {})
+    if not isinstance(legacy, dict):
+        legacy = {}
+    merged = dict(canonical)
+    merged.update(legacy)
+    merged["region"] = "cn"
+    return merged
+
+
 @dataclass(frozen=True)
 class _MiniMaxTTSRuntime:
     """A region-bound MiniMax endpoint and credential.
@@ -687,9 +719,7 @@ def _resolve_minimax_tts_runtime(
     credential wins when present; a China credential is selected only when it
     is the sole configured MiniMax credential.
     """
-    mm_config = tts_config.get("minimax", {})
-    if not isinstance(mm_config, dict):
-        mm_config = {}
+    mm_config = _get_minimax_config(tts_config)
 
     credentials = {
         "global": (
@@ -782,6 +812,7 @@ BUILTIN_TTS_PROVIDERS = frozenset({
     "elevenlabs",
     "openai",
     "minimax",
+    "minimax-cn",
     "xai",
     "mistral",
     "gemini",
@@ -2244,9 +2275,7 @@ def _generate_minimax_tts(text: str, output_path: str, tts_config: Dict[str, Any
 
     runtime = _resolve_minimax_tts_runtime(tts_config)
 
-    mm_config = tts_config.get("minimax", {})
-    if not isinstance(mm_config, dict):
-        mm_config = {}
+    mm_config = _get_minimax_config(tts_config)
     model = mm_config.get("model", DEFAULT_MINIMAX_MODEL)
     voice_id = mm_config.get("voice_id", DEFAULT_MINIMAX_VOICE_ID)
     base_url = runtime.endpoint
@@ -2259,11 +2288,14 @@ def _generate_minimax_tts(text: str, output_path: str, tts_config: Dict[str, Any
 
     # MiniMax accounts scope TTS requests by GroupId.  When present, the docs
     # show it as a ?GroupId=<id> query param on the t2a_v2 URL.  Accept it
-    # from config or from the MINIMAX_GROUP_ID env var; only attach when the
-    # URL doesn't already carry one.
+    # from config or from the region-matching env var; only attach when the
+    # URL doesn't already carry one. Never borrow a GroupId across regions.
+    group_id_env = (
+        "MINIMAX_CN_GROUP_ID" if runtime.region == "cn" else "MINIMAX_GROUP_ID"
+    )
     group_id = (
         str(mm_config.get("group_id") or "").strip()
-        or (get_env_value("MINIMAX_GROUP_ID") or "").strip()
+        or (get_env_value(group_id_env) or "").strip()
     )
     if group_id and "GroupId=" not in base_url:
         sep = "&" if "?" in base_url else "?"
@@ -3317,7 +3349,7 @@ def _text_to_speech_single(
             logger.info("Generating speech with DeepInfra TTS...")
             _generate_deepinfra_tts(text, file_str, tts_config)
 
-        elif provider == "minimax":
+        elif provider in {"minimax", "minimax-cn"}:
             logger.info("Generating speech with MiniMax TTS...")
             _generate_minimax_tts(text, file_str, tts_config)
 
@@ -3450,7 +3482,9 @@ def _text_to_speech_single(
                 voice_compatible = file_str.endswith(".ogg")
         elif (
             want_opus
-            and provider in {"edge", "neutts", "minimax", "xai", "kittentts", "piper"}
+            and provider in {
+                "edge", "neutts", "minimax", "minimax-cn", "xai", "kittentts", "piper"
+            }
             and not file_str.endswith(".ogg")
         ):
             opus_path = _convert_to_opus(file_str)
@@ -3747,7 +3781,7 @@ def check_tts_requirements() -> bool:
         if importlib.util.find_spec("openai") is None:
             return False
         return bool(_resolve_provider_key("DEEPINFRA_API_KEY", "deepinfra"))
-    if provider == "minimax":
+    if provider in {"minimax", "minimax-cn"}:
         try:
             _resolve_minimax_tts_runtime(tts_config)
         except ValueError:

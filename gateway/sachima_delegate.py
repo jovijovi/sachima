@@ -3358,6 +3358,7 @@ def compose_delegate_coordinator(
     *,
     env: Mapping[str, str] | None = None,
     executor: Any = None,
+    bindings: Any = None,
 ) -> SachimaDelegateCoordinator | None:
     """Compose and bind the resident delegation graph, or compose nothing.
 
@@ -3401,6 +3402,7 @@ def compose_delegate_coordinator(
         binding = bind_arsd_execution(
             config,
             payload_resolver=delegate_payload_resolver(),
+            bindings=bindings,
             executor=executor,
         )
     except Exception:

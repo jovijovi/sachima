@@ -135,6 +135,11 @@ from gateway.platforms.base import (
 )
 from gateway.status import acquire_scoped_lock, release_scoped_lock
 from hermes_constants import get_hermes_home
+from plugins.platforms.feishu.github_pr_approval import GitHubPrApprovalMixin
+from plugins.platforms.feishu.runtime import (
+    clear_active_adapter,
+    set_active_adapter,
+)
 from utils import atomic_json_write, env_float, env_int
 
 from agent.secret_scope import UnscopedSecretError as _UnscopedSecretError
@@ -1486,7 +1491,7 @@ def check_feishu_requirements() -> bool:
         return False
 
 
-class FeishuAdapter(BasePlatformAdapter):
+class FeishuAdapter(GitHubPrApprovalMixin, BasePlatformAdapter):
     """Feishu/Lark bot adapter."""
 
     supports_code_blocks = True  # Feishu renders fenced code blocks
@@ -1561,6 +1566,8 @@ class FeishuAdapter(BasePlatformAdapter):
         # Update prompt button state (prompt_id → {session_key, message_id, chat_id})
         self._update_prompt_state: Dict[int, Dict[str, str]] = {}
         self._update_prompt_counter = itertools.count(1)
+        self._init_github_pr_approval()
+        self._active_adapter_scope_key = ""
         # Feishu reaction deletion requires the opaque reaction_id returned
         # by create, so we cache it per message_id.
         self._pending_processing_reactions: "OrderedDict[str, str]" = OrderedDict()
@@ -1820,6 +1827,7 @@ class FeishuAdapter(BasePlatformAdapter):
             self._loop = asyncio.get_running_loop()
             await self._connect_with_retry()
             self._mark_connected()
+            self._active_adapter_scope_key = set_active_adapter(self)
             logger.info("[Feishu] Connected in %s mode (%s)", self._connection_mode, self._domain_name)
             # Plugin-registered native handlers (lark_oapi client).
             self._wire_plugin_handlers(self._client)
@@ -1833,6 +1841,8 @@ class FeishuAdapter(BasePlatformAdapter):
 
     async def disconnect(self) -> None:
         """Disconnect from Feishu/Lark."""
+        clear_active_adapter(self, self._active_adapter_scope_key)
+        self._active_adapter_scope_key = ""
         self._running = False
         await self._cancel_pending_tasks(self._pending_text_batch_tasks)
         await self._cancel_pending_tasks(self._pending_media_batch_tasks)
@@ -2902,11 +2912,21 @@ class FeishuAdapter(BasePlatformAdapter):
             action_value.get("hermes_update_prompt_action")
             if isinstance(action_value, dict) else None
         )
+        github_pr_action = (
+            action_value.get("hermes_github_pr_action")
+            if isinstance(action_value, dict) else None
+        )
 
         if hermes_action:
             return self._handle_approval_card_action(event=event, action_value=action_value, loop=loop)
         if update_prompt_action:
             return self._handle_update_prompt_card_action(
+                event=event,
+                action_value=action_value,
+                loop=loop,
+            )
+        if github_pr_action:
+            return self._handle_github_pr_approval_card_action(
                 event=event,
                 action_value=action_value,
                 loop=loop,

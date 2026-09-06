@@ -315,7 +315,7 @@ def test_chat_multimodal_note_persists_clean_input_once(tmp_path, monkeypatch):
         agent._cleanup_dead_connections = lambda: False
         agent._emit_status = lambda _message: None
         agent._replay_compression_warning = lambda: None
-        agent._hydrate_todo_store = lambda *_args: None
+        agent._hydrate_todo_store = lambda *_args, **_kwargs: None
         agent._safe_print = lambda *_args: None
 
         context = build_turn_context(

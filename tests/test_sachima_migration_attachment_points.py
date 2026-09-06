@@ -45,12 +45,14 @@ class TestTodoAttachmentPoint:
         source.write([{"id": "a", "content": "first", "status": "pending"}])
         snapshot = source.snapshot()
 
-        assert set(snapshot) == {"todos", "revision"}
+        assert {"todos", "revision"} <= set(snapshot)
 
         restored = TodoStore()
         restored.restore(snapshot["todos"], revision=snapshot["revision"])
 
-        assert restored.snapshot() == snapshot
+        restored_snapshot = restored.snapshot()
+        assert restored_snapshot["todos"] == snapshot["todos"]
+        assert restored_snapshot["revision"] == snapshot["revision"]
 
     def test_todo_tool_takes_an_injected_store(self):
         """A caller-supplied store is what keeps one task's TODOs its own."""

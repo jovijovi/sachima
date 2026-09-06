@@ -37,6 +37,11 @@ def test_api_server_keeps_run_methods_on_the_adapter_class():
     assert _RUN_METHODS <= api_server.APIServerAdapter.__dict__.keys()
 
 
+def test_run_handlers_keep_aiohttp_web_when_typed_request_keys_are_unavailable():
+    """The optional ``RequestKey`` typing helper must not disable HTTP replies."""
+    assert api_server_runs.web is api_server.web
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(("adapter_name", "implementation_name"), _HTTP_HANDLER_DELEGATES)
 async def test_run_http_handlers_delegate_without_changing_method_surface(

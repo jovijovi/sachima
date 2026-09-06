@@ -82,6 +82,7 @@ class TestBundledPluginsRegister:
             "keenable",
             "parallel",
             "searxng",
+            "tavily",
             "xai",
         ]
 
@@ -327,5 +328,4 @@ class TestAsyncExtractDispatch:
 
 class TestErrorResponseShapes:
     """When credentials are missing, plugins return typed errors, not raises."""
-
 

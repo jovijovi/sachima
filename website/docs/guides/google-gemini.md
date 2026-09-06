@@ -1,24 +1,32 @@
 ---
 sidebar_position: 16
 title: "Google Gemini"
-description: "Use Hermes Agent with Google Gemini — native AI Studio API, API-key setup, tool calling, streaming, and quota guidance"
+description: "Use Hermes Agent with Google Gemini through the native AI Studio API or Google's official Gemini CLI account login"
 ---
 
 # Google Gemini
 
-Hermes Agent supports Google Gemini as a native provider using the **Google AI Studio / Gemini API** — not the OpenAI-compatible endpoint. This lets Hermes translate its internal OpenAI-shaped message and tool loop into Gemini's native `generateContent` API while preserving tool calling, streaming, multimodal inputs, and Gemini-specific response metadata.
+Hermes Agent supports two distinct Google Gemini paths:
+
+- **Google AI Studio / Gemini API** (`provider: gemini`) uses an API key and Hermes' native `generateContent` adapter.
+- **Official Gemini CLI** (`provider: google-gemini-cli`) uses the Google account already signed in to Google's `gemini` command and communicates only through its documented ACP stdio mode.
+
+The second path does not copy or replay OAuth tokens and does not call the private Cloud Code Assist service directly. Google explicitly requires third-party tools to use supported integration surfaces rather than piggybacking Gemini CLI OAuth credentials; see the official [Gemini CLI terms and privacy guidance](https://github.com/google-gemini/gemini-cli/blob/main/docs/resources/tos-privacy.md) and [ACP mode documentation](https://github.com/google-gemini/gemini-cli/blob/main/docs/cli/acp-mode.md).
 
 ## Prerequisites
 
-- **Google AI Studio API key** — create one at [aistudio.google.com/apikey](https://aistudio.google.com/apikey)
-- **Billing-enabled Google Cloud project** — recommended for agent use. Gemini's free tier is too small for long-running agent sessions because Hermes may make several model calls per user turn.
-- **Hermes installed** — no extra Python package is required for the native Gemini provider.
+Choose one credential path:
+
+- **API key:** create a Google AI Studio key at [aistudio.google.com/apikey](https://aistudio.google.com/apikey). A billing-enabled Google Cloud project is recommended for long-running agent sessions.
+- **Google account:** install the official [Gemini CLI](https://github.com/google-gemini/gemini-cli), run `gemini` interactively, and choose **Sign in with Google**. Hermes never reads its credential files.
+
+Hermes itself needs no extra Python package for either path.
 
 :::tip API key path
 Set `GOOGLE_API_KEY` or `GEMINI_API_KEY`. Hermes checks both names for the `gemini` provider.
 :::
 
-## Quick Start
+## Quick Start: API Key
 
 ```bash
 # Add your Gemini API key
@@ -42,6 +50,36 @@ model:
   provider: gemini
   base_url: https://generativelanguage.googleapis.com/v1beta
 ```
+
+## Quick Start: Official Gemini CLI Account
+
+Install and authenticate Google's CLI first:
+
+```bash
+npm install -g @google/gemini-cli
+gemini
+# Choose "Sign in with Google", complete Google's flow, then exit.
+
+hermes model
+# → Choose "Google" → "Google Gemini CLI"
+hermes chat
+```
+
+The resulting Hermes configuration uses a local transport marker, not a web API endpoint:
+
+```yaml
+model:
+  default: gemini-cli
+  provider: google-gemini-cli
+  base_url: acp://gemini
+  api_mode: chat_completions
+```
+
+`gemini-cli` means “use the official CLI's current default model.” You may instead configure a specific Gemini model ID; Hermes passes it to the official process with `--model`. The aliases `gemini-cli` and `gemini-oauth` resolve to `google-gemini-cli` for older configs.
+
+:::important Supported OAuth boundary
+Do not paste a Gemini CLI OAuth token into Hermes. Authentication, refresh, account eligibility, and quota enforcement remain inside Google's CLI. Hermes starts `gemini --acp`, sends ACP JSON-RPC over stdio, and uses the login state the CLI already owns.
+:::
 
 ## Configuration
 
@@ -177,10 +215,12 @@ If you have not configured Gemini yet, exit the session and run `hermes model` f
 hermes doctor
 ```
 
-The doctor checks:
+For the API-key path, the doctor checks:
 
 - Whether `GOOGLE_API_KEY` or `GEMINI_API_KEY` is available
 - Whether configured provider credentials can be resolved
+
+For the official CLI path, Hermes verifies that `gemini` is available. This is a structural check only; to repair an expired or missing login, run `gemini` interactively and sign in again.
 
 ## Gateway (Messaging Platforms)
 
@@ -191,9 +231,23 @@ hermes gateway setup
 hermes gateway start
 ```
 
-The gateway reads `config.yaml` and uses the same Gemini provider configuration.
+The gateway reads `config.yaml` and uses the same Gemini provider configuration. For `google-gemini-cli`, the `gemini` executable and its authenticated user profile must exist on the machine running the Hermes backend, not merely on a remote messaging client.
 
 ## Troubleshooting
+
+### "Could not find the official Gemini CLI command 'gemini'"
+
+Install the official CLI on the Hermes backend, authenticate it, and retry:
+
+```bash
+npm install -g @google/gemini-cli
+gemini
+# Choose "Sign in with Google"
+```
+
+### Gemini CLI reports an authentication or credential error
+
+Run `gemini` interactively on the same backend account and choose **Sign in with Google**. Hermes intentionally does not open the OAuth flow or inspect the CLI's stored credentials from a headless agent request.
 
 ### "Gemini native client requires an API key"
 
