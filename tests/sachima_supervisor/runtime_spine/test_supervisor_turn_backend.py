@@ -454,19 +454,22 @@ def test_turn_backend_stable_codes_are_closed_and_module_local() -> None:
 # --------------------------------------------------------------------------- #
 # E. Import purity across every module P3 touches (extended in P4/P5)
 # --------------------------------------------------------------------------- #
+#: Every module in the spine that names, negotiates with, or dispatches to the
+#: ``agent-run-supervisor`` distribution. The list is the *current* tree's
+#: ARS-touching set, not a historical one: the P5 entries that named the
+#: retired library seam and the offline fixtures are gone with the modules
+#: themselves, and the read-model modules are listed by the layer that
+#: composes them rather than here. A module added to this seam and not added
+#: here is the gap this guard exists to catch.
 _TOUCHED_MODULES = (
     "sachima_supervisor.runtime_spine.supervisor_turn_backend",
-    # Extended in P4: the arsd backend and the de-ARS'd offline reader.
+    "sachima_supervisor.runtime_spine.arsd_socket_contract",
+    "sachima_supervisor.runtime_spine.arsd_run_binding_ledger",
     "sachima_supervisor.runtime_spine.arsd_supervisor_backend",
-    "sachima_supervisor.runtime_spine.live_progress_projection",
-    # Extended in P5: the migration seam, the retired offline seams, and the
-    # composition root that now wires the socket adapter.
-    "sachima_supervisor.runtime_spine.agent_run_supervisor_library_backend",
-    "sachima_supervisor.local_offline",
+    "sachima_supervisor.runtime_spine.agent_run_supervisor_port",
+    "sachima_supervisor.runtime_spine.fake_supervisor_port",
     "sachima_supervisor.runtime_spine.agent_run_supervisor_turn_dispatcher",
     "sachima_supervisor.runtime_spine.agent_run_supervisor_execution_binding",
-    "sachima_supervisor.runtime_spine.live_progress_sources",
-    "sachima_supervisor.activity_session_real_execution",
 )
 
 

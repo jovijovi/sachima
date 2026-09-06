@@ -82,10 +82,6 @@ from sachima_supervisor.runtime_spine.arsd_socket_contract import (
 from sachima_supervisor.runtime_spine.events import STATUS_VALUES, SpineError, scan_for_leak
 from sachima_supervisor.runtime_spine.execution_port import RUNTIME_INVALID_SESSION
 from sachima_supervisor.runtime_spine.launch_spec import build_launch_spec
-from sachima_supervisor.runtime_spine.live_progress_projection import (
-    build_live_progress_projection,
-    serialize_live_progress_projection,
-)
 from sachima_supervisor.runtime_spine.registry import TaskRegistry
 from sachima_supervisor.runtime_spine.arsd_supervisor_backend import (
     derive_arsd_backend_handle,
@@ -1090,20 +1086,16 @@ def test_no_path_maps_the_foreign_cursor_into_task_event_log_seq(
         "exhausted": False,
     }
 
+    # Read the foreign cursor through the backend's own reader. A read model
+    # built on top of this page is a separate, later layer; what matters here
+    # is that the number this layer surfaces never reaches the canonical log.
     reader = mod.ArsdLiveProgressReader(facade)
-    projection = build_live_progress_projection(
-        reader,
-        dispatched.private_locator,
-        "artifact_run_0",
-        task_id=TASK_ID,
-        limit=100,
-    )
+    page = reader.read_event_page(dispatched.private_locator, after_seq=None, limit=100)
 
-    # next_from_seq -> resume_cursor, exhausted -> has_more = not exhausted.
-    assert projection.available is True
-    assert projection.resume_cursor == FOREIGN_CURSOR
-    assert projection.has_more is True
-    assert projection.observed_last_seq == FOREIGN_CURSOR
+    # next_from_seq -> next_cursor, exhausted -> has_more = not exhausted.
+    assert page.next_cursor == FOREIGN_CURSOR
+    assert page.has_more is True
+    assert page.records[-1].seq == FOREIGN_CURSOR
     assert facade.ops("run_events") >= 1
 
     # The canonical log never learns that number.
@@ -1192,11 +1184,8 @@ def test_no_leak_sweep_over_reprs_projections_events_and_exception_text(
         "next_from_seq": 2,
         "exhausted": True,
     }
-    projection = build_live_progress_projection(
-        mod.ArsdLiveProgressReader(facade),
-        dispatched.private_locator,
-        "artifact_run_0",
-        task_id=TASK_ID,
+    page = mod.ArsdLiveProgressReader(facade).read_event_page(
+        dispatched.private_locator, after_seq=None, limit=100
     )
     facade.run_status_payload = {"result": _terminal_result("completed")}
     port.status(ref)
@@ -1229,8 +1218,7 @@ def test_no_leak_sweep_over_reprs_projections_events_and_exception_text(
         repr(binding),
         str(binding),
         json.dumps(binding.as_dict()),
-        json.dumps(projection.as_dict()),
-        serialize_live_progress_projection(projection).decode("utf-8"),
+        repr(page),
         json.dumps(list(port.stream(ref))),
         json.dumps(registry.snapshot(TASK_ID)),
         repr(backend),
@@ -1671,12 +1659,11 @@ def test_arsd_is_the_only_admissible_turn_backend_after_the_retirement(
     ]
     assert turn_backend._allowed_backend_types() == (mod.ArsdSupervisorBackend,)
 
-    # The dispatcher names no concrete backend, and the gateway names none
-    # either: it composes through the one root, which is where the enabled-only
-    # gate lives.
+    # The dispatcher names no concrete backend: it is driven through the one
+    # composition root, which is where the enabled-only gate lives. Every host
+    # that composes this seam is held to the same rule by its own suite.
     for module_name in (
         "sachima_supervisor.runtime_spine.agent_run_supervisor_turn_dispatcher",
-        "gateway.sachima_live_progress_binding",
     ):
         source = Path(
             importlib.import_module(module_name).__file__

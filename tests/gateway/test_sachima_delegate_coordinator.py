@@ -1597,6 +1597,1119 @@ async def test_capacity_bounds_admissions_and_says_so_only_when_it_waits(tmp_pat
 
 
 # --------------------------------------------------------------------------- #
+# L. The graph lifecycle primitive
+#
+# One owner for "may this graph still admit work, and when is it really
+# retired": admitted public operations, owned tasks and registered
+# synchronous futures are all drained through one shared close future.
+# --------------------------------------------------------------------------- #
+LIFECYCLE_REFUSAL = "sachima_delegate_unbound"
+
+
+def _lifecycle():
+    from gateway.sachima_delegate_lifecycle import GraphLifecycle
+
+    return GraphLifecycle(LIFECYCLE_REFUSAL)
+
+
+@pytest.mark.asyncio
+async def test_the_graph_lifecycle_joins_concurrent_closers_on_one_drain():
+    """Two closers, one drain: the second waits for the first's drain and
+    only one of them turns CLOSING into CLOSED."""
+
+    from gateway.sachima_delegate_lifecycle import CLOSED, CLOSING, OPEN
+
+    lifecycle = _lifecycle()
+    with lifecycle.restoring():
+        pass
+    assert lifecycle.state == OPEN
+
+    parked = asyncio.Event()
+    release = asyncio.Event()
+
+    async def _slow_to_cancel():
+        try:
+            await asyncio.Event().wait()
+        finally:
+            parked.set()
+            await release.wait()
+
+    task = lifecycle.spawn(_slow_to_cancel)
+    drains = 0
+    real_drain = lifecycle._drain_work
+
+    async def _counted_drain(generation):
+        nonlocal drains
+        drains += 1
+        await real_drain(generation)
+
+    lifecycle._drain_work = _counted_drain  # type: ignore[method-assign]
+
+    first = asyncio.create_task(lifecycle.close())
+    second = asyncio.create_task(lifecycle.close())
+    try:
+        assert await _until(parked.is_set)
+
+        assert lifecycle.state == CLOSING
+        assert lifecycle.closed is False
+        assert first.done() is False
+        assert second.done() is False
+
+        release.set()
+        await asyncio.wait_for(asyncio.gather(first, second), timeout=5)
+    finally:
+        # An assertion or instrumentation failure must not strand teardown in
+        # the owned task's cancellation handler.
+        release.set()
+        for pending in (first, second, task):
+            if not pending.done():
+                pending.cancel()
+        await asyncio.gather(first, second, task, return_exceptions=True)
+
+    assert lifecycle.state == CLOSED
+    assert lifecycle.closed is True
+    assert task.done() is True
+    assert lifecycle.tasks == frozenset()
+    assert drains == 1
+    # A later closer joins the finished drain and changes nothing.
+    await asyncio.wait_for(lifecycle.close(), timeout=5)
+    assert drains == 1
+
+
+@pytest.mark.asyncio
+async def test_the_graph_lifecycle_releases_a_queued_future_cancelled_before_start():
+    """A registered future that never started is cancelled by the drain, its
+    registration is released by its own terminal callback, and the drain
+    completes without anyone ever running it."""
+
+    import concurrent.futures
+
+    from gateway.sachima_delegate_lifecycle import CLOSED
+
+    lifecycle = _lifecycle()
+    queued = concurrent.futures.Future()
+    lifecycle.register_future(queued)
+    assert lifecycle.futures == frozenset({queued})
+
+    await asyncio.wait_for(lifecycle.close(), timeout=5)
+
+    assert queued.cancelled() is True
+    # The runner that would have executed it learns it must not start.
+    assert queued.set_running_or_notify_cancel() is False
+    assert lifecycle.futures == frozenset()
+    assert lifecycle.state == CLOSED
+
+
+@pytest.mark.asyncio
+async def test_the_graph_lifecycle_joins_a_running_future_instead_of_killing_it():
+    """A future already running cannot be cancelled; close waits for it."""
+
+    import concurrent.futures
+
+    from gateway.sachima_delegate_lifecycle import CLOSED, CLOSING
+
+    lifecycle = _lifecycle()
+    running = concurrent.futures.Future()
+    lifecycle.register_future(running)
+    assert running.set_running_or_notify_cancel() is True
+
+    closing = asyncio.create_task(lifecycle.close())
+    await asyncio.sleep(0.05)
+    assert closing.done() is False
+    assert lifecycle.state == CLOSING
+    assert running.cancelled() is False
+
+    # The call returns on its worker thread, as a daemon call really would.
+    threading.Thread(target=running.set_result, args=("done",), daemon=True).start()
+    await asyncio.wait_for(closing, timeout=5)
+
+    assert lifecycle.futures == frozenset()
+    assert lifecycle.state == CLOSED
+
+
+@pytest.mark.asyncio
+async def test_the_graph_lifecycle_publishes_closed_only_after_admitted_work_releases():
+    """An admitted operation holds CLOSED back; a new admission is refused
+    with the stable code the moment closing begins."""
+
+    from gateway.sachima_delegate_lifecycle import (
+        CLOSED,
+        CLOSING,
+        LifecycleRefused,
+    )
+
+    lifecycle = _lifecycle()
+    admission = lifecycle.admission()
+    admission.__enter__()
+    assert lifecycle.admitted == 1
+
+    closing = asyncio.create_task(lifecycle.close())
+    await asyncio.sleep(0.01)
+    assert lifecycle.state == CLOSING
+    assert lifecycle.closed is False
+    assert closing.done() is False
+
+    with pytest.raises(LifecycleRefused) as refused:
+        with lifecycle.admission():
+            pass
+    assert str(refused.value) == LIFECYCLE_REFUSAL
+    assert isinstance(refused.value, RuntimeError)
+    with pytest.raises(LifecycleRefused):
+        lifecycle.spawn(lambda: asyncio.sleep(0))
+    with pytest.raises(LifecycleRefused):
+        import concurrent.futures
+
+        lifecycle.register_future(concurrent.futures.Future())
+    assert lifecycle.tasks == frozenset()
+    assert lifecycle.futures == frozenset()
+
+    # Released from a worker thread, as a synchronous public entry would.
+    threading.Thread(target=admission.__exit__, args=(None, None, None)).start()
+    await asyncio.wait_for(closing, timeout=5)
+
+    assert lifecycle.admitted == 0
+    assert lifecycle.state == CLOSED
+    with pytest.raises(LifecycleRefused):
+        with lifecycle.admission():
+            pass
+
+
+@pytest.mark.asyncio
+async def test_the_graph_lifecycle_restores_once_and_never_after_closing():
+    from gateway.sachima_delegate_lifecycle import (
+        CLOSED,
+        COMPOSED,
+        OPEN,
+        RESTORING,
+        LifecycleRefused,
+    )
+
+    lifecycle = _lifecycle()
+    assert lifecycle.state == COMPOSED
+    assert lifecycle.fresh is True
+
+    with pytest.raises(RuntimeError, match="restore failed"):
+        with lifecycle.restoring():
+            assert lifecycle.state == RESTORING
+            raise RuntimeError("restore failed")
+    # A failed restoration is retried later, from the same fresh graph.
+    assert lifecycle.state == COMPOSED
+    assert lifecycle.fresh is True
+
+    with lifecycle.restoring():
+        assert lifecycle.fresh is True
+    assert lifecycle.state == OPEN
+    assert lifecycle.fresh is False
+
+    await asyncio.wait_for(lifecycle.close(), timeout=5)
+    assert lifecycle.state == CLOSED
+    with pytest.raises(LifecycleRefused):
+        with lifecycle.restoring():
+            pass
+
+
+def _loop_thread(name: str) -> tuple[asyncio.AbstractEventLoop, threading.Thread]:
+    loop = asyncio.new_event_loop()
+    thread = threading.Thread(target=loop.run_forever, name=name, daemon=True)
+    thread.start()
+    return loop, thread
+
+
+def test_the_graph_lifecycle_reclaims_a_drain_start_its_home_loop_never_acknowledged():
+    """The stop-during-handoff schedule, forced deterministically.
+
+    Home loop A is inside a callback that will call ``stop()`` — so it still
+    reports running — when foreign loop B closes and queues the drain start on
+    A. A then exits without ever running that callback: nobody owns the drain,
+    and the first closer waits on a completion nothing will settle. A repeated
+    closer must detect the unacknowledged start, reclaim it once A is no
+    longer running, and drain to CLOSED; the stale callback queued on A must
+    no-op if A ever runs again, never becoming a second drain owner.
+    """
+
+    from gateway.sachima_delegate_lifecycle import CLOSED, CLOSING
+
+    loop_a, thread_a = _loop_thread("home-loop-a")
+    loop_b, thread_b = _loop_thread("foreign-loop-b")
+    try:
+        lifecycle = _lifecycle()
+        lifecycle.bind_loop(loop_a)
+
+        in_callback = threading.Event()
+        may_stop = threading.Event()
+
+        def _stop_inside_callback() -> None:
+            in_callback.set()
+            may_stop.wait(10)
+            loop_a.stop()
+
+        loop_a.call_soon_threadsafe(_stop_inside_callback)
+        assert in_callback.wait(10) is True
+        assert loop_a.is_running() is True
+
+        b_queued = threading.Event()
+
+        async def _close_on_b():
+            closing = asyncio.ensure_future(lifecycle.close())
+            # One zero-length yield: the close has claimed the drain and
+            # queued its start on A before this returns.
+            await asyncio.sleep(0)
+            b_queued.set()
+            await closing
+
+        first = asyncio.run_coroutine_threadsafe(_close_on_b(), loop_b)
+        assert b_queued.wait(10) is True
+        assert lifecycle.state == CLOSING
+
+        # A now returns from its callback and exits without running the
+        # queued start.
+        may_stop.set()
+        thread_a.join(10)
+        assert thread_a.is_alive() is False
+        assert loop_a.is_running() is False
+
+        # A repeated closer must reclaim the start and drain to CLOSED.
+        second = asyncio.run_coroutine_threadsafe(lifecycle.close(), loop_b)
+        assert second.result(timeout=10) is None
+        assert first.result(timeout=10) is None
+        assert lifecycle.state == CLOSED
+        assert lifecycle.closed is True
+        drain_task = lifecycle._drain_task
+        assert drain_task is not None
+
+        # The stale start still queued on A must no-op when A runs again.
+        loop_a.run_until_complete(asyncio.sleep(0))
+        assert lifecycle._drain_task is drain_task
+        assert lifecycle.state == CLOSED
+        assert asyncio.run_coroutine_threadsafe(lifecycle.close(), loop_b).result(10) is None
+    finally:
+        loop_b.call_soon_threadsafe(loop_b.stop)
+        thread_b.join(10)
+        loop_a.close()
+        loop_b.close()
+
+
+def test_the_graph_lifecycle_settles_a_close_after_its_home_loop_terminated_with_owned_work():
+    """Home loop A terminated with an owned task still pending. A close from
+    loop B must settle deterministically: the task can never finish on a
+    loop that is gone, so it is asked to unwind and released, the shared
+    completion resolves, and the graph publishes CLOSED — no waiter is left
+    pending and no foreign-loop error escapes."""
+
+    from gateway.sachima_delegate_lifecycle import CLOSED
+
+    loop_a, thread_a = _loop_thread("home-loop-a")
+    loop_b, thread_b = _loop_thread("foreign-loop-b")
+    try:
+        lifecycle = _lifecycle()
+        lifecycle.bind_loop(loop_a)
+
+        async def _spawn_parked():
+            return lifecycle.spawn(lambda: asyncio.Event().wait())
+
+        parked = asyncio.run_coroutine_threadsafe(_spawn_parked(), loop_a).result(10)
+        assert lifecycle.tasks == frozenset({parked})
+
+        loop_a.call_soon_threadsafe(loop_a.stop)
+        thread_a.join(10)
+        assert loop_a.is_running() is False
+
+        closing = asyncio.run_coroutine_threadsafe(lifecycle.close(), loop_b)
+        assert closing.result(timeout=10) is None
+        assert lifecycle.state == CLOSED
+        assert lifecycle.closed is True
+        assert lifecycle.tasks == frozenset()
+
+        # The abandoned task was asked to unwind: should its loop ever run
+        # again it finishes cancelled rather than driving a closed graph.
+        loop_a.run_until_complete(asyncio.wait({parked}, timeout=5))
+        assert parked.cancelled() is True
+    finally:
+        loop_b.call_soon_threadsafe(loop_b.stop)
+        thread_b.join(10)
+        loop_a.close()
+        loop_b.close()
+
+
+def test_the_graph_lifecycle_reclaims_a_drain_task_that_never_ran_before_its_loop_stopped():
+    """The acknowledged-but-never-run schedule, forced deterministically.
+
+    Home loop A does run the drain-start callback, so ``_drain_task`` exists —
+    but A stops in the same iteration, before that task's first step. The
+    claim was acknowledged by a loop that then terminated, which is exactly
+    as dead as an unacknowledged one. A repeated closer must reclaim it and
+    drain to CLOSED; the stale drain task must no-op if A ever runs again,
+    never completing the shared result a second time.
+    """
+
+    from gateway.sachima_delegate_lifecycle import CLOSED, CLOSING
+
+    loop_a, thread_a = _loop_thread("home-loop-a")
+    loop_b, thread_b = _loop_thread("foreign-loop-b")
+    try:
+        lifecycle = _lifecycle()
+        lifecycle.bind_loop(loop_a)
+
+        in_callback = threading.Event()
+        may_continue = threading.Event()
+
+        def _hold_then_stop_next_iteration() -> None:
+            in_callback.set()
+            may_continue.wait(10)
+            # Queued *behind* the start B hands over while this callback is
+            # blocked: the next iteration runs that start, creates the drain
+            # task, then stops before the task's first step.
+            loop_a.call_soon(loop_a.stop)
+
+        loop_a.call_soon_threadsafe(_hold_then_stop_next_iteration)
+        assert in_callback.wait(10) is True
+        assert loop_a.is_running() is True
+
+        b_queued = threading.Event()
+
+        async def _close_on_b():
+            closing = asyncio.ensure_future(lifecycle.close())
+            await asyncio.sleep(0)
+            b_queued.set()
+            await closing
+
+        first = asyncio.run_coroutine_threadsafe(_close_on_b(), loop_b)
+        assert b_queued.wait(10) is True
+        assert lifecycle.state == CLOSING
+
+        may_continue.set()
+        thread_a.join(10)
+        assert thread_a.is_alive() is False
+        assert loop_a.is_running() is False
+        # Acknowledged: the drain task exists, and it never got to run.
+        stale = lifecycle._drain_task
+        assert stale is not None
+        assert stale.done() is False
+        assert lifecycle.state == CLOSING
+
+        second = asyncio.run_coroutine_threadsafe(lifecycle.close(), loop_b)
+        assert second.result(timeout=10) is None
+        assert first.result(timeout=10) is None
+        assert lifecycle.state == CLOSED
+        assert lifecycle.closed is True
+        reclaimed = lifecycle._drain_task
+        assert reclaimed is not None
+        assert reclaimed is not stale
+
+        # A runs again: the stale drain task takes its first step and must
+        # do nothing — no second owner, no second completion, no error.
+        loop_a.run_until_complete(asyncio.wait({stale}, timeout=5))
+        assert stale.done() is True
+        assert stale.cancelled() is False
+        assert stale.exception() is None
+        assert lifecycle._drain_task is reclaimed
+        assert lifecycle.state == CLOSED
+        assert asyncio.run_coroutine_threadsafe(lifecycle.close(), loop_b).result(10) is None
+    finally:
+        loop_b.call_soon_threadsafe(loop_b.stop)
+        thread_b.join(10)
+        loop_a.close()
+        loop_b.close()
+
+
+def test_the_graph_lifecycle_retires_an_admission_whose_loop_terminated_and_waits_for_the_rest():
+    """An admission held by a coroutine on home loop A can never release once
+    A has terminated. A later close must retire exactly that admission — and
+    keep waiting for a thread-owned admission and a registered backend future
+    that are still live, publishing CLOSED only once those have settled."""
+
+    import concurrent.futures
+
+    from gateway.sachima_delegate_lifecycle import CLOSED
+
+    loop_a, thread_a = _loop_thread("home-loop-a")
+    loop_b, thread_b = _loop_thread("foreign-loop-b")
+    try:
+        lifecycle = _lifecycle()
+        lifecycle.bind_loop(loop_a)
+
+        # The admission that will die with its loop.
+        coroutine_entered = threading.Event()
+        holder: dict[str, Any] = {}
+
+        async def _hold_admission_on_a():
+            holder["task"] = asyncio.current_task()
+            holder["release"] = asyncio.Event()
+            with lifecycle.admission():
+                coroutine_entered.set()
+                await holder["release"].wait()
+
+        asyncio.run_coroutine_threadsafe(_hold_admission_on_a(), loop_a)
+        assert coroutine_entered.wait(10) is True
+
+        # The positive controls: a thread-owned admission and a running
+        # backend future, both of which must still be waited for.
+        thread_entered = threading.Event()
+        thread_gate = threading.Event()
+
+        def _hold_admission_on_a_thread() -> None:
+            with lifecycle.admission():
+                thread_entered.set()
+                thread_gate.wait(10)
+
+        worker = threading.Thread(target=_hold_admission_on_a_thread, daemon=True)
+        worker.start()
+        assert thread_entered.wait(10) is True
+        running = concurrent.futures.Future()
+        lifecycle.register_future(running)
+        assert running.set_running_or_notify_cancel() is True
+        assert lifecycle.admitted == 2
+
+        loop_a.call_soon_threadsafe(loop_a.stop)
+        thread_a.join(10)
+        assert loop_a.is_running() is False
+
+        closing = asyncio.run_coroutine_threadsafe(lifecycle.close(), loop_b)
+        witnessed: list[tuple[bool, bool]] = []
+        closing.add_done_callback(
+            lambda _f: witnessed.append((thread_gate.is_set(), running.done()))
+        )
+
+        async def _still_waiting_after_fifty_iterations() -> bool:
+            # Zero-length yields on the drain's own loop — no timing. A drain
+            # that wrongly dropped the live work would be done by now.
+            for _ in range(50):
+                await asyncio.sleep(0)
+            return closing.done()
+
+        assert (
+            asyncio.run_coroutine_threadsafe(
+                _still_waiting_after_fifty_iterations(), loop_b
+            ).result(10)
+            is False
+        )
+
+        thread_gate.set()
+        worker.join(10)
+        running.set_result("returned")
+        assert closing.result(timeout=10) is None
+
+        assert witnessed == [(True, True)]
+        assert lifecycle.admitted == 0
+        assert lifecycle.futures == frozenset()
+        assert lifecycle.state == CLOSED
+        assert lifecycle.closed is True
+
+        # A runs again and the retired coroutine finally releases: a stale
+        # release changes nothing about a graph that already closed.
+        async def _let_it_finish():
+            holder["release"].set()
+            await holder["task"]
+
+        loop_a.run_until_complete(_let_it_finish())
+        assert lifecycle.admitted == 0
+        assert lifecycle.state == CLOSED
+    finally:
+        loop_b.call_soon_threadsafe(loop_b.stop)
+        thread_b.join(10)
+        loop_a.close()
+        loop_b.close()
+
+
+@pytest.mark.parametrize("settle_before_reclaim", [False, True])
+def test_close_reclaims_a_drain_cancelled_by_normal_home_loop_shutdown(
+    settle_before_reclaim,
+):
+    """Runner shutdown cancels the drain, not the shared retirement outcome."""
+    import concurrent.futures
+
+    from gateway.sachima_delegate_lifecycle import CLOSED, CLOSING
+
+    lifecycle = _lifecycle()
+    running = concurrent.futures.Future()
+    lifecycle.register_future(running)
+    assert running.set_running_or_notify_cancel()
+
+    async def _start_on_home():
+        lifecycle.bind_loop(asyncio.get_running_loop())
+        asyncio.create_task(lifecycle.close())
+        assert await _until(lambda: lifecycle._quiescent is not None)
+        assert lifecycle._quiescent is not None
+        assert not lifecycle._quiescent.done()
+        assert lifecycle.state == CLOSING
+        # Returning invokes asyncio.run's actual pending-task cancellation.
+
+    asyncio.run(_start_on_home())
+    assert lifecycle._drain_task is not None
+    assert lifecycle._drain_task.cancelled()
+    shared = lifecycle._drain_done
+    assert shared is not None
+    generation = lifecycle._drain_generation
+
+    async def _reclaim():
+        if settle_before_reclaim:
+            running.set_result("returned")
+        closers = [asyncio.create_task(lifecycle.close()) for _ in range(2)]
+        try:
+            for _ in range(20):
+                await asyncio.sleep(0)
+            if not settle_before_reclaim:
+                assert not any(closer.done() for closer in closers)
+                assert lifecycle.state == CLOSING
+                assert not shared.done()
+                running.set_result("returned")
+            await asyncio.wait_for(asyncio.gather(*closers), timeout=5)
+            assert lifecycle.state == CLOSED
+            assert lifecycle.futures == frozenset()
+            assert lifecycle._drain_done is shared
+            assert lifecycle._drain_generation == generation + 1
+            await lifecycle.close()
+        finally:
+            if not running.done():
+                running.set_result("cleanup")
+            for closer in closers:
+                if not closer.done():
+                    closer.cancel()
+            await asyncio.gather(*closers, return_exceptions=True)
+
+    asyncio.run(_reclaim())
+
+
+# --------------------------------------------------------------------------- #
+# M. Coordinator admission and close, through the lifecycle
+# --------------------------------------------------------------------------- #
+def _gated_card_delivery(gate: asyncio.Event) -> DelegateDelivery:
+    """A card-capable origin whose card *send* parks until the gate opens."""
+
+    async def _send_text(text: str) -> Any:
+        return SendResult(success=True, message_id="om_text")
+
+    async def _send_card(payload: dict) -> Any:
+        await gate.wait()
+        return SendResult(success=True, message_id="om_card")
+
+    async def _patch_card(message_id: str, payload: dict) -> Any:
+        return SendResult(success=True, message_id=message_id)
+
+    return DelegateDelivery(
+        send_text=_send_text,
+        send_plain_text_once=_send_text,
+        send_card=_send_card,
+        patch_card=_patch_card,
+    )
+
+
+def _state_files(coordinator) -> frozenset[str]:
+    root = Path(coordinator.state.root)
+    return frozenset(
+        str(path.relative_to(root)) for path in root.rglob("*") if path.is_file()
+    )
+
+
+@pytest.mark.asyncio
+async def test_close_joins_an_admission_parked_in_its_durable_prefix(tmp_path):
+    """Schedule 3a: the admission was accepted before closing began, so close
+    waits for it — CLOSED is not published over its head — and the admission
+    starts no dispatch into the closing graph."""
+
+    from gateway.sachima_delegate import SACHIMA_DELEGATE_UNBOUND
+
+    gate = asyncio.Event()
+    delivery = _gated_card_delivery(gate)
+    coordinator, facade = _coordinator(tmp_path, delivery=None)
+
+    created = asyncio.create_task(
+        coordinator.create(
+            task_text=TASK_TEXT_CANARY,
+            preset=_preset(coordinator),
+            origin=_origin(),
+            delivery=delivery,
+        )
+    )
+    # Parked inside the card send, with the identity already durable.
+    assert await _until(lambda: len(coordinator.state.list_tasks()) == 1)
+    await asyncio.sleep(0.02)
+    assert created.done() is False
+
+    closing = asyncio.create_task(coordinator.close())
+    await asyncio.sleep(0.05)
+    assert closing.done() is False
+    assert coordinator.closed is False
+
+    gate.set()
+    with pytest.raises(RuntimeError) as refused:
+        await asyncio.wait_for(created, timeout=5)
+    assert str(refused.value) == SACHIMA_DELEGATE_UNBOUND
+    await asyncio.wait_for(closing, timeout=5)
+
+    assert coordinator.closed is True
+    assert facade.submit_count() == 0
+    # The crash shape a restart restores from: identity durable, no submit.
+    (turn,) = coordinator.state.list_turns()
+    assert turn.lifecycle == "prepared"
+
+
+@pytest.mark.asyncio
+async def test_an_entry_after_close_began_is_refused_before_it_writes(tmp_path):
+    """Schedule 3b: every public entry is admitted before any durable or card
+    side effect, so a refusal leaves the store byte-for-byte as it was."""
+
+    from gateway.sachima_delegate import SACHIMA_DELEGATE_UNBOUND
+
+    delivery = _Delivery()
+    coordinator, facade = _coordinator(tmp_path, delivery=delivery)
+    await coordinator.close()
+    assert coordinator.closed is True
+    before = _state_files(coordinator)
+    calls_before = list(facade.calls)
+    session_id = _origin().session_id
+
+    entries = {
+        "create": lambda: coordinator.create(
+            task_text=TASK_TEXT_CANARY,
+            preset=_preset(coordinator),
+            origin=_origin(),
+            delivery=delivery.channel(),
+        ),
+        "continue_task": lambda: coordinator.continue_task(
+            "dtask_" + "a" * 32, TASK_TEXT_CANARY, delivery=delivery.channel()
+        ),
+        "status": lambda: coordinator.status("dtask_" + "a" * 32),
+        "cancel": lambda: coordinator.cancel("dtask_" + "a" * 32),
+        "recover": lambda: coordinator.recover("dtask_" + "a" * 32),
+        "restore": lambda: coordinator.restore(),
+    }
+    for name, entry in entries.items():
+        with pytest.raises(RuntimeError) as refused:
+            await entry()
+        assert str(refused.value) == SACHIMA_DELEGATE_UNBOUND, name
+
+    for name, entry in {
+        "pending_hermes_context": lambda: coordinator.pending_hermes_context(session_id),
+        "confirm_hermes_context": lambda: coordinator.confirm_hermes_context(session_id),
+        "release_hermes_context": lambda: coordinator.release_hermes_context(session_id),
+        "registered_agent_ids": lambda: coordinator.registered_agent_ids(),
+        "admit_agent": lambda: coordinator.admit_agent("codex", task_text="x"),
+        "agent_eligibility": lambda: coordinator.agent_eligibility(),
+        "agent_eligibility_by_role": lambda: coordinator.agent_eligibility(
+            role="code_review", division="engineering"
+        ),
+        "result": lambda: coordinator.result("dtask_" + "a" * 32),
+    }.items():
+        with pytest.raises(RuntimeError) as refused:
+            entry()
+        assert str(refused.value) == SACHIMA_DELEGATE_UNBOUND, name
+
+    assert _state_files(coordinator) == before
+    assert len(coordinator.state.list_turns()) == 0
+    assert len(coordinator.state.list_tasks()) == 0
+    # Zero backend calls: the roster entries never reached the daemon.
+    assert facade.calls == calls_before
+    assert delivery.receipts == []
+    assert delivery.notices == []
+
+
+def _control_entries(coordinator) -> dict[str, Any]:
+    """Every externally callable control entry, as the control tool and the
+    Gateway reach them. Anything here must be admitted at its boundary."""
+
+    session_id = _origin().session_id
+    task_ref = "dtask_" + "a" * 32
+    return {
+        "registered_agent_ids": lambda: coordinator.registered_agent_ids(),
+        "admit_agent": lambda: coordinator.admit_agent("codex", task_text="x"),
+        "agent_eligibility": lambda: coordinator.agent_eligibility(),
+        "result": lambda: coordinator.result(task_ref),
+        "pending_hermes_context": lambda: coordinator.pending_hermes_context(session_id),
+        "confirm_hermes_context": lambda: coordinator.confirm_hermes_context(session_id),
+        "release_hermes_context": lambda: coordinator.release_hermes_context(session_id),
+        "create": lambda: coordinator.create(
+            task_text=TASK_TEXT_CANARY, preset=_preset(coordinator), origin=_origin()
+        ),
+        "continue_task": lambda: coordinator.continue_task(task_ref, TASK_TEXT_CANARY),
+        "status": lambda: coordinator.status(task_ref),
+        "cancel": lambda: coordinator.cancel(task_ref),
+        "recover": lambda: coordinator.recover(task_ref),
+        "restore": lambda: coordinator.restore(),
+    }
+
+
+#: Public coordinator callables that are deliberately *not* control entries:
+#: composition-time wiring, the closer itself, a pure count, and the
+#: claim-check callable the composed backend resolves payloads through.
+_NOT_CONTROL_ENTRIES = frozenset(
+    {"bind_lifecycle_loop", "run_on_lifecycle_loop", "close", "active_count", "payload_resolver"}
+)
+
+
+def test_every_public_control_entry_is_admitted_at_its_boundary():
+    """The audit: one admission boundary, at the public surface, for every
+    control entry — and every public callable is either a control entry or
+    on the explicit non-entry list. A new public method cannot slip in
+    unadmitted without also being named here."""
+
+    import inspect
+
+    admitted: set[str] = set()
+    unadmitted: set[str] = set()
+    for name, member in inspect.getmembers(SachimaDelegateCoordinator):
+        if name.startswith("_") or not callable(member):
+            continue
+        if getattr(member, "__lifecycle_admitted__", False):
+            admitted.add(name)
+        else:
+            unadmitted.add(name)
+
+    coordinator_entries = set(_control_entries(object()).keys())
+    assert coordinator_entries <= admitted, sorted(coordinator_entries - admitted)
+    assert unadmitted == set(_NOT_CONTROL_ENTRIES), sorted(unadmitted ^ _NOT_CONTROL_ENTRIES)
+
+
+@pytest.mark.asyncio
+async def test_a_refused_admission_is_not_translated_into_roster_unavailable(tmp_path):
+    """After closing, ``admit_agent`` answers with the lifecycle refusal — not
+    with a roster that merely looks unreadable, which would send the caller
+    down the ordinary 'try again later' path of a live graph."""
+
+    from gateway.sachima_delegate import SACHIMA_DELEGATE_UNBOUND
+
+    coordinator, facade = _coordinator(tmp_path)
+    await coordinator.close()
+    calls_before = list(facade.calls)
+
+    with pytest.raises(RuntimeError) as refused:
+        coordinator.admit_agent("codex", task_text=TASK_TEXT_CANARY)
+    assert str(refused.value) == SACHIMA_DELEGATE_UNBOUND
+    assert facade.calls == calls_before
+
+
+@pytest.mark.asyncio
+async def test_close_waits_for_a_roster_call_blocked_inside_the_daemon(tmp_path):
+    """A synchronous control entry — the roster read behind eligibility — is
+    admitted work too. Close cannot publish CLOSED until that admitted call
+    has settled, and the call itself completes normally."""
+
+    facade = _Facade()
+    roster_gate = threading.Event()
+    roster_entered = threading.Event()
+    closed_when_released: list[bool] = []
+    real_agent_list = facade.agent_list
+
+    def _blocked_agent_list():
+        roster_entered.set()
+        roster_gate.wait(timeout=10)
+        # The witness from inside the daemon call: the graph must not have
+        # published CLOSED while this admitted call was still in here.
+        closed_when_released.append(coordinator.closed)
+        return real_agent_list()
+
+    facade.agent_list = _blocked_agent_list  # type: ignore[method-assign]
+    coordinator, _ = _coordinator(tmp_path, facade=facade)
+    loop = asyncio.get_running_loop()
+
+    eligibility = loop.run_in_executor(None, coordinator.agent_eligibility)
+    await loop.run_in_executor(None, roster_entered.wait, 10)
+
+    closing = asyncio.create_task(coordinator.close())
+    # A fixed number of zero-length yields — no timing — is more than an
+    # unheld drain needs to run to completion. A held drain stays put.
+    for _ in range(50):
+        await asyncio.sleep(0)
+    assert closing.done() is False
+    assert coordinator.closed is False
+
+    roster_gate.set()
+    await asyncio.wait_for(closing, timeout=10)
+    view, selection = await asyncio.wait_for(eligibility, timeout=10)
+
+    assert closed_when_released == [False]
+    assert coordinator.closed is True
+    assert selection is None
+    assert tuple(entry.agent_id for entry in view) == REGISTERED_AGENT_IDS
+
+
+def test_a_close_from_a_foreign_loop_joins_the_lifecycle_loops_drain(tmp_path):
+    """Two real loops on two threads. Loop A is the coordinator's bound
+    lifecycle loop and starts a close held open by an admission; loop B
+    closes concurrently. B must join A's drain — neither raise about a
+    future attached to another loop, nor return before the admission has
+    released. Ordering is witnessed by events, never by timing."""
+
+    from gateway.sachima_delegate_lifecycle import CLOSING
+
+    loop_a = asyncio.new_event_loop()
+    loop_b = asyncio.new_event_loop()
+    thread_a = threading.Thread(target=loop_a.run_forever, name="lifecycle-loop-a", daemon=True)
+    thread_b = threading.Thread(target=loop_b.run_forever, name="foreign-loop-b", daemon=True)
+    thread_a.start()
+    thread_b.start()
+    try:
+        coordinator, facade = _coordinator(tmp_path)
+        coordinator.bind_lifecycle_loop(loop_a)
+
+        card_gate = threading.Event()
+        card_entered = threading.Event()
+
+        async def _send_text(text: str) -> Any:
+            return SendResult(success=True, message_id="om_text")
+
+        async def _send_card(payload: dict) -> Any:
+            card_entered.set()
+            await asyncio.get_running_loop().run_in_executor(None, card_gate.wait, 10)
+            return SendResult(success=True, message_id="om_card")
+
+        async def _patch_card(message_id: str, payload: dict) -> Any:
+            return SendResult(success=True, message_id=message_id)
+
+        delivery = DelegateDelivery(
+            send_text=_send_text,
+            send_plain_text_once=_send_text,
+            send_card=_send_card,
+            patch_card=_patch_card,
+        )
+        # The admission: a create parked in its card prefix on loop A.
+        created = asyncio.run_coroutine_threadsafe(
+            coordinator.create(
+                task_text=TASK_TEXT_CANARY,
+                preset=_preset(coordinator),
+                origin=_origin(),
+                delivery=delivery,
+            ),
+            loop_a,
+        )
+        assert card_entered.wait(10) is True
+
+        closing_started = threading.Event()
+
+        async def _close_on_a():
+            closing = asyncio.ensure_future(coordinator.close())
+            # One zero-length yield lets the close task take its first step,
+            # which flips CLOSING before its first real await.
+            await asyncio.sleep(0)
+            closing_started.set()
+            await closing
+
+        closing_a = asyncio.run_coroutine_threadsafe(_close_on_a(), loop_a)
+        assert closing_started.wait(10) is True
+        assert coordinator._lifecycle.state == CLOSING
+
+        closing_b = asyncio.run_coroutine_threadsafe(coordinator.close(), loop_b)
+        witnessed: list[bool] = []
+        closing_b.add_done_callback(lambda _f: witnessed.append(card_gate.is_set()))
+
+        card_gate.set()
+        assert closing_a.result(timeout=10) is None
+        assert closing_b.result(timeout=10) is None
+        with pytest.raises((RuntimeError, asyncio.CancelledError)):
+            created.result(timeout=10)
+
+        assert witnessed == [True]
+        assert coordinator.closed is True
+        # The drain ran on the bound lifecycle loop, whoever asked for it.
+        assert coordinator._lifecycle._loop is loop_a
+        assert facade.submit_count() == 0
+    finally:
+        for loop in (loop_a, loop_b):
+            loop.call_soon_threadsafe(loop.stop)
+        thread_a.join(timeout=10)
+        thread_b.join(timeout=10)
+        for loop in (loop_a, loop_b):
+            loop.close()
+
+
+@pytest.mark.asyncio
+async def test_a_second_concurrent_close_waits_for_the_first_drain(tmp_path):
+    """Schedule 4: repeated close joins the one drain; nobody returns from
+    close while an owned task is still retiring, and CLOSED is published once."""
+
+    coordinator, _facade = _coordinator(tmp_path)
+    started = asyncio.Event()
+    parked = asyncio.Event()
+    release = asyncio.Event()
+
+    async def _slow_to_cancel():
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            parked.set()
+            await release.wait()
+
+    owner = asyncio.create_task(
+        coordinator._exclusive("dturn_" + "a" * 32, _slow_to_cancel)
+    )
+    await asyncio.wait_for(started.wait(), timeout=5)
+
+    first = asyncio.create_task(coordinator.close())
+    second = asyncio.create_task(coordinator.close())
+    await asyncio.wait_for(parked.wait(), timeout=5)
+    await asyncio.sleep(0.02)
+
+    assert first.done() is False
+    assert second.done() is False
+    assert coordinator.closed is False
+
+    release.set()
+    await asyncio.wait_for(asyncio.gather(first, second), timeout=5)
+    assert coordinator.closed is True
+    with pytest.raises(asyncio.CancelledError):
+        await owner
+    with pytest.raises(RuntimeError):
+        await coordinator._exclusive("dturn_" + "b" * 32, _slow_to_cancel)
+
+
+# --------------------------------------------------------------------------- #
+# N. Synchronous daemon work: registered before submission, joined by close
+# --------------------------------------------------------------------------- #
+def _parked_submit(facade: _Facade) -> threading.Event:
+    """Park the daemon's submit on its worker thread until the gate opens,
+    and record the instant the call actually returns."""
+
+    facade.submit_gate = threading.Event()
+    returned = threading.Event()
+    real_submit = facade.submit
+
+    def _submit(**kwargs):
+        try:
+            return real_submit(**kwargs)
+        finally:
+            returned.set()
+
+    facade.submit = _submit  # type: ignore[method-assign]
+    return returned
+
+
+@pytest.mark.asyncio
+async def test_close_waits_until_running_synchronous_backend_work_returns(tmp_path):
+    """Schedule 5: a dispatch is inside the daemon on a worker thread. Close
+    must not publish CLOSED until that call has actually returned — the
+    thread is joined, never interrupted, and never resubmitted."""
+
+    facade = _Facade()
+    returned = _parked_submit(facade)
+    coordinator, _ = _coordinator(tmp_path, facade=facade)
+
+    created = asyncio.create_task(
+        coordinator.create(
+            task_text=TASK_TEXT_CANARY,
+            preset=_preset(coordinator),
+            origin=_origin(),
+        )
+    )
+    assert await _until(lambda: facade.submit_count() == 1)
+
+    closing = asyncio.create_task(coordinator.close())
+    await asyncio.sleep(0.05)
+    assert closing.done() is False
+    assert coordinator.closed is False
+    assert returned.is_set() is False
+
+    facade.submit_gate.set()
+    await asyncio.wait_for(closing, timeout=5)
+
+    assert returned.is_set() is True
+    assert coordinator.closed is True
+    assert facade.submit_count() == 1
+    with pytest.raises((asyncio.CancelledError, RuntimeError)):
+        await created
+
+
+@pytest.mark.asyncio
+async def test_a_queued_synchronous_call_cancelled_before_start_is_released(tmp_path):
+    """Schedule 6: with one worker busy inside the daemon, a second dispatch
+    is registered but queued. Close cancels it before it ever starts; its own
+    terminal callback releases the registration; the drain completes once
+    the running call returns; the queued call never reaches the daemon."""
+
+    from concurrent.futures import ThreadPoolExecutor
+
+    asyncio.get_running_loop().set_default_executor(ThreadPoolExecutor(max_workers=1))
+    facade = _Facade()
+    _parked_submit(facade)
+    coordinator, _ = _coordinator(tmp_path, facade=facade)
+
+    running = asyncio.create_task(
+        coordinator.create(
+            task_text="first task", preset=_preset(coordinator), origin=_origin()
+        )
+    )
+    assert await _until(lambda: facade.submit_count() == 1)
+    queued = asyncio.create_task(
+        coordinator.create(
+            task_text="second task", preset=_preset(coordinator), origin=_origin()
+        )
+    )
+    # Registered before submission: the second call is owned while queued.
+    assert await _until(lambda: len(coordinator._lifecycle.futures) == 2)
+
+    closing = asyncio.create_task(coordinator.close())
+    await asyncio.sleep(0.05)
+    assert closing.done() is False
+    assert len(coordinator._lifecycle.futures) == 1
+
+    facade.submit_gate.set()
+    await asyncio.wait_for(closing, timeout=5)
+
+    assert coordinator.closed is True
+    assert coordinator._lifecycle.futures == frozenset()
+    assert facade.submit_count() == 1
+    for task in (running, queued):
+        with pytest.raises((asyncio.CancelledError, RuntimeError)):
+            await task
+
+
+@pytest.mark.asyncio
+async def test_closing_mid_dispatch_leaves_the_durable_shape_a_crash_leaves(tmp_path):
+    """Close while the submit is inside the daemon, then recompose over the
+    same durable state: restoration finds exactly what a process crash after
+    the submit returned would have left — a prepared turn over an accepted
+    ledger record — and restores it to ``admitted`` without submitting again."""
+
+    facade = _Facade()
+    _parked_submit(facade)
+    delivery = _Delivery()
+    coordinator, _ = _coordinator(tmp_path, facade=facade, delivery=delivery)
+
+    created = asyncio.create_task(
+        coordinator.create(
+            task_text=TASK_TEXT_CANARY,
+            preset=_preset(coordinator),
+            origin=_origin(),
+            delivery=delivery.channel(),
+        )
+    )
+    assert await _until(lambda: facade.submit_count() == 1)
+
+    closing = asyncio.create_task(coordinator.close())
+    await asyncio.sleep(0.05)
+    assert closing.done() is False
+    facade.submit_gate.set()
+    await asyncio.wait_for(closing, timeout=5)
+    with pytest.raises((asyncio.CancelledError, RuntimeError)):
+        await created
+
+    # The crash shape: identity durable, the daemon's acceptance recorded by
+    # the joined call, and no post-dispatch classification ever written.
+    (turn,) = coordinator.state.list_turns()
+    assert turn.lifecycle == "prepared"
+    record = coordinator.ledger.snapshot_exact(
+        turn.task_id, turn.backend_handle, turn.dispatch_ref
+    )
+    assert record is not None and record.state == "accepted"
+    assert coordinator.state.result_for_turn(turn.turn_key) is None
+    assert delivery.receipts == []
+
+    fresh_facade = _Facade()
+    fresh_facade.run_ids = list(facade.run_ids)
+    fresh = _recompose(tmp_path, facade=fresh_facade, delivery=delivery)
+    report = await fresh.restore()
+
+    assert report["restored"] == 1
+    assert fresh_facade.submit_count() == 0
+    restored = fresh.state.read_turn(turn.turn_key)
+    assert restored.lifecycle == "admitted"
+    assert restored.turn_ref == record.run_ref
+    assert fresh.capacity.holds(turn.turn_key)
+    assert len(delivery.receipts) == 1
+    await fresh.close()
+
+
+# --------------------------------------------------------------------------- #
 # K. The derived summary: one attempt per terminal, and no sink before it (S2)
 # --------------------------------------------------------------------------- #
 async def _settled_terminal(coordinator, facade, delivery, **terminalize):

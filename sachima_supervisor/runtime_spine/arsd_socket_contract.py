@@ -48,7 +48,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Mapping, NoReturn, Protocol, runtime_checkable
 
-from ..supervisor_library import EXPECTED_AGENT_RUN_SUPERVISOR_VERSION
+from .. import EXPECTED_AGENT_RUN_SUPERVISOR_VERSION
 from .events import SpineError, _safe_digest, _safe_id
 
 __all__ = [
@@ -234,8 +234,9 @@ _APPROVAL_REF_PREFIX = "approval_"
 _WORKSPACE_REF_PREFIX = "ws_"
 _POLICY_REF_PREFIX = "policy_"
 
-#: Sanitized version shape for the expected daemon package version (mirrors
-#: ``supervisor_library._VERSION_RE`` bounds).
+#: Sanitized version shape for the expected daemon package version. It bounds
+#: :data:`sachima_supervisor.EXPECTED_AGENT_RUN_SUPERVISOR_VERSION`, which is
+#: the single runtime source of truth for the pin.
 _VERSION_RE = re.compile(r"^[0-9][0-9A-Za-z._+-]{0,31}$")
 
 #: Opaque single-line wire tokens Sachima forwards but does not own the

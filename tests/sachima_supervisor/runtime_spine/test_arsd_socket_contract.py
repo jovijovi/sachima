@@ -249,9 +249,7 @@ def test_config_defaults_are_off_and_pinned_to_the_reviewed_contract() -> None:
     from sachima_supervisor.runtime_spine.arsd_socket_contract import (
         ARSD_REQUIRED_API_VERSION,
     )
-    from sachima_supervisor.supervisor_library import (
-        EXPECTED_AGENT_RUN_SUPERVISOR_VERSION,
-    )
+    from sachima_supervisor import EXPECTED_AGENT_RUN_SUPERVISOR_VERSION
 
     config = _make_config()
     assert config.enabled is False
@@ -1573,9 +1571,7 @@ def test_server_info_fixture_daemon_version_tracks_the_reviewed_pin() -> None:
     ``runtime_arsd_version_mismatch`` across unrelated tests.
     """
 
-    from sachima_supervisor.supervisor_library import (
-        EXPECTED_AGENT_RUN_SUPERVISOR_VERSION,
-    )
+    from sachima_supervisor import EXPECTED_AGENT_RUN_SUPERVISOR_VERSION
 
     assert _server_info_payload()["version"] == EXPECTED_AGENT_RUN_SUPERVISOR_VERSION
 

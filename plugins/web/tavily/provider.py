@@ -1,74 +1,60 @@
-"""Tavily web search + content extraction — plugin form.
+"""Tavily search and extraction through Hermes' web-provider seam.
 
-Subclasses :class:`agent.web_search_provider.WebSearchProvider`. Two
-capabilities advertised:
-
-- ``supports_search()``  -> True (Tavily ``/search``)
-- ``supports_extract()`` -> True (Tavily ``/extract``)
-
-Both are sync — the underlying call is ``httpx.post(...)``.
-
-Config keys this provider responds to::
-
-    web:
-      search_backend: "tavily"     # explicit per-capability
-      extract_backend: "tavily"    # explicit per-capability
-      backend: "tavily"            # shared fallback for both
-
-Env vars::
-
-    TAVILY_API_KEY=...           # https://app.tavily.com/home (required)
-    TAVILY_BASE_URL=...          # optional override of https://api.tavily.com
+Tavily documents both endpoints as JSON POST requests authenticated with an
+``Authorization: Bearer`` header. The provider deliberately remains a thin
+HTTP adapter: it adds no new model tool and is only selected by the existing
+``web.search_backend`` / ``web.extract_backend`` / ``web.backend`` config.
 """
 
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any, Dict, List
 
-from agent.web_search_provider import WebSearchProvider
+import httpx
+
+from agent.web_search_provider import WebSearchProvider, get_provider_env
 
 logger = logging.getLogger(__name__)
 
+_DEFAULT_BASE_URL = "https://api.tavily.com"
+
 
 def _tavily_request(endpoint: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-    """POST to the Tavily API and return the parsed JSON response.
-
-    Mirrors :func:`tools.web_tools._tavily_request`. Raises ``ValueError``
-    when ``TAVILY_API_KEY`` is unset; the caller catches and surfaces as
-    a typed error response.
-    """
-    import httpx
-
-    api_key = os.getenv("TAVILY_API_KEY")
+    """Call one Tavily JSON endpoint without mutating or logging secrets."""
+    api_key = get_provider_env("TAVILY_API_KEY")
     if not api_key:
         raise ValueError(
-            "TAVILY_API_KEY environment variable not set. "
-            "Get your API key at https://app.tavily.com/home"
+            "TAVILY_API_KEY is not configured. Get an API key at "
+            "https://app.tavily.com/home or run `hermes tools`."
         )
 
-    base_url = os.getenv("TAVILY_BASE_URL", "https://api.tavily.com")
-    payload = dict(payload)  # don't mutate caller's dict
-    payload["api_key"] = api_key
-    url = f"{base_url}/{endpoint.lstrip('/')}"
-    logger.info("Tavily %s request to %s", endpoint, url)
+    # Preserve the downstream override for existing installations while the
+    # normal product path remains explicit backend selection in config.yaml.
+    base_url = get_provider_env("TAVILY_BASE_URL") or _DEFAULT_BASE_URL
+    url = f"{base_url.rstrip('/')}/{endpoint.lstrip('/')}"
+    logger.info("Tavily %s request", endpoint)
 
-    response = httpx.post(url, json=payload, timeout=60)
+    response = httpx.post(
+        url,
+        json=dict(payload),
+        headers={"Authorization": f"Bearer {api_key}"},
+        timeout=60,
+    )
     response.raise_for_status()
     return response.json()
 
 
 def _normalize_tavily_search_results(response: Dict[str, Any]) -> Dict[str, Any]:
-    """Map Tavily ``/search`` response to ``{success, data: {web: [...]}}``."""
+    """Normalize Tavily search results to Hermes' shared response contract."""
     web_results = []
-    for i, result in enumerate(response.get("results", [])):
+    for index, result in enumerate(response.get("results", [])):
         web_results.append(
             {
                 "title": result.get("title", ""),
                 "url": result.get("url", ""),
                 "description": result.get("content", ""),
-                "position": i + 1,
+                "position": index + 1,
             }
         )
     return {"success": True, "data": {"web": web_results}}
@@ -77,56 +63,53 @@ def _normalize_tavily_search_results(response: Dict[str, Any]) -> Dict[str, Any]
 def _normalize_tavily_documents(
     response: Dict[str, Any], fallback_url: str = ""
 ) -> List[Dict[str, Any]]:
-    """Map Tavily ``/extract`` response to standard documents.
-
-    Documents follow the legacy LLM post-processing shape::
-
-        {"url", "title", "content", "raw_content", "metadata"}
-
-    Failures (``failed_results``, ``failed_urls``) become result entries
-    with an ``error`` field rather than raising.
-    """
+    """Normalize successful and per-URL failed Tavily extract results."""
     documents: List[Dict[str, Any]] = []
     for result in response.get("results", []):
-        url = result.get("url", fallback_url)
+        url = result.get("url") or fallback_url
         raw = result.get("raw_content", "") or result.get("content", "")
+        title = result.get("title", "")
         documents.append(
             {
                 "url": url,
-                "title": result.get("title", ""),
+                "title": title,
                 "content": raw,
                 "raw_content": raw,
-                "metadata": {"sourceURL": url, "title": result.get("title", "")},
+                "metadata": {"sourceURL": url, "title": title},
             }
         )
-    for fail in response.get("failed_results", []):
+
+    for failure in response.get("failed_results", []):
+        url = failure.get("url") or fallback_url
         documents.append(
             {
-                "url": fail.get("url", fallback_url),
+                "url": url,
                 "title": "",
                 "content": "",
                 "raw_content": "",
-                "error": fail.get("error", "extraction failed"),
-                "metadata": {"sourceURL": fail.get("url", fallback_url)},
+                "error": failure.get("error", "extraction failed"),
+                "metadata": {"sourceURL": url},
             }
         )
-    for fail_url in response.get("failed_urls", []):
-        url_str = fail_url if isinstance(fail_url, str) else str(fail_url)
+    # Older Tavily responses used a simple ``failed_urls`` collection. Keep
+    # reading it so existing response fixtures and proxies remain compatible.
+    for failure in response.get("failed_urls", []):
+        url = failure if isinstance(failure, str) else str(failure)
         documents.append(
             {
-                "url": url_str,
+                "url": url,
                 "title": "",
                 "content": "",
                 "raw_content": "",
                 "error": "extraction failed",
-                "metadata": {"sourceURL": url_str},
+                "metadata": {"sourceURL": url},
             }
         )
     return documents
 
 
 class TavilyWebSearchProvider(WebSearchProvider):
-    """Tavily search + extract provider."""
+    """Tavily implementation of the shared search/extract contract."""
 
     @property
     def name(self) -> str:
@@ -137,8 +120,7 @@ class TavilyWebSearchProvider(WebSearchProvider):
         return "Tavily"
 
     def is_available(self) -> bool:
-        """Return True when ``TAVILY_API_KEY`` is set to a non-empty value."""
-        return bool(os.getenv("TAVILY_API_KEY", "").strip())
+        return bool(get_provider_env("TAVILY_API_KEY"))
 
     def supports_search(self) -> bool:
         return True
@@ -147,19 +129,16 @@ class TavilyWebSearchProvider(WebSearchProvider):
         return True
 
     def search(self, query: str, limit: int = 5) -> Dict[str, Any]:
-        """Execute a Tavily search."""
         try:
             from tools.interrupt import is_interrupted
 
             if is_interrupted():
                 return {"success": False, "error": "Interrupted"}
-
-            logger.info("Tavily search: '%s' (limit=%d)", query, limit)
             raw = _tavily_request(
                 "search",
                 {
                     "query": query,
-                    "max_results": min(limit, 20),
+                    "max_results": min(max(int(limit), 1), 20),
                     "include_raw_content": False,
                     "include_images": False,
                 },
@@ -167,54 +146,58 @@ class TavilyWebSearchProvider(WebSearchProvider):
             return _normalize_tavily_search_results(raw)
         except ValueError as exc:
             return {"success": False, "error": str(exc)}
-        except Exception as exc:  # noqa: BLE001 — including httpx errors
-            logger.warning("Tavily search error: %s", exc)
+        except Exception as exc:  # noqa: BLE001 — vendor errors are tool results
+            logger.warning("Tavily search failed: %s", exc)
             return {"success": False, "error": f"Tavily search failed: {exc}"}
 
     def extract(self, urls: List[str], **kwargs: Any) -> List[Dict[str, Any]]:
-        """Extract content from one or more URLs via Tavily.
-
-        Sync — the underlying call is httpx.post(...). Returns the legacy
-        list-of-results shape; per-URL failures become items with ``error``.
-        """
         try:
             from tools.interrupt import is_interrupted
 
             if is_interrupted():
                 return [
-                    {"url": u, "error": "Interrupted", "title": ""} for u in urls
+                    {"url": url, "title": "", "content": "", "error": "Interrupted"}
+                    for url in urls
                 ]
 
-            logger.info("Tavily extract: %d URL(s)", len(urls))
-            raw = _tavily_request(
-                "extract",
-                {
-                    "urls": urls,
-                    "include_images": False,
-                },
-            )
+            payload: Dict[str, Any] = {
+                "urls": list(urls),
+                "include_images": False,
+            }
+            output_format = str(kwargs.get("format") or "").strip().lower()
+            if output_format in {"markdown", "text"}:
+                payload["format"] = output_format
+            raw = _tavily_request("extract", payload)
             return _normalize_tavily_documents(
                 raw, fallback_url=urls[0] if urls else ""
             )
         except ValueError as exc:
-            return [{"url": u, "title": "", "content": "", "error": str(exc)} for u in urls]
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Tavily extract error: %s", exc)
             return [
-                {"url": u, "title": "", "content": "", "error": f"Tavily extract failed: {exc}"}
-                for u in urls
+                {"url": url, "title": "", "content": "", "error": str(exc)}
+                for url in urls
+            ]
+        except Exception as exc:  # noqa: BLE001 — vendor errors are tool results
+            logger.warning("Tavily extract failed: %s", exc)
+            return [
+                {
+                    "url": url,
+                    "title": "",
+                    "content": "",
+                    "error": f"Tavily extract failed: {exc}",
+                }
+                for url in urls
             ]
 
     def get_setup_schema(self) -> Dict[str, Any]:
         return {
             "name": "Tavily",
-            "badge": "paid",
-            "tag": "Search + extract in one provider.",
+            "badge": "free tier",
+            "tag": "Search and extract with one provider.",
             "env_vars": [
                 {
                     "key": "TAVILY_API_KEY",
                     "prompt": "Tavily API key",
                     "url": "https://app.tavily.com/home",
-                },
+                }
             ],
         }

@@ -8,29 +8,52 @@ export const todoGlyph = (status: TodoItem['status']) =>
 export const todoTone = (status: TodoItem['status']): TodoTone =>
   status === 'in_progress' ? 'active' : status === 'pending' ? 'body' : 'dim'
 
-// Display-boundary validation for the optional executor label, mirroring
-// gateway/progress/todo_executor.py: the gateway already normalizes the
-// field, but the panel re-validates fail-closed so a stale or hostile
-// payload can never render links, mentions, or token-shaped strings.
-const SAFE_TODO_EXECUTOR_RE = /^[a-z0-9][a-z0-9._-]{0,31}$/
-const TOKEN_LIKE_EXECUTOR_PREFIXES = ['sk-', 'sk_', 'ghp_', 'gho_', 'github_pat_', 'xox', 'hf_', 'hf-', 'pat_']
-// Canonical short forms for known long labels, applied after validation.
-const TODO_EXECUTOR_ALIASES: Record<string, string> = { 'hermes-agent': 'hermes' }
+/** DFS order of a (possibly nested) todo list: [item, depth] pairs, parents
+ *  before children. Dangling/cyclic parents degrade to depth 0. Mirrors
+ *  apps/desktop/src/lib/todos.ts's todoTree() so both surfaces render the
+ *  same hierarchy from the same `parent` field. */
+export function todoTree(todos: readonly TodoItem[]): [TodoItem, number][] {
+  const ids = new Set(todos.map(t => t.id))
+  const kids = new Map<string, TodoItem[]>()
+  const roots: TodoItem[] = []
 
-export const displayTodoExecutor = (value: unknown): null | string => {
-  if (typeof value !== 'string') {
-    return null
+  for (const t of todos) {
+    if (t.parent && ids.has(t.parent) && t.parent !== t.id) {
+      const list = kids.get(t.parent) ?? []
+      list.push(t)
+      kids.set(t.parent, list)
+    } else {
+      roots.push(t)
+    }
   }
 
-  const text = value.trim().toLowerCase()
+  const out: [TodoItem, number][] = []
+  const seen = new Set<string>()
 
-  if (!text || !SAFE_TODO_EXECUTOR_RE.test(text)) {
-    return null
+  const walk = (item: TodoItem, depth: number) => {
+    if (seen.has(item.id)) {
+      return
+    }
+
+    seen.add(item.id)
+    out.push([item, depth])
+
+    for (const kid of kids.get(item.id) ?? []) {
+      walk(kid, depth + 1)
+    }
   }
 
-  if (TOKEN_LIKE_EXECUTOR_PREFIXES.some(prefix => text.startsWith(prefix))) {
-    return null
+  for (const root of roots) {
+    walk(root, 0)
   }
 
-  return TODO_EXECUTOR_ALIASES[text] ?? text
+  // Cycle members never reach a root — append them flat so nothing is lost.
+  for (const t of todos) {
+    if (!seen.has(t.id)) {
+      seen.add(t.id)
+      out.push([t, 0])
+    }
+  }
+
+  return out
 }

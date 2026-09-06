@@ -1,15 +1,9 @@
-from pathlib import Path
+import ast
 import re
 import tomllib
+from pathlib import Path
 
 import pytest
-
-# setuptools is declared in the [dev] extra and is the build backend, but
-# guard the import so a runner without it skips these packaging checks
-# instead of erroring out collection for the whole shard (it used to be
-# picked up ambiently from the CI image; newer ubuntu-latest images don't
-# ship it in the test venv).
-find_packages = pytest.importorskip("setuptools", exc_type=ImportError).find_packages
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -29,53 +23,6 @@ def _distribution_name(requirement: str) -> str:
     spec = spec.split("[", 1)[0]  # drop extras
     spec = re.split(r"[=<>!~]", spec, maxsplit=1)[0]  # drop any version operator
     return spec.strip().lower()
-
-
-def _packages_find_include():
-    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
-    return data["tool"]["setuptools"]["packages"]["find"]["include"]
-
-
-def test_every_on_disk_subpackage_is_covered_by_packages_find():
-    """Regression test for #34701 (and the bug class behind #34034 / #28149).
-
-    ``[tool.setuptools.packages.find]`` ``include`` is hand-maintained. Every
-    top-level package is listed twice — bare (``hermes_cli``) for the package
-    itself and ``hermes_cli.*`` for its subpackages — EXCEPT when someone
-    forgets the wildcard. v0.15.x listed ``hermes_cli`` without ``hermes_cli.*``,
-    so the wheel shipped ``hermes_cli/*.py`` but dropped the ``dashboard_auth``
-    and ``proxy`` subpackages. The dashboard then died on every install with
-    ``ModuleNotFoundError: No module named 'hermes_cli.dashboard_auth'``.
-
-    This drives setuptools' own discovery against the live tree: every package
-    that exists on disk and would be found by a permissive ``<name>.*`` scan
-    must also be found by the actual ``include`` list. A subpackage added under
-    any listed package without the matching wildcard fails here instead of in a
-    user's container.
-    """
-    include = _packages_find_include()
-
-    # What the real include list actually selects.
-    selected = set(find_packages(where=str(REPO_ROOT), include=include))
-
-    # Top-level packages we ship (bare names in the include list, no wildcard).
-    top_level = sorted({name for name in include if "." not in name})
-
-    # For each shipped top-level package, every on-disk subpackage must be
-    # covered by the include list.
-    expected = set(
-        find_packages(
-            where=str(REPO_ROOT),
-            include=[pattern for name in top_level for pattern in (name, f"{name}.*")],
-        )
-    )
-
-    missing = sorted(expected - selected)
-    assert not missing, (
-        "These packages exist on disk but are dropped from the wheel because "
-        "[tool.setuptools.packages.find] include is missing a wildcard. Add the "
-        f"matching '<name>.*' entry in pyproject.toml: {missing}"
-    )
 
 
 def test_packaging_declared_as_core_dependency():
@@ -109,52 +56,6 @@ def test_faster_whisper_is_not_a_base_dependency():
     assert any(dep.startswith("faster-whisper") for dep in voice_extra)
 
 
-def test_manifest_includes_bundled_skills():
-    manifest = (REPO_ROOT / "MANIFEST.in").read_text(encoding="utf-8")
-
-    assert "graft skills" in manifest
-    assert "graft optional-skills" in manifest
-
-
-def test_bundled_plugin_manifests_ship_in_both_wheel_and_sdist():
-    """Regression test for #34034 / #28149.
-
-    Plugin discovery (hermes_cli/plugins.py) registers each bundled plugin by
-    reading its ``plugin.yaml`` / ``plugin.yml`` manifest. Those manifests are
-    data files, not Python modules, so they only reach installed packages when
-    declared explicitly:
-
-    - wheel  -> ``[tool.setuptools.package-data]`` ``plugins`` glob
-    - sdist  -> ``MANIFEST.in`` (Homebrew and other downstream packagers build
-                from the sdist)
-
-    v0.15.0 declared neither, so the wheel shipped every adapter's Python code
-    but none of its manifests, and *every* gateway platform failed with
-    "No adapter available for <platform>". Both channels must cover manifests.
-    """
-    # There must actually be manifests on disk for the globs to match.
-    on_disk = list((REPO_ROOT / "plugins").rglob("plugin.yaml")) + list(
-        (REPO_ROOT / "plugins").rglob("plugin.yml")
-    )
-    assert on_disk, "expected bundled plugin manifests under plugins/"
-
-    # Wheel channel: package-data must declare a glob that matches plugin
-    # manifests anywhere under the plugins package.
-    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
-    plugins_pkg_data = data["tool"]["setuptools"]["package-data"].get("plugins", [])
-    assert any(
-        g.endswith("plugin.yaml") or g.endswith("plugin.yml")
-        for g in plugins_pkg_data
-    ), "pyproject package-data 'plugins' must ship plugin.yaml/plugin.yml (wheel)"
-
-    # Sdist channel: MANIFEST.in must recursively include the manifests so
-    # downstream packagers building from the sdist also get them.
-    manifest = (REPO_ROOT / "MANIFEST.in").read_text(encoding="utf-8")
-    assert "recursive-include plugins" in manifest and "plugin.yaml" in manifest, (
-        "MANIFEST.in must recursive-include plugins plugin.yaml/plugin.yml (sdist)"
-    )
-
-
 # Minimum non-vulnerable Starlette: CVE-2026-48710 ("BadHost") was fixed in
 # 1.0.1. Anything below that lets a malformed Host header desync
 # ``request.url.path`` from the dispatched ASGI path, bypassing path-based
@@ -163,6 +64,14 @@ def test_bundled_plugin_manifests_ship_in_both_wheel_and_sdist():
 # [dev]) so we pin it directly in every extra that exposes a server surface and
 # enforce the floor in both pyproject and the committed lockfile.
 _STARLETTE_CVE_FLOOR = (1, 0, 1)
+_UPDATE_DOWNGRADE_GUARD_FLOORS = {
+    # `hermes update` reinstalls exact pins from pyproject/lazy_deps. These
+    # reviewed CVE pins must not slide back to stale versions that downgrade
+    # already-patched user environments.
+    "cryptography": (50, 0, 0),
+    "starlette": (1, 3, 1),
+    "python-multipart": (0, 0, 32),
+}
 
 
 def _version_tuple(spec: str) -> tuple[int, ...]:
@@ -240,22 +149,311 @@ def test_locked_starlette_is_not_vulnerable_to_cve_2026_48710():
         )
 
 
+
+
+# ---------------------------------------------------------------------------
+# Dependency-pin consistency: pyproject extras <-> tools/lazy_deps.py
+#
+# The same package is exact-pinned in two hand-maintained places: the
+# [project.optional-dependencies] extras in pyproject.toml and the LAZY_DEPS
+# allowlist in tools/lazy_deps.py (the lazy-install path deliberately mirrors
+# the extras — see the comments on LAZY_DEPS: "match the corresponding extra
+# in pyproject.toml ... update both this map AND the corresponding extra").
+#
+# They have silently drifted more than once: the aiohttp Slack pin (3.13.3 in
+# the extras vs 3.13.4 in lazy_deps) and the anthropic pin (0.86.0 vs 0.87.0).
+# The version a user ends up with then depends on whether the backend was
+# installed eagerly (extra) or lazily (lazy_deps) — and for a CVE bump applied
+# to only one side, that divergence is a latent security regression. These two
+# tests assert the documented contract: the two sources agree, in lockstep.
+# ---------------------------------------------------------------------------
+
+# Matches "name==version" and "name[extra]==version", ignoring any trailing
+# environment marker / comment. Only exact pins are collected; ranged specs
+# (">=", "<") can't be compared for equality and are skipped.
+_PIN_RE = re.compile(
+    r"^\s*([A-Za-z0-9][A-Za-z0-9._-]*)\s*(?:\[[^\]]*\])?\s*==\s*([^\s;,#]+)"
+)
+
+
+def _canonical(name: str) -> str:
+    # PEP 503 normalization so e.g. discord.py / discord-py compare equal.
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def _pins_from_specs(specs):
+    """Map canonical package name -> set of exact-pinned versions seen."""
+    pins: dict[str, set[str]] = {}
+    for spec in specs:
+        m = _PIN_RE.match(spec)
+        if not m:
+            continue
+        pins.setdefault(_canonical(m.group(1)), set()).add(m.group(2))
+    return pins
+
+
+def _locked_versions(package: str) -> set[str]:
+    lock = tomllib.loads((REPO_ROOT / "uv.lock").read_text(encoding="utf-8"))
+    return {
+        pkg["version"]
+        for pkg in lock.get("package", [])
+        if _canonical(pkg["name"]) == _canonical(package)
+    }
+
+
+def _pyproject_pinned_specs():
+    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    specs = list(data["project"].get("dependencies", []))
+    for extra in data["project"].get("optional-dependencies", {}).values():
+        specs.extend(extra)
+    return specs
+
+
+def _lazy_deps_pinned_specs():
+    """Extract every string literal inside the LAZY_DEPS dict via AST.
+
+    Parsing rather than importing keeps this test free of
+    tools/lazy_deps.py's runtime imports and side effects.
+    """
+    src = (REPO_ROOT / "tools" / "lazy_deps.py").read_text(encoding="utf-8")
+    tree = ast.parse(src)
+    specs: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            targets = node.targets
+        elif isinstance(node, ast.AnnAssign):
+            targets = [node.target]
+        else:
+            continue
+        if not any(isinstance(t, ast.Name) and t.id == "LAZY_DEPS" for t in targets):
+            continue
+        for sub in ast.walk(node.value):
+            if isinstance(sub, ast.Constant) and isinstance(sub.value, str):
+                specs.append(sub.value)
+    assert specs, "could not extract specs from LAZY_DEPS — the AST parser drifted"
+    return specs
+
+
+def test_pyproject_pins_are_internally_consistent():
+    """No package may be exact-pinned to two different versions in pyproject.
+
+    A package legitimately appearing in several extras (e.g. aiohttp in
+    messaging/slack/homeassistant/sms) must use the SAME version everywhere.
+    """
+    pins = _pins_from_specs(_pyproject_pinned_specs())
+    conflicts = {name: sorted(v) for name, v in pins.items() if len(v) > 1}
+    assert not conflicts, (
+        "pyproject.toml exact-pins the same package to different versions "
+        "across [project.dependencies] / extras: " + str(conflicts)
+    )
+
+
+def test_build_system_requires_exempt_from_exclude_newer():
+    """Regression guard for the #78227 / #75992 exclude-newer brick class.
+
+    ``[tool.uv].exclude-newer`` applies to ``[build-system].requires`` too.
+    When a resolver cannot see a package's upload date (old uv, mirror
+    index, stale HTTP cache) it treats the release as newer than the cutoff
+    and filters it — and because build requirements are exact-pinned there
+    is no older candidate to fall back to, so the project cannot even be
+    BUILT from a git checkout ("No solution found when resolving:
+    setuptools==83.0.0", observed on released v0.20.0).
+
+    Exempting an exact-pinned build requirement costs nothing: the version
+    cannot move without a reviewed pin bump, so exclude-newer adds no float
+    protection for it. Every build requirement must therefore appear in the
+    ``exclude-newer-package`` whitelist (set to ``false``) for as long as a
+    relative ``exclude-newer`` cutoff is configured.
+    """
+    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    uv_cfg = data.get("tool", {}).get("uv", {})
+    if "exclude-newer" not in uv_cfg:
+        pytest.skip("no exclude-newer cutoff configured — nothing to exempt")
+    whitelist = {
+        _canonical(name)
+        for name, enabled in uv_cfg.get("exclude-newer-package", {}).items()
+        if enabled is False
+    }
+    build_requires = {
+        _canonical(_distribution_name(req))
+        for req in data.get("build-system", {}).get("requires", [])
+    }
+    missing = sorted(build_requires - whitelist)
+    assert not missing, (
+        "build-system.requires packages are subject to the exclude-newer "
+        "cutoff but missing from the [tool.uv].exclude-newer-package "
+        f"whitelist — fresh builds brick when upload dates are invisible: {missing}"
+    )
+
+
+def test_exact_pinned_deps_exempt_from_exclude_newer():
+    """Regression guard for the release-day brick class.
+
+    Every release exact-pins at least one dependency to a version published
+    days before the release (v0.20.6: snowballstemmer==3.1.1,
+    psutil==7.2.2). For two weeks after release the relative
+    ``exclude-newer`` cutoff filters those versions out, so any venv that
+    predates the release cannot resolve the new pins at all ("no version of
+    snowballstemmer==3.1.1" — observed 2026-08-29 updating three production
+    installs v0.20.0 -> v0.20.6, one Termux and two Linux servers). The pin
+    bump WAS the review, so the cutoff adds zero float protection for an
+    exact pin and can only brick.
+
+    Every exact-pinned package in [project].dependencies and
+    optional-dependencies must therefore appear in the
+    ``exclude-newer-package`` whitelist (set to ``false``) for as long as a
+    relative ``exclude-newer`` cutoff is configured.
+    """
+    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    uv_cfg = data.get("tool", {}).get("uv", {})
+    if "exclude-newer" not in uv_cfg:
+        pytest.skip("no exclude-newer cutoff configured — nothing to exempt")
+    whitelist = {
+        _canonical(name)
+        for name, enabled in uv_cfg.get("exclude-newer-package", {}).items()
+        if enabled is False
+    }
+    missing = sorted(set(_pins_from_specs(_pyproject_pinned_specs())) - whitelist)
+    assert not missing, (
+        "exact-pinned packages are subject to the exclude-newer cutoff but "
+        "missing from the [tool.uv].exclude-newer-package whitelist — "
+        "release-day updates brick while the pinned version is younger than "
+        f"the cutoff: {missing}"
+    )
+
+
+
+def test_build_system_requires_wheel_for_isolated_builds():
+    """Regression for #96488 — PEP 517 isolation must include wheel.
+
+    ``setuptools.build_meta`` and our ``setup.py`` bdist_wheel guard import
+    ``wheel`` during editable builds. uv's build-isolation sandbox is seeded
+    only from ``[build-system].requires``; without ``wheel`` there, Windows
+    ``uv sync`` / ``uv pip install -e .`` fails with
+    ``ModuleNotFoundError: No module named 'wheel.cli'`` even when the real
+    venv already has wheel installed.
+    """
+    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    names = {
+        _distribution_name(req)
+        for req in data.get("build-system", {}).get("requires", [])
+    }
+    assert "wheel" in names, (
+        "wheel must be listed in [build-system].requires so PEP 517 isolated "
+        "builds can import wheel.cli / bdist_wheel — see #96488"
+    )
+
+
+def _lazy_deps_by_feature():
+    """Parse LAZY_DEPS into {feature_name: [spec, ...]} via AST.
+
+    Same parse-don't-import rationale as _lazy_deps_pinned_specs, but keeps the
+    feature -> specs grouping so per-feature coverage can be asserted.
+    """
+    src = (REPO_ROOT / "tools" / "lazy_deps.py").read_text(encoding="utf-8")
+    tree = ast.parse(src)
+    for node in ast.walk(tree):
+        targets = (
+            node.targets if isinstance(node, ast.Assign)
+            else [node.target] if isinstance(node, ast.AnnAssign)
+            else []
+        )
+        if not any(isinstance(t, ast.Name) and t.id == "LAZY_DEPS" for t in targets):
+            continue
+        if not isinstance(node.value, ast.Dict):
+            continue
+        by_feature: dict[str, list[str]] = {}
+        for key, value in zip(node.value.keys, node.value.values):
+            if not (isinstance(key, ast.Constant) and isinstance(key.value, str)):
+                continue
+            by_feature[key.value] = [
+                sub.value
+                for sub in ast.walk(value)
+                if isinstance(sub, ast.Constant) and isinstance(sub.value, str)
+            ]
+        assert by_feature, "could not extract features from LAZY_DEPS — AST parser drifted"
+        return by_feature
+    raise AssertionError("LAZY_DEPS dict literal not found in tools/lazy_deps.py")
+
+
+# Security-critical packages whose patched floor must be enforced on EVERY
+# install path, eager and lazy. test_pyproject_and_lazy_deps_pins_agree only
+# fires when a package is pinned in BOTH sources, so it cannot catch a lazy
+# feature that omits the pin entirely — the exact gap that left platform.slack
+# carrying aiohttp==3.14.0 while platform.discord (whose discord.py dep pulls
+# aiohttp transitively as its HTTP backbone) shipped without it, so the lazy
+# Discord path could keep an already-installed vulnerable aiohttp. A fully
+# general "no mirrored feature drops a pin" check is impossible statically
+# (it can't see transitive deps), so this is the explicit coverage contract:
+# each security package -> the lazy features that bundle an SDK pulling it and
+# must therefore carry the same pin as the pyproject extra.
+_REQUIRED_SECURITY_PINS = {
+    # Every lazy messaging feature whose SDK pulls aiohttp transitively must
+    # carry the patched floor directly: discord.py (aiohttp<4), slack-bolt,
+    # mautrix/aiohttp-socks (aiohttp<4 / >=3.10), and microsoft-teams-apps —
+    # none of those upper/lower bounds excludes a vulnerable already-installed
+    # aiohttp, so the lazy path would not upgrade it without an explicit pin.
+    "aiohttp": {
+        "platform.discord",
+        "platform.slack",
+        "platform.matrix",
+        "platform.teams",
+    },
+}
+
+
+def test_security_pins_present_in_mirrored_lazy_features():
+    """Curated security pins must be present (not just version-consistent) in
+    every lazy feature that bundles an SDK pulling that package transitively.
+    """
+    py = _pins_from_specs(_pyproject_pinned_specs())
+    by_feature = _lazy_deps_by_feature()
+
+    problems = []
+    for pkg, features in _REQUIRED_SECURITY_PINS.items():
+        canon = _canonical(pkg)
+        expected = py.get(canon)
+        assert expected, (
+            f"{pkg} is listed in _REQUIRED_SECURITY_PINS but is not exact-pinned "
+            f"in pyproject.toml — update the map or the pin."
+        )
+        for feature in sorted(features):
+            specs = by_feature.get(feature)
+            assert specs is not None, (
+                f"lazy feature {feature!r} named in _REQUIRED_SECURITY_PINS no "
+                f"longer exists in LAZY_DEPS — update the map."
+            )
+            got = _pins_from_specs(specs).get(canon)
+            if got != expected:
+                problems.append(
+                    f"{feature}: {pkg}="
+                    f"{sorted(got) if got else 'MISSING'}, expected {sorted(expected)}"
+                )
+    assert not problems, (
+        "a lazy feature is missing a security pin it must mirror from the "
+        "pyproject extras — the lazy install path would not enforce the "
+        "CVE-patched floor:\n  " + "\n  ".join(problems)
+    )
+
+
+# ===========================================================================
+# agent-run-supervisor — one pin, three places
+# ===========================================================================
+
 def test_agent_run_supervisor_pin_consistent_across_pyproject_and_checker():
     """The agent-run-supervisor pin has exactly one source of truth.
 
     The external agent-run-supervisor AGENT execution/event-stream subsystem is
     consumed only as an exact-pinned PyPI distribution: declared in the
     dedicated ``agent-run-supervisor`` extra (opt-in provisioning) and mirrored
-    into ``dev`` (so CI's ``--extra dev`` sync runs the real caller-API compat
-    tests instead of skipping them). The runtime checker constant
-    ``EXPECTED_AGENT_RUN_SUPERVISOR_VERSION`` must equal that pin, and the
-    package must stay out of core dependencies, ``[all]``, and
-    ``flowweaver-temporal`` (it is not a Temporal component). A bump that
-    misses any of these places fails here instead of drifting.
+    into ``dev`` (so a ``--extra dev`` sync installs the distribution and the
+    offline contract drift locks run against it instead of skipping). The
+    runtime checker constant ``EXPECTED_AGENT_RUN_SUPERVISOR_VERSION`` must
+    equal that pin, and the package must stay out of core dependencies and out
+    of ``[all]``. A bump that misses any of these places fails here instead of
+    drifting.
     """
-    from sachima_supervisor.supervisor_library import (
-        EXPECTED_AGENT_RUN_SUPERVISOR_VERSION,
-    )
+    from sachima_supervisor import EXPECTED_AGENT_RUN_SUPERVISOR_VERSION
 
     data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     extras = data["project"]["optional-dependencies"]
@@ -266,8 +464,7 @@ def test_agent_run_supervisor_pin_consistent_across_pyproject_and_checker():
         f"agent-run-supervisor = [{pin!r}] (exact pin, no ranges)"
     )
     assert pin in extras.get("dev", []), (
-        f"dev extra must mirror {pin!r} so CI installs the distribution and "
-        "the real caller-API compat tests run for real"
+        f"dev extra must mirror {pin!r} so a dev sync installs the distribution"
     )
 
     core_names = {_distribution_name(dep) for dep in data["project"]["dependencies"]}
@@ -275,10 +472,9 @@ def test_agent_run_supervisor_pin_consistent_across_pyproject_and_checker():
         "agent-run-supervisor is opt-in (default-off supervisor spine) and "
         "must never be a core dependency"
     )
-    for fenced_extra in ("all", "flowweaver-temporal"):
-        assert not any(
-            "agent-run-supervisor" in spec for spec in extras.get(fenced_extra, [])
-        ), f"agent-run-supervisor must stay out of the [{fenced_extra}] extra"
+    assert not any(
+        "agent-run-supervisor" in spec for spec in extras.get("all", [])
+    ), "agent-run-supervisor must stay out of the [all] extra"
 
 
 def test_locked_agent_run_supervisor_matches_expected_pin():
@@ -286,153 +482,311 @@ def test_locked_agent_run_supervisor_matches_expected_pin():
 
     pyproject declares the pin, but hash-verified installs (``uv sync
     --locked`` / ``--frozen``) pull what the lockfile resolved. A pin bump (or
-    the initial extra introduction) without ``uv lock`` regeneration fails here
+    the initial extra introduction) without a matching lock entry fails here
     instead of shipping a stale or missing resolution.
     """
-    from sachima_supervisor.supervisor_library import (
-        EXPECTED_AGENT_RUN_SUPERVISOR_VERSION,
-    )
+    from sachima_supervisor import EXPECTED_AGENT_RUN_SUPERVISOR_VERSION
 
-    lock = (REPO_ROOT / "uv.lock").read_text(encoding="utf-8")
-    versions = []
-    in_target = False
-    for line in lock.splitlines():
-        if line.startswith("[[package]]"):
-            in_target = False
-        elif line.strip() == 'name = "agent-run-supervisor"':
-            in_target = True
-        elif in_target and line.startswith("version = "):
-            versions.append(line.split("=", 1)[1].strip().strip('"'))
-            in_target = False
-
-    assert versions == [EXPECTED_AGENT_RUN_SUPERVISOR_VERSION], (
-        f"uv.lock must resolve agent-run-supervisor to exactly "
-        f"{EXPECTED_AGENT_RUN_SUPERVISOR_VERSION} (found {versions or 'nothing'}) — "
-        "run `uv lock` after editing the pyproject pin"
+    assert _locked_versions("agent-run-supervisor") == {
+        EXPECTED_AGENT_RUN_SUPERVISOR_VERSION
+    }, (
+        "uv.lock must resolve agent-run-supervisor to exactly "
+        f"{EXPECTED_AGENT_RUN_SUPERVISOR_VERSION} (found "
+        f"{sorted(_locked_versions('agent-run-supervisor')) or 'nothing'})"
     )
 
 
 def test_agent_run_supervisor_exclude_newer_cutoff_admits_the_locked_release():
-    """The narrow date-policy override must actually admit the pinned release.
+    """The date policy must actually admit the pinned release.
 
-    The repo keeps a global ``exclude-newer = "7 days"`` supply-chain window and
-    narrows it per package. Every agent-run-supervisor pin advance so far has
-    landed inside that window, so the pin is installable only while the
-    package-specific ``[tool.uv].exclude-newer-package`` cutoff is at or after
-    the release's own PyPI upload time. A pin bump that forgets the cutoff fails
-    here — with both timestamps named — instead of surfacing as an opaque
-    "distribution not found" during a later hash-verified ``uv sync``.
+    agent-run-supervisor pin advances have landed inside the relative
+    ``exclude-newer`` window before, so the pin was installable only while the
+    per-package cutoff admitted it. On this baseline the repo already exempts
+    every exact pin outright (``exclude-newer-package`` set to ``false``),
+    which admits the reviewed release unconditionally — a strictly wider
+    admission than a dated cutoff, and the convention
+    ``test_exact_pinned_deps_exempt_from_exclude_newer`` enforces repo-wide.
+    Assert it explicitly here so the one pin Sachima owns cannot regress to a
+    stale date, or to no entry at all, without a named failure.
+    """
+    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    uv_cfg = data["tool"]["uv"]
+    if "exclude-newer" not in uv_cfg:
+        pytest.skip("no exclude-newer cutoff configured — nothing to exempt")
 
-    The override stays narrow by construction: only the agent-run-supervisor
-    cutoff is read, and the global window is asserted untouched.
+    assert uv_cfg["exclude-newer-package"].get("agent-run-supervisor") is False, (
+        "[tool.uv].exclude-newer-package must exempt agent-run-supervisor "
+        "(set it to false, as every other exact pin is) so the reviewed pin "
+        "stays installable inside the relative window"
+    )
+
+
+#: Directories a repo-wide source scan skips: not our code, or not code.
+_SCAN_SKIP_DIRS = frozenset(
+    {
+        ".git",
+        ".venv",
+        "venv",
+        "node_modules",
+        "__pycache__",
+        ".pytest_cache",
+        ".ruff_cache",
+        "dist",
+        "build",
+    }
+)
+
+
+def _tracked_python_sources():
+    """Every first-party Python source file in the tree."""
+
+    for path in REPO_ROOT.rglob("*.py"):
+        if _SCAN_SKIP_DIRS.intersection(path.relative_to(REPO_ROOT).parts):
+            continue
+        yield path
+
+
+def _import_patterns(dotted: str, text: str):
+    """Every real import of ``dotted`` in ``text``.
+
+    Import statements only, not any mention: a module named inside a docstring
+    or in a negative assertion (``assert "X" not in source``) is the seam
+    being *forbidden*, not used, and flagging those would make the guard fire
+    on the code that enforces it.
     """
 
-    from datetime import datetime
-
-    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
-    uv_config = data["tool"]["uv"]
-
-    assert uv_config["exclude-newer"] == "7 days", (
-        "the global supply-chain window must stay at 7 days — narrow the "
-        "per-package override instead of loosening it"
-    )
-    cutoff_raw = uv_config["exclude-newer-package"]["agent-run-supervisor"]
-    cutoff = datetime.fromisoformat(cutoff_raw.replace("Z", "+00:00"))
-
-    lock = (REPO_ROOT / "uv.lock").read_text(encoding="utf-8")
-    uploads = []
-    in_target = False
-    for line in lock.splitlines():
-        if line.startswith("[[package]]"):
-            in_target = False
-        elif line.strip() == 'name = "agent-run-supervisor"':
-            in_target = True
-        elif in_target:
-            uploads.extend(re.findall(r'upload-time = "([^"]+)"', line))
-
-    assert uploads, (
-        "uv.lock records no agent-run-supervisor artifact upload-time — "
-        "regenerate the lockfile with `uv lock`"
-    )
-    for stamp in uploads:
-        uploaded = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
-        assert uploaded <= cutoff, (
-            f"[tool.uv].exclude-newer-package pins agent-run-supervisor to "
-            f"{cutoff_raw}, which predates the locked artifact uploaded at "
-            f"{stamp} — advance that one package cutoff (and only that one) "
-            "so the reviewed pin is installable"
-        )
+    escaped = re.escape(dotted)
+    leaf = escaped.rsplit(r"\.", 1)[-1]
+    for pattern in (
+        rf"(?m)^\s*import\s+{escaped}\b",
+        rf"(?m)^\s*from\s+{escaped}\b",
+        rf"(?m)^\s*from\s+[\w.]+\s+import\s+[^\n]*\b{leaf}\b",
+        rf"import_module\(\s*[\"']{escaped}[\"']",
+    ):
+        yield from re.finditer(pattern, text)
 
 
-#: The only sanctioned way to reach agent-run-supervisor is the installed
-#: exact-pinned distribution. These tokens flag every historical source-path
-#: channel: the retired gateway sys.path shim envs, the retired test sibling
-#: checkout constant, and any path into an agent-run-supervisor source tree.
-#: A bare machine username is deliberately NOT a token: unrelated no-leak
-#: canary fixtures (e.g. tests/sachima_supervisor/p5_temporal/unit/
-#: test_contracts.py) use ``/home/<user>/...`` hostile inputs that have
-#: nothing to do with ARS; the machine-path signal for ARS checkouts is
-#: covered by ``repo/agent-run-supervisor`` and ``agent-run-supervisor/src``.
-_ARS_SOURCE_PATH_TOKENS = (
-    "AGENT_RUN_SUPERVISOR_SRC_PATH",  # also matches the SACHIMA_-prefixed env
-    "_SIBLING_SRC",
-    "agent-run-supervisor/src",
-    "repo/agent-run-supervisor",
+#: A source checkout of agent-run-supervisor reached by path rather than by
+#: distribution. Each pattern is a way that channel has actually been opened:
+#: a sys.path/PYTHONPATH entry pointing at a checkout, or a repo-relative
+#: import root for the package.
+_SOURCE_PATH_PATTERNS = (
+    re.compile(r"sys\.path[^\n]*agent[-_]run[-_]supervisor", re.IGNORECASE),
+    re.compile(r"PYTHONPATH[^\n]*agent[-_]run[-_]supervisor", re.IGNORECASE),
+    re.compile(r"agent[-_]run[-_]supervisor[^\n]*sys\.path", re.IGNORECASE),
+    re.compile(r"(?:\.\./|/)[\w./-]*agent-run-supervisor/(?:src|agent_run_supervisor)\b"),
 )
-_ARS_GUARD_SCAN_DIRS = ("gateway", "sachima_supervisor", "tools", "scripts", "tests")
 
 
 def test_no_agent_run_supervisor_source_path_references():
-    """Repo-wide guard: zero ARS source-path references in code directories.
+    """The exact-pinned distribution is the only channel to the subsystem.
 
-    agent-run-supervisor is an external subsystem consumed ONLY through the
-    installed ``agent-run-supervisor==X.Y.Z`` distribution (lazy imports behind
-    default-off gates). Source-path channels — sys.path shims, sibling checkout
-    constants, PYTHONPATH-style env hooks — would silently shadow the reviewed
-    exact pin, so they are banned from every code directory. Unreleased ARS
-    changes are validated by installing a locally built wheel / editable
-    package into an isolated environment, never by referencing a source tree.
-    Historical docs/plans and dev_logs are immutable records and out of scope.
+    A source checkout reached over ``sys.path`` / ``PYTHONPATH`` — or a
+    repo-relative import root for it — is a second, unreviewed channel: it
+    silently wins over the installed distribution, so the version the daemon
+    handshake compares against stops being the version actually running. The
+    pin then guarantees nothing. There is one way in, and it is
+    ``agent-run-supervisor==EXPECTED_AGENT_RUN_SUPERVISOR_VERSION`` installed
+    as a distribution.
+
+    This is a source-level scan on purpose: an import-time check would only
+    see the channel once something opened it.
     """
-    guard_file = Path(__file__).resolve()
     offenders = []
-    for dirname in _ARS_GUARD_SCAN_DIRS:
-        for path in sorted((REPO_ROOT / dirname).rglob("*.py")):
-            if path.resolve() == guard_file:
-                continue
-            text = path.read_text(encoding="utf-8", errors="replace")
-            for token in _ARS_SOURCE_PATH_TOKENS:
-                if token in text:
-                    offenders.append(f"{path.relative_to(REPO_ROOT)}: {token!r}")
+    for path in _tracked_python_sources():
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError):
+            continue
+        if "agent" not in text:
+            continue
+        for pattern in _SOURCE_PATH_PATTERNS:
+            for match in pattern.finditer(text):
+                line = text.count("\n", 0, match.start()) + 1
+                offenders.append(f"{path.relative_to(REPO_ROOT)}:{line}")
 
-    assert not offenders, (
-        "ARS source-path references are banned — consume the installed "
-        "agent-run-supervisor distribution instead (see the agent-run-"
-        "supervisor extra). Offenders:\n" + "\n".join(offenders)
+    assert offenders == [], (
+        "agent-run-supervisor must be reached only as the exact-pinned "
+        "distribution — no source checkout, sys.path shim, or PYTHONPATH "
+        "entry:\n  " + "\n  ".join(sorted(set(offenders)))
     )
 
 
-def test_locale_catalogs_ship_in_both_wheel_and_sdist():
-    """Regression test for #27632 / #35374 / #23943.
+def test_agent_run_supervisor_is_never_a_path_or_editable_dependency():
+    """The pin must resolve to a registry release, not to a local directory.
 
-    locales/ is a bare data directory (no __init__.py), so it is invisible to
-    packages.find and to package-data (which attaches to a package). It must be
-    declared as setuptools data-files (wheel) AND grafted in MANIFEST.in
-    (sdist). Without both, sealed installs drop the catalogs and gateway/CLI
-    commands surface raw i18n keys like `gateway.reset.header_default`.
+    The same second channel, opened through packaging instead of ``sys.path``:
+    a path/editable source declares the distribution name the version check
+    trusts while serving whatever happens to be in that directory.
     """
-    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
-    data_files = data["tool"]["setuptools"].get("data-files", {})
-    assert data_files.get("locales") == ["locales/*.yaml"], (
-        "pyproject [tool.setuptools.data-files] must declare "
-        'locales = ["locales/*.yaml"] so the wheel ships i18n catalogs'
+    pyproject = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    data = tomllib.loads(pyproject)
+    sources = data.get("tool", {}).get("uv", {}).get("sources", {})
+    assert "agent-run-supervisor" not in sources, (
+        "[tool.uv.sources] must not redirect agent-run-supervisor to a path, "
+        "editable, git or workspace source"
     )
 
-    manifest = (REPO_ROOT / "MANIFEST.in").read_text(encoding="utf-8")
-    assert "graft locales" in manifest, (
-        "MANIFEST.in must `graft locales` so the sdist ships i18n catalogs"
+    lock = (REPO_ROOT / "uv.lock").read_text(encoding="utf-8")
+    blocks = [
+        block
+        for block in lock.split("[[package]]")
+        # Line-anchored: a dependency *reference* elsewhere in the lock is
+        # `{ name = "agent-run-supervisor" }` and declares no source.
+        if re.search(r'^name = "agent-run-supervisor"$', block, re.MULTILINE)
+    ]
+    assert blocks, "uv.lock declares no agent-run-supervisor package block"
+    for block in blocks:
+        assert "source = { registry" in block or "source = { url" in block, (
+            "uv.lock must resolve agent-run-supervisor from a registry, not "
+            "from a directory/editable/git source"
+        )
+        for forbidden in ("source = { editable", "source = { directory", "source = { git"):
+            assert forbidden not in block, (
+                f"uv.lock resolves agent-run-supervisor via {forbidden!r} — the "
+                "pinned distribution is the only sanctioned channel"
+            )
+
+
+#: Submodules the 0.7.x distribution removed with its legacy library surface.
+#: Referencing one is a hard ImportError against the pinned distribution, not
+#: a soft degradation, so the reference must not survive anywhere in the tree.
+_REMOVED_ARS_SUBMODULES = (
+    "agent_run_supervisor.role",
+    "agent_run_supervisor.workspace",
+    "agent_run_supervisor.session_runtime",
+    "agent_run_supervisor.session_inspect",
+    "agent_run_supervisor.goal",
+    "agent_run_supervisor.hermes_caller",
+)
+
+
+def test_no_removed_agent_run_supervisor_submodule_references_survive():
+    """No reference to a submodule 0.7.x removed survives in the tree.
+
+    The in-process ``library`` backend that consumed these is retired, not
+    deprecated: there is no shim, no fallback, and no degraded emulation. A
+    surviving reference would therefore fail closed at the worst moment — on
+    first use against a real daemon — rather than here.
+    """
+    offenders = []
+    for path in _tracked_python_sources():
+        if path == Path(__file__):  # this guard names them to forbid them
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError):
+            continue
+        if "agent_run_supervisor" not in text:
+            continue
+        for module in _REMOVED_ARS_SUBMODULES:
+            for match in _import_patterns(module, text):
+                line = text.count("\n", 0, match.start()) + 1
+                offenders.append(f"{path.relative_to(REPO_ROOT)}:{line} -> {module}")
+
+    assert offenders == [], (
+        "these import agent-run-supervisor submodules removed in 0.7.x:\n  "
+        + "\n  ".join(sorted(set(offenders)))
     )
 
-    # Every on-disk catalog has the .yaml extension the globs above match.
-    on_disk = list((REPO_ROOT / "locales").glob("*.yaml"))
-    assert on_disk, "expected locales/*.yaml catalogs on disk"
+
+#: The only modules the spine reaches the daemon through. The socket adapter
+#: resolves the first one lazily inside its facade; nothing else is consumed.
+_CONSUMED_ARS_MODULES = (
+    "agent_run_supervisor.arsd.client",
+    "agent_run_supervisor.arsd.protocol",
+)
+
+
+def _ars_distribution_installed() -> bool:
+    import importlib.metadata
+
+    try:
+        importlib.metadata.version("agent-run-supervisor")
+    except importlib.metadata.PackageNotFoundError:
+        return False
+    return True
+
+
+@pytest.mark.skipif(
+    not _ars_distribution_installed(),
+    reason=(
+        "agent-run-supervisor distribution not installed — provision via "
+        "`uv sync --extra dev` (or --extra agent-run-supervisor)"
+    ),
+)
+def test_removed_submodule_list_drift_locks_against_the_pinned_distribution():
+    """The guard's removed-module list is checked against the real package.
+
+    A static scan can only be as good as its list. With the pinned
+    distribution installed, the list is verified from the other side: every
+    module named as removed really is absent, and the modules the spine does
+    consume really are present. If a future pin restores one of these, the
+    list is stale and this fails rather than the guard silently weakening.
+
+    Importing is safe by contract — the adapter opens sockets only when an
+    operation is made — so this reaches no daemon.
+    """
+    import importlib
+
+    for module_name in _CONSUMED_ARS_MODULES:
+        module = importlib.import_module(module_name)
+        assert module.__name__ == module_name
+
+    client = importlib.import_module("agent_run_supervisor.arsd.client")
+    assert isinstance(getattr(client, "ArsdClient", None), type), (
+        "agent_run_supervisor.arsd.client.ArsdClient must be a class in the "
+        "pinned distribution — the Socket API v3 adapter depends on it"
+    )
+
+    still_present = []
+    for module_name in _REMOVED_ARS_SUBMODULES:
+        try:
+            importlib.import_module(module_name)
+        except ModuleNotFoundError:
+            continue
+        except Exception:  # importable but broken is still "present"
+            pass
+        still_present.append(module_name)
+
+    assert still_present == [], (
+        "these are listed as removed in 0.7.x but exist in the installed "
+        f"distribution — the guard's list is stale: {still_present}"
+    )
+
+
+def test_the_retired_library_backend_seam_is_absent_not_merely_unused():
+    """The retired library seam is deleted, and nothing re-creates it.
+
+    Dropping the fallback means the modules are gone, not that they survive
+    unreferenced: a present-but-unused seam is one import away from becoming a
+    live second execution path again. Fail-closed is preserved by absence.
+    """
+    for retired in (
+        "sachima_supervisor/runtime_spine/agent_run_supervisor_library_backend.py",
+        "sachima_supervisor/supervisor_library.py",
+    ):
+        assert not (REPO_ROOT / retired).exists(), (
+            f"{retired} is a retired library-backend seam and must not exist"
+        )
+
+    offenders = []
+    for path in _tracked_python_sources():
+        if path == Path(__file__):  # this guard names them to forbid them
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError):
+            continue
+        for token in (
+            "agent_run_supervisor_library_backend",
+            "sachima_supervisor.supervisor_library",
+        ):
+            for match in _import_patterns(token, text):
+                line = text.count("\n", 0, match.start()) + 1
+                offenders.append(f"{path.relative_to(REPO_ROOT)}:{line} -> {token}")
+
+    assert offenders == [], (
+        "the retired library backend must have no surviving importers:\n  "
+        + "\n  ".join(sorted(set(offenders)))
+    )

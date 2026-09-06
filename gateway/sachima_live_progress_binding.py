@@ -61,6 +61,7 @@ from typing import Any
 
 from gateway.sachima_delegate import (
     bind_delegate_coordinator,
+    bound_delegate_coordinator,
     delegate_payload_resolver,
     unbind_delegate_coordinator,
 )
@@ -135,6 +136,17 @@ SACHIMA_LIVE_PROGRESS_HOST_BINDING_BOUND = "sachima_live_progress_host_binding_b
 #: so the default ``fake`` path keeps importing no spine module at all.
 SACHIMA_LIVE_PROGRESS_HOST_BINDING_RETIRED = "runtime_library_backend_retired"
 
+# Recognition of the deleted in-process library configuration lives here at
+# the host migration boundary.  The retired backend module itself stays
+# deleted: this string is only used to return a distinct, non-echoing operator
+# verdict when an old config is presented to the current ``arsd`` knob.
+_RETIRED_LIBRARY_CONFIG_TYPE = "sachima.runtime_spine.ars_library_config.v1"
+_LIBRARY_MIGRATION_MESSAGE = (
+    SACHIMA_LIVE_PROGRESS_HOST_BINDING_RETIRED
+    + ": the agent_run_supervisor library backend is retired; supported backends are "
+    + ", ".join(_VALID_BACKENDS)
+)
+
 SACHIMA_LIVE_PROGRESS_HOST_BINDING_STABLE_CODES = frozenset(
     {
         SACHIMA_LIVE_PROGRESS_HOST_BINDING_DISABLED,
@@ -202,6 +214,7 @@ def _summary(
 # arsd-mode execution bundle (host-held; cleared on every unbind path)
 # --------------------------------------------------------------------------- #
 _execution_binding: Any | None = None
+_owned_delegate_coordinator: Any | None = None
 
 
 def bound_execution_binding() -> Any | None:
@@ -210,15 +223,67 @@ def bound_execution_binding() -> Any | None:
     return _execution_binding
 
 
-def _set_execution_binding(bundle: Any | None) -> None:
-    global _execution_binding
+def _set_execution_binding(
+    bundle: Any | None, *, owned_coordinator: Any | None = None
+) -> None:
+    global _execution_binding, _owned_delegate_coordinator
     _execution_binding = bundle
-    if bundle is None:
-        # The delegate coordinator exists only for a live bundle. Clearing it
-        # here — rather than at each of the five unbind call sites — is what
-        # makes "no bundle" and "no coordinator" one fact instead of two that
-        # can drift apart.
+    _owned_delegate_coordinator = owned_coordinator
+
+
+def _clear_execution_binding() -> None:
+    """Clear this surface and only the coordinator it composed itself.
+
+    A Gateway may lend this module the resident delegation bundle.  Disabling
+    or misconfiguring the optional display must never unbind that borrowed
+    graph; only a coordinator created by this module's standalone ``arsd``
+    path belongs to this cleanup.
+    """
+
+    global _execution_binding, _owned_delegate_coordinator
+    owned = _owned_delegate_coordinator
+    _execution_binding = None
+    _owned_delegate_coordinator = None
+    if owned is not None and bound_delegate_coordinator() is owned:
         unbind_delegate_coordinator()
+
+
+def release_live_progress_execution_binding(bundle: Any) -> None:
+    """Drop display state for a Gateway-owned bundle without touching its owner."""
+
+    global _execution_binding, _owned_delegate_coordinator
+    if _execution_binding is not bundle:
+        return
+    _execution_binding = None
+    _owned_delegate_coordinator = None
+    try:
+        import tools.sachima_live_progress_tool as tool_mod
+
+        tool_mod.unbind_live_progress_display_service()
+    except Exception:
+        pass
+
+
+def gateway_live_progress_source_bindings() -> Any | None:
+    """Return a fresh source sink only for an explicitly requested ARSD view.
+
+    The helper is intentionally configuration-only: it opens no file and makes
+    no daemon call.  A Gateway passes the result into its single delegation
+    composition root so an eventual display reads the exact graph that admits
+    and publishes Runs.
+    """
+
+    if os.environ.get("SACHIMA_LIVE_PROGRESS_DISPLAY_SURFACE") != _HERMES_INTERNAL_SURFACE:
+        return None
+    raw_backend = os.environ.get(SACHIMA_LIVE_PROGRESS_BACKEND_ENV, "")
+    backend = raw_backend.strip() if type(raw_backend) is str else ""
+    if backend != _BACKEND_ARSD:
+        return None
+    from sachima_supervisor.runtime_spine.live_progress_sources import (
+        LiveProgressSourceBindings,
+    )
+
+    return LiveProgressSourceBindings()
 
 
 class _RetiredBackendSelected(Exception):
@@ -229,7 +294,50 @@ class _RetiredBackendSelected(Exception):
     """
 
 
-def _build_arsd_execution_binding(config_file: str) -> tuple[Any, Any]:
+def _build_arsd_display_service(bundle: Any) -> Any:
+    """Compose the optional read surface beside, never inside, a bundle."""
+
+    from sachima_supervisor.runtime_spine import (
+        ArsdLiveProgressReader,
+        LiveProgressDisplayService,
+        LiveProgressQueryService,
+        LiveProgressSourceBindings,
+        hermes_internal_query_gate,
+    )
+
+    if type(bundle.bindings) is not LiveProgressSourceBindings:
+        raise ValueError(SACHIMA_LIVE_PROGRESS_HOST_BINDING_INVALID)
+    reader = ArsdLiveProgressReader(getattr(bundle.backend, "_facade", None))
+    return LiveProgressDisplayService(
+        query_service=LiveProgressQueryService(
+            bundle.bindings,
+            bundle.registry,
+            bundle.port,
+            reader,
+            gate=hermes_internal_query_gate(),
+        )
+    )
+
+
+def _load_arsd_config(config_file: str) -> Any:
+    """Load one current config or identify the deleted library shape."""
+
+    from sachima_supervisor.runtime_spine.arsd_socket_contract import (
+        ArsdSupervisorConfig,
+    )
+
+    with open(config_file, encoding="utf-8") as fh:
+        payload = json.load(fh)
+    if type(payload) is dict and payload.get("type") == _RETIRED_LIBRARY_CONFIG_TYPE:
+        raise _RetiredBackendSelected()
+    if type(payload) is not dict:
+        raise ValueError(SACHIMA_LIVE_PROGRESS_HOST_BINDING_INVALID)
+    if not set(payload).issubset(_ARSD_CONFIG_KEYS):
+        raise ValueError(SACHIMA_LIVE_PROGRESS_HOST_BINDING_INVALID)
+    return ArsdSupervisorConfig(**payload)
+
+
+def _build_arsd_execution_binding(config_file: str) -> tuple[Any, Any, Any]:
     """Compose the ``arsd`` execution bundle from the private config file.
 
     Raises on any deviation (unreadable/malformed file, unknown keys, a
@@ -247,32 +355,30 @@ def _build_arsd_execution_binding(config_file: str) -> tuple[Any, Any]:
     *has*, not work it does.
     """
 
-    from sachima_supervisor.runtime_spine import hermes_internal_query_gate
     from sachima_supervisor.runtime_spine.agent_run_supervisor_execution_binding import (
         bind_arsd_execution,
     )
-    from sachima_supervisor.runtime_spine.agent_run_supervisor_library_backend import (
-        is_retired_library_config,
-    )
-    from sachima_supervisor.runtime_spine.arsd_socket_contract import (
-        ArsdSupervisorConfig,
+    from sachima_supervisor.runtime_spine.live_progress_sources import (
+        LiveProgressSourceBindings,
     )
 
-    with open(config_file, encoding="utf-8") as fh:
-        payload = json.load(fh)
-    if is_retired_library_config(payload):
-        raise _RetiredBackendSelected()
-    if type(payload) is not dict:
-        raise ValueError(SACHIMA_LIVE_PROGRESS_HOST_BINDING_INVALID)
-    if not set(payload).issubset(_ARSD_CONFIG_KEYS):
-        raise ValueError(SACHIMA_LIVE_PROGRESS_HOST_BINDING_INVALID)
-    config = ArsdSupervisorConfig(**payload)
+    config = _load_arsd_config(config_file)
+    bindings = LiveProgressSourceBindings()
     bundle = bind_arsd_execution(
         config,
-        gate=hermes_internal_query_gate(),
         payload_resolver=delegate_payload_resolver(),
+        bindings=bindings,
     )
-    return bundle, config
+    return bundle, config, _build_arsd_display_service(bundle)
+
+
+def _reuse_arsd_execution_binding(bundle: Any, config_file: str) -> tuple[Any, Any]:
+    """Validate and extend the Gateway's existing execution graph."""
+
+    config = _load_arsd_config(config_file)
+    if getattr(bundle.backend, "_config", None) != config:
+        raise ValueError(SACHIMA_LIVE_PROGRESS_HOST_BINDING_INVALID)
+    return config, _build_arsd_display_service(bundle)
 
 
 def _agent_execution_presets(config: Any) -> Any:
@@ -407,7 +513,9 @@ def _build_display_service(entries: list[dict[str, Any]]) -> tuple[Any, tuple[di
     return service, tuple(bound)
 
 
-def bind_live_progress_display_from_env() -> dict[str, Any]:
+def bind_live_progress_display_from_env(
+    *, execution_binding: Any | None = None
+) -> dict[str, Any]:
     """Build and bind the host ``LiveProgressDisplayService`` from explicit env.
 
     Fail-closed order: surface gate → backend selection (``fake`` default /
@@ -434,7 +542,7 @@ def bind_live_progress_display_from_env() -> dict[str, Any]:
         return _unbind(tool_mod, SACHIMA_LIVE_PROGRESS_HOST_BINDING_INVALID, backend="unknown")
 
     if backend == _BACKEND_ARSD:
-        return _bind_arsd_backend(tool_mod)
+        return _bind_arsd_backend(tool_mod, execution_binding=execution_binding)
     return _bind_fake_backend(tool_mod)
 
 
@@ -443,7 +551,7 @@ def _unbind(
 ) -> dict[str, Any]:
     """Put the host in its fail-closed posture and report one stable code."""
 
-    _set_execution_binding(None)
+    _clear_execution_binding()
     tool_mod.unbind_live_progress_display_service()
     return _summary(code, backend=backend)
 
@@ -457,11 +565,7 @@ def _retired(tool_mod: Any) -> dict[str, Any]:
     launched, rewritten, or fallen back to.
     """
 
-    from sachima_supervisor.runtime_spine.agent_run_supervisor_library_backend import (
-        LIBRARY_MIGRATION_MESSAGE,
-    )
-
-    logger.warning(LIBRARY_MIGRATION_MESSAGE)
+    logger.warning(_LIBRARY_MIGRATION_MESSAGE)
     return _unbind(
         tool_mod,
         SACHIMA_LIVE_PROGRESS_HOST_BINDING_RETIRED,
@@ -472,7 +576,7 @@ def _retired(tool_mod: Any) -> dict[str, Any]:
 def _bind_fake_backend(tool_mod: Any) -> dict[str, Any]:
     """The default composition: static bindings file over the fake backend."""
 
-    _set_execution_binding(None)  # fake mode never carries an execution bundle
+    _clear_execution_binding()  # fake mode never carries an execution bundle
 
     raw_file = os.environ.get(SACHIMA_LIVE_PROGRESS_BINDINGS_FILE_ENV)
     if type(raw_file) is not str or not raw_file.strip():
@@ -493,7 +597,9 @@ def _bind_fake_backend(tool_mod: Any) -> dict[str, Any]:
     return _summary(SACHIMA_LIVE_PROGRESS_HOST_BINDING_BOUND, bound)
 
 
-def _bind_arsd_backend(tool_mod: Any) -> dict[str, Any]:
+def _bind_arsd_backend(
+    tool_mod: Any, *, execution_binding: Any | None = None
+) -> dict[str, Any]:
     """The explicit Socket API v3 composition (triple default-off).
 
     Surface gate + explicit private config file + ``enabled`` exactly ``True``,
@@ -509,19 +615,24 @@ def _bind_arsd_backend(tool_mod: Any) -> dict[str, Any]:
         )
 
     try:
-        bundle, config = _build_arsd_execution_binding(raw_config.strip())
-        tool_mod.bind_live_progress_display_service(bundle.display_service)
-        # The delegate coordinator is bound over the bundle that was just
-        # composed, never beside it: one registry, backend, port, dispatcher,
-        # ledger, and bindings store serve both the display chain and
-        # delegation. Binding arms the startup barrier: the coordinator
-        # completes its restoration scans before it admits anything new.
-        bind_delegate_coordinator(
-            bundle,
-            config,
-            presets=_agent_execution_presets(config),
-            role_policy=_agent_role_policy(),
-        )
+        if execution_binding is None:
+            bundle, config, display_service = (
+                _build_arsd_execution_binding(raw_config.strip())
+            )
+            tool_mod.bind_live_progress_display_service(display_service)
+            coordinator = bind_delegate_coordinator(
+                bundle,
+                config,
+                presets=_agent_execution_presets(config),
+                role_policy=_agent_role_policy(),
+            )
+        else:
+            bundle = execution_binding
+            _config, display_service = _reuse_arsd_execution_binding(
+                bundle, raw_config.strip()
+            )
+            coordinator = None
+            tool_mod.bind_live_progress_display_service(display_service)
     except _RetiredBackendSelected:
         return _retired(tool_mod)
     except Exception:
@@ -531,7 +642,7 @@ def _bind_arsd_backend(tool_mod: Any) -> dict[str, Any]:
             tool_mod, SACHIMA_LIVE_PROGRESS_HOST_BINDING_INVALID, backend=_BACKEND_ARSD
         )
 
-    _set_execution_binding(bundle)
+    _set_execution_binding(bundle, owned_coordinator=coordinator)
     logger.info("%s backend=%s", SACHIMA_LIVE_PROGRESS_HOST_BINDING_BOUND, _BACKEND_ARSD)
     return _summary(SACHIMA_LIVE_PROGRESS_HOST_BINDING_BOUND, backend=_BACKEND_ARSD)
 
@@ -550,4 +661,6 @@ __all__ = [
     "SACHIMA_LIVE_PROGRESS_HOST_BINDING_STABLE_CODES",
     "bind_live_progress_display_from_env",
     "bound_execution_binding",
+    "gateway_live_progress_source_bindings",
+    "release_live_progress_execution_binding",
 ]

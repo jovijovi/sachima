@@ -10,10 +10,13 @@ drives exactly one supervised turn through an allowlisted
 Sachima-owned contract; no concrete backend type is named here — and then:
 
 * **auto-binds** the turn's tagged private read-model locator into the
-  host-owned ``LiveProgressSourceBindings`` under a fresh safe ``turn_ref``
-  (``turn_<n>_<digest8>``), resetting the foreign ``last_seen_cursor`` to
-  ``None`` — each turn is a new read-model stream, so cursors never bleed
-  across turns and the manual bindings-file copy step is retired;
+  host-owned :class:`~.supervisor_turn_backend.TurnSourceSink` under a fresh
+  safe ``turn_ref`` (``turn_<n>_<digest8>``), resetting the foreign
+  ``last_seen_cursor`` to ``None`` — each turn is a new read-model stream, so
+  cursors never bleed across turns and the manual bindings-file copy step is
+  retired. The sink is optional and admitted only through the neutral
+  contract's exact-type allowlist: a host composed without a read model binds
+  nothing, and the turn's own safe ``turn_ref`` is unaffected either way;
 * appends **refs-only** canonical events (a ``progress`` marker when the turn
   is accepted, a ``milestone`` carrying the ``turn_ref`` after it lands) —
   terminal states keep flowing through the port's own backend-state sync, so
@@ -51,16 +54,17 @@ from typing import Any, Callable, NoReturn
 
 from .agent_run_supervisor_port import AgentRunSupervisorPort
 from .events import SpineError, _safe_id, build_event_body, safe_task_id
-from .live_progress_sources import LiveProgressSourceBindings
 from .registry import TaskRegistry
 from .supervisor_turn_backend import (
     SUPERVISOR_TURN_STATUSES,
     DispatchedSupervisorTurn,
     SupervisorTurnBackend,
     TaskOperationLocks,
+    TurnSourceSink,
     derive_turn_ref,
     validate_supervisor_turn_backend,
     validate_supervisor_turn_result,
+    validate_turn_source_sink,
 )
 
 # --------------------------------------------------------------------------- #
@@ -234,7 +238,7 @@ class AgentRunSupervisorTurnDispatcher:
         self,
         port: AgentRunSupervisorPort,
         backend: SupervisorTurnBackend,
-        bindings: LiveProgressSourceBindings,
+        bindings: TurnSourceSink | None,
         registry: TaskRegistry,
         payload_resolver: Callable[[str], str] | None = None,
         *,
@@ -247,8 +251,11 @@ class AgentRunSupervisorTurnDispatcher:
             validate_supervisor_turn_backend(backend)
         except SpineError:
             _invalid()
-        if type(bindings) is not LiveProgressSourceBindings:
-            _invalid()
+        if bindings is not None:
+            try:
+                validate_turn_source_sink(bindings)
+            except SpineError:
+                _invalid()
         if type(registry) is not TaskRegistry:
             _invalid()
         # The port's canonical log and the dispatcher's must be the same object,
@@ -295,7 +302,7 @@ class AgentRunSupervisorTurnDispatcher:
         return self._registry
 
     @property
-    def bindings(self) -> LiveProgressSourceBindings:
+    def bindings(self) -> TurnSourceSink | None:
         return self._bindings
 
     @property
@@ -507,17 +514,24 @@ class AgentRunSupervisorTurnDispatcher:
     def _bind_source(
         self, task_id: str, session_id: str, dispatched: DispatchedSupervisorTurn
     ) -> str:
-        """Bind the turn's tagged private locator and return its safe ref."""
+        """Bind the turn's tagged private locator and return its safe ref.
+
+        With no sink composed there is nowhere to publish the locator, so the
+        bind is skipped. The returned ref is the turn's own safe handle either
+        way — the canonical events a turn appends never depended on the read
+        model existing.
+        """
 
         result = dispatched.result
-        self._bindings.bind_source(
-            task_id,
-            session_id,
-            result.source_kind,
-            dispatched.private_locator,
-            result.source_ref,
-            last_seen_cursor=result.foreign_cursor,
-        )
+        if self._bindings is not None:
+            self._bindings.bind_source(
+                task_id,
+                session_id,
+                result.source_kind,
+                dispatched.private_locator,
+                result.source_ref,
+                last_seen_cursor=result.foreign_cursor,
+            )
         return result.run_ref
 
     # -- internals ------------------------------------------------------------

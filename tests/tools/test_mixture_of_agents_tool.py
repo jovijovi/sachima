@@ -1,85 +1,111 @@
-import importlib
-import json
+"""Sachima MoA preservation acceptance against the upstream turn facade.
+
+The downstream implementation was a model tool with a hard-coded OpenRouter
+catalog. Upstream's `/moa` facade is the lower-footprint equivalent: it reads
+named preset slots from config, fans reference calls out in parallel, then
+lets the configured aggregator remain the acting model in the normal tool
+loop. These tests preserve the business behavior without restoring a model
+tool on every request.
+"""
+
+from __future__ import annotations
+
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
-
-import pytest
-
-moa = importlib.import_module("tools.mixture_of_agents_tool")
 
 
-def test_moa_defaults_are_well_formed():
-    # Invariants, not a catalog snapshot: the exact model list churns with
-    # OpenRouter availability (see PR #6636 where gemini-3-pro-preview was
-    # removed upstream). What we care about is that the defaults are present
-    # and valid vendor/model slugs.
-    assert isinstance(moa.REFERENCE_MODELS, list)
-    assert len(moa.REFERENCE_MODELS) >= 1
-    for m in moa.REFERENCE_MODELS:
-        assert isinstance(m, str) and "/" in m and not m.startswith("/")
-    assert isinstance(moa.AGGREGATOR_MODEL, str)
-    assert "/" in moa.AGGREGATOR_MODEL
+def _completion(content: str, model: str):
+    message = SimpleNamespace(content=content, tool_calls=[])
+    choice = SimpleNamespace(message=message, finish_reason="stop")
+    return SimpleNamespace(choices=[choice], usage=None, model=model)
 
 
-@pytest.mark.asyncio
-async def test_reference_model_retry_warnings_avoid_exc_info_until_terminal_failure(monkeypatch):
-    fake_client = SimpleNamespace(
-        chat=SimpleNamespace(
-            completions=SimpleNamespace(
-                create=AsyncMock(side_effect=RuntimeError("rate limited"))
-            )
-        )
+def test_configured_references_fan_out_before_configured_aggregator(
+    tmp_path, monkeypatch
+) -> None:
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        """
+moa:
+  default_preset: sachima-acceptance
+  presets:
+    sachima-acceptance:
+      enabled: true
+      reference_models:
+        - provider: openrouter
+          model: sachima/reference-one
+        - provider: openrouter
+          model: sachima/reference-two
+      aggregator:
+        provider: openrouter
+        model: sachima/aggregator
+""".strip(),
+        encoding="utf-8",
     )
-    warn = MagicMock()
-    err = MagicMock()
+    monkeypatch.setenv("HERMES_HOME", str(home))
 
-    monkeypatch.setattr(moa, "_get_openrouter_client", lambda: fake_client)
-    monkeypatch.setattr(moa.logger, "warning", warn)
-    monkeypatch.setattr(moa.logger, "error", err)
+    calls: list[dict] = []
 
-    model, message, success = await moa._run_reference_model_safe(
-        "openai/gpt-5.4-pro", "hello", max_retries=2
-    )
+    def fake_call_llm(**kwargs):
+        calls.append(kwargs)
+        model = kwargs["model"]
+        if kwargs.get("task") == "moa_reference":
+            return _completion(f"advice from {model}", model)
+        return _completion("synthesized answer", model)
 
-    assert model == "openai/gpt-5.4-pro"
-    assert success is False
-    assert "failed after 2 attempts" in message
-    assert warn.call_count == 2
-    assert all(call.kwargs.get("exc_info") is None for call in warn.call_args_list)
-    err.assert_called_once()
-    assert err.call_args.kwargs.get("exc_info") is True
-
-
-@pytest.mark.asyncio
-async def test_moa_top_level_error_logs_single_traceback_on_aggregator_failure(monkeypatch):
-    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setattr("agent.moa_loop.call_llm", fake_call_llm)
     monkeypatch.setattr(
-        moa,
-        "_run_reference_model_safe",
-        AsyncMock(return_value=("anthropic/claude-opus-4.6", "ok", True)),
+        "agent.moa_loop._slot_runtime",
+        lambda slot: {"provider": slot["provider"], "model": slot["model"]},
     )
     monkeypatch.setattr(
-        moa,
-        "_run_aggregator_model",
-        AsyncMock(side_effect=RuntimeError("aggregator boom")),
-    )
-    monkeypatch.setattr(
-        moa,
-        "_debug",
-        SimpleNamespace(log_call=MagicMock(), save=MagicMock(), active=False),
+        "agent.moa_loop._trim_messages_for_reference",
+        lambda messages, *_args, **_kwargs: messages,
     )
 
-    err = MagicMock()
-    monkeypatch.setattr(moa.logger, "error", err)
+    from agent.moa_loop import MoAChatCompletions
 
-    result = json.loads(
-        await moa.mixture_of_agents_tool(
-            "solve this",
-            reference_models=["anthropic/claude-opus-4.6"],
-        )
+    result = MoAChatCompletions("sachima-acceptance").create(
+        model="sachima-acceptance",
+        messages=[{"role": "user", "content": "Solve the business problem"}],
     )
 
-    assert result["success"] is False
-    assert "Error in MoA processing" in result["error"]
-    err.assert_called_once()
-    assert err.call_args.kwargs.get("exc_info") is True
+    reference_calls = [call for call in calls if call.get("task") == "moa_reference"]
+    aggregator_calls = [call for call in calls if call.get("task") == "moa_aggregator"]
+    assert {call["model"] for call in reference_calls} == {
+        "sachima/reference-one",
+        "sachima/reference-two",
+    }
+    assert len(aggregator_calls) == 1
+    assert aggregator_calls[0]["model"] == "sachima/aggregator"
+    aggregator_input = str(aggregator_calls[0]["messages"][-1]["content"])
+    assert "advice from sachima/reference-one" in aggregator_input
+    assert "advice from sachima/reference-two" in aggregator_input
+    assert result.choices[0].message.content == "synthesized answer"
+
+
+def test_moa_models_resolve_from_named_preset_not_module_catalog() -> None:
+    from hermes_cli.moa_config import resolve_moa_preset
+
+    raw = {
+        "presets": {
+            "custom": {
+                "reference_models": [
+                    {"provider": "provider-a", "model": "model-a"},
+                    {"provider": "provider-b", "model": "model-b"},
+                ],
+                "aggregator": {"provider": "provider-c", "model": "model-c"},
+            }
+        }
+    }
+
+    preset = resolve_moa_preset(raw, "custom")
+
+    assert [slot["model"] for slot in preset["reference_models"]] == [
+        "model-a",
+        "model-b",
+    ]
+    assert preset["aggregator"] == {
+        "provider": "provider-c",
+        "model": "model-c",
+    }

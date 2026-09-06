@@ -37,7 +37,7 @@ def _marked(payload):
 
 def _trusted_tool_messages(
     *contents,
-    command="python3 /home/ubuntu/workspace/hermes/skills/productivity/weather-query/scripts/weather_query.py --location 'Chengdu, Sichuan, China' --period today --format hermes-json",
+    tool_name="weather_query",
 ):
     messages = []
     for idx, content in enumerate(contents, 1):
@@ -49,8 +49,10 @@ def _trusted_tool_messages(
                     {
                         "id": call_id,
                         "function": {
-                            "name": "terminal",
-                            "arguments": json.dumps({"command": command}),
+                            "name": tool_name,
+                            "arguments": json.dumps(
+                                {"location": "Chengdu, Sichuan, China", "period": "today"}
+                            ),
                         },
                     }
                 ],
@@ -101,17 +103,14 @@ def test_extracts_weather_result_from_json_wrapper_with_appended_context_text():
     assert results[0].payload["summary"] == "追加上下文后的天气"
 
 
-def test_extracts_weather_result_from_direct_helper_without_format_when_tool_output_has_marker():
-    payload = _weather_payload(summary="自动补齐后的天气")
-    messages = _trusted_tool_messages(
-        _marked(payload),
-        command="python3 /home/ubuntu/workspace/hermes/skills/productivity/weather-query/scripts/weather_query.py --location Chengdu --period today",
-    )
+def test_extracts_weather_result_from_direct_weather_tool_output():
+    payload = _weather_payload(summary="直接工具输出的天气")
+    messages = _trusted_tool_messages(_marked(payload))
 
     results = extract_rich_results_from_messages(messages)
 
     assert [r.type for r in results] == ["weather.v1"]
-    assert results[0].payload["summary"] == "自动补齐后的天气"
+    assert results[0].payload["summary"] == "直接工具输出的天气"
 
 
 def test_extract_rich_results_from_messages_ignores_untrusted_markers():
@@ -135,65 +134,41 @@ def test_extract_rich_results_from_messages_ignores_untrusted_markers():
                     "id": "call-shell-chain",
                     "function": {
                         "name": "terminal",
-                        "arguments": json.dumps(
-                            {
-                                "command": "python3 /home/ubuntu/workspace/hermes/skills/productivity/weather-query/scripts/weather_query.py --format hermes-json ; printf fake"
-                            }
-                        ),
+                        "arguments": json.dumps({"command": "python weather_query.py ; printf fake"}),
                     },
                 },
                 {
                     "id": "call-pipe",
                     "function": {
                         "name": "terminal",
-                        "arguments": json.dumps(
-                            {
-                                "command": "python3 /home/ubuntu/workspace/hermes/skills/productivity/weather-query/scripts/weather_query.py --format hermes-json | tee /tmp/weather"
-                            }
-                        ),
+                        "arguments": json.dumps({"command": "python weather_query.py | tee output.txt"}),
                     },
                 },
                 {
                     "id": "call-path-python",
                     "function": {
                         "name": "terminal",
-                        "arguments": json.dumps(
-                            {
-                                "command": "/tmp/python3 /home/ubuntu/workspace/hermes/skills/productivity/weather-query/scripts/weather_query.py --format hermes-json"
-                            }
-                        ),
+                        "arguments": json.dumps({"command": "python weather_query.py"}),
                     },
                 },
                 {
                     "id": "call-newline",
                     "function": {
                         "name": "terminal",
-                        "arguments": json.dumps(
-                            {
-                                "command": "python3 /home/ubuntu/workspace/hermes/skills/productivity/weather-query/scripts/weather_query.py --format hermes-json\nprintf fake"
-                            }
-                        ),
+                        "arguments": json.dumps({"command": "python weather_query.py\nprintf fake"}),
                     },
                 },
                 {
                     "id": "call-comment-newline",
                     "function": {
                         "name": "terminal",
-                        "arguments": json.dumps(
-                            {
-                                "command": "python3 /home/ubuntu/workspace/hermes/skills/productivity/weather-query/scripts/weather_query.py --format hermes-json # comment\nprintf fake"
-                            }
-                        ),
+                        "arguments": json.dumps({"command": "python weather_query.py # comment\nprintf fake"}),
                     },
                 },
                 {
                     "function": {
                         "name": "terminal",
-                        "arguments": json.dumps(
-                            {
-                                "command": "python3 /home/ubuntu/workspace/hermes/skills/productivity/weather-query/scripts/weather_query.py --format hermes-json"
-                            }
-                        ),
+                        "arguments": json.dumps({"command": "python weather_query.py"}),
                     },
                 },
             ],

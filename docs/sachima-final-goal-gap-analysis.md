@@ -1,5 +1,11 @@
 # Sachima Final Goal Gap Analysis
 
+> **Historical measurement note (2026-09-06):** The percentages and phase-gap
+> estimates below are retained as the planning snapshot that informed the
+> Runtime Spine. They are not a measurement of the Hermes Agent `v2026.8.31`
+> merge candidate. Use `docs/roadmap/current-status.md` for current source and
+> approval boundaries.
+
 ## Purpose
 
 This document turns the final Sachima project goal into a practical planning baseline. It records what is already proven, what is still missing, which gaps block the final AI workbench experience, and which phase sequence should guide future development.

@@ -495,7 +495,7 @@ async def test_an_adapter_exception_on_the_receipt_is_uncertain_not_a_crash(tmp_
 # F. Feishu wiring: one low-level text send (A16)
 # --------------------------------------------------------------------------- #
 def test_feishu_sends_one_low_level_text_frame_and_no_post_or_chunk():
-    from gateway.platforms.feishu import FeishuAdapter
+    from plugins.platforms.feishu.adapter import FeishuAdapter
 
     adapter = FeishuAdapter.__new__(FeishuAdapter)
     adapter._client = object()
@@ -527,11 +527,11 @@ def test_feishu_sends_one_low_level_text_frame_and_no_post_or_chunk():
 
 
 def test_the_feishu_one_message_bound_is_the_platforms_own():
-    from gateway.platforms.feishu import FeishuAdapter
+    from plugins.platforms.feishu.adapter import FeishuAdapter
 
     adapter = FeishuAdapter.__new__(FeishuAdapter)
-    assert adapter.single_message_text_limit() == FeishuAdapter.MAX_MESSAGE_LENGTH
-    assert adapter.measure_text("abc") == 3
+    assert adapter.max_message_length_for_chat("oc_chat") == FeishuAdapter.MAX_MESSAGE_LENGTH
+    assert adapter.message_len_fn_for_chat("oc_chat")("abc") == 3
 
 
 # --------------------------------------------------------------------------- #
@@ -615,13 +615,28 @@ def test_the_slash_access_gate_no_longer_has_a_delegation_command_to_gate():
 
 
 def test_the_running_agent_fast_path_kept_every_other_bypass():
-    """Removal was surgical: the neighbouring bypasses are still there."""
+    """Removal was surgical: the neighbouring bypasses are still there.
 
-    src = _run_source()
-    assert '_cmd_def_inner.name in {"approve", "deny"}' in src
-    for kept in ("agents", "background", "kanban"):
-        assert f'_cmd_def_inner.name == "{kept}"' in src
-    assert '_cmd_def_inner.name == "delegate"' not in src
+    Asserted on the registry rather than on ``run.py``'s source, because
+    upstream v2026.8.31 retired the per-command ``if`` chain this used to read:
+    each command now declares its own ``busy_policy`` and the fast path
+    dispatches every one of them through ``_dispatch_busy_slash_command``.
+    ``/background`` is checked under ``/bg``, the canonical name the same
+    upstream change promoted it to. The retired word is still asserted
+    textually — a bypass for it must not reappear in either shape.
+    """
+
+    from hermes_cli.commands import ACTIVE_SESSION_BYPASS_COMMANDS
+
+    for kept in ("approve", "deny", "agents", "bg", "kanban"):
+        cmd = resolve_command(kept)
+        assert cmd is not None, f"{kept} no longer resolves"
+        assert cmd.busy_policy != "reject", kept
+        assert cmd.name in ACTIVE_SESSION_BYPASS_COMMANDS, kept
+
+    assert resolve_command(RETIRED_COMMAND) is None
+    assert RETIRED_COMMAND not in ACTIVE_SESSION_BYPASS_COMMANDS
+    assert f'_cmd_def_inner.name == "{RETIRED_COMMAND}"' not in _run_source()
 
 
 # --------------------------------------------------------------------------- #
@@ -630,7 +645,12 @@ def test_the_running_agent_fast_path_kept_every_other_bypass():
 def test_the_gateway_forwards_both_trusted_session_values():
     src = _run_source()
     index = src.index("def _set_session_env(")
-    block = src[index : index + 1800]
+    # Bounded by the method's own extent, not by a fixed character budget:
+    # upstream keeps growing this prologue, and a fixed window silently stops
+    # covering the two kwargs this test exists to check (they sit past 1800
+    # characters as of v2026.8.31) — which reads as "the gateway stopped
+    # forwarding them" when nothing of the sort happened.
+    block = src[index : src.index("\n    def ", index + 1)]
     assert "session_key=context.session_key" in block
     assert "session_id=context.session_id" in block
 
@@ -761,7 +781,7 @@ async def test_gateway_start_awaits_delegate_restore_before_admissions(
     assert await asyncio.wait_for(starting, timeout=10) is True
     assert (await _await_composed(admission)).lifecycle == "admitted"
     assert coordinator.lifecycle_loop is asyncio.get_running_loop()
-    assert coordinator._restored is True
+    assert coordinator.restored is True
     assert facade.submit_count() == 1
     facade.terminalize(0)
 
@@ -1129,6 +1149,13 @@ async def test_gateway_confirms_handoff_only_after_the_model_turn_consumes_it(
     )
     assert runner._run_agent.await_count == 0
     assert coordinator.state.read_result(event.event_id).hermes_sink == "pending"
+
+    # Release the first turn's lease exactly as ``_handle_message``'s finally
+    # does. This test is the only one here that drives two turns through
+    # ``_handle_message_with_agent`` directly, so it is also the only one that
+    # has to do the caller's half of the lease protocol itself — without it the
+    # second turn fails closed waiting on the first turn's still-held lease.
+    runner._release_turn_lease(HANDOFF_SESSION_KEY, 1)
 
     runner.hooks.emit = AsyncMock()
 
@@ -1558,7 +1585,7 @@ def _telegram_origin_host():
     """A real Telegram adapter behind the runner's durable delivery factory."""
 
     from gateway.config import Platform, PlatformConfig
-    from gateway.platforms.telegram import TelegramAdapter
+    from plugins.platforms.telegram.adapter import TelegramAdapter
     from gateway.run import GatewayRunner
 
     adapter = TelegramAdapter(PlatformConfig(enabled=True, token="fake-token"))
@@ -1677,7 +1704,14 @@ async def test_durable_telegram_dm_with_reply_mode_off_sends_without_the_anchor(
 
 @pytest.mark.asyncio
 async def test_durable_telegram_topic_without_an_anchor_still_lands_in_the_topic():
-    """An origin can outlive its anchor; the topic id still routes the result."""
+    """An origin can outlive its anchor; the topic still routes the result.
+
+    The lane is ``message_thread_id`` — the Hermes topic the session actually
+    runs in. Upstream #87051 made that the preferred anchor-less lane because
+    ``direct_messages_topic_id`` renders in a *different* chat lane than the
+    topic the session runs in, so asserting the native DM-topic id here would
+    be pinning the delivery to the bug that change fixed.
+    """
 
     runner, _adapter, calls = _telegram_origin_host()
 
@@ -1688,7 +1722,8 @@ async def test_durable_telegram_topic_without_an_anchor_still_lands_in_the_topic
 
     assert result.success is True
     assert len(calls) == 1
-    assert calls[0]["direct_messages_topic_id"] == 42
+    assert calls[0]["message_thread_id"] == 42
+    assert calls[0].get("direct_messages_topic_id") is None
     assert calls[0]["reply_to_message_id"] is None
 
 
@@ -1788,6 +1823,461 @@ def _provider_agent():
     return built
 
 
+# --------------------------------------------------------------------------- #
+# Production composition — a fresh runner really composes, or composes nothing
+#
+# Every test here starts from an UNBOUND process and never calls ``_bind``.
+# That is the point: before this seam existed the only thing that ever bound a
+# coordinator was a test helper, so resident delegation was unreachable in
+# production no matter how the deployment was configured.
+# --------------------------------------------------------------------------- #
+def _composition_files(tmp_path: Path, config, *, agent_ids=(AGENT_ID,)):
+    """The three host-owned documents a declared composition names."""
+
+    from gateway.sachima_agent_execution_presets import AGENT_EXECUTION_PRESETS_TYPE
+    from gateway.sachima_agent_role_policy import AGENT_ROLE_POLICY_TYPE
+    from sachima_supervisor.runtime_spine.arsd_socket_contract import (
+        ARSD_SUPERVISOR_CONFIG_TYPE,
+    )
+
+    private = tmp_path / "composition"
+    private.mkdir(parents=True, exist_ok=True)
+
+    document = {
+        "type": ARSD_SUPERVISOR_CONFIG_TYPE,
+        "approval_ref": config.approval_ref,
+        "owner": config.owner,
+        "namespace": config.namespace,
+        "socket_path": config.socket_path,
+        "binding_ledger_path": config.binding_ledger_path,
+        "agent_by_policy_ref": dict(config.agent_by_policy_ref),
+        "model_by_policy_ref": dict(config.model_by_policy_ref),
+        "effort_by_policy_ref": dict(config.effort_by_policy_ref),
+        "workspace_by_ref": dict(config.workspace_by_ref),
+        "run_limits_by_policy_ref": {
+            k: dict(v) for k, v in config.run_limits_by_policy_ref.items()
+        },
+        "grant_ref": config.grant_ref,
+        "grant_hash": config.grant_hash,
+        "grant_role_hash": config.grant_role_hash,
+        "grant_capabilities": list(config.grant_capabilities),
+        "grant_by_policy_ref": {
+            k: list(v) for k, v in config.grant_by_policy_ref.items()
+        },
+        "mcp_snapshot_hashes": list(config.mcp_snapshot_hashes),
+        "credential_refs": list(config.credential_refs),
+        "evidence_policy_hash": config.evidence_policy_hash,
+        "recovery_policy_hash": config.recovery_policy_hash,
+        "enabled": True,
+    }
+    config_file = private / "arsd-config.json"
+    config_file.write_text(json.dumps(document), encoding="utf-8")
+
+    presets_file = private / "presets.json"
+    presets_file.write_text(
+        json.dumps(
+            {
+                "type": AGENT_EXECUTION_PRESETS_TYPE,
+                "presets": [
+                    {
+                        "agent_id": agent_id,
+                        "workspace_ref": "ws_delegate",
+                        "agent_policy_ref": "policy_codex",
+                        "model_policy_ref": "policy_model",
+                        "effort_policy_ref": "policy_effort",
+                        "run_limits_policy_ref": "policy_limits",
+                        "permissions": list(config.grant_by_policy_ref["policy_codex"]),
+                    }
+                    for agent_id in agent_ids
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    policy_file = private / "roles.json"
+    policy_file.write_text(
+        json.dumps(
+            {
+                "type": AGENT_ROLE_POLICY_TYPE,
+                "assignments": [
+                    {
+                        "agent_id": agent_id,
+                        "division": "engineering",
+                        "roles": ["code_review"],
+                    }
+                    for agent_id in agent_ids
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    return config_file, presets_file, policy_file
+
+
+def _declare_composition(monkeypatch, config_file, presets_file, policy_file):
+    monkeypatch.setenv(delegate_mod.SACHIMA_DELEGATE_COMPOSE_ENV, "1")
+    monkeypatch.setenv(
+        delegate_mod.SACHIMA_DELEGATE_CONFIG_FILE_ENV, str(config_file)
+    )
+    monkeypatch.setenv(
+        delegate_mod.SACHIMA_DELEGATE_PRESETS_FILE_ENV, str(presets_file)
+    )
+    monkeypatch.setenv(
+        delegate_mod.SACHIMA_DELEGATE_ROLE_POLICY_FILE_ENV, str(policy_file)
+    )
+
+
+@pytest.fixture
+def _unbound():
+    """Start and end every composition test with nothing bound."""
+
+    delegate_mod.unbind_delegate_coordinator()
+    try:
+        yield
+    finally:
+        delegate_mod.unbind_delegate_coordinator()
+
+
+@pytest.fixture
+def _offline_arsd(monkeypatch):
+    """Keep composition real but its transport offline.
+
+    Only the daemon socket is substituted: the config document, the presets,
+    the role policy, the bundle, and the bind are the production ones.
+    """
+
+    import sachima_supervisor.runtime_spine.agent_run_supervisor_execution_binding as binding_mod
+
+    facade = _Facade()
+    seen: dict[str, Any] = {}
+    real = binding_mod.bind_arsd_execution
+
+    def _offline(config, **kwargs):
+        seen["config"] = config
+        seen["payload_resolver"] = kwargs.get("payload_resolver")
+        kwargs.setdefault("facade", facade)
+        kwargs.setdefault("ledger", ArsdRunBindingLedger(config.binding_ledger_path))
+        bundle = real(config, **kwargs)
+        seen["bundle"] = bundle
+        return bundle
+
+    monkeypatch.setattr(binding_mod, "bind_arsd_execution", _offline)
+    return SimpleNamespace(facade=facade, seen=seen)
+
+
+def test_an_undeclared_host_composes_nothing_and_binds_nothing(_unbound, monkeypatch):
+    """Default off: the switch absent means no coordinator and no daemon."""
+
+    monkeypatch.delenv(delegate_mod.SACHIMA_DELEGATE_COMPOSE_ENV, raising=False)
+
+    assert delegate_mod.delegate_composition_requested() is False
+    assert delegate_mod.compose_delegate_coordinator() is None
+    assert delegate_mod.bound_delegate_coordinator() is None
+
+
+@pytest.mark.parametrize("declared", ["", "0", "true", "yes", "TRUE", " 1"])
+def test_an_ambiguous_switch_is_not_a_declaration(_unbound, monkeypatch, declared):
+    """A half-set switch on a permissioned execution path means no."""
+
+    monkeypatch.setenv(delegate_mod.SACHIMA_DELEGATE_COMPOSE_ENV, declared)
+
+    assert delegate_mod.delegate_composition_requested() is False
+    assert delegate_mod.compose_delegate_coordinator() is None
+    assert delegate_mod.bound_delegate_coordinator() is None
+
+
+def test_a_declared_composition_really_builds_and_binds_the_coordinator(
+    tmp_path, monkeypatch, _unbound, _offline_arsd
+):
+    """The positive case: configured deployment, real graph, bound coordinator."""
+
+    config = _config(tmp_path)
+    files = _composition_files(tmp_path, config)
+    _declare_composition(monkeypatch, *files)
+
+    assert delegate_mod.bound_delegate_coordinator() is None
+
+    coordinator = delegate_mod.compose_delegate_coordinator()
+
+    assert coordinator is not None
+    assert delegate_mod.bound_delegate_coordinator() is coordinator
+    # Composed against the declared config, not an invented one.
+    assert _offline_arsd.seen["config"].socket_path == config.socket_path
+    assert _offline_arsd.seen["config"].enabled is True
+    # The claim-check resolver is wired, so a Run recovers its payload.
+    assert callable(_offline_arsd.seen["payload_resolver"])
+    # The presets and roles the host declared really reached the coordinator.
+    assert coordinator.admit_agent(AGENT_ID, task_text=TASK_TEXT_CANARY).preset
+    assert _offline_arsd.facade.calls[0] == "server_info"
+
+
+@pytest.mark.parametrize(
+    "missing",
+    [
+        "SACHIMA_DELEGATE_CONFIG_FILE_ENV",
+        "SACHIMA_DELEGATE_PRESETS_FILE_ENV",
+        "SACHIMA_DELEGATE_ROLE_POLICY_FILE_ENV",
+    ],
+)
+def test_a_declared_composition_missing_a_document_fails_closed(
+    tmp_path, monkeypatch, _unbound, _offline_arsd, missing
+):
+    """Declared but incomplete binds nothing — it never half-composes."""
+
+    config = _config(tmp_path)
+    _declare_composition(monkeypatch, *_composition_files(tmp_path, config))
+    monkeypatch.delenv(getattr(delegate_mod, missing), raising=False)
+
+    with pytest.raises(delegate_mod.DelegateCompositionError):
+        delegate_mod.compose_delegate_coordinator()
+
+    assert delegate_mod.bound_delegate_coordinator() is None
+
+
+def test_a_disabled_arsd_config_is_a_declaration_that_composes_nothing(
+    tmp_path, monkeypatch, _unbound, _offline_arsd
+):
+    """``enabled=False`` reaches no daemon, exactly as the contract promises."""
+
+    config = _config(tmp_path)
+    config_file, presets_file, policy_file = _composition_files(tmp_path, config)
+    document = json.loads(config_file.read_text(encoding="utf-8"))
+    document["enabled"] = False
+    config_file.write_text(json.dumps(document), encoding="utf-8")
+    _declare_composition(monkeypatch, config_file, presets_file, policy_file)
+
+    with pytest.raises(delegate_mod.DelegateCompositionError):
+        delegate_mod.compose_delegate_coordinator()
+
+    assert delegate_mod.bound_delegate_coordinator() is None
+    assert _offline_arsd.facade.calls == []
+
+
+def test_a_malformed_config_document_never_becomes_a_coordinator(
+    tmp_path, monkeypatch, _unbound, _offline_arsd
+):
+    """A forged or corrupt document fails the real allowlist, not a pre-check."""
+
+    config = _config(tmp_path)
+    config_file, presets_file, policy_file = _composition_files(tmp_path, config)
+    document = json.loads(config_file.read_text(encoding="utf-8"))
+    document["socket_path"] = "not/an/absolute/private/path"
+    config_file.write_text(json.dumps(document), encoding="utf-8")
+    _declare_composition(monkeypatch, config_file, presets_file, policy_file)
+
+    with pytest.raises(delegate_mod.DelegateCompositionError) as excinfo:
+        delegate_mod.compose_delegate_coordinator()
+
+    # The code, never the rejected material.
+    assert str(excinfo.value) == delegate_mod.SACHIMA_DELEGATE_COMPOSITION_INVALID
+    assert "not/an/absolute" not in str(excinfo.value)
+    assert delegate_mod.bound_delegate_coordinator() is None
+
+
+@pytest.mark.asyncio
+async def test_a_fresh_runner_composes_the_coordinator_during_startup(
+    tmp_path, monkeypatch, _unbound, _offline_arsd
+):
+    """The seam the reviewer asked for: production startup, no manual bind.
+
+    A fresh ``GatewayRunner`` starts with nothing bound. Startup must compose
+    the declared graph and *then* restore it, so resident semantic delegation
+    is available on the real path rather than only where a test bound it.
+    """
+
+    from gateway.config import GatewayConfig
+    from gateway.run import GatewayRunner
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    config = _config(tmp_path)
+    _declare_composition(monkeypatch, *_composition_files(tmp_path, config))
+
+    runner = GatewayRunner(
+        GatewayConfig(platforms={}, sessions_dir=tmp_path / "sessions")
+    )
+    assert delegate_mod.bound_delegate_coordinator() is None
+
+    assert await asyncio.wait_for(runner.start(), timeout=30) is True
+
+    coordinator = delegate_mod.bound_delegate_coordinator()
+    assert coordinator is not None
+    assert coordinator.restored is True
+    assert coordinator.lifecycle_loop is asyncio.get_running_loop()
+    assert runner._running is True
+
+
+@pytest.mark.asyncio
+async def test_an_undeclared_fresh_runner_starts_an_ordinary_gateway(
+    tmp_path, monkeypatch, _unbound
+):
+    """The default deployment is untouched: it starts with nothing bound."""
+
+    from gateway.config import GatewayConfig
+    from gateway.run import GatewayRunner
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    monkeypatch.delenv(delegate_mod.SACHIMA_DELEGATE_COMPOSE_ENV, raising=False)
+
+    runner = GatewayRunner(
+        GatewayConfig(platforms={}, sessions_dir=tmp_path / "sessions")
+    )
+
+    assert await asyncio.wait_for(runner.start(), timeout=30) is True
+
+    assert delegate_mod.bound_delegate_coordinator() is None
+    assert runner._running is True
+
+
+@pytest.mark.asyncio
+async def test_a_broken_declaration_still_starts_the_gateway_with_nothing_bound(
+    tmp_path, monkeypatch, _unbound, _offline_arsd
+):
+    """Fail closed, not fail loud: no coordinator, and no crashed Gateway."""
+
+    from gateway.config import GatewayConfig
+    from gateway.run import GatewayRunner
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    config = _config(tmp_path)
+    config_file, presets_file, policy_file = _composition_files(tmp_path, config)
+    config_file.write_text("{ not json", encoding="utf-8")
+    _declare_composition(monkeypatch, config_file, presets_file, policy_file)
+
+    runner = GatewayRunner(
+        GatewayConfig(platforms={}, sessions_dir=tmp_path / "sessions")
+    )
+
+    assert await asyncio.wait_for(runner.start(), timeout=30) is True
+
+    assert delegate_mod.bound_delegate_coordinator() is None
+    assert runner._running is True
+
+
+@pytest.mark.asyncio
+async def test_stopping_the_gateway_retires_the_coordinator_it_composed(
+    tmp_path, monkeypatch, _unbound, _offline_arsd
+):
+    """What a runner composes, that runner retires.
+
+    A coordinator left bound after shutdown keeps observers scheduled on a
+    loop that is going away and keeps delivery pointed at a stopped runner's
+    adapters — and the next start in this process would find it and reuse it.
+    """
+
+    from gateway.config import GatewayConfig
+    from gateway.run import GatewayRunner
+    from tools import sachima_delegate_control_tool as control_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    config = _config(tmp_path)
+    _declare_composition(monkeypatch, *_composition_files(tmp_path, config))
+
+    runner = GatewayRunner(
+        GatewayConfig(platforms={}, sessions_dir=tmp_path / "sessions")
+    )
+    assert await asyncio.wait_for(runner.start(), timeout=30) is True
+
+    composed = delegate_mod.bound_delegate_coordinator()
+    assert composed is not None
+    assert composed.closed is False
+    assert control_tool._bound_session_store() is not None
+
+    await asyncio.wait_for(runner.stop(), timeout=30)
+
+    assert composed.closed is True
+    assert delegate_mod.bound_delegate_coordinator() is None
+    assert delegate_mod._delivery_factory_hook is None
+    assert control_tool._bound_session_store() is None
+    # Retirement is one-way and safe to repeat.
+    await composed.close()
+    assert composed.closed is True
+
+
+@pytest.mark.asyncio
+async def test_a_disabled_restart_cannot_reuse_the_previous_runs_coordinator(
+    tmp_path, monkeypatch, _unbound, _offline_arsd
+):
+    """Enabled → stop → disabled must start an ordinary Gateway.
+
+    The global bind is process-wide, so a coordinator that survived the first
+    shutdown would still be there for the second start — a deployment that
+    turned the feature off would keep serving it from a dead runner's graph.
+    """
+
+    from gateway.config import GatewayConfig
+    from gateway.run import GatewayRunner
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    config = _config(tmp_path)
+    _declare_composition(monkeypatch, *_composition_files(tmp_path, config))
+
+    first = GatewayRunner(
+        GatewayConfig(platforms={}, sessions_dir=tmp_path / "sessions")
+    )
+    assert await asyncio.wait_for(first.start(), timeout=30) is True
+    composed = delegate_mod.bound_delegate_coordinator()
+    assert composed is not None
+    await asyncio.wait_for(first.stop(), timeout=30)
+
+    # The operator turns it off and the process starts a second Gateway.
+    monkeypatch.delenv(delegate_mod.SACHIMA_DELEGATE_COMPOSE_ENV, raising=False)
+    second = GatewayRunner(
+        GatewayConfig(platforms={}, sessions_dir=tmp_path / "sessions2")
+    )
+    assert await asyncio.wait_for(second.start(), timeout=30) is True
+
+    assert delegate_mod.bound_delegate_coordinator() is None
+    assert second._running is True
+    assert composed.closed is True
+
+    await asyncio.wait_for(second.stop(), timeout=30)
+
+
+@pytest.mark.asyncio
+async def test_stop_leaves_a_coordinator_this_runner_did_not_compose_alone(
+    tmp_path, monkeypatch, _unbound
+):
+    """A borrowed coordinator is not this runner's to retire.
+
+    An embedding application (or a test) that bound its own graph keeps it:
+    tearing it down on an unrelated runner's shutdown would drop a bundle
+    whose lifetime this runner never controlled.
+    """
+
+    from gateway.config import GatewayConfig
+    from gateway.run import GatewayRunner
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    monkeypatch.delenv(delegate_mod.SACHIMA_DELEGATE_COMPOSE_ENV, raising=False)
+
+    external, _facade = _bind(tmp_path)
+    runner = GatewayRunner(
+        GatewayConfig(platforms={}, sessions_dir=tmp_path / "sessions")
+    )
+    assert await asyncio.wait_for(runner.start(), timeout=30) is True
+    assert delegate_mod.bound_delegate_coordinator() is external
+
+    await asyncio.wait_for(runner.stop(), timeout=30)
+
+    assert delegate_mod.bound_delegate_coordinator() is external
+    assert external.closed is False
+
+
+@pytest.mark.asyncio
+async def test_a_retired_coordinator_arms_no_further_observer(
+    tmp_path, monkeypatch, _unbound
+):
+    """Retirement stops observation, not just the tasks already running."""
+
+    external, _facade = _bind(tmp_path)
+    await external.close()
+
+    assert external.closed is True
+    external._arm_observer("turn-key-1")
+    assert external._observers == {}
+
+
 def _chat_response(content: str = "Final answer"):
     message = SimpleNamespace(content=content, tool_calls=None)
     return SimpleNamespace(
@@ -1867,6 +2357,1245 @@ def test_a_stale_worker_cannot_dispatch_through_the_rebound_cached_agent(
     assert old_claim.consumed is False
     assert new_claim.consumed is False
     assert agent._provider_attempts == 0
+
+
+def test_a_stale_worker_never_commits_the_successor_turns_lease(monkeypatch):
+    """The decisive cross-turn race: rebound to a *new* lease, not to nothing.
+
+    Revoking the abandoned turn's lease is not enough on its own. If the
+    dispatch reads the lease off the shared cached agent, the successor turn
+    has already replaced it by the time the stale worker wakes — so the worker
+    finds a perfectly valid lease, dispatches, and confirms a claim belonging
+    to a turn it has nothing to do with. The delegate result of the *new* turn
+    is then consumed by a request the new turn never made.
+
+    The worker must answer with its own turn's lease, which is revoked.
+    """
+
+    import hermes_cli.middleware as middleware
+
+    from agent.chat_completion_helpers import ProviderDispatchLease
+    from gateway.run import GatewayRunner, _DelegateResultHandoff
+
+    agent = _provider_agent()
+    old_claim = _DelegateResultHandoff("session-old")
+    new_claim = _DelegateResultHandoff("session-new")
+    old_lease = ProviderDispatchLease(old_claim.mark_provider_attempt)
+    new_lease = ProviderDispatchLease(new_claim.mark_provider_attempt)
+    agent.client.chat.completions.create.return_value = _chat_response()
+
+    entered = threading.Event()
+    release = threading.Event()
+
+    def _paused(api_kwargs, next_call, **_kwargs):
+        entered.set()
+        release.wait(10)
+        return next_call(api_kwargs)
+
+    monkeypatch.setattr(middleware, "run_llm_execution_middleware", _paused)
+
+    def _turn():
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            agent.run_conversation("hello", _provider_dispatch_lease=old_lease)
+
+    worker = threading.Thread(target=_turn, daemon=True)
+    worker.start()
+    assert entered.wait(10) is True
+
+    # The Gateway abandons that executor and binds the cached agent to the
+    # NEXT turn's claim — the state the old worker wakes into.
+    GatewayRunner._init_cached_agent_for_turn(agent, 0)
+    agent._activate_provider_dispatch_lease(new_lease)
+
+    release.set()
+    worker.join(30)
+
+    assert worker.is_alive() is False
+    assert agent.client.chat.completions.create.called is False
+    assert old_claim.consumed is False
+    # The whole point: the successor's claim is untouched by its predecessor.
+    assert new_claim.consumed is False
+    assert new_lease.committed is False
+    assert new_claim.take_for_settlement() is True
+
+
+def test_a_rebind_with_no_lease_leaves_the_stale_worker_refusing(monkeypatch):
+    """A successor that holds no lease must not hand the old worker freedom.
+
+    Reading dispatch authority off the agent fails in this direction too: the
+    successor is an ordinary un-claimed turn, so the shared attribute says
+    "no lease, dispatch freely" — and the abandoned worker takes it.
+    """
+
+    import hermes_cli.middleware as middleware
+
+    from agent.chat_completion_helpers import ProviderDispatchLease
+    from gateway.run import _DelegateResultHandoff
+
+    agent = _provider_agent()
+    old_claim = _DelegateResultHandoff("session-old")
+    old_lease = ProviderDispatchLease(old_claim.mark_provider_attempt)
+    agent.client.chat.completions.create.return_value = _chat_response()
+
+    entered = threading.Event()
+    release = threading.Event()
+
+    def _paused(api_kwargs, next_call, **_kwargs):
+        entered.set()
+        release.wait(10)
+        return next_call(api_kwargs)
+
+    monkeypatch.setattr(middleware, "run_llm_execution_middleware", _paused)
+
+    def _turn():
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            agent.run_conversation("hello", _provider_dispatch_lease=old_lease)
+
+    worker = threading.Thread(target=_turn, daemon=True)
+    worker.start()
+    assert entered.wait(10) is True
+
+    agent._activate_provider_dispatch_lease(None)
+
+    release.set()
+    worker.join(30)
+
+    assert worker.is_alive() is False
+    assert agent.client.chat.completions.create.called is False
+    assert old_claim.consumed is False
+    assert old_claim.take_for_settlement() is True
+
+
+def test_a_client_that_fails_to_build_is_not_a_provider_attempt():
+    """Constructing a client is not reaching a model.
+
+    Admitting before the client exists books an attempt for a request that
+    never went out, so an interrupted turn's delegate result is consumed and
+    lost while no provider ever saw it.
+    """
+
+    from agent.chat_completion_helpers import _dispatch_nonstreaming_api_request
+    from gateway.run import _DelegateResultHandoff
+    from agent.chat_completion_helpers import ProviderDispatchLease
+
+    agent = _provider_agent()
+    agent.api_mode = "chat_completions"
+    agent.provider = "openrouter"
+    claim = _DelegateResultHandoff("session-1")
+    lease = ProviderDispatchLease(claim.mark_provider_attempt)
+
+    def _make_client(reason, kind="openai"):
+        raise RuntimeError("no socket for you")
+
+    with pytest.raises(RuntimeError):
+        _dispatch_nonstreaming_api_request(
+            agent, {"model": "test/model"}, make_client=_make_client, lease=lease
+        )
+
+    assert claim.consumed is False
+    assert lease.committed is False
+    assert getattr(agent, "_provider_attempts", 0) == 0
+    # Still settleable: nothing was spent, so the result returns to pending.
+    assert claim.take_for_settlement() is True
+
+
+def test_a_built_client_that_dispatches_does_book_the_attempt():
+    """The GREEN half of the boundary: a real call still confirms the claim."""
+
+    from agent.chat_completion_helpers import (
+        ProviderDispatchLease,
+        _dispatch_nonstreaming_api_request,
+    )
+    from gateway.run import _DelegateResultHandoff
+
+    agent = _provider_agent()
+    agent.api_mode = "chat_completions"
+    agent.provider = "openrouter"
+    claim = _DelegateResultHandoff("session-1")
+    lease = ProviderDispatchLease(claim.mark_provider_attempt)
+
+    client = MagicMock()
+    client.chat.completions.create.return_value = _chat_response()
+
+    _dispatch_nonstreaming_api_request(
+        agent,
+        {"model": "test/model"},
+        make_client=lambda reason, kind="openai": client,
+        lease=lease,
+    )
+
+    assert client.chat.completions.create.called is True
+    assert claim.consumed is True
+    assert agent._provider_attempts == 1
+
+
+def test_a_revoked_lease_refuses_before_the_client_is_even_built():
+    """A refused dispatch must not construct a client, let alone a request."""
+
+    from agent.chat_completion_helpers import (
+        ProviderDispatchLease,
+        _dispatch_nonstreaming_api_request,
+    )
+    from gateway.run import _DelegateResultHandoff
+
+    agent = _provider_agent()
+    agent.api_mode = "chat_completions"
+    agent.provider = "openrouter"
+    claim = _DelegateResultHandoff("session-1")
+    lease = ProviderDispatchLease(claim.mark_provider_attempt)
+    lease.revoke()
+
+    client = MagicMock()
+
+    with pytest.raises(InterruptedError):
+        _dispatch_nonstreaming_api_request(
+            agent,
+            {"model": "test/model"},
+            make_client=lambda reason, kind="openai": client,
+            lease=lease,
+        )
+
+    assert client.chat.completions.create.called is False
+    assert claim.consumed is False
+
+
+def test_no_lease_leaves_every_non_gateway_caller_dispatching_unchanged():
+    """CLI / TUI / subagents / evals hold no lease and are not gated."""
+
+    from agent.chat_completion_helpers import _dispatch_nonstreaming_api_request
+
+    agent = _provider_agent()
+    agent.api_mode = "chat_completions"
+    agent.provider = "openrouter"
+    client = MagicMock()
+    client.chat.completions.create.return_value = _chat_response()
+
+    _dispatch_nonstreaming_api_request(
+        agent,
+        {"model": "test/model"},
+        make_client=lambda reason, kind="openai": client,
+        lease=None,
+    )
+
+    assert client.chat.completions.create.called is True
+    assert getattr(agent, "_provider_attempts", 0) == 0
+
+
+def test_the_moa_branch_admits_at_its_own_provider_call():
+    """Every api_mode is gated, including the one that builds no client."""
+
+    from agent.chat_completion_helpers import (
+        ProviderDispatchLease,
+        _dispatch_nonstreaming_api_request,
+    )
+    from gateway.run import _DelegateResultHandoff
+
+    agent = _provider_agent()
+    agent.api_mode = "chat_completions"
+    agent.provider = "moa"
+    agent.client.chat.completions.create.return_value = _chat_response()
+    claim = _DelegateResultHandoff("session-1")
+    lease = ProviderDispatchLease(claim.mark_provider_attempt)
+    lease.revoke()
+
+    def _make_client(reason, kind="openai"):  # pragma: no cover - must not run
+        raise AssertionError("MoA builds no request-local client")
+
+    with pytest.raises(InterruptedError):
+        _dispatch_nonstreaming_api_request(
+            agent, {"model": "test/model"}, make_client=_make_client, lease=lease
+        )
+
+    assert agent.client.chat.completions.create.called is False
+    assert claim.consumed is False
+
+
+def test_a_streaming_turn_is_admitted_under_the_lease_of_its_own_context():
+    """Streaming is the ordinary Gateway path and is gated the same way.
+
+    Left ungated, the common path would dispatch without ever confirming the
+    claim it folded in — the delegate result would be released back to pending
+    and re-folded into a later turn, which is the failure the seam exists for.
+    """
+
+    from agent.chat_completion_helpers import (
+        ProviderDispatchLease,
+        bind_provider_dispatch_lease,
+        capture_provider_dispatch_lease,
+        active_provider_dispatch_gate,
+    )
+    from gateway.run import _DelegateResultHandoff
+
+    agent = _provider_agent()
+    claim = _DelegateResultHandoff("session-1")
+    lease = ProviderDispatchLease(claim.mark_provider_attempt)
+
+    captured: dict[str, object] = {}
+
+    def _in_turn():
+        bind_provider_dispatch_lease(lease)
+        captured["lease"] = capture_provider_dispatch_lease()
+        gate = active_provider_dispatch_gate(agent)
+        sdk = MagicMock(return_value="stream")
+        captured["result"] = gate.invoke(sdk, model="test/model")
+        captured["sdk"] = sdk
+
+    turn = threading.Thread(target=_in_turn, daemon=True)
+    turn.start()
+    turn.join(10)
+
+    assert captured["lease"] is lease
+    assert captured["result"] == "stream"
+    assert captured["sdk"].call_count == 1
+    assert claim.consumed is True
+
+
+def test_a_lease_bound_in_one_turn_is_invisible_to_another_context():
+    """Turn-locality itself: one turn's binding never leaks into another."""
+
+    from agent.chat_completion_helpers import (
+        ProviderDispatchLease,
+        bind_provider_dispatch_lease,
+        capture_provider_dispatch_lease,
+    )
+
+    lease = ProviderDispatchLease(None)
+    seen: dict[str, object] = {}
+
+    def _turn_a():
+        bind_provider_dispatch_lease(lease)
+        seen["a"] = capture_provider_dispatch_lease()
+
+    def _turn_b():
+        seen["b"] = capture_provider_dispatch_lease()
+
+    a = threading.Thread(target=_turn_a, daemon=True)
+    a.start()
+    a.join(10)
+    b = threading.Thread(target=_turn_b, daemon=True)
+    b.start()
+    b.join(10)
+
+    assert seen["a"] is lease
+    assert seen["b"] is None
+
+
+def test_a_synchronous_dispatch_failure_does_not_consume_the_claim():
+    """Establishment, not intent, is what the claim may be spent on.
+
+    The client built fine; the SDK call itself refused on the way out. No
+    provider saw the request, so consuming here would retire a delegate result
+    that was never delivered to a model — and the turn could not settle it.
+    """
+
+    from agent.chat_completion_helpers import (
+        ProviderDispatchLease,
+        _dispatch_nonstreaming_api_request,
+    )
+    from gateway.run import _DelegateResultHandoff
+
+    agent = _provider_agent()
+    agent.api_mode = "chat_completions"
+    agent.provider = "openrouter"
+    claim = _DelegateResultHandoff("session-1")
+    lease = ProviderDispatchLease(claim.mark_provider_attempt)
+
+    client = MagicMock()
+    client.chat.completions.create.side_effect = ConnectionError("refused")
+
+    with pytest.raises(ConnectionError):
+        _dispatch_nonstreaming_api_request(
+            agent,
+            {"model": "test/model"},
+            make_client=lambda reason, kind="openai": client,
+            lease=lease,
+        )
+
+    assert client.chat.completions.create.called is True
+    assert claim.consumed is False
+    assert lease.committed is False
+    assert getattr(agent, "_provider_attempts", 0) == 0
+    # The turn keeps the right to settle it back to pending.
+    assert claim.take_for_settlement() is True
+
+
+def test_a_failed_then_retried_dispatch_consumes_exactly_once():
+    """A retry after a synchronous failure confirms the claim once, not twice."""
+
+    from agent.chat_completion_helpers import (
+        ProviderDispatchLease,
+        _dispatch_nonstreaming_api_request,
+    )
+    from gateway.run import _DelegateResultHandoff
+
+    agent = _provider_agent()
+    agent.api_mode = "chat_completions"
+    agent.provider = "openrouter"
+    claim = _DelegateResultHandoff("session-1")
+    lease = ProviderDispatchLease(claim.mark_provider_attempt)
+    marks = []
+    lease_with_counter = ProviderDispatchLease(lambda: marks.append(1))
+
+    client = MagicMock()
+    client.chat.completions.create.side_effect = [
+        ConnectionError("refused"),
+        _chat_response(),
+        _chat_response(),
+    ]
+
+    def _dispatch():
+        return _dispatch_nonstreaming_api_request(
+            agent,
+            {"model": "test/model"},
+            make_client=lambda reason, kind="openai": client,
+            lease=lease_with_counter,
+        )
+
+    with pytest.raises(ConnectionError):
+        _dispatch()
+    assert marks == []
+
+    _dispatch()
+    assert marks == [1]
+
+    _dispatch()
+    assert marks == [1]
+    assert agent._provider_attempts == 1
+
+
+def _anthropic_streaming_agent(monkeypatch, *, stream_error=None):
+    """A production-shaped Anthropic streaming turn with an injected client.
+
+    Only the client factory is substituted — the real Anthropic SDK is not
+    installed here and building one is out of scope. Everything downstream of
+    it (the streaming entry point, the relay attempt, and the establishment
+    closure that the lease gates) is the production code path.
+    """
+
+    agent = _provider_agent()
+    agent.api_mode = "anthropic_messages"
+    agent.provider = "anthropic"
+    agent._disable_streaming = False
+
+    opened: dict[str, Any] = {"calls": 0}
+
+    class _Manager:
+        def __init__(self, raw):
+            self._raw = raw
+
+        def __enter__(self):
+            return self._raw
+
+        def __exit__(self, *exc):
+            return False
+
+    def _stream(**kwargs):
+        opened["calls"] += 1
+        opened["kwargs"] = kwargs
+        if stream_error is not None:
+            raise stream_error
+        raw = MagicMock()
+        raw.__iter__ = lambda self: iter(())
+        raw.response = None
+        return _Manager(raw)
+
+    client = MagicMock()
+    client.messages.stream.side_effect = _stream
+    monkeypatch.setattr(
+        agent, "_create_request_anthropic_client", lambda **_k: client, raising=False
+    )
+    return agent, client, opened
+
+
+def test_an_abandoned_turn_cannot_open_an_anthropic_stream(monkeypatch):
+    """The native Anthropic streaming branch answers to the same lease.
+
+    Before this it opened ``messages.stream`` directly, so the one production
+    path a Gateway turn most often takes could dispatch under a lease it no
+    longer held.
+    """
+
+    from agent.chat_completion_helpers import (
+        ProviderDispatchLease,
+        bind_provider_dispatch_lease,
+        interruptible_streaming_api_call,
+    )
+    from gateway.run import _DelegateResultHandoff
+
+    agent, client, opened = _anthropic_streaming_agent(monkeypatch)
+    claim = _DelegateResultHandoff("session-1")
+    lease = ProviderDispatchLease(claim.mark_provider_attempt)
+    lease.revoke()
+
+    outcome: dict[str, Any] = {}
+
+    def _turn():
+        bind_provider_dispatch_lease(lease)
+        try:
+            interruptible_streaming_api_call(agent, {"model": "claude-opus-5"})
+        except BaseException as exc:  # noqa: BLE001 - recorded, then asserted
+            outcome["error"] = exc
+
+    worker = threading.Thread(target=_turn, daemon=True)
+    worker.start()
+    worker.join(30)
+
+    assert worker.is_alive() is False
+    # Never opened: refused before the SDK was touched at all.
+    assert opened["calls"] == 0
+    assert client.messages.stream.called is False
+    assert claim.consumed is False
+    assert claim.take_for_settlement() is True
+
+
+def test_a_live_anthropic_stream_establishment_consumes_exactly_once(monkeypatch):
+    """The GREEN half: a real establishment confirms the turn's claim once."""
+
+    from agent.chat_completion_helpers import (
+        ProviderDispatchLease,
+        bind_provider_dispatch_lease,
+        interruptible_streaming_api_call,
+    )
+    from gateway.run import _DelegateResultHandoff
+
+    agent, client, opened = _anthropic_streaming_agent(monkeypatch)
+    claim = _DelegateResultHandoff("session-1")
+    marks: list[int] = []
+    lease = ProviderDispatchLease(lambda: (marks.append(1), claim.mark_provider_attempt())[0])
+
+    def _turn():
+        bind_provider_dispatch_lease(lease)
+        try:
+            interruptible_streaming_api_call(agent, {"model": "claude-opus-5"})
+        except BaseException:  # noqa: BLE001 - establishment is what is asserted
+            pass
+
+    worker = threading.Thread(target=_turn, daemon=True)
+    worker.start()
+    worker.join(30)
+
+    assert worker.is_alive() is False
+    assert opened["calls"] >= 1
+    assert claim.consumed is True
+    # Confirmed once no matter how many attempts the relay opened.
+    assert marks == [1]
+
+
+def test_an_anthropic_stream_that_fails_to_open_does_not_consume(monkeypatch):
+    """A stream that refused on the way out established nothing."""
+
+    from agent.chat_completion_helpers import (
+        ProviderDispatchLease,
+        bind_provider_dispatch_lease,
+        interruptible_streaming_api_call,
+    )
+    from gateway.run import _DelegateResultHandoff
+
+    agent, client, opened = _anthropic_streaming_agent(
+        monkeypatch, stream_error=ConnectionError("refused")
+    )
+    claim = _DelegateResultHandoff("session-1")
+    lease = ProviderDispatchLease(claim.mark_provider_attempt)
+
+    def _turn():
+        bind_provider_dispatch_lease(lease)
+        try:
+            interruptible_streaming_api_call(agent, {"model": "claude-opus-5"})
+        except BaseException:  # noqa: BLE001 - the refusal is expected
+            pass
+
+    worker = threading.Thread(target=_turn, daemon=True)
+    worker.start()
+    worker.join(30)
+
+    assert worker.is_alive() is False
+    assert opened["calls"] >= 1
+    assert claim.consumed is False
+    assert claim.take_for_settlement() is True
+
+
+def test_abandoning_a_timed_out_turn_retires_its_lease_immediately(monkeypatch):
+    """Settlement follows abandonment, so the lease must die with the turn.
+
+    The worker may be parked just short of its provider call and has not
+    observed the interrupt. Waiting for the next cached-agent reuse to revoke
+    leaves it free to wake and confirm a claim already settled.
+    """
+
+    from agent.chat_completion_helpers import ProviderDispatchLease
+    from gateway.run import _DelegateResultHandoff, _abandon_timed_out_gateway_turn
+
+    agent = _provider_agent()
+    claim = _DelegateResultHandoff("session-1")
+    lease = ProviderDispatchLease(claim.mark_provider_attempt)
+    agent._activate_provider_dispatch_lease(lease)
+
+    monkeypatch.setattr(
+        "gateway.run.request_hard_interrupt", lambda *a, **k: None, raising=False
+    )
+    monkeypatch.setattr(
+        "gateway.run._dump_wedged_turn_stacks", lambda *a, **k: None, raising=False
+    )
+    monkeypatch.setattr(
+        "gateway.run._reap_gateway_turn_processes", lambda *a, **k: None, raising=False
+    )
+
+    abandoned = _abandon_timed_out_gateway_turn(
+        agent_holder=[agent],
+        task_id="task-1",
+        process_baseline=None,
+        worker_done=threading.Event(),
+        timeout_fired=threading.Event(),
+        cleanup_lock=threading.Lock(),
+        dispatch_lease=lease,
+    )
+
+    assert abandoned is True
+    assert lease.cancelled is True
+
+    # A delayed worker waking now dispatches nothing and confirms nothing.
+    gate = lease.gate(agent)
+    sdk = MagicMock()
+    with pytest.raises(InterruptedError):
+        gate.invoke(sdk, model="test/model")
+
+    assert sdk.call_count == 0
+    assert claim.consumed is False
+    assert claim.take_for_settlement() is True
+
+
+# --------------------------------------------------------------------------- #
+# The execution lifecycle fence
+#
+# One invariant, four production paths: shutdown, abandonment and closure must
+# fence every new provider dispatch and every coordinator-owned task *before*
+# anything outside can observe the terminal, timed-out or restored state they
+# publish. Each test below drives the real path and asserts the ordering or the
+# identity that makes the fence real — never the source text.
+# --------------------------------------------------------------------------- #
+def _bedrock_streaming_agent(monkeypatch, *, stream_error, converse_result=None):
+    """A production-shaped Bedrock streaming turn with an injected client."""
+
+    import agent.bedrock_adapter as bedrock_adapter
+
+    agent = _provider_agent()
+    agent.api_mode = "bedrock_converse"
+    agent.provider = "bedrock"
+    agent._disable_streaming = False
+
+    calls: list[str] = []
+    client = MagicMock()
+
+    def _converse_stream(**_kwargs):
+        calls.append("converse_stream")
+        raise stream_error
+
+    def _converse(**_kwargs):
+        calls.append("converse")
+        return converse_result if converse_result is not None else {}
+
+    client.converse_stream.side_effect = _converse_stream
+    client.converse.side_effect = _converse
+    monkeypatch.setattr(
+        bedrock_adapter, "_get_bedrock_runtime_client", lambda _r: client
+    )
+    monkeypatch.setattr(
+        bedrock_adapter, "is_streaming_access_denied_error", lambda _e: True
+    )
+    monkeypatch.setattr(
+        bedrock_adapter, "normalize_converse_response", lambda raw: raw
+    )
+    monkeypatch.setattr(
+        bedrock_adapter, "recover_from_cache_point_rejection", lambda _e, _k: None
+    )
+    return agent, client, calls
+
+
+def test_a_revoked_turn_cannot_dispatch_through_the_bedrock_iam_fallback(
+    monkeypatch,
+):
+    """The IAM fallback is a second real dispatch and answers to the lease.
+
+    ``converse_stream`` is denied, so the branch falls back to a fresh
+    non-streaming ``converse``. Ungated, an abandoned turn that was refused the
+    stream would still put that fallback request on the wire.
+    """
+
+    from agent.chat_completion_helpers import (
+        ProviderDispatchLease,
+        bind_provider_dispatch_lease,
+        interruptible_streaming_api_call,
+    )
+    from gateway.run import _DelegateResultHandoff
+
+    agent, client, calls = _bedrock_streaming_agent(
+        monkeypatch, stream_error=PermissionError("AccessDeniedException")
+    )
+    claim = _DelegateResultHandoff("session-1")
+    lease = ProviderDispatchLease(claim.mark_provider_attempt)
+    lease.revoke()
+
+    def _turn():
+        bind_provider_dispatch_lease(lease)
+        try:
+            interruptible_streaming_api_call(
+                agent, {"model": "anthropic.claude", "__bedrock_region__": "us-east-1"}
+            )
+        except BaseException:  # noqa: BLE001 - the refusal is the assertion
+            pass
+
+    worker = threading.Thread(target=_turn, daemon=True)
+    worker.start()
+    worker.join(30)
+
+    assert worker.is_alive() is False
+    assert "converse" not in calls
+    assert client.converse.called is False
+    assert claim.consumed is False
+    assert claim.take_for_settlement() is True
+
+
+def test_a_bedrock_iam_fallback_that_establishes_consumes_exactly_once(monkeypatch):
+    """The GREEN half: the fallback confirms the claim once, not twice.
+
+    The refused stream established nothing, so the single commit must come
+    from the fallback that actually reached the model.
+    """
+
+    from agent.chat_completion_helpers import (
+        ProviderDispatchLease,
+        bind_provider_dispatch_lease,
+        interruptible_streaming_api_call,
+    )
+    from gateway.run import _DelegateResultHandoff
+
+    agent, client, calls = _bedrock_streaming_agent(
+        monkeypatch,
+        stream_error=PermissionError("AccessDeniedException"),
+        converse_result={"output": {"message": {"content": []}}},
+    )
+    claim = _DelegateResultHandoff("session-1")
+    marks: list[int] = []
+    lease = ProviderDispatchLease(
+        lambda: (marks.append(1), claim.mark_provider_attempt())[0]
+    )
+
+    def _turn():
+        bind_provider_dispatch_lease(lease)
+        try:
+            interruptible_streaming_api_call(
+                agent, {"model": "anthropic.claude", "__bedrock_region__": "us-east-1"}
+            )
+        except BaseException:  # noqa: BLE001 - establishment is the assertion
+            pass
+
+    worker = threading.Thread(target=_turn, daemon=True)
+    worker.start()
+    worker.join(30)
+
+    assert worker.is_alive() is False
+    assert calls.count("converse") >= 1
+    assert claim.consumed is True
+    assert marks == [1]
+
+
+def test_the_timeout_fence_closes_before_the_timeout_becomes_observable(
+    monkeypatch,
+):
+    """Ordering, not merely eventual cancellation.
+
+    Publishing ``timeout_fired`` is what releases settlement and lets the next
+    turn rebind the cached agent. Any observer that sees the timeout must
+    already find this turn's lease dead, or a worker can dispatch into a turn
+    the Gateway is settling.
+    """
+
+    from agent.chat_completion_helpers import ProviderDispatchLease
+    from gateway.run import _DelegateResultHandoff, _abandon_timed_out_gateway_turn
+
+    agent = _provider_agent()
+    agent._gateway_turn_process_task_id = "task-1"
+    claim = _DelegateResultHandoff("session-1")
+    lease = ProviderDispatchLease(claim.mark_provider_attempt)
+    agent._activate_provider_dispatch_lease(lease)
+
+    monkeypatch.setattr(
+        "gateway.run.request_hard_interrupt", lambda *a, **k: None, raising=False
+    )
+    monkeypatch.setattr(
+        "gateway.run._dump_wedged_turn_stacks", lambda *a, **k: None, raising=False
+    )
+    monkeypatch.setattr(
+        "gateway.run._reap_gateway_turn_processes", lambda *a, **k: None, raising=False
+    )
+
+    timeout_fired = threading.Event()
+    observed: dict[str, Any] = {}
+
+    class _WitnessEvent(threading.Event):
+        """Records the lease state at the instant the timeout is published."""
+
+        def set(self) -> None:  # type: ignore[override]
+            observed["cancelled_at_publication"] = lease.cancelled
+            super().set()
+
+    witness = _WitnessEvent()
+
+    _abandon_timed_out_gateway_turn(
+        agent_holder=[agent],
+        task_id="task-1",
+        process_baseline=None,
+        worker_done=threading.Event(),
+        timeout_fired=witness,
+        cleanup_lock=threading.Lock(),
+        dispatch_lease=lease,
+    )
+
+    assert witness.is_set() is True
+    # The fence was already closed when the timeout became observable.
+    assert observed["cancelled_at_publication"] is True
+    assert lease.cancelled is True
+    assert timeout_fired.is_set() is False
+
+
+def test_abandonment_never_cancels_a_successor_turns_lease(monkeypatch):
+    """Identity, not whatever the shared cached agent currently points at.
+
+    The reaper runs on its own thread and can land after the cached agent has
+    been rebound to the next turn. Cancelling the lease it finds there would
+    kill a live turn instead of the abandoned one.
+    """
+
+    from agent.chat_completion_helpers import ProviderDispatchLease
+    from gateway.run import _DelegateResultHandoff, _abandon_timed_out_gateway_turn
+
+    agent = _provider_agent()
+    abandoned_claim = _DelegateResultHandoff("session-abandoned")
+    abandoned_lease = ProviderDispatchLease(abandoned_claim.mark_provider_attempt)
+    successor_claim = _DelegateResultHandoff("session-successor")
+    successor_lease = ProviderDispatchLease(successor_claim.mark_provider_attempt)
+
+    # The cached agent already belongs to the NEXT turn by the time the
+    # abandoned turn's reaper thread finally runs.
+    agent._gateway_turn_process_task_id = "task-successor"
+    agent._activate_provider_dispatch_lease(successor_lease)
+
+    monkeypatch.setattr(
+        "gateway.run.request_hard_interrupt", lambda *a, **k: None, raising=False
+    )
+    monkeypatch.setattr(
+        "gateway.run._dump_wedged_turn_stacks", lambda *a, **k: None, raising=False
+    )
+    monkeypatch.setattr(
+        "gateway.run._reap_gateway_turn_processes", lambda *a, **k: None, raising=False
+    )
+
+    _abandon_timed_out_gateway_turn(
+        agent_holder=[agent],
+        task_id="task-abandoned",
+        process_baseline=None,
+        worker_done=threading.Event(),
+        timeout_fired=threading.Event(),
+        cleanup_lock=threading.Lock(),
+        dispatch_lease=abandoned_lease,
+    )
+
+    # The abandoned turn's own lease is fenced; the successor is untouched
+    # and can still dispatch and confirm.
+    assert abandoned_lease.cancelled is True
+    assert successor_lease.cancelled is False
+    gate = successor_lease.gate(agent)
+    sdk = MagicMock(return_value="ok")
+    assert gate.invoke(sdk, model="test/model") == "ok"
+    assert successor_claim.consumed is True
+
+
+def test_a_same_session_predecessor_reaper_fences_only_its_own_lease(monkeypatch):
+    """Schedule 1: the reaper fences exactly the lease handed to it.
+
+    Two turns of the *same* session share one cached agent and one
+    session-scoped task id, so no ownership marker on the agent can tell the
+    predecessor's reaper apart from the successor's live lease. The reaper
+    must cancel L1 — the object it was constructed with — and never L2.
+    """
+
+    from agent.chat_completion_helpers import ProviderDispatchLease
+    from gateway.run import (
+        GatewayRunner,
+        _DelegateResultHandoff,
+        _abandon_timed_out_gateway_turn,
+    )
+
+    agent = _provider_agent()
+    predecessor_claim = _DelegateResultHandoff("session-1")
+    successor_claim = _DelegateResultHandoff("session-1")
+    l1 = ProviderDispatchLease(predecessor_claim.mark_provider_attempt)
+    l2 = ProviderDispatchLease(successor_claim.mark_provider_attempt)
+
+    # Turn one binds L1; the Gateway then starts turn two of the same session
+    # on the same cached agent, under the same session-scoped task id.
+    agent._gateway_turn_process_task_id = "session-1"
+    agent._activate_provider_dispatch_lease(l1)
+    GatewayRunner._init_cached_agent_for_turn(agent, 0)
+    agent._activate_provider_dispatch_lease(l2)
+
+    monkeypatch.setattr(
+        "gateway.run.request_hard_interrupt", lambda *a, **k: None, raising=False
+    )
+    monkeypatch.setattr(
+        "gateway.run._dump_wedged_turn_stacks", lambda *a, **k: None, raising=False
+    )
+    monkeypatch.setattr(
+        "gateway.run._reap_gateway_turn_processes", lambda *a, **k: None, raising=False
+    )
+
+    # Turn one's reaper finally fires, carrying turn one's lease.
+    abandoned = _abandon_timed_out_gateway_turn(
+        agent_holder=[agent],
+        task_id="session-1",
+        process_baseline=None,
+        worker_done=threading.Event(),
+        timeout_fired=threading.Event(),
+        cleanup_lock=threading.Lock(),
+        dispatch_lease=l1,
+    )
+
+    assert abandoned is True
+    assert l1.cancelled is True
+    assert l2.cancelled is False
+    assert l2.revoked is False
+    gate = l2.gate(agent)
+    sdk = MagicMock(return_value="ok")
+    assert gate.invoke(sdk, model="test/model") == "ok"
+    assert successor_claim.consumed is True
+    assert predecessor_claim.consumed is False
+
+
+def test_a_lease_abandoned_before_worker_publication_binds_dead(monkeypatch):
+    """Schedule 2: the lease exists before the worker is scheduled, so the
+    reaper can fence it before the worker has published its agent at all.
+    When the worker finally binds that lease it is already dead: the provider
+    SDK is never called and the claim stays unconsumed for settlement."""
+
+    from agent.chat_completion_helpers import ProviderDispatchLease
+    from gateway.run import _DelegateResultHandoff, _abandon_timed_out_gateway_turn
+
+    agent = _provider_agent()
+    claim = _DelegateResultHandoff("session-1")
+    lease = ProviderDispatchLease(claim.mark_provider_attempt)
+    # Nothing published yet: the worker has not reached agent binding.
+    agent_holder: list[Any] = [None]
+
+    monkeypatch.setattr(
+        "gateway.run.request_hard_interrupt", lambda *a, **k: None, raising=False
+    )
+    monkeypatch.setattr(
+        "gateway.run._dump_wedged_turn_stacks", lambda *a, **k: None, raising=False
+    )
+    monkeypatch.setattr(
+        "gateway.run._reap_gateway_turn_processes", lambda *a, **k: None, raising=False
+    )
+
+    abandoned = _abandon_timed_out_gateway_turn(
+        agent_holder=agent_holder,
+        task_id="session-1",
+        process_baseline=None,
+        worker_done=threading.Event(),
+        timeout_fired=threading.Event(),
+        cleanup_lock=threading.Lock(),
+        dispatch_lease=lease,
+    )
+    assert abandoned is True
+    assert lease.cancelled is True
+
+    # The worker wakes late, publishes its agent and binds the turn's lease.
+    agent_holder[0] = agent
+    assert agent._activate_provider_dispatch_lease(lease) is True
+    gate = lease.gate(agent)
+    sdk = MagicMock()
+    with pytest.raises(InterruptedError):
+        gate.invoke(sdk, model="test/model")
+
+    assert sdk.call_count == 0
+    assert lease.committed is False
+    assert claim.consumed is False
+    assert claim.take_for_settlement() is True
+
+
+class _LeaseWitnessAgent(_InterruptThenProviderAgent):
+    """A fake agent that records the lease each turn was handed."""
+
+    leases: list[Any] = []
+
+    def run_conversation(self, user_message, **kwargs):
+        type(self).leases.append(kwargs.get("_provider_dispatch_lease"))
+        self.turns.append(user_message)
+        lease = kwargs.get("_provider_dispatch_lease")
+        if lease is not None:
+            lease.gate(self).invoke(lambda: "ok")
+        return {"final_response": "done", "messages": [], "api_calls": 1}
+
+
+@pytest.mark.asyncio
+async def test_the_turns_lease_is_built_before_scheduling_and_shared_with_the_reaper(
+    monkeypatch,
+):
+    """The turn owns one lease: built beside the timeout machinery before the
+    worker is scheduled, handed to the watchdog reaper explicitly, and the
+    very object the worker dispatches under."""
+
+    import sys
+    import types
+
+    from agent.chat_completion_helpers import ProviderDispatchLease
+    from gateway.config import Platform
+    from gateway.run import _DelegateResultHandoff
+    from gateway.session import SessionSource
+
+    _LeaseWitnessAgent.leases = []
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = _LeaseWitnessAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "off")
+    monkeypatch.setenv("HERMES_AGENT_TIMEOUT", "1800")
+    monkeypatch.setattr("gateway.run._load_gateway_config", lambda: {})
+
+    import hermes_cli.tools_config as tools_config
+
+    monkeypatch.setattr(
+        tools_config, "_get_platform_tools", lambda *_args, **_kwargs: {"core"}
+    )
+
+    watchdog: dict[str, Any] = {}
+
+    def _watchdog(**kwargs):
+        watchdog.update(kwargs)
+
+    monkeypatch.setattr("gateway.run._watch_gateway_turn_inactivity", _watchdog)
+
+    runner = _run_agent_runner("session-1")
+    source = SessionSource(
+        platform=Platform.TELEGRAM, chat_id="12345", chat_type="dm", user_id="user-1"
+    )
+    handoff = _DelegateResultHandoff("session-1")
+
+    await asyncio.wait_for(
+        runner._run_agent(
+            message="what happened?",
+            context_prompt="",
+            history=[],
+            source=source,
+            session_id="session-1",
+            session_key="agent:main:telegram:dm:12345",
+            delegate_handoff=handoff,
+        ),
+        timeout=10,
+    )
+
+    (lease,) = _LeaseWitnessAgent.leases
+    assert isinstance(lease, ProviderDispatchLease)
+    assert "dispatch_lease" in watchdog
+    assert watchdog["dispatch_lease"] is lease
+    assert lease.committed is True
+    assert handoff.consumed is True
+
+
+@pytest.mark.asyncio
+async def test_closing_a_coordinator_fences_admission_and_owns_no_orphan(
+    tmp_path, _unbound
+):
+    """The concurrent-admission canary.
+
+    ``close`` and owner-task creation must not cross. Whichever order they
+    race in, the outcome is one of exactly two: the task was registered and
+    the drain cancelled and awaited it, or admission was refused and no task
+    exists. A task created after the drain snapshot would survive retirement
+    still holding its turn lock.
+    """
+
+    coordinator, _facade = _bind(tmp_path)
+    coordinator.bind_lifecycle_loop(asyncio.get_running_loop())
+
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def _slow():
+        started.set()
+        await release.wait()
+        return "done"
+
+    admitted = asyncio.create_task(coordinator._exclusive("turn-1", _slow))
+    await asyncio.wait_for(started.wait(), timeout=5)
+
+    closing = asyncio.create_task(coordinator.close())
+    await asyncio.sleep(0)
+    release.set()
+    await asyncio.wait_for(closing, timeout=10)
+
+    assert coordinator.closed is True
+    # The in-flight owner was drained, not orphaned.
+    assert coordinator._lifecycle.tasks == frozenset()
+    assert coordinator._observers == {}
+    with pytest.raises((asyncio.CancelledError, RuntimeError)):
+        await admitted
+
+    # Every later admission is refused deterministically.
+    for _ in range(8):
+        with pytest.raises(RuntimeError):
+            await coordinator._exclusive("turn-2", _slow)
+    assert coordinator._lifecycle.tasks == frozenset()
+
+
+@pytest.mark.asyncio
+async def test_a_closed_coordinator_refuses_a_captured_thread_caller(
+    tmp_path, _unbound
+):
+    """A worker thread holding a pre-retirement reference gets no new work."""
+
+    coordinator, _facade = _bind(tmp_path)
+    coordinator.bind_lifecycle_loop(asyncio.get_running_loop())
+    await coordinator.close()
+
+    outcome: dict[str, Any] = {}
+
+    def _captured_caller():
+        async def _factory():
+            return "should not run"
+
+        try:
+            coordinator.run_on_lifecycle_loop(_factory)
+        except BaseException as exc:  # noqa: BLE001 - recorded, then asserted
+            outcome["error"] = exc
+
+    worker = threading.Thread(target=_captured_caller, daemon=True)
+    worker.start()
+    await asyncio.get_running_loop().run_in_executor(None, worker.join, 10)
+
+    assert isinstance(outcome.get("error"), RuntimeError)
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_turn_ledger_fails_restoration_closed(tmp_path, _unbound):
+    """An unreadable ledger is not an empty one.
+
+    Treating the error as "no turns" declares the startup barrier complete,
+    so the coordinator starts admitting new work beside in-flight Runs it
+    never observed.
+    """
+
+    from gateway.sachima_delegate_state import DelegateStateError
+
+    coordinator, _facade = _bind(tmp_path)
+    coordinator.bind_lifecycle_loop(asyncio.get_running_loop())
+
+    def _unreadable():
+        raise DelegateStateError("sachima_delegate_state_unreadable")
+
+    coordinator._state.list_turns = _unreadable  # type: ignore[method-assign]
+
+    with pytest.raises(DelegateStateError):
+        await coordinator.restore()
+
+    assert coordinator.restored is False
+
+
+@pytest.mark.asyncio
+async def test_a_partial_restore_failure_retires_the_composed_coordinator(
+    tmp_path, monkeypatch, _unbound, _offline_arsd
+):
+    """The partial-restore cleanup canary.
+
+    Restoration arms owned work as it goes, so a failure partway through can
+    leave observers running. Unbinding alone hides the coordinator while those
+    tasks keep driving a half-restored graph on the Gateway loop.
+    """
+
+    from gateway.config import GatewayConfig
+    from gateway.run import GatewayRunner
+    from gateway.sachima_delegate_state import DelegateStateError
+    from tools import sachima_delegate_control_tool as control_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    config = _config(tmp_path)
+    _declare_composition(monkeypatch, *_composition_files(tmp_path, config))
+
+    armed: dict[str, Any] = {}
+    real_restore = delegate_mod.SachimaDelegateCoordinator._restore_locked
+
+    async def _partial_restore(self):
+        # Arm a real owned task, then fail — the half-restored shape.
+        async def _parked():
+            await asyncio.Event().wait()
+
+        task = self._lifecycle.spawn(_parked)
+        armed["task"] = task
+        armed["coordinator"] = self
+        raise DelegateStateError("sachima_delegate_state_unreadable")
+
+    monkeypatch.setattr(
+        delegate_mod.SachimaDelegateCoordinator,
+        "_restore_locked",
+        _partial_restore,
+    )
+
+    runner = GatewayRunner(
+        GatewayConfig(platforms={}, sessions_dir=tmp_path / "sessions")
+    )
+    assert await asyncio.wait_for(runner.start(), timeout=30) is True
+
+    composed = armed["coordinator"]
+    assert composed.closed is True
+    assert armed["task"].done() is True
+    assert composed._lifecycle.tasks == frozenset()
+    assert delegate_mod.bound_delegate_coordinator() is None
+    assert delegate_mod._delivery_factory_hook is None
+    assert control_tool._bound_session_store() is None
+    # Ordinary Gateway startup is unaffected.
+    assert runner._running is True
+    assert real_restore is not None
+
+    await asyncio.wait_for(runner.stop(), timeout=30)
+
+
+@pytest.mark.asyncio
+async def test_a_borrowed_coordinator_is_unbound_but_never_closed_on_restore_failure(
+    tmp_path, monkeypatch, _unbound
+):
+    """A graph this runner did not compose is not its to retire."""
+
+    from gateway.config import GatewayConfig
+    from gateway.run import GatewayRunner
+    from gateway.sachima_delegate_state import DelegateStateError
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    monkeypatch.delenv(delegate_mod.SACHIMA_DELEGATE_COMPOSE_ENV, raising=False)
+
+    external, _facade = _bind(tmp_path)
+
+    def _unreadable():
+        raise DelegateStateError("sachima_delegate_state_unreadable")
+
+    external._state.list_turns = _unreadable  # type: ignore[method-assign]
+
+    runner = GatewayRunner(
+        GatewayConfig(platforms={}, sessions_dir=tmp_path / "sessions")
+    )
+    assert await asyncio.wait_for(runner.start(), timeout=30) is True
+
+    # Fail-closed: hidden from new callers, but still the owner's object.
+    assert delegate_mod.bound_delegate_coordinator() is None
+    assert external.closed is False
+    assert runner._running is True
+
+    await asyncio.wait_for(runner.stop(), timeout=30)
 
 
 def test_cancel_first_leaves_the_claim_unconsumed_for_settlement():

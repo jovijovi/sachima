@@ -230,6 +230,8 @@ function TransactionRow({
     <button
       type="button"
       onClick={onSelect}
+      aria-controls="progress-timeline"
+      aria-pressed={selected}
       className={cn(
         "group w-full border border-border bg-card/50 p-3 text-left transition-colors cursor-pointer",
         "hover:border-primary/40 hover:bg-primary/5",
@@ -237,7 +239,10 @@ function TransactionRow({
       )}
     >
       <div className="flex items-start gap-3">
-        <Activity className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground group-hover:text-primary" />
+        <Activity
+          aria-hidden
+          className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground group-hover:text-primary"
+        />
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
             <p className="truncate text-sm font-medium text-foreground normal-case">
@@ -293,14 +298,14 @@ function EventRow({ event }: { event: ProgressEventRecord }) {
     : "Transaction snapshot";
   const preview = op?.preview || op?.args_preview || event.transaction.title;
   return (
-    <div className="border-b border-border/60 p-3 last:border-b-0">
+    <div role="listitem" className="border-b border-border/60 p-3 last:border-b-0">
       <div className="flex flex-wrap items-center gap-2">
         {op?.is_error ? (
-          <XCircle className="h-4 w-4 text-destructive" />
+          <XCircle aria-hidden className="h-4 w-4 text-destructive" />
         ) : event.record_type === "progress.snapshot" ? (
-          <CheckCircle2 className="h-4 w-4 text-success" />
+          <CheckCircle2 aria-hidden className="h-4 w-4 text-success" />
         ) : (
-          <Terminal className="h-4 w-4 text-muted-foreground" />
+          <Terminal aria-hidden className="h-4 w-4 text-muted-foreground" />
         )}
         <span className="font-mono-ui text-xs text-foreground normal-case">{title}</span>
         <Badge tone={badge.tone} className="text-[9px]">
@@ -388,15 +393,20 @@ export default function ProgressPage() {
     <div className="flex flex-col gap-4">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center gap-2">
-          <Activity className="h-5 w-5 text-muted-foreground" />
+          <Activity aria-hidden className="h-5 w-5 text-muted-foreground" />
           <H2 variant="sm">Progress</H2>
-          {loading && <Loader2 className="h-4 w-4 animate-spin text-primary" />}
-          <Badge tone={enabled ? "success" : "outline"} className="text-[10px]">
+          {loading && <Loader2 aria-hidden className="h-4 w-4 animate-spin text-primary" />}
+          <Badge
+            role="status"
+            tone={enabled ? "success" : "outline"}
+            className="text-[10px]"
+          >
             {enabled ? "Event store enabled" : "Event store off"}
           </Badge>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <select
+            aria-label="Filter progress transactions by status"
             value={status}
             onChange={(event) => setStatus(event.target.value as StatusFilter)}
             className="h-8 border border-border bg-background px-2 text-xs uppercase text-foreground"
@@ -420,19 +430,29 @@ export default function ProgressPage() {
       </div>
 
       {error && (
-        <div className="flex items-start gap-2 border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive normal-case">
-          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+        <div
+          role="alert"
+          className="flex items-start gap-2 border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive normal-case"
+        >
+          <AlertTriangle aria-hidden className="mt-0.5 h-4 w-4 shrink-0" />
           <span>{error}</span>
         </div>
       )}
 
       {!enabled && (
-        <div className="border border-warning/30 bg-warning/10 p-3 text-sm text-warning normal-case">
+        <div
+          role="status"
+          className="border border-warning/30 bg-warning/10 p-3 text-sm text-warning normal-case"
+        >
           Progress persistence is disabled. Enable display.task_tracker.persist_events with the jsonl event store to populate this dashboard.
         </div>
       )}
 
-      <div className="grid gap-3 sm:grid-cols-3">
+      <div
+        role="group"
+        aria-label="Progress transaction totals"
+        className="grid gap-3 sm:grid-cols-3"
+      >
         <Card>
           <CardHeader className="py-3 px-4"><CardTitle className="text-sm">Running</CardTitle></CardHeader>
           <CardContent className="px-4 pb-4 text-2xl text-warning">{running}</CardContent>
@@ -450,12 +470,17 @@ export default function ProgressPage() {
       <div className="grid gap-4 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.2fr)]">
         <Card>
           <CardHeader className="py-3 px-4">
-            <CardTitle className="flex items-center gap-2 text-sm">
-              <Clock className="h-4 w-4" />
+            <CardTitle id="progress-transactions-heading" className="flex items-center gap-2 text-sm">
+              <Clock aria-hidden className="h-4 w-4" />
               Transactions
             </CardTitle>
           </CardHeader>
-          <CardContent className="flex max-h-[680px] flex-col gap-2 overflow-y-auto p-3">
+          <CardContent
+            role="region"
+            aria-labelledby="progress-transactions-heading"
+            aria-busy={loading}
+            className="flex max-h-[680px] flex-col gap-2 overflow-y-auto p-3"
+          >
             {transactions.length === 0 ? (
               <p className="p-6 text-center text-sm text-muted-foreground normal-case">
                 No persisted progress transactions yet.
@@ -475,13 +500,19 @@ export default function ProgressPage() {
 
         <Card>
           <CardHeader className="py-3 px-4">
-            <CardTitle className="flex items-center gap-2 text-sm">
-              <Terminal className="h-4 w-4" />
+            <CardTitle id="progress-timeline-heading" className="flex items-center gap-2 text-sm">
+              <Terminal aria-hidden className="h-4 w-4" />
               Timeline
-              {detailLoading && <Loader2 className="h-3 w-3 animate-spin text-primary" />}
+              {detailLoading && <Loader2 aria-hidden className="h-3 w-3 animate-spin text-primary" />}
             </CardTitle>
           </CardHeader>
-          <CardContent className="p-0">
+          <CardContent
+            id="progress-timeline"
+            role="region"
+            aria-labelledby="progress-timeline-heading"
+            aria-busy={detailLoading}
+            className="p-0"
+          >
             {selected ? (
               <>
                 <div className="border-b border-border/70 p-4">
@@ -505,7 +536,7 @@ export default function ProgressPage() {
                   )}
                   <SuspendedTodoHint hint={selected.suspended_todo_hint} />
                 </div>
-                <div className="max-h-[560px] overflow-y-auto">
+                <div role="list" aria-label="Progress events" className="max-h-[560px] overflow-y-auto">
                   {events.length === 0 ? (
                     <p className="p-6 text-center text-sm text-muted-foreground normal-case">
                       No events found for this transaction.
@@ -530,7 +561,7 @@ export default function ProgressPage() {
       </div>
 
       {skippedLines > 0 && (
-        <p className="text-xs text-warning normal-case">
+        <p role="status" className="text-xs text-warning normal-case">
           {skippedLines} malformed progress event line{skippedLines === 1 ? "" : "s"} skipped while reading the JSONL store.
         </p>
       )}

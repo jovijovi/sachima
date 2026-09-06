@@ -737,6 +737,51 @@ def test_reserving_the_same_turn_twice_holds_one_permit():
     assert capacity.held() == 1
 
 
+def test_a_release_between_the_capacity_check_and_the_wait_is_not_lost():
+    """The lost-wakeup schedule, forced deterministically.
+
+    The holder releases its permit at the exact instant admission has found
+    the slot full and let go of the lock, but has not yet registered to be
+    woken. A release that runs there finds no waiter to wake, so a split
+    check/register leaves the admitting turn waiting forever on a slot that
+    is free. The check and the registration must share one lock hold.
+    """
+
+    capacity = DelegateCapacity(1)
+    holder = "dturn_" + "a" * 32
+    admitted = "dturn_" + "b" * 32
+    capacity.reserve(holder)
+
+    real_lock = capacity._lock
+    fired: list[bool] = []
+
+    class _ReleaseAtFirstExit:
+        """The capacity lock, with the holder's release scheduled at the first
+        point admission lets go of it."""
+
+        def __enter__(self):
+            return real_lock.__enter__()
+
+        def __exit__(self, *exc):
+            result = real_lock.__exit__(*exc)
+            if not fired:
+                fired.append(True)
+                capacity.release(holder)
+            return result
+
+    capacity._lock = _ReleaseAtFirstExit()
+
+    async def _drive():
+        await asyncio.wait_for(capacity.acquire(admitted), timeout=2)
+
+    asyncio.run(_drive())
+
+    assert fired == [True]
+    assert capacity.holds(admitted) is True
+    assert capacity.holds(holder) is False
+    assert capacity.held() == 1
+
+
 # --------------------------------------------------------------------------- #
 # E. Trusted Session resolution (A5)
 # --------------------------------------------------------------------------- #

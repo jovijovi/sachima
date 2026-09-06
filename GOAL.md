@@ -1,5 +1,23 @@
 # Sachima Project Goal
 
+## Hermes v2026.8.31 source-baseline reconciliation
+
+This tree is the upstream-structure-first merge candidate based on Hermes
+Agent `v2026.8.31`. It preserves the private Runtime Spine and native semantic
+delegation while adapting product capability at upstream extension seams:
+platform plugins, provider plugins, the existing tool registry, and the
+dashboard API. The candidate does not itself imply a deployment, runtime
+restart, configuration change, or new live surface.
+
+The retained product additions are the default-off Sachima channel, Feishu
+Task Workbench and approval presentation, profile-contained workspace and
+media tools, image edit/history manifests, MiniMax-CN compatibility, Tavily,
+and the official Gemini CLI ACP provider. Current upstream implementations own
+Chronos, Mixture-of-Agents, gateway Session continuity, and declarative Desktop
+memory-provider configuration. Full Temporal runtime, FlowWeaver/P6, P7
+delivery activation, NeMo Relay, and reliable active-Run cancellation remain
+explicitly deferred.
+
 ## One-sentence goal
 
 Sachima should become a production-grade AI workbench inside a custom IM channel: a safe, reliable, durable, observable, and recoverable private-Hermes runtime-spine system designed for real production use, able to receive real IM requests, coordinate external local AGENT work, orchestrate durable long tasks, deliver results back through the channel, and preserve clear operational control.
@@ -62,5 +80,4 @@ Use these documents as the canonical project compass:
 - `docs/plans/2026-07-03-sachima-private-hermes-runtime-spine-development-plan.md` — active R0-R5 development roadmap for the runtime spine.
 - `docs/roadmap/superseded-plans.md` — register of old plans superseded as active roadmap but retained as support foundation.
 - `docs/sachima-final-goal-gap-analysis.md` — detailed gap analysis and phase-planning basis.
-- `docs/plans/2026-05-11-flowweaver-pe1d-pe2-readiness-decision-packet.md` — latest readiness decision and explicit non-approvals.
 - `docs/sachima-channel.md` — current Sachima adapter/channel behavior.

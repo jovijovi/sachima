@@ -1,0 +1,5 @@
+name: google-gemini-cli-provider
+kind: model-provider
+version: 1.0.0
+description: Google account access through the official Gemini CLI ACP process
+author: Nous Research

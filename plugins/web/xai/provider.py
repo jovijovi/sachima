@@ -101,12 +101,12 @@ class XAIWebSearchProvider(WebSearchProvider):
     back to the Responses API ``citations`` list if Grok ignores the JSON
     schema instruction (rare for grok-4.3 but cheap insurance).
 
-    No extract capability — pair with Firecrawl / Tavily / Exa for
+    No extract capability — pair with Firecrawl / Keenable / Exa for
     ``web_extract`` if you need page content.
 
     Trust model
     -----------
-    Unlike index-backed providers (Brave / Tavily / Exa) which return
+    Unlike index-backed providers (Brave / Keenable / Exa) which return
     verbatim search-engine results, this backend is an LLM in a trench
     coat: Grok decides which URLs to surface, generates the titles and
     descriptions itself, and is influenced by the *content of the query*.
@@ -270,7 +270,10 @@ class XAIWebSearchProvider(WebSearchProvider):
                         "refresh and retrying once.",
                     )
                     try:
-                        refreshed = resolve_xai_http_credentials(force_refresh=True)
+                        refreshed = resolve_xai_http_credentials(
+                            force_refresh=True,
+                            api_key_hint=api_key,
+                        )
                         refreshed_key = str(refreshed.get("api_key") or "").strip()
                         if refreshed_key and refreshed_key != api_key:
                             api_key = refreshed_key

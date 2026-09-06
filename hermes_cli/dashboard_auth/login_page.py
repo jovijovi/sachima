@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import html
 
-from hermes_cli.dashboard_auth import list_providers
+from hermes_cli.dashboard_auth import list_session_providers
 
 # Inline minimal CSS. The dashboard's full skin lives in the React
 # bundle, which we deliberately do NOT load here — the login page must
@@ -385,16 +385,19 @@ _EMPTY_HTML = """\
     font-family: 'Courier New', monospace;
     font-size: 0.9em;
   }
+  a { color: var(--midground); }
 </style>
 </head>
 <body>
 <main>
 <h1>Sign-in unavailable</h1>
 <p>This dashboard is bound to a non-loopback host but no authentication
-providers are installed.</p>
-<p>Install <code>plugins/dashboard-auth-nous</code> (default) or another
-auth provider, or restart with <code>--insecure</code> to bypass the
-auth gate (not recommended on untrusted networks).</p>
+providers are available.</p>
+<p>Configure the bundled username/password provider or an OAuth provider.
+See the <a href="https://hermes-agent.nousresearch.com/docs/user-guide/features/web-dashboard#authentication-gated-mode">dashboard
+authentication documentation</a> for setup instructions.</p>
+<p>For auth-free local use, bind to <code>127.0.0.1</code> and connect through
+an SSH tunnel or Tailscale.</p>
 </main>
 </body>
 </html>
@@ -465,7 +468,7 @@ def render_login_html(*, next_path: str = "") -> str:
     validating ``next_path`` against the same-origin rules before we
     emit it; we still HTML-escape it as defence in depth.
     """
-    providers = list_providers()
+    providers = list_session_providers()
     if not providers:
         return _EMPTY_HTML
 

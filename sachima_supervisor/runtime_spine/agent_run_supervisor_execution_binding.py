@@ -10,28 +10,28 @@ TaskRegistry (single seq authority)
   + an allowlisted SupervisorTurnBackend (the arsd adapter)
   + AgentRunSupervisorPort (existing ExecutionPort adapter, unchanged)
   + AgentRunSupervisorTurnDispatcher (single-flight goal/prompt turns,
-        auto LiveProgressSourceBindings registration per turn)
-  + LiveProgressQueryService (LS4-A default-off activation gate)
-  + LiveProgressDisplayService (closed-template rendering)
+        auto TurnSourceSink registration per turn)
 ```
 
-— sharing one registry / one bindings store, so dispatcher-created source
-bindings feed the display chain directly and no hand-written bindings file or
-copy script is needed.
+— sharing one registry and one optional source sink, so dispatcher-created
+source bindings are published into the host's own store and no hand-written
+bindings file or copy script is needed.
+
+The read chain that consumes those bindings — the LS4 query activation gate
+and the display renderer — is **not composed here**. It is a separately
+approved, default-off surface that extends this bundle rather than being part
+of it, so composing the execution seam never brings a query surface with it.
 
 Default-off is layered, not assumed: a disabled/forged config refuses to
 compose (``require_enabled_arsd_supervisor_config`` runs before any client is
-built, and the backend constructor is the second gate); a composed bundle
-without an explicit activation ``gate`` keeps the query/display chain
-fail-closed with ``runtime_live_progress_query_disabled``; and without an
-injected ``payload_resolver`` the dispatcher refuses every dispatch — a
-display-only composition can never be driven into running turns, so **composing
-this bundle submits no Run**.
+built, and the backend constructor is the second gate); and without an
+injected ``payload_resolver`` the dispatcher refuses every dispatch, so
+**composing this bundle submits no Run**.
 
 The retired ``library`` composition this module used to offer is gone (plan
-P5-a/S-1): there is exactly one migration seam,
-:func:`~.agent_run_supervisor_library_backend.library_backend_retired`, and no
-path here falls back to it, to a CLI, or to another API version.
+P5-a/S-1): the in-process library backend, its config and its migration seam
+are all deleted rather than deprecated, and no path here falls back to a
+library, to a CLI, or to another API version.
 
 Importing this module starts no process, socket, Gateway, Feishu, IM, or
 Temporal surface and performs no ``agent_run_supervisor`` import — the official
@@ -52,20 +52,15 @@ from .arsd_socket_contract import (
     DefaultArsdClientFacade,
     require_enabled_arsd_supervisor_config,
 )
-from .arsd_supervisor_backend import ArsdLiveProgressReader, ArsdSupervisorBackend
+from .arsd_supervisor_backend import ArsdSupervisorBackend
 from .events import SpineError
 from .execution_port import RUNTIME_INVALID_SESSION
-from .live_progress_display import LiveProgressDisplayService
-from .live_progress_projection import LiveProgressReader
-from .live_progress_query import (
-    LiveProgressQueryActivationGate,
-    LiveProgressQueryService,
-)
-from .live_progress_sources import LiveProgressSourceBindings
 from .registry import TaskRegistry
 from .supervisor_turn_backend import (
     SupervisorTurnBackend,
+    TurnSourceSink,
     validate_supervisor_turn_backend,
+    validate_turn_source_sink,
 )
 
 
@@ -87,21 +82,20 @@ class AgentRunSupervisorExecutionBinding:
     as every other part's view of it, and the whole graph must share one task
     operation lock provider.
 
-    The read chain is checked the same way, and for the same kind of reason. A
-    query service pointed at another spine's bindings, registry, or port
-    answers about a different conversation — reading a Run this task never
-    dispatched, or missing the one it did — and a display service wrapping
-    another bundle's query service renders that answer. Both type-check
-    perfectly, so both are checked by identity.
+    The source sink is checked the same way, and for the same kind of reason. A
+    sink that belongs to another spine collects this task's bindings where
+    nothing will read them, and hands the reader that *does* read it a stream
+    for work it is not waiting for. It type-checks perfectly, so it is checked
+    by identity.
     """
 
     registry: TaskRegistry
     backend: SupervisorTurnBackend
     port: AgentRunSupervisorPort
-    bindings: LiveProgressSourceBindings
+    #: The host-owned read-model sink the dispatcher publishes into, or
+    #: ``None`` for an execution-only composition that keeps no read model.
+    bindings: TurnSourceSink | None
     dispatcher: AgentRunSupervisorTurnDispatcher
-    query_service: LiveProgressQueryService
-    display_service: LiveProgressDisplayService
     #: The durable binding ledger this graph classifies against. Published on
     #: the bundle so a coordinator reads the backend's **own** ledger object
     #: rather than constructing a second one over the same path: two instances
@@ -118,14 +112,16 @@ class AgentRunSupervisorExecutionBinding:
         checks = (
             (self.registry, TaskRegistry),
             (self.port, AgentRunSupervisorPort),
-            (self.bindings, LiveProgressSourceBindings),
             (self.dispatcher, AgentRunSupervisorTurnDispatcher),
-            (self.query_service, LiveProgressQueryService),
-            (self.display_service, LiveProgressDisplayService),
         )
         for value, expected in checks:
             if type(value) is not expected:
                 raise SpineError(RUNTIME_INVALID_SESSION)
+        if self.bindings is not None:
+            try:
+                validate_turn_source_sink(self.bindings)
+            except SpineError:
+                raise SpineError(RUNTIME_INVALID_SESSION) from None
 
         # One graph, by identity. Each pair is a way a bundle could be
         # assembled from two spines while every type still checks out.
@@ -139,13 +135,6 @@ class AgentRunSupervisorExecutionBinding:
             # The invariant this is all for: admission and publication guard
             # the same section, so a cancel cannot land between them.
             (self.dispatcher.task_locks, self.backend.task_locks),
-            # The read chain reads THIS spine: the same bindings the dispatcher
-            # publishes into, the same registry that is the seq authority, and
-            # the same port that owns the sessions being asked about.
-            (self.query_service.bindings, self.bindings),
-            (self.query_service.registry, self.registry),
-            (self.query_service.port, self.port),
-            (self.display_service.query_service, self.query_service),
         )
         for actual, expected_object in identities:
             if actual is not expected_object:
@@ -182,23 +171,20 @@ def prompt_resolver_from_payload_resolver(
 def bind_arsd_execution(
     config: ArsdSupervisorConfig,
     *,
-    gate: LiveProgressQueryActivationGate | None = None,
     payload_resolver: Callable[[str], str] | None = None,
     facade: Any | None = None,
     ledger: Any | None = None,
     prompt_resolver: Callable[[Any], str] | None = None,
-    progress_reader: LiveProgressReader | None = None,
     registry: TaskRegistry | None = None,
-    bindings: LiveProgressSourceBindings | None = None,
+    bindings: TurnSourceSink | None = None,
     executor: Any | None = None,
 ) -> AgentRunSupervisorExecutionBinding:
     """Compose the ``arsd`` execution seam from one enabled config, or fail closed.
 
-    ``gate=None`` (the default) leaves the query/display chain default-off;
-    pass an explicit LS4-A gate (e.g. ``hermes_internal_query_gate()``) to
-    activate the approved internal surface. ``payload_resolver=None`` leaves
-    the dispatcher fail-closed (display-only posture), so composing a bundle
-    never submits a Run.
+    ``payload_resolver=None`` leaves the dispatcher fail-closed, so composing a
+    bundle never submits a Run. ``bindings=None`` composes an execution-only
+    seam that keeps no read model; a host that owns one passes it, and only an
+    allowlisted concrete sink is admitted.
 
     ``registry`` / ``bindings`` let a host hand in the spine state it already
     holds instead of having a second, empty one invented beside it. That is
@@ -212,12 +198,12 @@ def bind_arsd_execution(
     The task operation lock is acquired inside that worker, never across the
     hand-off, so a real thread pool is safe here.
 
-    ``facade`` / ``ledger`` / ``prompt_resolver`` / ``progress_reader`` are
-    deterministic-test injection seams; the defaults reach the daemon through
-    the official client lazily and never at compose time beyond the one
-    contract negotiation the backend constructor performs. A ``prompt_resolver``
-    is derived from ``payload_resolver`` when one is not given, so the
-    recovery path resolves prompts exactly the way the dispatch path does.
+    ``facade`` / ``ledger`` / ``prompt_resolver`` are deterministic-test
+    injection seams; the defaults reach the daemon through the official client
+    lazily and never at compose time beyond the one contract negotiation the
+    backend constructor performs. A ``prompt_resolver`` is derived from
+    ``payload_resolver`` when one is not given, so the recovery path resolves
+    prompts exactly the way the dispatch path does.
 
     The composed graph shares one task operation lock provider by construction:
     the dispatcher derives it from the backend, and the bundle re-checks that
@@ -236,7 +222,7 @@ def bind_arsd_execution(
     )
     task_registry = registry if registry is not None else TaskRegistry()
     port = AgentRunSupervisorPort(task_registry, backend)
-    source_bindings = bindings if bindings is not None else LiveProgressSourceBindings()
+    source_bindings = bindings
     # The dispatcher derives the shared section from the backend, so admitting
     # a Run and publishing it are one task operation by construction rather
     # than by a caller remembering to pass the same object twice.
@@ -248,21 +234,12 @@ def bind_arsd_execution(
         payload_resolver,
         executor=executor,
     )
-    reader: LiveProgressReader = (
-        progress_reader if progress_reader is not None else ArsdLiveProgressReader(client)
-    )
-    query_service = LiveProgressQueryService(
-        source_bindings, task_registry, port, reader, gate=gate
-    )
-    display_service = LiveProgressDisplayService(query_service=query_service)
     return AgentRunSupervisorExecutionBinding(
         registry=task_registry,
         backend=backend,
         port=port,
         bindings=source_bindings,
         dispatcher=dispatcher,
-        query_service=query_service,
-        display_service=display_service,
         ledger=bindings_ledger if type(bindings_ledger) is ArsdRunBindingLedger else None,
     )
 

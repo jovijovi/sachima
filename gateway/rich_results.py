@@ -4,12 +4,9 @@ from __future__ import annotations
 
 import json
 import re
-import shlex
 from dataclasses import dataclass
 from typing import Any, Iterable
 
-from gateway.config import Platform
-from gateway.platforms.base import SendResult
 from gateway.progress.redaction import REDACTION_TEXT, sanitize_for_progress
 
 RICH_RESULT_BEGIN = "HERMES_RICH_RESULT_JSON_BEGIN"
@@ -23,22 +20,12 @@ _URL_RE = re.compile(r"https?://[^\s)\]>]+", re.IGNORECASE)
 _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]{0,160})\]\([^)]*\)")
 _AUTH_PREFIX_RE = re.compile(r"(?i)\bauthorization\s*:\s*(?:bearer|basic|token)?\s*\[REDACTED\]\s*")
 _SENSITIVE_WORD_RE = re.compile(r"(?i)\b(api[-_]?key|token|secret|password|passwd|authorization|bearer|credential)\b")
-_WEATHER_HELPER_PATH = "/home/ubuntu/workspace/hermes/skills/productivity/weather-query/scripts/weather_query.py"
-_SHELL_OPERATOR_RE = re.compile(r"[;&|<>`$#]|[\x00-\x1f\x7f]")
 
 
 @dataclass(frozen=True)
 class RichResult:
     type: str
     payload: dict[str, Any]
-
-
-@dataclass(frozen=True)
-class RichResultDelivery:
-    response_text: str
-    card_sent: bool = False
-    message_id: str | None = None
-    error: str | None = None
 
 
 def extract_rich_results_from_text(text: str | None) -> list[RichResult]:
@@ -124,43 +111,7 @@ def _trusted_weather_tool_call_ids(messages: list[dict[str, Any]]) -> set[str]:
             name = str(fn.get("name") or call.get("name") or "").strip().lower()
             if name == "weather_query":
                 trusted.add(call_id)
-                continue
-            if name != "terminal":
-                continue
-            args = _parse_tool_arguments(fn.get("arguments") if "arguments" in fn else call.get("arguments"))
-            if _is_direct_weather_helper_command(args.get("command")):
-                trusted.add(call_id)
     return trusted
-
-
-def _parse_tool_arguments(raw: Any) -> dict[str, Any]:
-    if isinstance(raw, dict):
-        return raw
-    if isinstance(raw, str):
-        try:
-            parsed = json.loads(raw)
-        except Exception:
-            return {}
-        return parsed if isinstance(parsed, dict) else {}
-    return {}
-
-
-def _is_direct_weather_helper_command(command: Any) -> bool:
-    if not isinstance(command, str) or not command.strip():
-        return False
-    if _SHELL_OPERATOR_RE.search(command):
-        return False
-    try:
-        parts = shlex.split(command)
-    except Exception:
-        return False
-    if len(parts) < 2:
-        return False
-    if parts[0] not in {"python", "python3"}:
-        return False
-    if parts[1] != _WEATHER_HELPER_PATH:
-        return False
-    return True
 
 
 def _clipped_marker_block_index(text: str) -> int:
@@ -197,63 +148,6 @@ def strip_rich_result_blocks(text: str | None) -> str:
         stripped = stripped[:begin_idx]
     stripped = re.sub(r"\n?" + re.escape(RICH_RESULT_END) + r"\n?", "\n", stripped)
     return "\n".join(line.rstrip() for line in stripped.splitlines()).strip()
-
-
-async def maybe_deliver_weather_result(
-    *,
-    adapter: Any,
-    platform: Platform | str | None,
-    chat_id: str,
-    response_text: str,
-    messages: Iterable[dict[str, Any]] | None,
-    mode: str = "auto",
-    metadata: dict[str, Any] | None = None,
-    reply_to: str | None = None,
-) -> RichResultDelivery:
-    """Deliver the latest weather rich result as a Feishu card when supported.
-
-    The normal text remains the fallback. Marker blocks are never exposed.
-    """
-
-    cleaned_response = strip_rich_result_blocks(response_text)
-    mode = (mode or "auto").strip().lower()
-    if mode == "off":
-        return RichResultDelivery(response_text=cleaned_response)
-
-    results = extract_rich_results_from_messages(messages)
-    weather = next((result.payload for result in reversed(results) if result.type == "weather.v1"), None)
-    if weather is None:
-        return RichResultDelivery(response_text=cleaned_response)
-
-    from gateway.renderers.weather import format_weather_markdown, render_feishu_weather_card
-
-    fallback_text = format_weather_markdown(weather)
-    platform_value = platform.value if isinstance(platform, Platform) else str(platform or "")
-    wants_card = mode == "card" or (mode == "auto" and platform_value == Platform.FEISHU.value)
-    if wants_card and platform_value == Platform.FEISHU.value and hasattr(adapter, "send_interactive_card"):
-        card = render_feishu_weather_card(weather)
-        try:
-            result = await adapter.send_interactive_card(
-                chat_id,
-                card,
-                reply_to=reply_to,
-                metadata=metadata,
-            )
-        except Exception as exc:
-            result = SendResult(success=False, error=str(exc))
-        if getattr(result, "success", False):
-            return RichResultDelivery(
-                response_text=cleaned_response or fallback_text,
-                card_sent=True,
-                message_id=getattr(result, "message_id", None),
-            )
-        return RichResultDelivery(
-            response_text=fallback_text,
-            card_sent=False,
-            error=getattr(result, "error", None),
-        )
-
-    return RichResultDelivery(response_text=cleaned_response or fallback_text)
 
 
 def _validate_rich_result(raw: Any) -> RichResult | None:

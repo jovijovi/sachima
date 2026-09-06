@@ -1,237 +1,156 @@
 #!/usr/bin/env python3
+"""Compatibility surface for provider-agnostic image editing.
+
+The current image provider contract routes both generation and editing through
+``ImageGenProvider.generate``.  This module preserves the established
+``image_edit`` tool name without reintroducing a second provider interface: it
+validates the edit-specific contract, then delegates to the same execution
+path as ``image_generate``.
 """
-Image Edit Tool
-===============
 
-Exposes ``image_edit`` — a separate tool surface from ``image_generate`` for
-image-to-image / image editing. It is a thin dispatcher:
-
-1. Validate the agent inputs (``prompt`` + ``image`` required).
-2. Resolve the active backend via the existing ``image_gen.provider`` logic
-   (:func:`agent.image_gen_registry.get_active_provider`).
-3. If the provider advertises edit support, call ``provider.edit(...)``.
-4. Otherwise return a clear ``unsupported_capability`` result — generate-only
-   backends (FAL, OpenAI, Krea, …) are never forced to implement editing.
-
-The provider-specific request shape (e.g. xAI's ``/v1/images/edits``) lives in
-the provider; this module stays backend-agnostic so the same surface works for
-any future edit-capable provider.
-"""
+from __future__ import annotations
 
 import json
-import logging
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 from agent.image_gen_provider import DEFAULT_ASPECT_RATIO, VALID_ASPECT_RATIOS
-
-# Import the generation tool for its side effect: it registers the ``image_gen``
-# toolset (and its availability check) at module-import time. Because the tool
-# discovery walk imports modules in alphabetical order, ``image_edit_tool``
-# would otherwise register the toolset first and bind the toolset-level
-# availability check to *edit* readiness — hiding the broader image_gen toolset
-# whenever no edit-capable provider is configured. Importing here guarantees the
-# generation tool anchors the shared toolset check regardless of import order.
-import tools.image_generation_tool  # noqa: F401
+from tools import image_generation_tool as generation
 from tools.image_manifest import append_image_manifest_record
 from tools.registry import registry, tool_error
 
-logger = logging.getLogger(__name__)
-
-
-# ---------------------------------------------------------------------------
-# Availability
-# ---------------------------------------------------------------------------
-
 
 def check_image_edit_requirements() -> bool:
-    """True when at least one registered provider supports editing and is available.
-
-    Keeps ``image_edit`` hidden from the model unless an edit-capable backend
-    (xAI today) is actually usable, so the agent isn't offered a tool that can
-    only ever return ``unsupported_capability``.
-    """
+    """Expose the compatibility tool only for an available edit backend."""
     try:
-        from agent.image_gen_registry import list_providers
-        from hermes_cli.plugins import _ensure_plugins_discovered
-
-        _ensure_plugins_discovered()
-        for provider in list_providers():
-            try:
-                if provider.supports_edit() and provider.is_available():
-                    return True
-            except Exception:
-                continue
-    except Exception as exc:
-        logger.debug("image_edit availability probe failed: %s", exc)
-    return False
+        return bool(
+            generation.check_image_generation_requirements()
+            and "image" in generation._active_image_capabilities().get("modalities", [])
+        )
+    except Exception:
+        return False
 
 
-# ---------------------------------------------------------------------------
-# Dispatch
-# ---------------------------------------------------------------------------
-
-
-def _dispatch_image_edit(prompt: str, image: str, aspect_ratio: str) -> str:
-    """Resolve the active provider and route the edit request to it."""
-    try:
-        from hermes_cli.plugins import _ensure_plugins_discovered
-
-        _ensure_plugins_discovered()
-    except Exception as exc:
-        logger.debug("image_edit plugin discovery skipped: %s", exc)
-
-    try:
-        from agent import image_gen_registry
-
-        provider = image_gen_registry.get_active_provider()
-    except Exception as exc:
-        logger.warning("image_edit could not resolve a provider: %s", exc)
-        return json.dumps({
-            "success": False,
-            "image": None,
-            "error": f"Could not resolve an image provider: {exc}",
-            "error_type": "no_provider",
-        })
-
-    if provider is None:
-        return json.dumps({
+def _unsupported_result(info: Dict[str, Any]) -> str:
+    provider = info.get("provider") or "active image provider"
+    return json.dumps(
+        {
             "success": False,
             "image": None,
             "error": (
-                "No image generation provider is configured. Set one via "
-                "`hermes tools` → Image Generation (an edit-capable backend "
-                "such as xAI is required for image_edit)."
-            ),
-            "error_type": "no_provider",
-        })
-
-    provider_name = getattr(provider, "name", "?")
-
-    try:
-        supports = bool(provider.supports_edit())
-    except Exception as exc:
-        logger.debug("provider %s.supports_edit() raised: %s", provider_name, exc)
-        supports = False
-
-    if not supports:
-        return json.dumps({
-            "success": False,
-            "image": None,
-            "error": (
-                f"Provider '{provider_name}' does not support image editing. "
-                f"Configure an edit-capable image_gen.provider (e.g. xai)."
+                f"{provider} does not support image editing. Choose an "
+                "edit-capable image model in `hermes tools` → Image Generation."
             ),
             "error_type": "unsupported_capability",
-            "provider": provider_name,
-        })
-
-    try:
-        result = provider.edit(prompt=prompt, image=image, aspect_ratio=aspect_ratio)
-    except Exception as exc:
-        logger.warning("Image edit provider '%s' raised: %s", provider_name, exc)
-        return json.dumps({
-            "success": False,
-            "image": None,
-            "error": f"Provider '{provider_name}' error: {exc}",
-            "error_type": "provider_exception",
-        })
-
-    if not isinstance(result, dict):
-        return json.dumps({
-            "success": False,
-            "image": None,
-            "error": "Provider returned a non-dict result",
-            "error_type": "provider_contract",
-        })
-
-    return json.dumps(result)
+            "provider": provider,
+        },
+        ensure_ascii=False,
+    )
 
 
 def _handle_image_edit(args: Dict[str, Any], **kw: Any) -> str:
     started_at = time.perf_counter()
     prompt = args.get("prompt", "")
-    if not prompt or not str(prompt).strip():
-        result = tool_error("prompt is required for image edit")
-        append_image_manifest_record(
-            tool="image_edit",
-            operation="edit",
-            backend=None,
-            args=args,
-            response_text=result,
-            duration_ms=(time.perf_counter() - started_at) * 1000,
-        )
-        return result
-
     image = args.get("image", "")
-    if not image or not str(image).strip():
-        result = tool_error("image is required for image edit")
-        append_image_manifest_record(
-            tool="image_edit",
-            operation="edit",
-            backend=None,
-            args=args,
-            response_text=result,
-            duration_ms=(time.perf_counter() - started_at) * 1000,
-        )
-        return result
+    info = generation._active_image_capabilities()
 
-    aspect_ratio = args.get("aspect_ratio", DEFAULT_ASPECT_RATIO)
-    result = _dispatch_image_edit(str(prompt), str(image), aspect_ratio)
+    if not isinstance(prompt, str) or not prompt.strip():
+        result = tool_error("prompt is required for image edit")
+    elif not isinstance(image, str) or not image.strip():
+        result = tool_error("image is required for image edit")
+    elif "image" not in info.get("modalities", []):
+        result = _unsupported_result(info)
+    else:
+        generate_args: Dict[str, Any] = {
+            "prompt": prompt,
+            "image_url": image,
+            "aspect_ratio": args.get("aspect_ratio", DEFAULT_ASPECT_RATIO),
+        }
+        references = args.get("reference_image_urls")
+        if isinstance(references, (list, tuple)):
+            generate_args["reference_image_urls"] = list(references)
+        if isinstance(args.get("upscale"), bool):
+            generate_args["upscale"] = args["upscale"]
+        result = generation._execute_image_generate(generate_args, **kw)
+
+    manifest_args = dict(args)
+    if info.get("model") and not manifest_args.get("model"):
+        manifest_args["model"] = info["model"]
+    input_images = [image] if isinstance(image, str) and image.strip() else []
+    references = args.get("reference_image_urls")
+    if isinstance(references, (list, tuple)):
+        input_images.extend(
+            ref.strip()
+            for ref in references
+            if isinstance(ref, str) and ref.strip()
+        )
     append_image_manifest_record(
         tool="image_edit",
         operation="edit",
-        backend=None,
-        args=args,
+        backend=info.get("provider"),
+        args=manifest_args,
+        input_images=input_images,
         response_text=result,
         duration_ms=(time.perf_counter() - started_at) * 1000,
     )
     return result
 
 
-# ---------------------------------------------------------------------------
-# Registry
-# ---------------------------------------------------------------------------
-
 IMAGE_EDIT_SCHEMA = {
     "name": "image_edit",
     "description": (
-        "Edit or transform an existing image guided by a text prompt "
-        "(image-to-image). Provide the source image as a local file path, an "
-        "http(s) URL, or a data URI; the configured backend must support "
-        "editing (e.g. xAI). Returns either a URL or an absolute file path in "
-        "the `image` field; display it with markdown ![description](url-or-path) "
-        "and the gateway will deliver it. If the active backend cannot edit, "
-        "the result has success=false and error_type='unsupported_capability'."
+        "Edit or transform an existing image with the configured image "
+        "provider. Uses the same provider/model selected for image_generate "
+        "and is shown only when that model advertises image input support."
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "prompt": {
                 "type": "string",
-                "description": "Instruction describing the desired edit / transformation.",
+                "description": "Instruction describing the desired edit.",
             },
             "image": {
                 "type": "string",
-                "description": (
-                    "The source image to edit: a local file path, an http(s) "
-                    "URL, or a data URI."
-                ),
+                "description": "Source image URL, data URI, or conversation-local path.",
             },
             "aspect_ratio": {
                 "type": "string",
                 "enum": list(VALID_ASPECT_RATIOS),
-                "description": "Output aspect ratio. 'landscape' is 16:9 wide, 'portrait' is 16:9 tall, 'square' is 1:1.",
                 "default": DEFAULT_ASPECT_RATIO,
+            },
+            "reference_image_urls": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Optional additional reference images supported by the active model.",
             },
             "content_summary": {
                 "type": "string",
-                "description": "Optional agent-supplied summary for local manifest logging only; it is not sent to image providers.",
+                "description": "Optional profile-local history summary; never sent to the provider.",
             },
         },
         "required": ["prompt", "image"],
     },
 }
+
+
+def _build_dynamic_image_edit_schema() -> Dict[str, Any]:
+    schema = {
+        "description": IMAGE_EDIT_SCHEMA["description"],
+        "parameters": {
+            **IMAGE_EDIT_SCHEMA["parameters"],
+            "properties": dict(IMAGE_EDIT_SCHEMA["parameters"]["properties"]),
+        },
+    }
+    max_refs = int(generation._active_image_capabilities().get("max_reference_images") or 0)
+    if max_refs > 1:
+        schema["parameters"]["properties"]["reference_image_urls"] = {
+            **schema["parameters"]["properties"]["reference_image_urls"],
+            "maxItems": max_refs,
+        }
+    else:
+        schema["parameters"]["properties"].pop("reference_image_urls", None)
+    return schema
 
 
 registry.register(
@@ -243,4 +162,5 @@ registry.register(
     requires_env=[],
     is_async=False,
     emoji="🖌️",
+    dynamic_schema_overrides=_build_dynamic_image_edit_schema,
 )

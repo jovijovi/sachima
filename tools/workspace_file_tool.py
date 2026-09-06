@@ -18,8 +18,6 @@ import time
 from pathlib import Path
 from typing import Any
 
-import yaml
-
 from hermes_constants import get_hermes_home
 from tools.registry import registry
 from utils import atomic_replace
@@ -61,20 +59,20 @@ def _load_config() -> dict[str, Any]:
     cfg = dict(_DEFAULT_CONFIG)
     cfg["scan"] = dict(_DEFAULT_CONFIG["scan"])
 
-    config_path = get_hermes_home() / "config.yaml"
-    if config_path.exists():
-        try:
-            raw = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
-            section = raw.get("workspace_file") if isinstance(raw, dict) else None
-            if isinstance(section, dict):
-                for key, value in section.items():
-                    if key == "scan" and isinstance(value, dict):
-                        cfg["scan"].update(value)
-                    else:
-                        cfg[key] = value
-        except Exception:
-            # Config errors should not weaken the filesystem boundary.
-            pass
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        raw = load_config_readonly()
+        section = raw.get("workspace_file") if isinstance(raw, dict) else None
+        if isinstance(section, dict):
+            for key, value in section.items():
+                if key == "scan" and isinstance(value, dict):
+                    cfg["scan"].update(value)
+                else:
+                    cfg[key] = value
+    except Exception:
+        # Config errors should not weaken the filesystem boundary.
+        pass
 
     if not isinstance(cfg.get("allowed_extensions"), list):
         cfg["allowed_extensions"] = _DEFAULT_CONFIG["allowed_extensions"]

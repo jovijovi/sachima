@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { displayTodoExecutor, todoGlyph, todoTone } from './todo.js'
+import { todoGlyph, todoTone, todoTree } from './todo.js'
 
 describe('todoGlyph', () => {
   it('uses fixed-width ASCII markers so the active row does not render wide or emoji-like', () => {
@@ -20,30 +20,53 @@ describe('todoTone', () => {
   })
 })
 
-describe('displayTodoExecutor', () => {
-  it('accepts compact lowercase tokens and normalizes case/whitespace', () => {
-    expect(displayTodoExecutor('codex')).toBe('codex')
-    expect(displayTodoExecutor('  Claude  ')).toBe('claude')
-    expect(displayTodoExecutor('gemini-cli')).toBe('gemini-cli')
+describe('todoTree', () => {
+  it('orders parents before children with depths', () => {
+    const tree = todoTree([
+      { content: 'WP1', id: 'wp1', status: 'in_progress' },
+      { content: 'WP2', id: 'wp2', status: 'pending' },
+      { content: 'T1', id: 't1', parent: 'wp1', status: 'pending' },
+      { content: 'T2', id: 't2', parent: 'wp1', status: 'pending' }
+    ])
+
+    expect(tree.map(([t, d]) => [t.id, d])).toEqual([
+      ['wp1', 0],
+      ['t1', 1],
+      ['t2', 1],
+      ['wp2', 0]
+    ])
   })
 
-  it('aliases hermes-agent to the short display form', () => {
-    expect(displayTodoExecutor('hermes-agent')).toBe('hermes')
-    expect(displayTodoExecutor('Hermes-Agent')).toBe('hermes')
-    expect(displayTodoExecutor('hermes')).toBe('hermes')
+  it('degrades dangling and self parents to roots', () => {
+    const tree = todoTree([
+      { content: 'A', id: 'a', parent: 'ghost', status: 'pending' },
+      { content: 'B', id: 'b', parent: 'b', status: 'pending' }
+    ])
+
+    expect(tree.map(([t, d]) => [t.id, d])).toEqual([
+      ['a', 0],
+      ['b', 0]
+    ])
   })
 
-  it('drops invalid, hostile, or credential-shaped values entirely', () => {
-    expect(displayTodoExecutor(undefined)).toBeNull()
-    expect(displayTodoExecutor(123)).toBeNull()
-    expect(displayTodoExecutor('')).toBeNull()
-    expect(displayTodoExecutor('two words')).toBeNull()
-    expect(displayTodoExecutor('a'.repeat(33))).toBeNull()
-    expect(displayTodoExecutor('https://evil.example/agent')).toBeNull()
-    expect(displayTodoExecutor('[claude](https://evil.example)')).toBeNull()
-    expect(displayTodoExecutor('<at id=ou_x>bot</at>')).toBeNull()
-    expect(displayTodoExecutor('sk-' + 'a'.repeat(24))).toBeNull()
-    expect(displayTodoExecutor('ghp_' + 'b'.repeat(24))).toBeNull()
-    expect(displayTodoExecutor('xoxb-slack-token')).toBeNull()
+  it('keeps cycle members instead of dropping them', () => {
+    const tree = todoTree([
+      { content: 'A', id: 'a', parent: 'b', status: 'pending' },
+      { content: 'B', id: 'b', parent: 'a', status: 'pending' }
+    ])
+
+    expect(tree.map(([t]) => t.id).sort()).toEqual(['a', 'b'])
+  })
+
+  it('flattens a todo list with no parents unchanged, all at depth 0', () => {
+    const tree = todoTree([
+      { content: 'A', id: 'a', status: 'pending' },
+      { content: 'B', id: 'b', status: 'completed' }
+    ])
+
+    expect(tree.map(([t, d]) => [t.id, d])).toEqual([
+      ['a', 0],
+      ['b', 0]
+    ])
   })
 })

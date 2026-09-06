@@ -30,6 +30,14 @@ coordinator-owned task that waiters join through cancellation shielding: an IM
 caller that gives up cannot cancel the spine work it started or release the
 exclusion that is supposed to cover it.
 
+**One lifecycle owner.** Whether this graph may still take work, and when it
+has really stopped, is decided in one place — the private
+:class:`~gateway.sachima_delegate_lifecycle.GraphLifecycle`. Every public entry
+is admitted there before any durable or card side effect; every owner task,
+observer, and synchronous daemon call is registered there; and ``close`` is
+one drain that every closer joins, publishing ``closed`` only when all of that
+has finished. A thread inside daemon code is joined, never interrupted.
+
 **Identity before any possible submit.** Payload, task binding, turn record, and
 the exact ledger key are on disk before anything that could reach the daemon. A
 record with no submit is recoverable; a submit with no record is not.
@@ -50,6 +58,10 @@ behavior.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
+import contextvars
+import functools
+import inspect
 import logging
 import os
 import threading
@@ -64,6 +76,7 @@ from gateway.sachima_agent_role_policy import (
     AgentRoleSelection,
     build_agent_eligibility_view,
     empty_agent_role_policy,
+    load_agent_role_policy,
     select_agent_by_role,
 )
 from gateway.sachima_agent_execution_presets import (
@@ -74,6 +87,7 @@ from gateway.sachima_agent_execution_presets import (
     AgentExecutionPresets,
     admit_agent_execution,
     empty_agent_execution_presets,
+    load_agent_execution_presets,
     requested_configuration,
 )
 from gateway.sachima_delegate_result import (
@@ -134,6 +148,7 @@ from gateway.sachima_delegate_state import (
     DelegateTurnRecord,
     delegate_state_root,
 )
+from gateway.sachima_delegate_lifecycle import OPEN, GraphLifecycle, LifecycleRefused
 
 logger = logging.getLogger(__name__)
 
@@ -146,6 +161,11 @@ __all__ = [
     "SACHIMA_DELEGATE_BLOCKED",
     "SACHIMA_DELEGATE_CARD_PATCH_INTERVAL_ENV",
     "SACHIMA_DELEGATE_CARD_UNAVAILABLE",
+    "SACHIMA_DELEGATE_COMPOSE_ENV",
+    "SACHIMA_DELEGATE_COMPOSITION_INVALID",
+    "SACHIMA_DELEGATE_CONFIG_FILE_ENV",
+    "SACHIMA_DELEGATE_PRESETS_FILE_ENV",
+    "SACHIMA_DELEGATE_ROLE_POLICY_FILE_ENV",
     "SACHIMA_DELEGATE_DISPATCH_FAILED",
     "SACHIMA_DELEGATE_INVALID_TARGET",
     "SACHIMA_DELEGATE_INVALID_TASK_TEXT",
@@ -158,12 +178,15 @@ __all__ = [
     "SACHIMA_DELEGATE_UNBOUND",
     "SACHIMA_DELEGATE_UNKNOWN_PAYLOAD_REF",
     "SACHIMA_DELEGATE_UNKNOWN_TASK",
+    "DelegateCompositionError",
     "DelegateDelivery",
     "DelegateOutcome",
     "SachimaDelegateCoordinator",
     "bind_delegate_coordinator",
     "bound_delegate_coordinator",
+    "compose_delegate_coordinator",
     "configured_running_patch_interval",
+    "delegate_composition_requested",
     "delegate_payload_resolver",
     "unbind_delegate_coordinator",
 ]
@@ -355,7 +378,7 @@ def _utc_status_time() -> str:
 def _claimed_by(recorded: Any, continuity: Any) -> bool:
     """Does the caller's ``TrustedSession`` claim something recorded here?
 
-    The whole rule lives in ``gateway.session_continuity``; this is only the
+    The whole rule lives in ``gateway.session_context``; this is only the
     fail-closed way to ask it. Nothing in this module re-derives Session
     lineage, reads a Session store, or compares Session keys on its own.
     """
@@ -406,6 +429,34 @@ def configured_running_patch_interval(config: Any = None) -> float:
     return normalize_running_patch_interval(declared)
 
 
+def _lifecycle_admitted(method: Any) -> Any:
+    """Admit one public coordinator entry into the graph before it runs.
+
+    Admission is the first thing a public operation does — before any durable
+    or card side effect — and it is released when the operation returns,
+    however it returns. An entry that arrives after closing has begun is
+    refused with ``sachima_delegate_unbound`` and has written nothing.
+    """
+
+    if inspect.iscoroutinefunction(method):
+
+        @functools.wraps(method)
+        async def _admitted_async(self: Any, *args: Any, **kwargs: Any) -> Any:
+            with self._lifecycle.admission():
+                return await method(self, *args, **kwargs)
+
+        _admitted_async.__lifecycle_admitted__ = True  # type: ignore[attr-defined]
+        return _admitted_async
+
+    @functools.wraps(method)
+    def _admitted_sync(self: Any, *args: Any, **kwargs: Any) -> Any:
+        with self._lifecycle.admission():
+            return method(self, *args, **kwargs)
+
+    # The marker the surface audit reads: a public control entry either
+    # carries it or is explicitly listed as not being a control entry.
+    _admitted_sync.__lifecycle_admitted__ = True  # type: ignore[attr-defined]
+    return _admitted_sync
 
 
 class SachimaDelegateCoordinator:
@@ -469,13 +520,16 @@ class SachimaDelegateCoordinator:
         self._turn_locks: dict[str, asyncio.Lock] = {}
         self._task_gates: dict[str, asyncio.Lock] = {}
         self._card_publications: dict[str, asyncio.Lock] = {}
-        self._owned: set[asyncio.Task] = set()
         self._observers: dict[str, asyncio.Task] = {}
-        # Only a genuinely fresh composition graph may reclassify a found
-        # ``in_flight`` to ``uncertain``, and only while it is restoring. The
-        # authority is internal to composition and cannot be requested.
-        self._fresh_graph = True
-        self._restored = False
+        # The one owner of "may this graph still take work, and when has it
+        # really stopped": admission, owned tasks, registered synchronous
+        # calls, restoration, and the single close/drain all live here. Only a
+        # genuinely fresh graph — one that has not completed restoration — may
+        # reclassify a found ``in_flight`` to ``uncertain``; that authority is
+        # internal to composition and cannot be requested.
+        self._lifecycle = GraphLifecycle(
+            SACHIMA_DELEGATE_UNBOUND, SACHIMA_DELEGATE_INVARIANT
+        )
         self._restore_lock = asyncio.Lock()
         self._lifecycle_loop: asyncio.AbstractEventLoop | None = None
 
@@ -535,6 +589,9 @@ class SachimaDelegateCoordinator:
             if existing is not None and existing is not loop:
                 raise RuntimeError(SACHIMA_DELEGATE_INVARIANT)
             self._lifecycle_loop = loop
+        # The drain runs on this loop whichever loop asks for it: the owned
+        # tasks live here, and a closer elsewhere joins through a bridge.
+        self._lifecycle.bind_loop(loop)
 
     def run_on_lifecycle_loop(self, factory: Callable[[], Awaitable[Any]]) -> Any:
         """Run one synchronous control request on the Gateway-owned loop.
@@ -546,6 +603,13 @@ class SachimaDelegateCoordinator:
         """
 
         with self._guard:
+            # A worker thread can hold a reference to this coordinator from
+            # before retirement — the global unbind does not reach into it.
+            # Reading the loop without the closing check is what lets such a
+            # caller submit fresh control work into a graph that is being
+            # drained and unbound.
+            if self._lifecycle.closing:
+                raise RuntimeError(SACHIMA_DELEGATE_UNBOUND)
             loop = self._lifecycle_loop
         if loop is None or loop.is_closed() or not loop.is_running():
             raise RuntimeError(SACHIMA_DELEGATE_UNBOUND)
@@ -620,15 +684,51 @@ class SachimaDelegateCoordinator:
             async with lock:
                 return await factory()
 
-        task = asyncio.create_task(_owner())
-        with self._guard:
-            self._owned.add(task)
-        task.add_done_callback(self._forget_owner)
+        # The lifecycle creates and registers the owner task atomically with
+        # its own closing check, so the task is either owned by the drain or
+        # never created; a graph that has begun closing refuses with
+        # ``sachima_delegate_unbound``.
+        task = self._lifecycle.spawn(_owner)
         return await asyncio.shield(task)
 
-    def _forget_owner(self, task: asyncio.Task) -> None:
-        with self._guard:
-            self._owned.discard(task)
+    # -- retirement --------------------------------------------------------- #
+    @property
+    def closed(self) -> bool:
+        """True once this coordinator has been retired and owns nothing.
+
+        Published only when every admitted operation has released, every
+        owned task has finished and every registered synchronous call has
+        returned — never merely when closing began.
+        """
+
+        return self._lifecycle.closed
+
+    @property
+    def restored(self) -> bool:
+        """True once the startup barrier has completed for this graph."""
+
+        return not self._lifecycle.fresh
+
+    async def close(self) -> None:
+        """Retire this coordinator: admit nothing further, and own no live work.
+
+        The first call flips the graph to closing; every call, including a
+        concurrent or repeated one, awaits the same drain. The drain runs on
+        the bound lifecycle loop whichever loop asked for it, and a closer on
+        another loop joins it through a loop-local bridge rather than a
+        future attached to the wrong loop. The drain cancels the observers
+        and owner tasks and awaits them — a task cancelled but never awaited
+        is still scheduled on a loop the Gateway is about to drop — and it
+        joins, never interrupts, any synchronous daemon call still running on
+        a worker thread. No deadline is added here: the drain is bounded by
+        the bounds of the calls it waits on.
+
+        Retirement is one-way. A retired coordinator admits no entry and arms
+        no observer, so a restart composes a new graph rather than reviving
+        this one over a ledger it no longer holds the daemon connection for.
+        """
+
+        await self._lifecycle.close()
 
     # -- classification (§5.2) ---------------------------------------------- #
     def _classify(self, turn: DelegateTurnRecord) -> tuple[str, Any, str | None]:
@@ -667,6 +767,7 @@ class SachimaDelegateCoordinator:
         return _DISPOSITION_ACCEPTED, record, None
 
     # -- eligibility: live roster ∩ valid execution preset ------------------ #
+    @_lifecycle_admitted
     def registered_agent_ids(self) -> tuple[str, ...]:
         """The connected daemon's live roster of canonical agent ids.
 
@@ -674,8 +775,14 @@ class SachimaDelegateCoordinator:
         backend, which validates the reply before it becomes an answer.
         """
 
+        return self._registered_agent_ids()
+
+    def _registered_agent_ids(self) -> tuple[str, ...]:
+        """The roster read itself, for entries that are already admitted."""
+
         return self._binding.backend.list_registered_agents()
 
+    @_lifecycle_admitted
     def admit_agent(self, agent_id: Any, *, task_text: str = "") -> AgentAdmission:
         """Decide whether one canonical ``agent_id`` may execute here.
 
@@ -690,7 +797,12 @@ class SachimaDelegateCoordinator:
         """
 
         try:
-            roster = self.registered_agent_ids()
+            roster = self._registered_agent_ids()
+        except LifecycleRefused:
+            # A graph that has begun closing is not an unreadable roster: the
+            # refusal keeps its own code rather than becoming a live graph's
+            # "try again later".
+            raise
         except Exception:
             # One stable code only — never the raised text, which can carry
             # private socket paths or remote error bodies.
@@ -703,6 +815,7 @@ class SachimaDelegateCoordinator:
             task_text=task_text,
         )
 
+    @_lifecycle_admitted
     def agent_eligibility(
         self, *, role: Any = None, division: Any = None
     ) -> tuple[tuple[Any, ...], AgentRoleSelection | None]:
@@ -718,7 +831,7 @@ class SachimaDelegateCoordinator:
         unreadable roster means for the answer it is composing.
         """
 
-        roster = self.registered_agent_ids()
+        roster = self._registered_agent_ids()
         view = build_agent_eligibility_view(
             registered_agent_ids=roster,
             presets=self._presets,
@@ -735,6 +848,7 @@ class SachimaDelegateCoordinator:
         )
 
     # -- creation (§5.3, I4) ------------------------------------------------ #
+    @_lifecycle_admitted
     async def create(
         self,
         *,
@@ -764,6 +878,35 @@ class SachimaDelegateCoordinator:
         passes ``None`` rather than a clipped prompt: the card says "not
         provided" and logs the round without a caption, which is true, instead
         of showing half an instruction as if it were a sentence.
+        """
+
+        return await self._create(
+            task_text=task_text,
+            preset=preset,
+            origin=origin,
+            delivery=delivery,
+            linked_from=linked_from,
+            admitted_role=admitted_role,
+            task_title=task_title,
+            round_title=round_title,
+        )
+
+    async def _create(
+        self,
+        *,
+        task_text: str,
+        preset: AgentExecutionPreset,
+        origin: DelegateOrigin,
+        delivery: DelegateDelivery | None,
+        linked_from: str | None,
+        admitted_role: Any,
+        task_title: Any,
+        round_title: Any,
+    ) -> DelegateOutcome:
+        """The body of :meth:`create`, for an entry that is already admitted.
+
+        An AGENT switch inside :meth:`continue_task` lands here rather than on
+        the public entry, so one admitted operation is admitted once.
         """
 
         await self._ensure_restored()
@@ -841,6 +984,7 @@ class SachimaDelegateCoordinator:
             lambda: self._drive(turn.turn_key, mode="dispatch", delivery=delivery),
         )
 
+    @_lifecycle_admitted
     async def continue_task(
         self,
         task_ref: str,
@@ -941,7 +1085,7 @@ class SachimaDelegateCoordinator:
                 # how two cards of one piece of work start disagreeing about
                 # what that work is. A source Task that retains none passes
                 # none on, and the new card says so.
-                return await self.create(
+                return await self._create(
                     task_text=task_text,
                     preset=preset,
                     origin=origin,
@@ -1072,10 +1216,11 @@ class SachimaDelegateCoordinator:
         """Drive one turn through the bundle's dispatcher, off the event loop.
 
         The dispatcher is synchronous spine code that talks to a socket, so it
-        runs on a worker thread: inline, it would freeze every other
-        conversation in the gateway for the length of an admission. Its return
-        value is deliberately discarded — the snapshot that follows is what
-        decides — and a raise is a diagnostic, never a disposition.
+        runs on a worker thread through :meth:`_sync`: inline, it would freeze
+        every other conversation in the gateway for the length of an
+        admission. Its return value is deliberately discarded — the snapshot
+        that follows is what decides — and a raise is a diagnostic, never a
+        disposition.
         """
 
         await self._spine_call(lambda: self._dispatch_request(turn))
@@ -1085,13 +1230,58 @@ class SachimaDelegateCoordinator:
 
     async def _spine_call(self, call: Callable[[], Any]) -> None:
         try:
-            await asyncio.to_thread(call)
+            await self._sync(call)
         except asyncio.CancelledError:
             raise
         except BaseException:
             # One stable code only — never the offending value or exception
             # text, both of which can carry private config refs.
             logger.warning(SACHIMA_DELEGATE_DISPATCH_FAILED)
+
+    async def _sync(self, call: Callable[[], Any]) -> Any:
+        """Run one synchronous daemon/spine call on a worker thread, owned.
+
+        This is the only place coordinator work leaves the event loop. The
+        call's future is registered with the lifecycle *before* it is
+        submitted, and its registration is released only by the future's own
+        terminal callback — so a call the drain cancels while it is still
+        queued never starts and is accounted for exactly like one that ran,
+        and a call already running is joined by close rather than abandoned.
+
+        The wait is shielded: cancelling the coroutine that waits (an owner
+        or observer task the drain cancels) must not cancel the call. A
+        thread inside daemon code cannot be interrupted, and pretending it was
+        is what let close finish while the daemon was still being spoken to.
+        """
+
+        loop = asyncio.get_running_loop()
+        future: concurrent.futures.Future = concurrent.futures.Future()
+        self._lifecycle.register_future(future)
+        context = contextvars.copy_context()
+
+        def _run() -> None:
+            # A future the drain cancelled while it was still queued must not
+            # start; its terminal callback has already released it.
+            if not future.set_running_or_notify_cancel():
+                return
+            try:
+                result = context.run(call)
+            except BaseException as exc:
+                future.set_exception(exc)
+            else:
+                future.set_result(result)
+
+        try:
+            loop.run_in_executor(None, _run)
+        except BaseException:
+            # Nothing was submitted, so the registration is released here.
+            future.cancel()
+            raise
+        wrapped = asyncio.wrap_future(future, loop=loop)
+        # A waiter that was cancelled never reads the outcome; retrieving it
+        # keeps a raise on the worker thread from being reported as lost.
+        wrapped.add_done_callback(lambda done: done.cancelled() or done.exception())
+        return await asyncio.shield(wrapped)
 
     def _dispatch_request(self, turn: DelegateTurnRecord) -> Any:
         from sachima_supervisor.runtime_spine.agent_run_supervisor_turn_dispatcher import (
@@ -1326,7 +1516,7 @@ class SachimaDelegateCoordinator:
         """
 
         if turn.receipt != "pending":
-            if turn.receipt == "in_flight" and not self._fresh_graph:
+            if turn.receipt == "in_flight" and not self._lifecycle.fresh:
                 logger.warning(SACHIMA_DELEGATE_INVARIANT)
             return turn
 
@@ -1373,10 +1563,16 @@ class SachimaDelegateCoordinator:
         """Arm exactly one observer for this turn. A second call does nothing."""
 
         with self._guard:
-            if turn_key in self._observers:
+            # A closing coordinator observes nothing further: its bundle's
+            # transport is being dropped, so an observer armed now would poll
+            # a connection that no longer exists.
+            if self._lifecycle.closing or turn_key in self._observers:
                 return
             self._state.update_turn(turn_key, observation="armed")
-            task = asyncio.create_task(self._observe_loop(turn_key))
+            try:
+                task = self._lifecycle.spawn(lambda: self._observe_loop(turn_key))
+            except LifecycleRefused:
+                return
             self._observers[turn_key] = task
         task.add_done_callback(lambda _t: self._forget_observer(turn_key))
 
@@ -1403,8 +1599,8 @@ class SachimaDelegateCoordinator:
         blindness_reported = False
         while True:
             try:
-                result = await asyncio.to_thread(
-                    self._binding.backend.observe_run_result, turn.backend_handle
+                result = await self._sync(
+                    lambda: self._binding.backend.observe_run_result(turn.backend_handle)
                 )
             except asyncio.CancelledError:
                 raise
@@ -1597,7 +1793,7 @@ class SachimaDelegateCoordinator:
             # A claimed attempt this frame did not make. Whether the provider
             # was actually called is unknowable from here, so it fails closed
             # rather than being replayed at a second real cost.
-            if not self._fresh_graph:
+            if not self._lifecycle.fresh:
                 logger.warning(SACHIMA_DELEGATE_INVARIANT)
             return self._settle_unavailable(existing, SUMMARY_REASON_ATTEMPT_ABANDONED)
 
@@ -1798,6 +1994,7 @@ class SachimaDelegateCoordinator:
             return False
         return turn is not None and _claimed_by(turn.origin, continuity)
 
+    @_lifecycle_admitted
     def pending_hermes_context(
         self, session_id: str, *, continuity: Any = None
     ) -> tuple[str, ...]:
@@ -1850,6 +2047,7 @@ class SachimaDelegateCoordinator:
             )
         return tuple(lines)
 
+    @_lifecycle_admitted
     def confirm_hermes_context(self, session_id: str, *, continuity: Any = None) -> int:
         """Confirm the handoff **after** the next model turn consumed it.
 
@@ -1867,6 +2065,7 @@ class SachimaDelegateCoordinator:
             confirmed += 1
         return confirmed
 
+    @_lifecycle_admitted
     def release_hermes_context(self, session_id: str, *, continuity: Any = None) -> int:
         """Return an interrupted handoff to ``pending`` for a later turn."""
 
@@ -1881,6 +2080,7 @@ class SachimaDelegateCoordinator:
         return released
 
     # -- control operations (§5.3) ------------------------------------------ #
+    @_lifecycle_admitted
     async def status(self, task_ref: str) -> DelegateOutcome:
         """Reconcile the current turn's evidence and report the durable state."""
 
@@ -1892,6 +2092,7 @@ class SachimaDelegateCoordinator:
             turn.turn_key, lambda: self._reconcile(turn.turn_key)
         )
 
+    @_lifecycle_admitted
     async def cancel(self, task_ref: str) -> DelegateOutcome:
         """Cancel this task's Run — never the task, never either Session."""
 
@@ -1903,6 +2104,7 @@ class SachimaDelegateCoordinator:
             turn.turn_key, lambda: self._cancel_turn(turn.turn_key)
         )
 
+    @_lifecycle_admitted
     async def recover(
         self, task_ref: str, *, delivery: DelegateDelivery | None = None
     ) -> DelegateOutcome:
@@ -1919,6 +2121,7 @@ class SachimaDelegateCoordinator:
             lambda: self._drive(turn.turn_key, mode="recover", delivery=delivery),
         )
 
+    @_lifecycle_admitted
     def result(self, task_ref: str) -> dict[str, Any] | None:
         """The durable result of this task's latest settled terminal."""
 
@@ -1975,8 +2178,8 @@ class SachimaDelegateCoordinator:
 
     async def _observe_once(self, turn: DelegateTurnRecord) -> Any:
         try:
-            return await asyncio.to_thread(
-                self._binding.backend.observe_run_result, turn.backend_handle
+            return await self._sync(
+                lambda: self._binding.backend.observe_run_result(turn.backend_handle)
             )
         except asyncio.CancelledError:
             raise
@@ -2007,8 +2210,8 @@ class SachimaDelegateCoordinator:
 
         turn = self._state.update_turn(turn_key, cancellation="in_flight")
         try:
-            outcome = await asyncio.to_thread(
-                self._binding.backend.cancel_run, turn.backend_handle
+            outcome = await self._sync(
+                lambda: self._binding.backend.cancel_run(turn.backend_handle)
             )
         except asyncio.CancelledError:
             raise
@@ -2026,27 +2229,41 @@ class SachimaDelegateCoordinator:
     # -- startup restoration (I7, §5.3) ------------------------------------- #
     async def _ensure_restored(self) -> None:
         async with self._restore_lock:
-            if self._restored:
+            if self._lifecycle.state == OPEN:
                 return
             await self._restore_locked()
 
+    @_lifecycle_admitted
     async def restore(self) -> dict[str, Any]:
         """Complete the startup barrier before any new admission is allowed."""
 
         async with self._restore_lock:
-            if self._restored:
+            if self._lifecycle.state == OPEN:
                 return {"restored": 0, "already": True}
             return await self._restore_locked()
 
     async def _restore_locked(self) -> dict[str, Any]:
+        # The lifecycle is RESTORING for exactly the span of this body: a
+        # failure returns the graph to COMPOSED so a later caller restores
+        # again, and only a completed body publishes OPEN.
+        with self._lifecycle.restoring():
+            return await self._restore_body()
+
+    async def _restore_body(self) -> dict[str, Any]:
         execution = 0
         identities = 0
         sinks = 0
         try:
             turns = self._state.list_turns()
         except DelegateStateError:
+            # Fail closed. An unreadable turn ledger is not an empty one: the
+            # durable record may hold in-flight Runs this coordinator would
+            # then never observe, and treating it as empty would declare the
+            # barrier complete and start admitting new work beside them. The
+            # graph stays fresh, so nothing downstream mistakes this for a
+            # finished restoration.
             logger.warning(SACHIMA_DELEGATE_BLOCKED)
-            turns = ()
+            raise
 
         for turn in turns:
             if turn.lifecycle in {"terminal", "admission_failed"}:
@@ -2078,8 +2295,6 @@ class SachimaDelegateCoordinator:
 
         summaries = await self._restore_summaries()
         sinks = await self._restore_sinks()
-        self._restored = True
-        self._fresh_graph = False
         return {
             "restored": execution,
             "identities": identities,
@@ -3066,3 +3281,138 @@ def unbind_delegate_coordinator() -> None:
 
     global _coordinator
     _coordinator = None
+
+
+# --------------------------------------------------------------------------- #
+# Production composition — default off, declared explicitly, fail closed
+# --------------------------------------------------------------------------- #
+#: The one switch. Anything but exactly ``"1"`` composes nothing at all, which
+#: is what every Gateway that has not opted in gets: no bundle, no coordinator,
+#: no daemon contact, and not one changed code path.
+SACHIMA_DELEGATE_COMPOSE_ENV = "SACHIMA_DELEGATE_COMPOSE"
+#: Host-owned private files, outside the tracked repo. They are named rather
+#: than defaulted: a composition that guessed its own arsd socket, grant, or
+#: roster would be a deployment nobody declared.
+SACHIMA_DELEGATE_CONFIG_FILE_ENV = "SACHIMA_DELEGATE_CONFIG_FILE"
+SACHIMA_DELEGATE_PRESETS_FILE_ENV = "SACHIMA_DELEGATE_PRESETS_FILE"
+SACHIMA_DELEGATE_ROLE_POLICY_FILE_ENV = "SACHIMA_DELEGATE_ROLE_POLICY_FILE"
+
+SACHIMA_DELEGATE_COMPOSITION_INVALID = "sachima_delegate_composition_invalid"
+
+
+class DelegateCompositionError(ValueError):
+    """A declared composition that cannot be honoured. Never echoes material."""
+
+
+def _composition_invalid() -> "DelegateCompositionError":
+    return DelegateCompositionError(SACHIMA_DELEGATE_COMPOSITION_INVALID)
+
+
+def delegate_composition_requested(env: Mapping[str, str] | None = None) -> bool:
+    """Whether this host declared the resident delegation composition.
+
+    Exact-match on ``"1"``: a half-set variable ("true", "yes", "0", "") is a
+    host that did not declare it, and the honest answer to an ambiguous switch
+    on a permissioned execution path is no.
+    """
+
+    source = os.environ if env is None else env
+    return source.get(SACHIMA_DELEGATE_COMPOSE_ENV) == "1"
+
+
+def _required_composition_path(source: Mapping[str, str], name: str) -> str:
+    value = source.get(name)
+    if type(value) is not str or not value.strip():
+        raise _composition_invalid()
+    return value.strip()
+
+
+def _load_arsd_config_document(config_file: str) -> Any:
+    """Build the frozen arsd config from one host-owned JSON document.
+
+    The document is passed to the real config type, so every field goes
+    through the same allowlist a test-built config does; nothing here relaxes
+    or pre-validates it, and a rejected document is never echoed.
+    """
+
+    import json
+
+    from sachima_supervisor.runtime_spine.arsd_socket_contract import (
+        ArsdSupervisorConfig,
+    )
+
+    try:
+        with open(config_file, encoding="utf-8") as handle:
+            document = json.load(handle)
+    except Exception:
+        raise _composition_invalid() from None
+    if not isinstance(document, Mapping):
+        raise _composition_invalid()
+    try:
+        return ArsdSupervisorConfig(**dict(document))
+    except Exception:
+        raise _composition_invalid() from None
+
+
+def compose_delegate_coordinator(
+    *,
+    env: Mapping[str, str] | None = None,
+    executor: Any = None,
+    bindings: Any = None,
+) -> SachimaDelegateCoordinator | None:
+    """Compose and bind the resident delegation graph, or compose nothing.
+
+    Returns ``None`` when the host did not declare the composition — the
+    default, and the state every ordinary Gateway stays in. When it *is*
+    declared, this is the only thing standing between a configured deployment
+    and a coordinator: the bundle is really composed against the declared
+    ``arsd`` config, the presets and role policy are really loaded, and the
+    coordinator is really bound. Restoration is the caller's next step.
+
+    Fail closed in both directions. A declared-but-unusable composition raises
+    ``DelegateCompositionError`` and leaves nothing bound, because a host that
+    asked for resident delegation and cannot have it must not silently serve a
+    Gateway that looks like it has one. An undeclared host raises nothing.
+    """
+
+    source = os.environ if env is None else env
+    if not delegate_composition_requested(source):
+        return None
+
+    from sachima_supervisor.runtime_spine.agent_run_supervisor_execution_binding import (
+        bind_arsd_execution,
+    )
+
+    config_file = _required_composition_path(source, SACHIMA_DELEGATE_CONFIG_FILE_ENV)
+    presets_file = _required_composition_path(source, SACHIMA_DELEGATE_PRESETS_FILE_ENV)
+    policy_file = _required_composition_path(
+        source, SACHIMA_DELEGATE_ROLE_POLICY_FILE_ENV
+    )
+
+    config = _load_arsd_config_document(config_file)
+    # The default-off gate inside the contract itself: an ``enabled=False``
+    # config is a declared composition that still composes nothing.
+    try:
+        presets = load_agent_execution_presets(presets_file, config)
+        role_policy = load_agent_role_policy(policy_file)
+    except Exception:
+        raise _composition_invalid() from None
+
+    try:
+        binding = bind_arsd_execution(
+            config,
+            payload_resolver=delegate_payload_resolver(),
+            bindings=bindings,
+            executor=executor,
+        )
+    except Exception:
+        raise _composition_invalid() from None
+
+    # Bound last: until every part validated there is nothing to dispatch
+    # into, and a half-composed graph must never become reachable.
+    return bind_delegate_coordinator(
+        binding,
+        config,
+        presets=presets,
+        role_policy=role_policy,
+    )

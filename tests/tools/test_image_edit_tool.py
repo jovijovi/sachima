@@ -1,212 +1,148 @@
-"""Tests for the ``image_edit`` tool surface (tools/image_edit_tool.py).
-
-The tool is a thin dispatcher: it validates inputs, resolves the active
-image-gen provider via the existing ``image_gen.provider`` logic, and either
-calls ``provider.edit(...)`` or returns a clear ``unsupported_capability``
-result. xAI-specific behavior lives in the provider; these tests cover the
-tool contract only.
-"""
-
 from __future__ import annotations
 
 import json
 
-import pytest
-
 from agent.image_gen_provider import ImageGenProvider
 
 
-class _FakeEditProvider(ImageGenProvider):
+class _EditProvider(ImageGenProvider):
     def __init__(self):
-        self.last_kwargs = None
+        self.received = None
 
     @property
-    def name(self) -> str:
-        return "fakeedit"
+    def name(self):
+        return "editcap"
 
-    def supports_edit(self) -> bool:
-        return True
+    def capabilities(self):
+        return {"modalities": ["text", "image"], "max_reference_images": 2}
 
-    def generate(self, prompt, aspect_ratio="landscape", **kw):
-        return {"success": True, "image": "/tmp/gen.png", "provider": "fakeedit"}
-
-    def edit(self, prompt, image=None, aspect_ratio="landscape", *, images=None, **kw):
-        self.last_kwargs = kw
+    def generate(
+        self,
+        prompt,
+        aspect_ratio="landscape",
+        *,
+        image_url=None,
+        reference_image_urls=None,
+        **kwargs,
+    ):
+        self.received = {
+            "prompt": prompt,
+            "aspect_ratio": aspect_ratio,
+            "image_url": image_url,
+            "reference_image_urls": reference_image_urls,
+            "kwargs": kwargs,
+        }
         return {
             "success": True,
             "image": "/tmp/edited.png",
-            "model": "fake-edit",
-            "prompt": prompt,
-            "aspect_ratio": aspect_ratio,
-            "provider": "fakeedit",
-            "_received_image": image,
-            "_received_images": images,
+            "provider": self.name,
+            "model": "edit-v1",
+            "modality": "image",
         }
 
 
-class _FakeGenOnlyProvider(ImageGenProvider):
-    @property
-    def name(self) -> str:
-        return "genonly"
-
-    def generate(self, prompt, aspect_ratio="landscape", **kw):
-        return {"success": True, "image": "/tmp/gen.png", "provider": "genonly"}
-
-
-def _patch_active(monkeypatch, provider):
+def _configure(monkeypatch, provider):
     from agent import image_gen_registry
-    from hermes_cli import plugins as plugins_module
-    from tools import image_edit_tool  # noqa: F401 — ensure module imported
+    from hermes_cli import plugins
+    from tools import image_generation_tool
 
-    monkeypatch.setattr(plugins_module, "_ensure_plugins_discovered", lambda *a, **k: None)
-    monkeypatch.setattr(image_gen_registry, "get_active_provider", lambda: provider)
-
-
-class TestSchema:
-    def test_schema_shape(self):
-        from tools.image_edit_tool import IMAGE_EDIT_SCHEMA
-
-        assert IMAGE_EDIT_SCHEMA["name"] == "image_edit"
-        props = IMAGE_EDIT_SCHEMA["parameters"]["properties"]
-        assert "prompt" in props
-        assert "image" in props
-        assert "aspect_ratio" in props
-        assert "content_summary" in props
-        required = IMAGE_EDIT_SCHEMA["parameters"]["required"]
-        assert "prompt" in required
-        assert "image" in required
-        assert "content_summary" not in required
-        # Mask is intentionally omitted until xAI edit-mask semantics are clear.
-        assert "mask" not in props
+    image_gen_registry._reset_for_tests()
+    image_gen_registry.register_provider(provider)
+    monkeypatch.setattr(plugins, "_ensure_plugins_discovered", lambda *a, **k: None)
+    monkeypatch.setattr(image_generation_tool, "_read_configured_image_provider", lambda: provider.name)
+    monkeypatch.setattr(image_generation_tool, "_read_configured_image_model", lambda: "edit-v1")
+    monkeypatch.setattr(image_generation_tool, "check_image_generation_requirements", lambda: True)
 
 
-class TestRegistration:
-    def test_registered_under_image_gen_toolset(self):
-        import tools.image_edit_tool  # noqa: F401 — triggers registration
-        from tools.registry import registry
+def test_schema_and_registration_preserve_image_edit_surface():
+    from tools.image_edit_tool import IMAGE_EDIT_SCHEMA
+    from tools.registry import registry
 
-        entry = registry.get_entry("image_edit")
-        assert entry is not None
-        assert entry.toolset == "image_gen"
-
-    def test_toolset_check_still_anchored_to_generation(self):
-        # Importing image_edit_tool must not hijack the image_gen toolset's
-        # availability check away from the generation tool.
-        import tools.image_edit_tool as edit_tool
-        import tools.image_generation_tool as gen_tool
-        from tools.registry import registry
-
-        check = registry._toolset_checks.get("image_gen")
-        assert check is not None
-
-        # Identity (``is``) is too brittle here: in the broader suite a peer
-        # test may reload ``tools.image_generation_tool``, rebinding
-        # ``check_image_generation_requirements`` to a fresh function object
-        # while the registry still holds the original (equally valid)
-        # generation check. Anchor on module + qualified name instead, which is
-        # stable across reloads. The real invariant is that the image_gen
-        # toolset check is still the *generation* availability check...
-        def _ident(fn):
-            return (fn.__module__, fn.__qualname__)
-
-        assert _ident(check) == _ident(gen_tool.check_image_generation_requirements)
-        # ...and is NOT the *edit* availability check (image_edit must not
-        # hijack the toolset-level gate).
-        assert _ident(check) != _ident(edit_tool.check_image_edit_requirements)
+    assert IMAGE_EDIT_SCHEMA["parameters"]["required"] == ["prompt", "image"]
+    entry = registry.get_entry("image_edit")
+    assert entry is not None
+    assert entry.toolset == "image_gen"
 
 
-class TestHandler:
-    def test_missing_prompt(self, monkeypatch):
-        from tools.image_edit_tool import _handle_image_edit
+def test_check_is_true_only_for_available_edit_capability(monkeypatch):
+    provider = _EditProvider()
+    _configure(monkeypatch, provider)
+    from tools.image_edit_tool import check_image_edit_requirements
 
-        result = json.loads(_handle_image_edit({"image": "https://x/a.png"}))
-        assert "error" in result
+    assert check_image_edit_requirements() is True
 
-    def test_missing_image(self, monkeypatch):
-        from tools.image_edit_tool import _handle_image_edit
 
-        result = json.loads(_handle_image_edit({"prompt": "make it blue"}))
-        assert "error" in result
+def test_handler_delegates_to_unified_provider_and_keeps_summary_local(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_PROFILE", "images")
+    provider = _EditProvider()
+    _configure(monkeypatch, provider)
+    from tools.image_edit_tool import _handle_image_edit
 
-    def test_dispatches_to_edit_provider(self, monkeypatch):
-        _patch_active(monkeypatch, _FakeEditProvider())
-        from tools.image_edit_tool import _handle_image_edit
-
-        result = json.loads(
-            _handle_image_edit({"prompt": "make it blue", "image": "https://x/a.png", "aspect_ratio": "square"})
+    payload = json.loads(
+        _handle_image_edit(
+            {
+                "prompt": "make it blue",
+                "image": "https://cdn.example.test/in.png?token=secret",
+                "reference_image_urls": ["https://cdn.example.test/ref.png?sig=secret"],
+                "aspect_ratio": "square",
+                "content_summary": "blue product photo",
+            }
         )
-        assert result["success"] is True
-        assert result["provider"] == "fakeedit"
-        assert result["image"] == "/tmp/edited.png"
-        assert result["aspect_ratio"] == "square"
-        assert result["_received_image"] == "https://x/a.png"
+    )
 
-    def test_unsupported_capability_when_provider_cannot_edit(self, monkeypatch):
-        _patch_active(monkeypatch, _FakeGenOnlyProvider())
-        from tools.image_edit_tool import _handle_image_edit
+    assert payload["success"] is True
+    assert provider.received == {
+        "prompt": "make it blue",
+        "aspect_ratio": "square",
+        "image_url": "https://cdn.example.test/in.png?token=secret",
+        "reference_image_urls": ["https://cdn.example.test/ref.png?sig=secret"],
+        "kwargs": {"model": "edit-v1"},
+    }
+    manifest = tmp_path / "workspace" / "image-generation" / "manifest.jsonl"
+    record = json.loads(manifest.read_text(encoding="utf-8"))
+    assert record["tool"] == "image_edit"
+    assert record["operation"] == "edit"
+    assert record["request"]["content_summary"] == "blue product photo"
+    assert "token=secret" not in manifest.read_text(encoding="utf-8")
+    assert "sig=secret" not in manifest.read_text(encoding="utf-8")
 
-        result = json.loads(
-            _handle_image_edit({"prompt": "make it blue", "image": "https://x/a.png"})
+
+def test_handler_rejects_missing_fields(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    provider = _EditProvider()
+    _configure(monkeypatch, provider)
+    from tools.image_edit_tool import _handle_image_edit
+
+    assert "error" in json.loads(_handle_image_edit({"image": "https://x/in.png"}))
+    assert "error" in json.loads(_handle_image_edit({"prompt": "edit"}))
+
+
+def test_handler_does_not_call_text_only_provider(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    provider = _EditProvider()
+    _configure(monkeypatch, provider)
+    from tools import image_edit_tool
+
+    monkeypatch.setattr(
+        image_edit_tool.generation,
+        "_active_image_capabilities",
+        lambda: {"modalities": ["text"], "provider": "text-only"},
+    )
+    payload = json.loads(
+        image_edit_tool._handle_image_edit(
+            {"prompt": "edit", "image": "https://x/in.png"}
         )
-        assert result["success"] is False
-        assert result["image"] is None
-        assert result["error_type"] == "unsupported_capability"
-        assert result["provider"] == "genonly"
+    )
+    assert payload["success"] is False
+    assert payload["error_type"] == "unsupported_capability"
+    assert provider.received is None
 
-    def test_no_provider_configured(self, monkeypatch):
-        _patch_active(monkeypatch, None)
-        from tools.image_edit_tool import _handle_image_edit
 
-        result = json.loads(
-            _handle_image_edit({"prompt": "make it blue", "image": "https://x/a.png"})
-        )
-        assert result["success"] is False
-        assert result["image"] is None
-        assert result["error_type"] == "no_provider"
+def test_dynamic_schema_uses_active_reference_cap(monkeypatch):
+    provider = _EditProvider()
+    _configure(monkeypatch, provider)
+    from tools.image_edit_tool import _build_dynamic_image_edit_schema
 
-    def test_records_manifest_without_passing_content_summary_to_provider(self, monkeypatch, tmp_path):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        monkeypatch.setenv("HERMES_PROFILE", "manifest-test")
-        provider = _FakeEditProvider()
-        _patch_active(monkeypatch, provider)
-
-        from tools.image_edit_tool import _handle_image_edit
-
-        result = json.loads(
-            _handle_image_edit(
-                {
-                    "prompt": "make it blue",
-                    "image": "https://cdn.example.test/input.png?token=secret",
-                    "aspect_ratio": "square",
-                    "content_summary": "blue product photo",
-                }
-            )
-        )
-
-        assert result["success"] is True
-        assert result["image"] == "/tmp/edited.png"
-        assert provider.last_kwargs == {}
-
-        manifest_path = tmp_path / "workspace" / "image-generation" / "manifest.jsonl"
-        records = [json.loads(line) for line in manifest_path.read_text(encoding="utf-8").splitlines()]
-        assert len(records) == 1
-        record = records[0]
-        assert record["sequence"] == 1
-        assert record["profile"] == "manifest-test"
-        assert record["tool"] == "image_edit"
-        assert record["operation"] == "edit"
-        assert record["backend"] == {
-            "provider": "fakeedit",
-            "model": "fake-edit",
-            "endpoint_kind": "edit",
-        }
-        assert record["request"]["prompt"] == "make it blue"
-        assert record["request"]["content_summary"] == "blue product photo"
-        assert record["request"]["content_summary_source"] == "agent_supplied"
-        assert record["request"]["content_summary_verified"] is False
-        assert record["input_images"][0]["url"] == "https://cdn.example.test/input.png"
-        assert isinstance(record["result"]["duration_ms"], int)
-        assert record["result"]["outputs"] == [
-            {"output_index": 1, "kind": "image", "ref": "edited.png"}
-        ]
-        assert "token=secret" not in manifest_path.read_text(encoding="utf-8")
+    props = _build_dynamic_image_edit_schema()["parameters"]["properties"]
+    assert props["reference_image_urls"]["maxItems"] == 2

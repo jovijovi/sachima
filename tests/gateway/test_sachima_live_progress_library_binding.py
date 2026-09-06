@@ -44,11 +44,6 @@ import pytest
 import gateway.sachima_live_progress_binding as binding_mod
 import tools.sachima_live_progress_tool as tool_mod
 from tools.registry import invalidate_check_fn_cache, registry
-from sachima_supervisor.runtime_spine.agent_run_supervisor_library_backend import (
-    ARS_LIBRARY_CONFIG_TYPE,
-    LIBRARY_MIGRATION_MESSAGE,
-    RUNTIME_LIBRARY_BACKEND_RETIRED,
-)
 from sachima_supervisor.runtime_spine.arsd_socket_contract import (
     ARSD_SUPERVISOR_CONFIG_TYPE,
     EXPECTED_AGENT_RUN_SUPERVISOR_VERSION,
@@ -65,21 +60,36 @@ _ABSENT = binding_mod.SACHIMA_LIVE_PROGRESS_HOST_BINDING_ABSENT
 _INVALID = binding_mod.SACHIMA_LIVE_PROGRESS_HOST_BINDING_INVALID
 _BOUND = binding_mod.SACHIMA_LIVE_PROGRESS_HOST_BINDING_BOUND
 _RETIRED = binding_mod.SACHIMA_LIVE_PROGRESS_HOST_BINDING_RETIRED
+ARS_LIBRARY_CONFIG_TYPE = binding_mod._RETIRED_LIBRARY_CONFIG_TYPE
+LIBRARY_MIGRATION_MESSAGE = binding_mod._LIBRARY_MIGRATION_MESSAGE
+RUNTIME_LIBRARY_BACKEND_RETIRED = _RETIRED
 
 
 @pytest.fixture(autouse=True)
 def _default_off(monkeypatch):
-    for env in (_SURFACE_ENV, _FILE_ENV, _BACKEND_ENV, _ARSD_CONFIG_ENV):
+    import gateway.sachima_delegate as delegate_mod
+
+    isolated_env = (
+        _SURFACE_ENV,
+        _FILE_ENV,
+        _BACKEND_ENV,
+        _ARSD_CONFIG_ENV,
+        binding_mod.SACHIMA_AGENT_EXECUTION_PRESETS_FILE_ENV,
+        binding_mod.SACHIMA_AGENT_ROLE_POLICY_FILE_ENV,
+    )
+    for env in isolated_env:
         monkeypatch.delenv(env, raising=False)
     tool_mod.unbind_live_progress_display_service()
+    delegate_mod.unbind_delegate_coordinator()
     invalidate_check_fn_cache()
     yield
     # Clear the envs BEFORE the reset rebind so the disabled path runs and
     # deterministically drops both the tool service and any bound bundle.
-    for env in (_SURFACE_ENV, _FILE_ENV, _BACKEND_ENV, _ARSD_CONFIG_ENV):
+    for env in isolated_env:
         monkeypatch.delenv(env, raising=False)
     binding_mod.bind_live_progress_display_from_env()
     tool_mod.unbind_live_progress_display_service()
+    delegate_mod.unbind_delegate_coordinator()
     invalidate_check_fn_cache()
 
 
@@ -703,9 +713,92 @@ def test_delegate_and_live_progress_share_exactly_one_bundle(monkeypatch, tmp_pa
     assert coordinator.binding.dispatcher is bundle.dispatcher
     assert bundle.dispatcher.registry is bundle.registry
     assert bundle.dispatcher.bindings is bundle.bindings
-    assert bundle.query_service.registry is bundle.registry
-    assert bundle.query_service.port is bundle.port
-    assert bundle.display_service is tool_mod._bound_service()
+    # Query/display stay outside the execution bundle, but share its exact
+    # registry, port and source sink through the host-owned service.
+    assert not hasattr(bundle, "query_service")
+    assert not hasattr(bundle, "display_service")
+    service = tool_mod._bound_service()
+    assert service.query_service.registry is bundle.registry
+    assert service.query_service.port is bundle.port
+    assert service.query_service.bindings is bundle.bindings
+
+
+def _compose_borrowed_arsd_bundle(monkeypatch, tmp_path):
+    """Build the graph through the current delegation root, outside H."""
+
+    import gateway.sachima_delegate as delegate_mod
+    from sachima_supervisor.runtime_spine import LiveProgressSourceBindings
+    from sachima_supervisor.runtime_spine import (
+        agent_run_supervisor_execution_binding as compose_mod,
+    )
+
+    facade = _MinimalFacade()
+    (tmp_path / "private").mkdir(parents=True, exist_ok=True)
+    config_file = _write_arsd_config(tmp_path, enabled=True)
+    config = binding_mod._load_arsd_config(config_file)
+    bundle = compose_mod.bind_arsd_execution(
+        config,
+        facade=facade,
+        payload_resolver=delegate_mod.delegate_payload_resolver(),
+        bindings=LiveProgressSourceBindings(),
+    )
+    coordinator = delegate_mod.bind_delegate_coordinator(bundle, config)
+    monkeypatch.setenv(_SURFACE_ENV, "hermes_internal")
+    monkeypatch.setenv(_BACKEND_ENV, "arsd")
+    monkeypatch.setenv(_ARSD_CONFIG_ENV, config_file)
+    return bundle, coordinator
+
+
+def test_gateway_owned_bundle_is_reused_without_a_second_composition(
+    monkeypatch, tmp_path
+):
+    """The display extends the resident graph instead of replacing its owner."""
+
+    import gateway.sachima_delegate as delegate_mod
+
+    bundle, coordinator = _compose_borrowed_arsd_bundle(monkeypatch, tmp_path)
+
+    def _unexpected_second_composition(_path):
+        raise AssertionError("display must reuse the resident execution graph")
+
+    monkeypatch.setattr(
+        binding_mod, "_build_arsd_execution_binding", _unexpected_second_composition
+    )
+    summary = binding_mod.bind_live_progress_display_from_env(
+        execution_binding=bundle
+    )
+
+    assert summary["code"] == _BOUND
+    assert binding_mod.bound_execution_binding() is bundle
+    assert delegate_mod.bound_delegate_coordinator() is coordinator
+    service = tool_mod._bound_service()
+    assert service.query_service.registry is bundle.registry
+    assert service.query_service.port is bundle.port
+    assert service.query_service.bindings is bundle.bindings
+
+
+def test_failed_display_config_does_not_unbind_borrowed_delegate_graph(
+    monkeypatch, tmp_path
+):
+    """Optional display failure cannot retire a separately owned coordinator."""
+
+    import gateway.sachima_delegate as delegate_mod
+
+    bundle, coordinator = _compose_borrowed_arsd_bundle(monkeypatch, tmp_path)
+    mismatched = _arsd_payload(tmp_path, enabled=True)
+    mismatched["owner"] = "another_host"
+    mismatch_file = tmp_path / "mismatched-arsd.json"
+    mismatch_file.write_text(json.dumps(mismatched), encoding="utf-8")
+    monkeypatch.setenv(_ARSD_CONFIG_ENV, str(mismatch_file))
+
+    summary = binding_mod.bind_live_progress_display_from_env(
+        execution_binding=bundle
+    )
+
+    assert summary["code"] == _INVALID
+    assert tool_mod._bound_service() is None
+    assert binding_mod.bound_execution_binding() is None
+    assert delegate_mod.bound_delegate_coordinator() is coordinator
 
 
 def test_the_bound_coordinator_capacity_comes_from_the_live_negotiation(

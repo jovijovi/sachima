@@ -757,7 +757,7 @@ Hermes 会确认会话标题，并重放最后一条助手消息以提供上下�
 - 论坛启用私聊中的 General（置顶顶部）话题被视为根大厅，无论 Telegram 是以 `message_thread_id=1` 还是无 thread_id 投递其消息
 - 根大厅提醒每个聊天每 30 秒限速一条——忘记话题模式已开启并在根目录输入十条 prompt 的用户不会收到十条回复
 - BotFather 设置截图每个聊天每 5 分钟限速一次发送——在 Threads Settings 仍然禁用时重复尝试 `/topic` 不会重复上传同一张图片
-- 在话题内启动的 `/background <prompt>` 会将结果投递回同一话题；后台会话不会触发所属话题的自动重命名
+- 在话题内启动的 `/bg <prompt>` 会将结果投递回同一话题；后台会话不会触发所属话题的自动重命名
 - `/topic` 本身受机器人用户授权检查限制——未授权的私聊会收到拒绝而非激活
 
 ### 禁用多会话模式
@@ -886,17 +886,17 @@ gateway:
 - **小表格**被展平为**行组项目符号**——每行在列标题下变为可读的项目符号列表。适合 2-4 列和短单元格。
 - **较大或较宽的表格**回退为带对齐列的**围栏代码块**，以防内容折叠。
 
-富消息**默认启用**。一些 Telegram 客户端能接收 Bot API 载荷但渲染效果很差；若要关闭并强制所有回复走旧版 MarkdownV2 路径：
+富消息现在是**选择启用**。默认保持旧版 MarkdownV2 路径，因为当前 Telegram 客户端可能让 Bot API 富消息难以作为纯文本复制，这对命令片段和移动端交接尤其麻烦。若要为表格、任务列表、折叠 `<details>` 和块级数学启用原生渲染：
 
 ```yaml
 gateway:
   platforms:
     telegram:
       extra:
-        rich_messages: false
+        rich_messages: true
 ```
 
-这个设置用于客户端渲染兼容性；当 Telegram 拒绝富消息 API 调用时，Hermes 已经会自动回退。如果你只是想在保持富消息启用的同时恢复旧版「始终使用代码块」表格行为，可在 `config.yaml` 中设置 `telegram.pretty_tables: false` 禁用表格规范化（默认：`true`）。
+这个设置用于客户端渲染/复制兼容性；当 Telegram 拒绝富消息 API 调用时，Hermes 已经会自动回退。如果你只是想在保持富消息启用的同时恢复旧版「始终使用代码块」表格行为，可在 `config.yaml` 中设置 `telegram.pretty_tables: false` 禁用表格规范化（默认：`true`）。
 
 **链接预览。** Telegram 会为机器人消息中的 URL 自动生成链接预览。如果你希望抑制这些预览（长 `/tools` 输出、提及十个链接的 Agent 回复等）：
 

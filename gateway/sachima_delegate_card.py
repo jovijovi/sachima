@@ -161,8 +161,9 @@ def _conflict() -> DelegateCardError:
 # would drag a platform adapter and the coordinator into a layer that must stay
 # pure, so the inputs are mirrored *and* proven equal rather than imported.
 # --------------------------------------------------------------------------- #
-#: ``gateway/platforms/feishu.py::_FEISHU_SEND_ATTEMPTS`` — the adapter's own
-#: transient-retry ladder for one ``im.v1.message.patch`` call.
+#: ``plugins/platforms/feishu/adapter.py::_FEISHU_SEND_ATTEMPTS`` — the
+#: adapter's own transient-retry ladder, which the generic
+#: ``patch_interactive_card`` seam reuses for one ``im.v1.message.patch`` call.
 _FEISHU_PATCH_ATTEMPTS = 3
 #: ``gateway/sachima_delegate.py::_DEFAULT_OBSERVE_INTERVAL_SECONDS`` — the
 #: cadence at which a running Run's state can even be learned.
@@ -1623,7 +1624,8 @@ def bounded_card_payload(
 
     The bound is the adapter's own one-message limit, applied to the exact
     serialized string the SDK request body carries — the same value the delegate
-    delivery already reads from ``single_message_text_limit()``. Compaction runs
+    delivery already reads from the platform-neutral
+    ``max_message_length_for_chat()``. Compaction runs
     *before* the adapter call and fails closed: rows are dropped first, and a
     card that still does not fit is refused outright rather than sent for the
     API to reject. API rejection is not control flow.

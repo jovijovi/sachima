@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+from unittest.mock import patch
 
 
 def _parse(result: str) -> dict:
@@ -235,6 +236,25 @@ def test_media_list_and_delete_are_scoped(monkeypatch, tmp_path):
     assert deleted["success"] is True
     assert not target.exists()
     assert outside.exists()
+
+
+def test_media_delete_rejects_symlink_without_deleting_target(tmp_path):
+    root = tmp_path / "profile"
+    media_dir = root / "workspace" / "media" / "images"
+    media_dir.mkdir(parents=True)
+    original = media_dir / "original.png"
+    original.write_bytes(b"test")
+    alias = media_dir / "alias.png"
+    alias.symlink_to(original)
+
+    from tools import media_fetch_tool
+
+    with patch.object(media_fetch_tool, "get_hermes_home", return_value=root):
+        result = _parse(media_fetch_tool.media_delete("images/alias.png"))
+
+    assert result == {"success": False, "error": "symlink targets are not allowed"}
+    assert original.read_bytes() == b"test"
+    assert alias.is_symlink()
 
 
 def test_media_fetch_root_is_canonical_and_rejects_symlinked_workspace(monkeypatch, tmp_path):

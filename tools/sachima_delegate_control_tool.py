@@ -49,7 +49,7 @@ model-invoked control surface safe:
   accepted, so a model cannot act on a conversation it is not in. A *task* also
   belongs to a Session, and context compression forks a new physical one out
   from under a live conversation — so "is this task yours" is asked of
-  ``gateway.session_continuity``, which admits this exact Session or a
+  ``gateway.session_context``, which admits this exact Session or a
   compression continuation of it proven hop by hop from persisted lineage.
   ``/new``, reset, ``/branch``, and subagent runs inherit nothing, and this
   surface holds no copy of that rule.
@@ -145,15 +145,14 @@ def _trusted_session() -> Any:
     """The caller's live conversation, from trusted Gateway context only.
 
     Never a tool argument. The Gateway sets both the id and the key, and the
-    Session/Gateway authority in ``gateway.session_continuity`` resolves them —
+    Session/Gateway authority in ``gateway.session_context`` resolves them —
     including the one legitimate disagreement, the window where context
     compression has already rotated the contextvar onto the continuation and the
     store still names the pre-compression parent. That window is admitted only
     on persisted, per-hop lineage proof; this surface holds no rule of its own.
     """
 
-    from gateway.session_context import get_session_env
-    from gateway.session_continuity import resolve_trusted_session
+    from gateway.session_context import get_session_env, resolve_trusted_session
 
     store = _bound_session_store()
     if store is None:

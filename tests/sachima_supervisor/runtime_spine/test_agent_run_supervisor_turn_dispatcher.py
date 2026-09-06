@@ -32,12 +32,10 @@ from typing import Any
 import pytest
 
 from sachima_supervisor.runtime_spine import (
-    LiveProgressSourceBindings,
     SpineError,
     TaskRegistry,
     build_launch_spec,
     scan_for_leak,
-    serialize_live_progress_source,
 )
 from sachima_supervisor.runtime_spine.agent_run_supervisor_execution_binding import (
     prompt_resolver_from_payload_resolver,
@@ -53,6 +51,7 @@ from sachima_supervisor.runtime_spine.arsd_supervisor_backend import (
 from sachima_supervisor.runtime_spine.agent_run_supervisor_port import (
     AgentRunSupervisorPort,
 )
+from sachima_supervisor.runtime_spine import supervisor_turn_backend as turns
 from sachima_supervisor.runtime_spine.supervisor_turn_backend import (
     SUPERVISOR_TURN_STATUSES,
     TaskOperationLocks,
@@ -260,6 +259,98 @@ def _config(tmp_path: Path) -> ArsdSupervisorConfig:
     )
 
 
+@dataclasses.dataclass(frozen=True)
+class _SafeSource:
+    """The safe half of a binding: refs and a foreign cursor, nothing else."""
+
+    task_id: str
+    session_id: str
+    source_kind: str
+    artifact_ref: str
+    last_seen_cursor: int | None
+
+    def as_dict(self) -> dict[str, Any]:
+        return dataclasses.asdict(self)
+
+
+@dataclasses.dataclass(frozen=True, repr=False)
+class _ResolvedSource:
+    """The safe source plus the private locator, as the real store pairs them."""
+
+    source: _SafeSource
+    artifact_dir: str = dataclasses.field(repr=False)
+
+
+class _SourceSinkDouble:
+    """A ``TurnSourceSink`` double: the contract the dispatcher publishes into.
+
+    The dispatcher is deliberately written against the neutral sink contract
+    rather than any one read-model implementation, so this suite exercises the
+    contract. It keeps the property that matters for the assertions below —
+    the private locator is held apart from the safe source and never reachable
+    from the safe half — and nothing else.
+    """
+
+    def __init__(self) -> None:
+        self._bound: dict[tuple[str, str], _ResolvedSource] = {}
+
+    def bind_source(
+        self,
+        task_id: str,
+        session_id: str,
+        source_kind: str,
+        private_locator: str,
+        artifact_ref: str,
+        *,
+        last_seen_cursor: int | None = None,
+    ) -> _SafeSource:
+        source = _SafeSource(
+            task_id=task_id,
+            session_id=session_id,
+            source_kind=source_kind,
+            artifact_ref=artifact_ref,
+            last_seen_cursor=last_seen_cursor,
+        )
+        self._bound[(task_id, session_id)] = _ResolvedSource(source, private_locator)
+        return source
+
+    def resolve(self, task_id: str, session_id: str) -> _ResolvedSource:
+        try:
+            return self._bound[(task_id, session_id)]
+        except KeyError:
+            raise SpineError("runtime_invalid_live_progress_source") from None
+
+    def resolve_source(self, task_id: str, session_id: str) -> _SafeSource:
+        return self.resolve(task_id, session_id).source
+
+    def update_last_seen_cursor(
+        self, task_id: str, cursor: int, session_id: str
+    ) -> _SafeSource:
+        resolved = self.resolve(task_id, session_id)
+        updated = dataclasses.replace(resolved.source, last_seen_cursor=cursor)
+        self._bound[(task_id, session_id)] = _ResolvedSource(
+            updated, resolved.artifact_dir
+        )
+        return updated
+
+
+@pytest.fixture(autouse=True)
+def _admit_the_sink_double(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Admit the double through the sink's own exact-type factory allowlist.
+
+    The allowlist is the production admission gate and is not weakened here:
+    the double is admitted by being *named* in it, exactly as a real sink is,
+    so every construction below still goes through
+    ``validate_turn_source_sink``.
+    """
+
+    monkeypatch.setattr(
+        turns,
+        "_SOURCE_SINK_FACTORY_ALLOWLIST",
+        (("test_double", __name__, "_SourceSinkDouble"),),
+    )
+
+
 @pytest.fixture()
 def rig(tmp_path: Path):
     facade = _FacadeDouble()
@@ -284,7 +375,7 @@ def rig(tmp_path: Path):
     )
     registry = TaskRegistry()
     port = AgentRunSupervisorPort(registry, backend)
-    bindings = LiveProgressSourceBindings()
+    bindings = _SourceSinkDouble()
 
     dispatcher = AgentRunSupervisorTurnDispatcher(
         port, backend, bindings, registry, resolver, task_locks=task_locks
@@ -745,14 +836,14 @@ def test_payload_and_private_material_never_leak_into_any_surface(rig) -> None:
     events = rig.registry.log.events_for("task_alpha")
     surfaces.extend(json.dumps(_event_dict(event)) for event in events)
     source = rig.bindings.resolve_source("task_alpha", rig.ref.session_id)
-    surfaces.append(serialize_live_progress_source(source).decode("utf-8"))
+    surfaces.append(json.dumps(source.as_dict()))
     surfaces.append(json.dumps(dataclasses.asdict(rig.port.status(rig.ref))))
     combined = "\n".join(surfaces)
     assert canary not in combined
     assert _SOCKET_CANARY not in combined
     assert _RUN_ID_CANARY not in combined
     assert _ARS_SESSION_CANARY not in combined
-    assert scan_for_leak(json.loads(serialize_live_progress_source(source))) is None
+    assert scan_for_leak(source.as_dict()) is None
     assert rig.resolver_calls.count("payload_canary") == 1
 
 
@@ -939,7 +1030,7 @@ def test_a_recomposed_dispatcher_rehydrates_the_accepted_run_without_submitting(
     )
     fresh_registry = TaskRegistry()
     fresh_port = AgentRunSupervisorPort(fresh_registry, fresh_backend)
-    fresh_bindings = LiveProgressSourceBindings()
+    fresh_bindings = _SourceSinkDouble()
     fresh_dispatcher = AgentRunSupervisorTurnDispatcher(
         fresh_port,
         fresh_backend,

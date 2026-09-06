@@ -34,6 +34,12 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     "tool_progress": "all",
     "tool_progress_grouping": "accumulate",  # "accumulate" = edit one bubble; "separate" = one msg per tool
     "show_reasoning": False,
+    # How a reasoning/thinking summary is rendered when show_reasoning is on.
+    #   "code"      -> 💭 **Reasoning:** + fenced code block (legacy default)
+    #   "blockquote"-> each line prefixed with "> "
+    #   "subtext"   -> each line prefixed with "-# " (Discord small grey subtext)
+    # Discord defaults to "subtext"; everywhere else defaults to "code".
+    "reasoning_style": "code",
     "tool_preview_length": 0,
     "streaming": None,  # None = follow top-level streaming config
     # Gateway-only assistant/status chatter controls. These default on for
@@ -41,15 +47,30 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     "interim_assistant_messages": True,
     "long_running_notifications": True,
     "busy_ack_detail": True,
+    # Whether busy_input_mode=steer sends a visible "Steered into current run"
+    # acknowledgment after successfully injecting the user's mid-turn message.
+    # Disable when the platform should steer silently (the text still lands in
+    # the active run; only the confirmation echo is suppressed).
+    "busy_steer_ack_enabled": True,
     # When true, delete tool-progress / "⏳ Working — N min" / status bubbles
     # after the final response lands on platforms that support message
     # deletion (e.g. Telegram). Off by default — progress is still shown
     # live, just cleaned up after success so the chat doesn't fill up with
     # stale breadcrumbs. Failed runs leave bubbles in place as breadcrumbs.
     "cleanup_progress": False,
-    # Rich weather cards/text are production delivery behavior; require an
-    # explicit opt-in instead of enabling extra rendering/sending by default.
+    # Rich weather delivery is production behaviour, so it remains off until
+    # the user explicitly selects text/card/auto rendering.
     "rich_result_weather": "off",  # off | auto | text | card
+    # Live working-state status on platforms whose typing indicator renders
+    # text (Slack's assistant status line). Values:
+    #   "full" / true  -> verb + argument preview ("is running pytest…")
+    #   "verb"         -> verb only ("is running…") — keeps file paths and
+    #                     commands out of shared channels
+    #   "off" / false  -> static text (typing_status_text or "is thinking...")
+    # Independent of tool_progress: works even when progress bubbles are off
+    # (Slack's default), and costs no extra API calls — the existing typing
+    # refresh cadence just renders different text.
+    "live_status": "full",
 }
 
 # ---------------------------------------------------------------------------
@@ -114,15 +135,29 @@ _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
         "tool_progress": "off",
         "busy_ack_detail": False,
     },
-    "discord":     _TIER_HIGH,
+    # Discord has a native "subtext" primitive (-# small grey text) that reads
+    # as metadata rather than content, so reasoning summaries default to it
+    # here instead of the fenced code block used elsewhere.
+    "discord":     {**_TIER_HIGH, "reasoning_style": "subtext"},
 
     # Tier 2 — edit support, often customer/workspace channels
     # Slack: tool_progress off by default — Bolt posts cannot be edited like CLI;
     # "new"/"all" spam permanent lines in channels (hermes-agent#14663).
-    "slack":           {**_TIER_MEDIUM, "tool_progress": "off"},
+    "slack":           {
+        **_TIER_MEDIUM,
+        "tool_progress": "off",
+        "long_running_notifications": False,
+        "busy_ack_detail": False,
+    },
     "mattermost":      _TIER_MEDIUM,
     "matrix":          _TIER_MEDIUM,
     "feishu":          _TIER_MEDIUM,
+    # Buzz (Nostr relay via buzz-cli): messages can be edited in place
+    # (`buzz messages edit`), so grouped/accumulating progress works, but
+    # channels are shared community spaces — keep the medium tier. Without
+    # this entry Buzz inherited the verbose _GLOBAL_DEFAULTS and every
+    # interim update became a separate permanent channel post (#95841).
+    "buzz":            _TIER_MEDIUM,
 
     # Tier 3 — no edit support, progress messages are permanent
     "signal":          _TIER_LOW,
@@ -133,9 +168,21 @@ _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
     # status update as a separate message. Promote to TIER_MEDIUM once
     # Cloud's edit_message lands.
     "whatsapp_cloud":  _TIER_LOW,
+    # Photon (managed iMessage over the gRPC sidecar) and BlueBubbles are both
+    # permanent-message iMessage inboxes with no message-edit support, so both
+    # stay TIER_LOW. This keeps tool progress, interim scratch commentary,
+    # "still working" heartbeats, and busy-ack iteration detail out of the
+    # user's iMessage thread. Without this entry Photon inherited the noisy
+    # global ("all") defaults and compacted/narrated on nearly every turn.
+    "photon":          _TIER_LOW,
     "bluebubbles":     _TIER_LOW,
     "weixin":          _TIER_LOW,
-    "wecom":           _TIER_LOW,
+    # WeCom is technically non-editable but exposes a native streaming
+    # transport (msgtype: "stream" via aibot_respond_msg) that the gateway
+    # consumer routes mid-stream content through. Enable streaming by default
+    # so the WeCom client renders the typing animation and cumulative content
+    # updates instead of a single one-shot markdown drop.
+    "wecom":           {**_TIER_LOW, "streaming": True},
     "wecom_callback":  _TIER_LOW,
     "dingtalk":        _TIER_LOW,
 
@@ -227,24 +274,49 @@ def _normalise(setting: str, value: Any) -> Any:
             return "off"
         if value is True:
             return "all"
-        return str(value).lower()
+        val = str(value).strip().lower()
+        if val in {"false", "0", "no"}:
+            return "off"
+        if val in {"true", "1", "yes", "on"}:
+            return "all"
+        return val if val in {"off", "new", "all", "verbose", "log"} else "all"
     if setting in {
         "show_reasoning",
         "streaming",
         "interim_assistant_messages",
         "long_running_notifications",
         "busy_ack_detail",
+        "busy_steer_ack_enabled",
+        "thinking_progress",
     }:
         if isinstance(value, str):
-            return value.lower() in {"true", "1", "yes", "on"}
+            val = value.strip().lower()
+            if val == "generic" and setting == "long_running_notifications":
+                return "generic"
+            return val in {"true", "1", "yes", "on", "raw", "verbose"}
         return bool(value)
     if setting == "cleanup_progress":
         if isinstance(value, str):
             return value.lower() in {"true", "1", "yes", "on"}
         return bool(value)
+    if setting == "live_status":
+        # Tri-state: "full" (verb + preview), "verb" (verb only), "off".
+        if value is True:
+            return "full"
+        if value is False:
+            return "off"
+        val = str(value).strip().lower()
+        if val in {"true", "1", "yes", "on", "all"}:
+            return "full"
+        if val in {"false", "0", "no"}:
+            return "off"
+        return val if val in {"full", "verb", "off"} else "full"
     if setting == "tool_progress_grouping":
         val = str(value).lower()
         return val if val in ("accumulate", "separate") else "accumulate"
+    if setting == "reasoning_style":
+        val = str(value).lower()
+        return val if val in ("code", "blockquote", "subtext") else "code"
     if setting == "tool_preview_length":
         try:
             return int(value)

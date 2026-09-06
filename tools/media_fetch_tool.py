@@ -24,8 +24,6 @@ import urllib.parse
 from pathlib import Path
 from typing import Any
 
-import yaml
-
 from hermes_constants import get_hermes_home
 from tools.registry import registry
 from utils import atomic_replace
@@ -79,16 +77,16 @@ def _error(message: str, **extra: Any) -> str:
 
 def _load_config() -> dict[str, Any]:
     cfg = dict(_DEFAULT_CONFIG)
-    config_path = get_hermes_home() / "config.yaml"
-    if config_path.exists():
-        try:
-            raw = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
-            section = raw.get("media_fetch") if isinstance(raw, dict) else None
-            if isinstance(section, dict):
-                cfg.update(section)
-        except Exception:
-            # Config parse failures must not weaken boundaries.
-            pass
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        raw = load_config_readonly()
+        section = raw.get("media_fetch") if isinstance(raw, dict) else None
+        if isinstance(section, dict):
+            cfg.update(section)
+    except Exception:
+        # Config parse failures must not weaken boundaries.
+        pass
 
     for key in ("image_max_bytes", "video_max_bytes", "timeout_seconds", "max_redirects"):
         try:
@@ -140,15 +138,16 @@ def _resolve_media_path(path: str, *, must_exist: bool = False) -> tuple[Path, P
     root = _media_root(cfg)
     root.mkdir(parents=True, exist_ok=True)
     rel = _safe_relative_path(path)
-    target = (root / rel).resolve()
+    target = root / rel
+    if target.is_symlink():
+        raise ValueError("symlink targets are not allowed")
+    target = target.resolve()
     try:
         target.relative_to(root)
     except ValueError as exc:
         raise ValueError("path escapes media root") from exc
     if must_exist and not target.exists():
         raise FileNotFoundError(path)
-    if target.exists() and target.is_symlink():
-        raise ValueError("symlink targets are not allowed")
     return root, target, cfg
 
 

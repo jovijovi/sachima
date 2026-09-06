@@ -34,7 +34,7 @@ class BraveFreeWebSearchProvider(WebSearchProvider):
     """Search-only Brave provider using the free-tier Data-for-Search API.
 
     Free tier is 2,000 queries/month (1 qps). No content-extraction capability —
-    users pair this with Firecrawl/Tavily/Exa for ``web_extract``.
+    users pair this with Firecrawl/Keenable/Exa for ``web_extract``.
     """
 
     @property
@@ -49,7 +49,9 @@ class BraveFreeWebSearchProvider(WebSearchProvider):
 
     def is_available(self) -> bool:
         """Return True when ``BRAVE_SEARCH_API_KEY`` is set to a non-empty value."""
-        return bool(os.getenv("BRAVE_SEARCH_API_KEY", "").strip())
+        from agent.web_search_provider import get_provider_env
+
+        return bool(get_provider_env("BRAVE_SEARCH_API_KEY"))
 
     def supports_search(self) -> bool:
         return True
@@ -65,7 +67,9 @@ class BraveFreeWebSearchProvider(WebSearchProvider):
         """
         import httpx
 
-        api_key = os.getenv("BRAVE_SEARCH_API_KEY", "").strip()
+        from agent.web_search_provider import get_provider_env
+
+        api_key = get_provider_env("BRAVE_SEARCH_API_KEY")
         if not api_key:
             return {"success": False, "error": "BRAVE_SEARCH_API_KEY is not set"}
 

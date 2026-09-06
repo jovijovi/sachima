@@ -1,5 +1,11 @@
 # Sachima Private Hermes Runtime Spine Development Plan
 
+> **Baseline reconciliation (2026-09-06):** The R0–R5 design remains the
+> governing Sachima roadmap on the Hermes Agent `v2026.8.31`
+> upstream-structure-first candidate. References to implementation completion
+> are source/task history, not claims that this candidate has been deployed or
+> independently accepted.
+
 > **For Hermes:** Treat this as a governed docs-only development plan. Source implementation still requires a separate named approval; when approved, use `subagent-driven-development` and TDD slice by slice.
 
 **Goal:** Build the Private Hermes Runtime Spine as Sachima's minimal runtime backbone: one `task_id` spine, refs-only event truth, deterministic projection, supervised external local AGENT attachment, and optional Temporal durability.

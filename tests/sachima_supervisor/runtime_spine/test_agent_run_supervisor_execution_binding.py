@@ -1,17 +1,17 @@
-"""One-call ``arsd`` execution binding bundle (port + dispatcher + display).
+"""One-call ``arsd`` execution binding bundle (port + dispatcher + sink).
 
 Tests for :func:`bind_arsd_execution`: the composition root that builds the
-full seam (registry + the ``arsd`` backend + port + turn dispatcher + source
-bindings + LS4-A-gated query service + display service) from one validated,
-explicitly enabled config.
+execution seam (registry + the ``arsd`` backend + port + turn dispatcher +
+the host's read-model source sink) from one validated, explicitly enabled
+config.
 
 The retired ``library`` composition root this file used to cover is gone (plan
 P5, seam S-1), and with it any path that could compose one. Default-off posture
-is preserved at every layer: a disabled config refuses to compose, a composed
-bundle without an explicit activation gate keeps the query/display chain
-fail-closed, and composing a bundle submits **no** Run. Pure local/offline: the
-daemon is reached only through an injected facade double, so no test opens a
-socket, starts a daemon, reaches the network, or launches a real AGENT.
+is preserved at every layer: a disabled config refuses to compose, the seam
+composes no query or display surface at all, and composing a bundle submits
+**no** Run. Pure local/offline: the daemon is reached only through an injected
+facade double, so no test opens a socket, starts a daemon, reaches the
+network, or launches a real AGENT.
 """
 
 from __future__ import annotations
@@ -29,17 +29,15 @@ import pytest
 
 from sachima_supervisor.runtime_spine import (
     RUNTIME_INVALID_SESSION,
-    RUNTIME_LIVE_PROGRESS_QUERY_DISABLED,
     SpineError,
     build_launch_spec,
-    hermes_internal_query_gate,
     scan_for_leak,
 )
 from sachima_supervisor.runtime_spine.agent_run_supervisor_execution_binding import (
     AgentRunSupervisorExecutionBinding,
     bind_arsd_execution,
 )
-from sachima_supervisor.runtime_spine import LiveProgressSourceBindings, TaskRegistry
+from sachima_supervisor.runtime_spine import TaskRegistry
 from sachima_supervisor.runtime_spine.arsd_run_binding_ledger import ArsdRunBindingLedger
 from sachima_supervisor.runtime_spine.arsd_socket_contract import (
     ARSD_SUPERVISOR_CONFIG_TYPE,
@@ -49,17 +47,11 @@ from sachima_supervisor.runtime_spine.arsd_socket_contract import (
 from sachima_supervisor.runtime_spine.agent_run_supervisor_port import (
     AgentRunSupervisorPort,
 )
-from sachima_supervisor.runtime_spine.live_progress_display import (
-    LiveProgressDisplayService,
-)
-from sachima_supervisor.runtime_spine.live_progress_query import (
-    LiveProgressQueryService,
-)
+from sachima_supervisor.runtime_spine import supervisor_turn_backend as turns
 from sachima_supervisor.runtime_spine.agent_run_supervisor_turn_dispatcher import (
     AgentRunSupervisorTurnDispatcher,
 )
 from sachima_supervisor.runtime_spine.arsd_supervisor_backend import (
-    ArsdLiveProgressReader,
     ArsdSupervisorBackend,
 )
 from sachima_supervisor.runtime_spine.agent_run_supervisor_turn_dispatcher import (
@@ -239,15 +231,68 @@ class _FacadeDouble:
         return {"agent_ids": list(REGISTERED_AGENT_IDS)}
 
 
-def _bundle(tmp_path: Path, *, gate=None, payload_resolver=None, reader=None):
+class _SourceSinkDouble:
+    """A ``TurnSourceSink`` double — the contract the dispatcher publishes into.
+
+    The execution seam composes a sink it does not implement, so these tests
+    exercise the contract rather than any one read-model implementation. It
+    keeps only what the identity assertions below need.
+    """
+
+    def __init__(self) -> None:
+        self.bound: dict[tuple[str, str], tuple[str, str, str, int | None]] = {}
+
+    def bind_source(
+        self,
+        task_id: str,
+        session_id: str,
+        source_kind: str,
+        private_locator: str,
+        artifact_ref: str,
+        *,
+        last_seen_cursor: int | None = None,
+    ) -> None:
+        self.bound[(task_id, session_id)] = (
+            source_kind,
+            private_locator,
+            artifact_ref,
+            last_seen_cursor,
+        )
+
+    def update_last_seen_cursor(
+        self, task_id: str, cursor: int, session_id: str
+    ) -> None:
+        kind, locator, ref, _ = self.bound[(task_id, session_id)]
+        self.bound[(task_id, session_id)] = (kind, locator, ref, cursor)
+
+    def artifact_ref(self, task_id: str, session_id: str) -> str:
+        return self.bound[(task_id, session_id)][2]
+
+
+@pytest.fixture(autouse=True)
+def _admit_the_sink_double(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Admit the double through the sink's own exact-type factory allowlist.
+
+    The production admission gate is not weakened: the double is admitted by
+    being *named* in the allowlist, exactly as a real sink is, so every
+    composition below still passes ``validate_turn_source_sink``.
+    """
+
+    monkeypatch.setattr(
+        turns,
+        "_SOURCE_SINK_FACTORY_ALLOWLIST",
+        (("test_double", __name__, "_SourceSinkDouble"),),
+    )
+
+
+def _bundle(tmp_path: Path, *, payload_resolver=None, bindings=None):
     facade = _FacadeDouble()
     bundle = bind_arsd_execution(
         _config(tmp_path),
-        gate=gate,
         payload_resolver=payload_resolver,
         facade=facade,
         ledger=ArsdRunBindingLedger(str(tmp_path / "ledger.json")),
-        progress_reader=reader,
+        bindings=_SourceSinkDouble() if bindings is None else bindings,
     )
     return bundle, facade
 
@@ -288,16 +333,16 @@ def test_the_retired_library_composition_root_is_gone() -> None:
 def test_bundle_composes_shared_spine_objects(tmp_path: Path) -> None:
     bundle, _ = _bundle(tmp_path)
     assert isinstance(bundle, AgentRunSupervisorExecutionBinding)
-    assert bundle.query_service.bindings is bundle.bindings
-    assert bundle.query_service.registry is bundle.registry
-    assert bundle.query_service.port is bundle.port
-    assert bundle.display_service.query_service is bundle.query_service
+    assert bundle.dispatcher.registry is bundle.registry
+    assert bundle.dispatcher.port is bundle.port
+    assert bundle.dispatcher.bindings is bundle.bindings
+    assert bundle.port._registry is bundle.registry
 
 
-def test_composing_the_display_service_submits_no_run(tmp_path: Path) -> None:
+def test_composing_the_bundle_submits_no_run(tmp_path: Path) -> None:
     """A composed host has not started work — it has only proven the contract."""
 
-    bundle, facade = _bundle(tmp_path, gate=hermes_internal_query_gate())
+    bundle, facade = _bundle(tmp_path)
     assert facade.submitted == []
     assert facade.ops("submit") == 0
     # Composition negotiates the contract, and does nothing else on the wire.
@@ -307,9 +352,77 @@ def test_composing_the_display_service_submits_no_run(tmp_path: Path) -> None:
     assert facade.ops("submit") == 0
 
 
-def test_the_default_read_model_is_the_arsd_reader(tmp_path: Path) -> None:
+def test_the_execution_seam_composes_no_query_or_display_surface(
+    tmp_path: Path,
+) -> None:
+    """Composing execution never brings a read/query surface with it.
+
+    The LS4 query gate and the display renderer are a separately approved,
+    default-off surface that *extends* this bundle. A composition root that
+    built them itself would make "compose the execution seam" and "expose a
+    live-progress surface" the same act, which is exactly the coupling the
+    separate approval exists to prevent.
+    """
+
     bundle, _ = _bundle(tmp_path)
-    assert isinstance(bundle.query_service.progress_reader, ArsdLiveProgressReader)
+    for surface in ("query_service", "display_service", "progress_reader"):
+        assert not hasattr(bundle, surface), surface
+
+    import sachima_supervisor.runtime_spine.agent_run_supervisor_execution_binding as mod
+
+    src = Path(mod.__file__).read_text(encoding="utf-8")
+    for token in ("LiveProgressQueryService", "LiveProgressDisplayService"):
+        assert token not in src, token
+
+
+def test_an_execution_only_bundle_composes_without_a_sink(tmp_path: Path) -> None:
+    """No read model composed means no sink — not an invented empty one."""
+
+    facade = _FacadeDouble()
+    bundle = bind_arsd_execution(
+        _config(tmp_path),
+        facade=facade,
+        ledger=ArsdRunBindingLedger(str(tmp_path / "ledger.json")),
+    )
+    assert bundle.bindings is None
+    assert bundle.dispatcher.bindings is None
+    assert facade.ops("submit") == 0
+
+
+def test_the_sink_is_admitted_only_through_the_factory_allowlist(
+    tmp_path: Path,
+) -> None:
+    """A sink is exact-type admitted, exactly as a backend is.
+
+    The private locator is written into whatever the sink is, so a
+    protocol-shaped object that merely *looks* like one is refused rather than
+    handed a task's private material.
+    """
+
+    class _ProtocolShapedSink:
+        def bind_source(
+            self,
+            task_id,
+            session_id,
+            source_kind,
+            private_locator,
+            artifact_ref,
+            *,
+            last_seen_cursor=None,
+        ): ...
+
+    class _HostileSubclass(_SourceSinkDouble):
+        pass
+
+    for refused in (_ProtocolShapedSink(), _HostileSubclass(), object()):
+        with pytest.raises(SpineError) as exc:
+            bind_arsd_execution(
+                _config(tmp_path),
+                facade=_FacadeDouble(),
+                ledger=ArsdRunBindingLedger(str(tmp_path / "ledger.json")),
+                bindings=refused,
+            )
+        assert exc.value.code == RUNTIME_INVALID_TURN_DISPATCH
 
 
 def test_bundle_admits_a_backend_only_through_the_factory_allowlist(tmp_path: Path) -> None:
@@ -339,15 +452,8 @@ def test_bundle_admits_a_backend_only_through_the_factory_allowlist(tmp_path: Pa
         assert exc.value.code == RUNTIME_INVALID_SESSION
 
 
-def test_query_chain_stays_default_off_without_gate(tmp_path: Path) -> None:
-    bundle, _ = _bundle(tmp_path)
-    with pytest.raises(SpineError) as exc:
-        bundle.query_service.query_task_live_progress("task_alpha", "sess_1")
-    assert exc.value.code == RUNTIME_LIVE_PROGRESS_QUERY_DISABLED
-
-
 def test_dispatch_stays_fail_closed_without_payload_resolver(tmp_path: Path) -> None:
-    bundle, facade = _bundle(tmp_path, gate=hermes_internal_query_gate())
+    bundle, facade = _bundle(tmp_path)
     ref = _attach(bundle)
     request = TurnDispatchRequest(
         task_id="task_alpha",
@@ -362,11 +468,17 @@ def test_dispatch_stays_fail_closed_without_payload_resolver(tmp_path: Path) -> 
     assert facade.ops("submit") == 0
 
 
-def test_dispatched_turn_feeds_display_chain_end_to_end(tmp_path: Path) -> None:
+def test_a_dispatched_turn_publishes_into_the_composed_sink(tmp_path: Path) -> None:
+    """The composed seam end to end: one turn, one binding, refs-only events.
+
+    The dispatcher's own suite proves the binding semantics; what is proven
+    here is that the *composition root* wires the sink it published on the
+    bundle to the dispatcher that writes into it, so a host that composed one
+    bundle does not have to hand-copy bindings between two.
+    """
+
     payloads = {"payload_goal_1": "ship the integration"}
-    bundle, facade = _bundle(
-        tmp_path, gate=hermes_internal_query_gate(), payload_resolver=payloads.__getitem__
-    )
+    bundle, facade = _bundle(tmp_path, payload_resolver=payloads.__getitem__)
     ref = _attach(bundle)
     outcome = bundle.dispatcher.dispatch(
         TurnDispatchRequest(
@@ -379,24 +491,32 @@ def test_dispatched_turn_feeds_display_chain_end_to_end(tmp_path: Path) -> None:
     assert outcome.supervisor_status == "accepted"
     assert facade.ops("submit") == 1
 
-    display = bundle.display_service.display_task_live_progress(
-        "task_alpha", ref.session_id
-    )
-    payload = display.as_dict()
-    assert payload["task_id"] == "task_alpha"
-    assert payload["session_id"] == ref.session_id
-    assert payload["artifact_ref"] == outcome.artifact_ref
-    assert payload["progress_available"] is True
-    assert payload["observed_event_count"] == 2
-    assert isinstance(payload["display_lines"], list) and payload["display_lines"]
+    # The bundle's own sink is the one that received the turn.
+    bound = bundle.bindings.bound[("task_alpha", ref.session_id)]
+    source_kind, private_locator, artifact_ref, last_seen_cursor = bound
+    assert source_kind == "arsd_run"
+    assert artifact_ref == outcome.artifact_ref
+    # A new turn is a new read-model stream: the foreign cursor starts unset.
+    assert last_seen_cursor is None
 
-    # Refs, counts and coarse tokens only — never the private run id, the
-    # socket path, the prompt, or remote free text.
-    assert scan_for_leak(payload) is None
-    rendered = json.dumps(payload)
-    for canary in (_RUN_ID_CANARY, _ARS_SESSION_CANARY, _SOCKET_CANARY, "never surfaced"):
-        assert canary not in rendered, canary
-    assert str(tmp_path) not in rendered
+    # The private locator reached the sink and nothing else: not the outcome,
+    # not the canonical log, not the bundle's own repr.
+    surfaces = [
+        json.dumps(dataclasses.asdict(outcome)),
+        json.dumps(list(bundle.port.stream(ref))),
+        repr(bundle),
+    ]
+    for surface in surfaces:
+        assert scan_for_leak(surface) is None, surface
+        for canary in (
+            _RUN_ID_CANARY,
+            _ARS_SESSION_CANARY,
+            _SOCKET_CANARY,
+            "never surfaced",
+            private_locator,
+            str(tmp_path),
+        ):
+            assert canary not in surface, canary
 
 
 def test_two_turns_run_in_one_ars_session_without_the_task_going_terminal(
@@ -413,7 +533,7 @@ def test_two_turns_run_in_one_ars_session_without_the_task_going_terminal(
 
     payloads = {"payload_turn_1": "ship the integration", "payload_turn_2": "now review it"}
     bundle, facade = _bundle(
-        tmp_path, gate=hermes_internal_query_gate(), payload_resolver=payloads.__getitem__
+        tmp_path, payload_resolver=payloads.__getitem__
     )
     ref = _attach(bundle)
 
@@ -431,9 +551,8 @@ def test_two_turns_run_in_one_ars_session_without_the_task_going_terminal(
     assert first.supervisor_status == "accepted"
     assert bundle.port.status(ref).terminal is False
 
-    # The caller reads the first turn's stream and advances its cursor.
-    display = bundle.display_service.display_task_live_progress("task_alpha", ref.session_id)
-    assert display.as_dict()["observed_event_count"] == 2
+    # The caller follows the first turn's stream and advances its cursor.
+    assert bundle.bindings.artifact_ref("task_alpha", ref.session_id) == first.turn_ref
     bundle.bindings.update_last_seen_cursor("task_alpha", 2, ref.session_id)
 
     # The first Run ends. The task does not.
@@ -457,12 +576,14 @@ def test_two_turns_run_in_one_ars_session_without_the_task_going_terminal(
 
     # Distinct turn refs, and a cursor that did not bleed across the turns.
     assert first.turn_ref != second.turn_ref
-    source = bundle.bindings.resolve_source("task_alpha", ref.session_id)
-    assert source.artifact_ref == second.turn_ref
-    assert source.last_seen_cursor is None
-    assert bundle.bindings.resolve("task_alpha", ref.session_id).artifact_dir == (
-        f"{_RUN_ID_CANARY}-2"
-    )
+    _kind, locator, artifact_ref, cursor = bundle.bindings.bound[
+        ("task_alpha", ref.session_id)
+    ]
+    assert artifact_ref == second.turn_ref
+    # The advanced cursor belonged to the first turn's stream; the second turn
+    # is a new stream, so it starts unset rather than inheriting position 2.
+    assert cursor is None
+    assert locator == f"{_RUN_ID_CANARY}-2"
 
     # Still nonterminal after the second turn, and still one Session.
     assert bundle.port.status(ref).terminal is False
@@ -490,7 +611,7 @@ def test_a_lost_ack_is_recovered_through_the_composed_seam(tmp_path: Path) -> No
         return payloads[payload_ref]
 
     bundle, facade = _bundle(
-        tmp_path, gate=hermes_internal_query_gate(), payload_resolver=_resolver
+        tmp_path, payload_resolver=_resolver
     )
     ref = _attach(bundle)
     request = TurnDispatchRequest(
@@ -517,13 +638,14 @@ def test_a_lost_ack_is_recovered_through_the_composed_seam(tmp_path: Path) -> No
     # Resolved through the injected resolver, by the request's own ref.
     assert resolved == ["payload_turn_1", "payload_turn_1"]
 
-    # And it published like any acceptance: the display chain can read it.
-    display = bundle.display_service.display_task_live_progress("task_alpha", ref.session_id)
-    payload = display.as_dict()
-    assert payload["artifact_ref"] == recovered.turn_ref
-    assert payload["progress_available"] is True
-    assert scan_for_leak(payload) is None
-    assert _RUN_ID_CANARY not in json.dumps(payload)
+    # And it published like any acceptance: same sink, same binding shape, so
+    # a recovered turn is readable exactly as an ordinary one is.
+    kind, _locator, artifact_ref, cursor = bundle.bindings.bound[
+        ("task_alpha", ref.session_id)
+    ]
+    assert (kind, artifact_ref, cursor) == ("arsd_run", recovered.turn_ref, None)
+    assert scan_for_leak(json.dumps(dataclasses.asdict(recovered))) is None
+    assert _RUN_ID_CANARY not in json.dumps(dataclasses.asdict(recovered))
 
 
 def test_a_recomposed_bundle_rehydrates_the_accepted_run_without_submitting(
@@ -538,7 +660,7 @@ def test_a_recomposed_bundle_rehydrates_the_accepted_run_without_submitting(
 
     payloads = {"payload_turn_1": "ship the integration"}
     bundle, facade = _bundle(
-        tmp_path, gate=hermes_internal_query_gate(), payload_resolver=payloads.__getitem__
+        tmp_path, payload_resolver=payloads.__getitem__
     )
     ref = _attach(bundle)
     first = bundle.dispatcher.dispatch(
@@ -554,11 +676,10 @@ def test_a_recomposed_bundle_rehydrates_the_accepted_run_without_submitting(
     # A brand-new process over the same durable ledger, and the host's own
     # registry/bindings handed in rather than re-invented.
     fresh_registry = TaskRegistry()
-    fresh_bindings = LiveProgressSourceBindings()
+    fresh_bindings = _SourceSinkDouble()
     fresh_facade = _FacadeDouble()
     fresh = bind_arsd_execution(
         _config(tmp_path),
-        gate=hermes_internal_query_gate(),
         facade=fresh_facade,
         ledger=ArsdRunBindingLedger(str(tmp_path / "ledger.json")),
         registry=fresh_registry,
@@ -576,14 +697,13 @@ def test_a_recomposed_bundle_rehydrates_the_accepted_run_without_submitting(
     # daemon operation, no fabricated task state.
     assert fresh_facade.ops("submit") == 0
     assert fresh_facade.calls == calls_before
-    display = fresh.display_service.display_task_live_progress(
-        "task_alpha", fresh_ref.session_id
-    )
-    payload = display.as_dict()
-    assert payload["artifact_ref"] == turn_ref
-    assert payload["progress_available"] is True
-    assert payload["observed_event_count"] == 2
-    assert scan_for_leak(payload) is None
+    kind, locator, artifact_ref, cursor = fresh_bindings.bound[
+        ("task_alpha", fresh_ref.session_id)
+    ]
+    assert (kind, artifact_ref, cursor) == ("arsd_run", turn_ref, None)
+    # The private locator came back from the durable ledger and stayed private.
+    assert locator.startswith(_RUN_ID_CANARY)
+    assert _RUN_ID_CANARY not in turn_ref
 
 
 # --------------------------------------------------------------------------- #
@@ -600,12 +720,9 @@ def _second_spine(tmp_path: Path):
     )
     registry = TaskRegistry()
     port = AgentRunSupervisorPort(registry, backend)
-    bindings = LiveProgressSourceBindings()
+    bindings = _SourceSinkDouble()
     dispatcher = AgentRunSupervisorTurnDispatcher(
         port, backend, bindings, registry, lambda ref: "x"
-    )
-    query_service = LiveProgressQueryService(
-        bindings, registry, port, ArsdLiveProgressReader(facade)
     )
     return SimpleNamespace(
         backend=backend,
@@ -613,8 +730,6 @@ def _second_spine(tmp_path: Path):
         port=port,
         bindings=bindings,
         dispatcher=dispatcher,
-        query_service=query_service,
-        display_service=LiveProgressDisplayService(query_service=query_service),
     )
 
 
@@ -623,7 +738,7 @@ def test_a_composed_bundle_is_one_graph_sharing_one_lock_provider(
 ) -> None:
     """Every part is the same object as every other part's view of it."""
 
-    bundle, facade = _bundle(tmp_path, gate=hermes_internal_query_gate())
+    bundle, facade = _bundle(tmp_path)
 
     assert bundle.dispatcher.backend is bundle.backend
     assert bundle.dispatcher.port is bundle.port
@@ -652,7 +767,7 @@ def test_a_bundle_assembled_from_two_graphs_fails_closed(
     is precisely the one where a cancel can interleave with a publication.
     """
 
-    bundle, _facade = _bundle(tmp_path, gate=hermes_internal_query_gate())
+    bundle, _facade = _bundle(tmp_path)
     other = _second_spine(tmp_path)
     fields = {f.name: getattr(bundle, f.name) for f in dataclasses.fields(bundle)}
     fields[swapped] = getattr(other, swapped)
@@ -670,10 +785,10 @@ def test_the_composed_graph_dispatches_on_a_real_executor(tmp_path: Path) -> Non
     facade = _FacadeDouble()
     bundle = bind_arsd_execution(
         _config(tmp_path),
-        gate=hermes_internal_query_gate(),
         payload_resolver=payloads.__getitem__,
         facade=facade,
         ledger=ArsdRunBindingLedger(str(tmp_path / "ledger.json")),
+        bindings=_SourceSinkDouble(),
         executor=pool,
     )
     ref = bundle.port.create_or_attach(
@@ -710,91 +825,40 @@ def test_the_composed_graph_dispatches_on_a_real_executor(tmp_path: Path) -> Non
     assert facade.ops("submit") == 1
     assert bundle.dispatcher.task_locks is bundle.backend.task_locks
 
-    # ...and the read chain the identity checks admitted really does read it.
-    display = bundle.display_service.display_task_live_progress(
-        "task_alpha", ref.session_id
-    )
-    payload = display.as_dict()
-    assert payload["artifact_ref"] == box["outcome"].turn_ref
-    assert payload["progress_available"] is True
-    assert payload["observed_event_count"] == 2
-    assert scan_for_leak(payload) is None
+    # ...and the turn really was published into this bundle's own sink.
+    assert ("task_alpha", ref.session_id) in bundle.bindings.bound
 
 
-def _read_model(bundle) -> Any:
-    """The reader a bundle's own query service uses."""
-
-    return bundle.query_service.progress_reader
-
-
-@pytest.mark.parametrize(
-    "forge",
-    [
-        "display_only",
-        "query_and_display",
-        "query_with_foreign_bindings",
-        "query_with_foreign_registry",
-        "query_with_foreign_port",
-    ],
-)
-def test_a_bundle_whose_read_chain_belongs_to_another_graph_fails_closed(
-    tmp_path: Path, forge: str
+def test_a_bundle_whose_sink_belongs_to_another_graph_fails_closed(
+    tmp_path: Path,
 ) -> None:
-    """The read chain has to be reading THIS bundle's spine.
+    """The sink the bundle publishes has to be the one its dispatcher writes to.
 
-    A display service that renders another bundle's query service, or a query
-    service pointed at another bundle's bindings/registry/port, type-checks
-    perfectly and answers about a different conversation: it would read a Run
-    this task never dispatched, or miss the one it did. The mixed cases are the
-    subtle ones — a query service built from this graph's parts with exactly
-    one foreign — and the coherent ``query_and_display`` pair is subtler still,
-    because it is internally consistent and only disagrees with the bundle.
+    A bundle holding one sink while its dispatcher writes into another
+    type-checks perfectly, and everything downstream then reads a store this
+    task never wrote to: the bindings are on one object and the reader is on
+    the other. So it is checked by identity, exactly as the rest of the graph
+    is.
     """
 
-    bundle, facade = _bundle(tmp_path, gate=hermes_internal_query_gate())
+    bundle, facade = _bundle(tmp_path)
     other = _second_spine(tmp_path)
     fields = {f.name: getattr(bundle, f.name) for f in dataclasses.fields(bundle)}
-
-    if forge == "display_only":
-        fields["display_service"] = other.display_service
-    elif forge == "query_and_display":
-        fields["query_service"] = other.query_service
-        fields["display_service"] = other.display_service
-    else:
-        parts = {
-            "bindings": bundle.bindings,
-            "registry": bundle.registry,
-            "port": bundle.port,
-        }
-        parts[forge.removeprefix("query_with_foreign_")] = getattr(
-            other, forge.removeprefix("query_with_foreign_")
-        )
-        forged_query = LiveProgressQueryService(
-            parts["bindings"],
-            parts["registry"],
-            parts["port"],
-            _read_model(bundle),
-            gate=hermes_internal_query_gate(),
-        )
-        fields["query_service"] = forged_query
-        fields["display_service"] = LiveProgressDisplayService(
-            query_service=forged_query
-        )
+    fields["bindings"] = other.bindings
 
     with pytest.raises(SpineError) as exc:
         AgentRunSupervisorExecutionBinding(**fields)
     assert exc.value.code == RUNTIME_INVALID_SESSION
 
-    # Refused at construction: nothing was dispatched, queried, or submitted.
+    # Refused at construction: nothing was dispatched or submitted.
     assert facade.ops("submit") == 0
     assert facade.ops("run_events") == 0
 
 
-def test_a_composed_bundle_read_chain_is_this_bundles_own(tmp_path: Path) -> None:
-    """The positive control for the whole read chain, by identity."""
+def test_a_composed_bundle_sink_is_this_bundles_own(tmp_path: Path) -> None:
+    """The positive control: the bundle's sink is the dispatcher's sink."""
 
-    bundle, _facade = _bundle(tmp_path, gate=hermes_internal_query_gate())
-    assert bundle.query_service.bindings is bundle.bindings
-    assert bundle.query_service.registry is bundle.registry
-    assert bundle.query_service.port is bundle.port
-    assert bundle.display_service.query_service is bundle.query_service
+    bundle, _facade = _bundle(tmp_path)
+    assert bundle.dispatcher.bindings is bundle.bindings
+    assert bundle.dispatcher.registry is bundle.registry
+    assert bundle.dispatcher.port is bundle.port

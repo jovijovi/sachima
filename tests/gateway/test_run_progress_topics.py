@@ -10,11 +10,10 @@ from types import SimpleNamespace
 
 import pytest
 
+import gateway.platforms.base as base_platform
 from gateway.config import Platform, PlatformConfig, StreamingConfig
 from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult
-from gateway.progress.tracker import ProgressTracker
 from gateway.session import SessionSource
-from tools.todo_tool import TodoStore
 
 
 class ProgressCaptureAdapter(BasePlatformAdapter):
@@ -24,7 +23,7 @@ class ProgressCaptureAdapter(BasePlatformAdapter):
         self.edits = []
         self.typing = []
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         return True
 
     async def disconnect(self) -> None:
@@ -59,6 +58,37 @@ class ProgressCaptureAdapter(BasePlatformAdapter):
 
     async def get_chat_info(self, chat_id: str):
         return {"id": chat_id}
+
+
+class DiscordProgressCaptureAdapter(ProgressCaptureAdapter):
+    """Capture sends while exercising Discord's real preview formatter."""
+
+    def __init__(self):
+        super().__init__(platform=Platform.DISCORD)
+
+    def format_tool_preview(self, preview, **kwargs):
+        from plugins.platforms.discord.adapter import DiscordAdapter
+
+        return DiscordAdapter.format_tool_preview(self, preview, **kwargs)
+
+
+class MediaCaptureProgressAdapter(ProgressCaptureAdapter):
+    """Capture native image batches without contacting a platform API."""
+
+    def __init__(self, platform=Platform.TELEGRAM):
+        super().__init__(platform=platform)
+        self.image_batches = []
+
+    async def send_multiple_images(
+        self, chat_id, images, metadata=None, human_delay=0.0
+    ) -> None:
+        self.image_batches.append(
+            {
+                "chat_id": chat_id,
+                "images": images,
+                "metadata": metadata,
+            }
+        )
 
 
 class SmallLimitProgressAdapter(ProgressCaptureAdapter):
@@ -117,253 +147,64 @@ class MetadataEditProgressCaptureAdapter(ProgressCaptureAdapter):
         return SendResult(success=True, message_id=message_id)
 
 
+class RetryableFirstEditProgressCaptureAdapter(ProgressCaptureAdapter):
+    """Fail one progress edit transiently, then accept later edits."""
+
+    def __init__(self, platform=Platform.TELEGRAM):
+        super().__init__(platform=platform)
+        self.edit_outcomes = []
+
+    async def edit_message(self, chat_id, message_id, content) -> SendResult:
+        self.edits.append(
+            {
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "content": content,
+            }
+        )
+        if not self.edit_outcomes:
+            self.edit_outcomes.append(False)
+            return SendResult(
+                success=False,
+                error="temporary network failure",
+                retryable=True,
+                error_kind="transient",
+            )
+        self.edit_outcomes.append(True)
+        return SendResult(success=True, message_id=message_id)
+
+
+class RetryableOverflowEditProgressAdapter(SmallLimitProgressAdapter):
+    """Fail the first split edit transiently, then keep editing."""
+
+    def __init__(self, platform=Platform.TELEGRAM):
+        super().__init__(platform=platform)
+        self.retryable_edit_failures = 0
+
+    async def edit_message(self, chat_id, message_id, content) -> SendResult:
+        if self.retryable_edit_failures == 0:
+            self.retryable_edit_failures += 1
+            self.edits.append(
+                {
+                    "chat_id": chat_id,
+                    "message_id": message_id,
+                    "content": content,
+                }
+            )
+            return SendResult(
+                success=False,
+                error="temporary network failure",
+                retryable=True,
+                error_kind="transient",
+            )
+        return await super().edit_message(chat_id, message_id, content)
+
+
 class NonEditingProgressCaptureAdapter(ProgressCaptureAdapter):
     SUPPORTS_MESSAGE_EDITING = False
 
     async def edit_message(self, chat_id, message_id, content) -> SendResult:
         raise AssertionError("non-editable adapters should not receive edit_message calls")
-
-
-class FinalProgressEditFailureAdapter(ProgressCaptureAdapter):
-    """Adapter that rejects the final Completed task-tracker edit."""
-
-    async def edit_message(self, chat_id, message_id, content) -> SendResult:
-        self.edits.append(
-            {
-                "chat_id": chat_id,
-                "message_id": message_id,
-                "content": content,
-            }
-        )
-        if "**Status:** Completed" in content:
-            return SendResult(success=False, error="update failed")
-        return SendResult(success=True, message_id=message_id)
-
-
-class CancellingTaskDropsFinalAdapter(ProgressCaptureAdapter):
-    """Adapter where edits from a cancelling progress task are not visibly applied."""
-
-    def __init__(self, platform=Platform.TELEGRAM):
-        super().__init__(platform=platform)
-        self.visible_completed_updates = []
-        self.dropped_completed_updates = []
-
-    async def edit_message(self, chat_id, message_id, content) -> SendResult:
-        self.edits.append(
-            {
-                "chat_id": chat_id,
-                "message_id": message_id,
-                "content": content,
-            }
-        )
-        if "**Status:** Completed" in content:
-            task = asyncio.current_task()
-            if task is not None and task.cancelling():
-                self.dropped_completed_updates.append(content)
-                return SendResult(success=True, message_id=message_id)
-            self.visible_completed_updates.append(content)
-        return SendResult(success=True, message_id=message_id)
-
-
-class SlowInFlightRunningUpdateAdapter(CancellingTaskDropsFinalAdapter):
-    """Adapter with a slow pre-completion Running update in flight during cleanup."""
-
-    def __init__(self, platform=Platform.TELEGRAM):
-        super().__init__(platform=platform)
-        self.delayed_running_send = False
-        self.delayed_running_edit = False
-
-    async def send(self, chat_id, content, reply_to=None, metadata=None) -> SendResult:
-        if "**Status:** Running" in content and not self.delayed_running_send:
-            self.delayed_running_send = True
-            await asyncio.sleep(1.0)
-        return await super().send(chat_id, content, reply_to=reply_to, metadata=metadata)
-
-    async def edit_message(self, chat_id, message_id, content) -> SendResult:
-        if "**Status:** Running" in content and not self.delayed_running_edit:
-            self.delayed_running_edit = True
-            await asyncio.sleep(0.5)
-        return await super().edit_message(chat_id, message_id, content)
-
-
-class FeishuProgressCardCaptureAdapter(ProgressCaptureAdapter):
-    def __init__(self, platform=Platform.FEISHU):
-        super().__init__(platform=platform)
-        self.cards_sent = []
-        self.cards_patched = []
-
-    async def send_interactive_card(self, chat_id, card, reply_to=None, metadata=None) -> SendResult:
-        self.cards_sent.append({"chat_id": chat_id, "card": card, "reply_to": reply_to, "metadata": metadata})
-        return SendResult(success=True, message_id="om_card_1")
-
-    async def patch_interactive_card(self, chat_id, message_id, card, finalize=False) -> SendResult:
-        self.cards_patched.append(
-            {"chat_id": chat_id, "message_id": message_id, "card": card, "finalize": finalize}
-        )
-        return SendResult(success=True, message_id=message_id)
-
-
-class FeishuFinalPatchFailureAdapter(FeishuProgressCardCaptureAdapter):
-    async def patch_interactive_card(self, chat_id, message_id, card, finalize=False) -> SendResult:
-        self.cards_patched.append(
-            {"chat_id": chat_id, "message_id": message_id, "card": card, "finalize": finalize}
-        )
-        if finalize:
-            return SendResult(success=False, error="patch failed")
-        return SendResult(success=True, message_id=message_id)
-
-
-class FeishuInitialCardFailureAdapter(FeishuProgressCardCaptureAdapter):
-    async def send_interactive_card(self, chat_id, card, reply_to=None, metadata=None) -> SendResult:
-        self.cards_sent.append({"chat_id": chat_id, "card": card, "reply_to": reply_to, "metadata": metadata})
-        return SendResult(success=False, error="temporary card send failure")
-
-    async def patch_interactive_card(self, chat_id, message_id, card, finalize=False) -> SendResult:
-        raise AssertionError("initial card send failure must not patch a missing card")
-
-
-class FeishuPatchFailureAdapter(FeishuProgressCardCaptureAdapter):
-    async def patch_interactive_card(self, chat_id, message_id, card, finalize=False) -> SendResult:
-        self.cards_patched.append(
-            {"chat_id": chat_id, "message_id": message_id, "card": card, "finalize": finalize}
-        )
-        return SendResult(success=False, error="temporary card patch failure")
-
-
-def test_copy_agent_todo_progress_carries_lifecycle_and_clears_archived_items():
-    from gateway.run import _copy_agent_todo_progress
-
-    active_store = TodoStore()
-    active_store.write([{"id": "1", "content": "Current task", "status": "pending"}])
-    active_store.bind_transaction("tx-current")
-    active_store.mark_lifecycle("active")
-    active_agent = SimpleNamespace(_todo_store=active_store)
-    tracker = ProgressTracker("tx-current")
-
-    _copy_agent_todo_progress(tracker, active_agent)
-
-    active_snapshot = tracker.snapshot()
-    assert [item.content for item in active_snapshot.todo_items] == ["Current task"]
-    assert active_snapshot.todo_lifecycle.state == "active"
-
-    archived_store = TodoStore()
-    archived_store.write([{"id": "old", "content": "Old task", "status": "pending"}])
-    archived_store.bind_transaction("tx-old")
-    archived_store.mark_lifecycle("archived")
-    archived_agent = SimpleNamespace(_todo_store=archived_store)
-
-    _copy_agent_todo_progress(tracker, archived_agent)
-
-    archived_snapshot = tracker.snapshot()
-    assert archived_snapshot.todo_items == ()
-    assert archived_snapshot.todo_lifecycle.state == "archived"
-
-
-def test_copy_agent_todo_progress_drops_completed_prior_transaction_items():
-    from gateway.run import _copy_agent_todo_progress
-
-    old_store = TodoStore()
-    old_store.write([{"id": "old", "content": "Finished old task", "status": "completed"}])
-    old_store.bind_transaction("tx-old")
-    old_store.mark_lifecycle("completed")
-    old_agent = SimpleNamespace(_todo_store=old_store)
-    new_tracker = ProgressTracker("tx-new")
-
-    _copy_agent_todo_progress(new_tracker, old_agent)
-
-    new_snapshot = new_tracker.snapshot()
-    assert new_snapshot.todo_items == ()
-    assert new_snapshot.todo_lifecycle is not None
-    assert new_snapshot.todo_lifecycle.state == "archived"
-
-
-def test_copy_agent_todo_progress_keeps_completed_items_for_visible_task_id_alias():
-    from gateway.run import _copy_agent_todo_progress
-
-    store = TodoStore()
-    store.write([
-        {"id": "done", "content": "Finished current task", "status": "completed"},
-    ])
-    store.bind_transaction("persistent-session")
-    store.mark_lifecycle("completed")
-    agent = SimpleNamespace(_todo_store=store, _current_task_id="persistent-session")
-    tracker = ProgressTracker("task-unique-visible-id")
-
-    _copy_agent_todo_progress(tracker, agent)
-
-    snapshot = tracker.snapshot()
-    assert [item.content for item in snapshot.todo_items] == ["Finished current task"]
-    assert snapshot.todo_lifecycle is not None
-    assert snapshot.todo_lifecycle.state == "completed"
-
-
-def test_copy_agent_todo_progress_keeps_completed_items_for_same_transaction_final_card():
-    from gateway.run import _copy_agent_todo_progress
-
-    store = TodoStore()
-    store.write([{"id": "done", "content": "Finished current task", "status": "completed"}])
-    store.bind_transaction("tx-current")
-    store.mark_lifecycle("completed")
-    agent = SimpleNamespace(_todo_store=store)
-    tracker = ProgressTracker("tx-current")
-
-    _copy_agent_todo_progress(tracker, agent)
-
-    snapshot = tracker.snapshot()
-    assert [item.content for item in snapshot.todo_items] == ["Finished current task"]
-    assert snapshot.todo_lifecycle is not None
-    assert snapshot.todo_lifecycle.state == "completed"
-
-
-def test_copy_agent_todo_progress_keeps_unbound_completed_items_for_current_final_card():
-    from gateway.progress.renderers import render_feishu_progress_card
-    from gateway.run import _copy_agent_todo_progress
-
-    store = TodoStore()
-    store.write([
-        {"id": "done-1", "content": "Finished current task A", "status": "completed"},
-        {"id": "done-2", "content": "Finished current task B", "status": "completed"},
-    ])
-    agent = SimpleNamespace(_todo_store=store)
-    tracker = ProgressTracker("tx-current")
-
-    _copy_agent_todo_progress(tracker, agent)
-
-    snapshot = tracker.snapshot()
-    assert [item.content for item in snapshot.todo_items] == [
-        "Finished current task A",
-        "Finished current task B",
-    ]
-    assert snapshot.todo_lifecycle is not None
-    assert snapshot.todo_lifecycle.state == "completed"
-    card = render_feishu_progress_card(snapshot, language="zh", tool_progress_mode="off")
-    rendered = json.dumps(card, ensure_ascii=False)
-    assert "待办 - 2 / 2（100%）" in rendered
-
-
-class FeishuRetryableIntermediatePatchFailureAdapter(FeishuProgressCardCaptureAdapter):
-    async def patch_interactive_card(self, chat_id, message_id, card, finalize=False) -> SendResult:
-        self.cards_patched.append(
-            {"chat_id": chat_id, "message_id": message_id, "card": card, "finalize": finalize}
-        )
-        if not finalize and not any(not call["finalize"] for call in self.cards_patched[:-1]):
-            return SendResult(
-                success=False,
-                error="[230020] update the single messages too frequently",
-                retryable=True,
-            )
-        return SendResult(success=True, message_id=message_id)
-
-
-def _assert_compact_card_failure_notice_only(text: str) -> None:
-    assert "任务卡片更新失败" in text
-    assert "Transaction" not in text
-    assert "Recent operations" not in text
-    assert "Context" not in text
-    assert "read_file" not in text
-    assert "search_files" not in text
-    assert "gateway/run.py" not in text
-    assert "tool_progress" not in text
 
 
 class FakeAgent:
@@ -381,6 +222,108 @@ class FakeAgent:
             cb("tool.started", "terminal", "pwd", {})
             time.sleep(0.35)
             cb("tool.started", "browser_navigate", "https://example.com", {})
+            time.sleep(0.35)
+        return {
+            "final_response": "done",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+class NativeTaskCardAdapter(ProgressCaptureAdapter):
+    def __init__(self, platform=Platform.SLACK):
+        super().__init__(platform=platform)
+        self.native_updates = []
+        self.native_stops = 0
+
+    def native_task_cards_enabled(self):
+        return True
+
+    async def send_native_task_card_progress(
+        self,
+        chat_id,
+        tasks,
+        *,
+        title,
+        reply_to=None,
+        metadata=None,
+        fallback_text=None,
+    ) -> SendResult:
+        self.native_updates.append(
+            {
+                "chat_id": chat_id,
+                "tasks": [dict(task) for task in tasks],
+                "metadata": dict(metadata or {}),
+                "fallback_text": fallback_text,
+            }
+        )
+        return SendResult(success=True, message_id="native-stream-1")
+
+    async def stop_native_task_card_progress(
+        self, chat_id, *, reply_to=None, metadata=None
+    ):
+        self.native_stops += 1
+
+    async def edit_message(
+        self, chat_id, message_id, content, *, finalize=False, metadata=None
+    ) -> SendResult:
+        self.edits.append(
+            {
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "content": content,
+                "metadata": metadata,
+            }
+        )
+        return SendResult(success=True, message_id=message_id)
+
+
+class FailingNativeTaskCardAdapter(NativeTaskCardAdapter):
+    async def send_native_task_card_progress(self, *args, **kwargs) -> SendResult:
+        await super().send_native_task_card_progress(*args, **kwargs)
+        return SendResult(success=False, error="native stream unavailable", retryable=True)
+
+
+class DuplicateNativeToolsAgent:
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tool_start_callback = kwargs.get("tool_start_callback")
+        self.tool_complete_callback = kwargs.get("tool_complete_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        self.tool_start_callback("call-a", "web_search", {"query": "alpha"})
+        time.sleep(0.15)
+        self.tool_start_callback("call-b", "web_search", {"query": "beta"})
+        time.sleep(0.15)
+        # Complete the second same-name call first. Correlation by tool name
+        # would incorrectly mark call-a as failed here.
+        self.tool_complete_callback(
+            "call-b", "web_search", {"query": "beta"}, '{"error": "boom"}'
+        )
+        time.sleep(0.15)
+        self.tool_complete_callback(
+            "call-a", "web_search", {"query": "alpha"}, '{"success": true}'
+        )
+        time.sleep(0.15)
+        return {"final_response": "done", "messages": [], "api_calls": 1}
+
+
+class ThinkingAgent:
+    """Agent that emits _thinking scratch text (no tool calls).
+
+    Used to prove the progress callback relays _thinking bubbles when
+    thinking_progress is enabled but tool_progress is off.
+    """
+
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        cb = self.tool_progress_callback
+        if cb is not None:
+            cb("_thinking", "weighing the options here")
             time.sleep(0.35)
         return {
             "final_response": "done",
@@ -407,6 +350,28 @@ class LongPreviewAgent:
         }
 
 
+class UrlPreviewAgent:
+    URL = "https://hermes-agent.nousresearch.com/docs/gateway/discord/tool-progress"
+
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        self.tool_progress_callback(
+            "tool.started",
+            "web_extract",
+            self.URL,
+            {"urls": [self.URL]},
+        )
+        time.sleep(0.35)
+        return {
+            "final_response": "done",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
 class DelayedProgressAgent:
     def __init__(self, **kwargs):
         self.tool_progress_callback = kwargs.get("tool_progress_callback")
@@ -417,6 +382,31 @@ class DelayedProgressAgent:
         time.sleep(0.45)
         self.tool_progress_callback("tool.started", "terminal", "second command", {})
         time.sleep(0.1)
+        return {
+            "final_response": "done",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+class RetryableEditProgressAgent:
+    """Keep the turn alive long enough to retry the same progress bubble."""
+
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        callback = self.tool_progress_callback
+        assert callback is not None
+        callback("tool.started", "terminal", "first command", {})
+        time.sleep(0.5)
+        callback("tool.started", "terminal", "second command", {})
+        time.sleep(1.7)
+        callback("tool.started", "terminal", "third command", {})
+        time.sleep(0.5)
+        callback("tool.started", "terminal", "fourth command", {})
+        time.sleep(0.6)
         return {
             "final_response": "done",
             "messages": [],
@@ -481,6 +471,7 @@ def _make_runner(adapter):
     runner._session_db = None
     runner._running_agents = {}
     runner._session_run_generation = {}
+    runner.session_store = SimpleNamespace(_entries={}, _save=lambda: None)
     runner.hooks = SimpleNamespace(loaded_hooks=False)
     runner.config = SimpleNamespace(
         thread_sessions_per_user=False,
@@ -488,133 +479,6 @@ def _make_runner(adapter):
         stt_enabled=False,
     )
     return runner
-
-
-@pytest.mark.asyncio
-async def test_run_agent_progress_stays_in_originating_topic(monkeypatch, tmp_path):
-    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
-
-    fake_dotenv = types.ModuleType("dotenv")
-    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
-    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
-
-    fake_run_agent = types.ModuleType("run_agent")
-    fake_run_agent.AIAgent = FakeAgent
-    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
-    import tools.terminal_tool  # noqa: F401 - register terminal emoji for this fake-agent test
-
-    adapter = ProgressCaptureAdapter()
-    runner = _make_runner(adapter)
-    gateway_run = importlib.import_module("gateway.run")
-    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
-    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"})
-    source = SessionSource(
-        platform=Platform.TELEGRAM,
-        chat_id="-1001",
-        chat_type="group",
-        thread_id="17585",
-    )
-
-    result = await runner._run_agent(
-        message="hello",
-        context_prompt="",
-        history=[],
-        source=source,
-        session_id="sess-1",
-        session_key="agent:main:telegram:group:-1001:17585",
-    )
-
-    assert result["final_response"] == "done"
-    assert adapter.sent == [
-        {
-            "chat_id": "-1001",
-            "content": '💻 terminal: "pwd"',
-            "reply_to": None,
-            "metadata": {"thread_id": "17585"},
-        }
-    ]
-    assert adapter.edits
-    assert all(call["metadata"] == {"thread_id": "17585"} for call in adapter.typing)
-
-
-@pytest.mark.asyncio
-async def test_run_agent_progress_edits_keep_originating_topic_metadata(monkeypatch, tmp_path):
-    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
-
-    fake_dotenv = types.ModuleType("dotenv")
-    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
-    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
-
-    fake_run_agent = types.ModuleType("run_agent")
-    fake_run_agent.AIAgent = FakeAgent
-    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
-
-    adapter = MetadataEditProgressCaptureAdapter()
-    runner = _make_runner(adapter)
-    gateway_run = importlib.import_module("gateway.run")
-    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
-    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"})
-    source = SessionSource(
-        platform=Platform.TELEGRAM,
-        chat_id="-1001",
-        chat_type="group",
-        thread_id="17585",
-    )
-
-    result = await runner._run_agent(
-        message="hello",
-        context_prompt="",
-        history=[],
-        source=source,
-        session_id="sess-progress-edit-topic",
-        session_key="agent:main:telegram:group:-1001:17585",
-    )
-
-    assert result["final_response"] == "done"
-    assert adapter.edits
-    assert all(call["metadata"] == {"thread_id": "17585"} for call in adapter.edits)
-
-
-@pytest.mark.asyncio
-async def test_run_agent_progress_does_not_use_event_message_id_for_telegram_dm(monkeypatch, tmp_path):
-    """Telegram DM progress must not reuse event message id as thread metadata."""
-    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
-
-    fake_dotenv = types.ModuleType("dotenv")
-    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
-    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
-
-    fake_run_agent = types.ModuleType("run_agent")
-    fake_run_agent.AIAgent = FakeAgent
-    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
-
-    adapter = ProgressCaptureAdapter(platform=Platform.TELEGRAM)
-    runner = _make_runner(adapter)
-    gateway_run = importlib.import_module("gateway.run")
-    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
-    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
-
-    source = SessionSource(
-        platform=Platform.TELEGRAM,
-        chat_id="12345",
-        chat_type="dm",
-        thread_id=None,
-    )
-
-    result = await runner._run_agent(
-        message="hello",
-        context_prompt="",
-        history=[],
-        source=source,
-        session_id="sess-2",
-        session_key="agent:main:telegram:dm:12345",
-        event_message_id="777",
-    )
-
-    assert result["final_response"] == "done"
-    assert adapter.sent
-    assert adapter.sent[0]["metadata"] is None
-    assert all(call["metadata"] is None for call in adapter.typing)
 
 
 @pytest.mark.asyncio
@@ -663,14 +527,28 @@ async def test_run_agent_progress_uses_event_message_id_for_slack_dm(monkeypatch
 
     assert result["final_response"] == "done"
     assert adapter.sent
-    assert adapter.sent[0]["metadata"] == {"thread_id": "1234567890.000001"}
-    assert all(call["metadata"] == {"thread_id": "1234567890.000001"} for call in adapter.typing)
+    expected_metadata = {
+        "thread_id": "1234567890.000001",
+        "message_id": "1234567890.000001",
+    }
+    assert adapter.sent[0]["metadata"] == expected_metadata
+    assert all(call["metadata"] == expected_metadata for call in adapter.typing)
 
 
 @pytest.mark.asyncio
-async def test_run_agent_feishu_progress_replies_inside_existing_thread(monkeypatch, tmp_path):
-    """Feishu needs reply_to plus reply_in_thread metadata for topic-scoped progress."""
+async def test_progress_carries_anchor_for_relay_discord_auto_thread(monkeypatch, tmp_path):
+    """Relay Discord channel-initiate: the thread doesn't exist at ingest, so
+    the connector auto-threads on the reply anchor and stamps
+    prospective_thread_id. The tool-progress / status bubbles must carry that
+    anchor (reply_to + metadata.reply_to_message_id) so they route into the
+    SAME auto-thread as the final reply — otherwise the search-status updates
+    leak into the parent channel (staging repro 2026-08-02)."""
     monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
+    import yaml
+    (tmp_path / "config.yaml").write_text(
+        yaml.dump({"display": {"platforms": {"discord": {"tool_progress": "all"}}}}),
+        encoding="utf-8",
+    )
 
     fake_dotenv = types.ModuleType("dotenv")
     fake_dotenv.load_dotenv = lambda *args, **kwargs: None
@@ -680,40 +558,124 @@ async def test_run_agent_feishu_progress_replies_inside_existing_thread(monkeypa
     fake_run_agent.AIAgent = FakeAgent
     monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
 
-    adapter = ProgressCaptureAdapter(platform=Platform.FEISHU)
+    adapter = ProgressCaptureAdapter(platform=Platform.RELAY)
     runner = _make_runner(adapter)
     gateway_run = importlib.import_module("gateway.run")
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
 
+    # Channel-initiating message: no thread_id yet, but the connector stamped
+    # the prospective thread id (== the triggering message id). Relay ingress
+    # keeps the underlying platform (discord) on the source for display policy,
+    # but delivery/progress route through the one live RelayAdapter.
     source = SessionSource(
-        platform=Platform.FEISHU,
-        chat_id="oc_chat",
+        platform=Platform.DISCORD,
+        chat_id="chan-parent",
         chat_type="group",
-        thread_id="topic_17585",
+        thread_id=None,
+        prospective_thread_id="msg-anchor-1",
+        delivered_via_upstream_relay=True,
     )
 
     result = await runner._run_agent(
-        message="hello",
+        message="find me a gift",
         context_prompt="",
         history=[],
         source=source,
-        session_id="sess-feishu-progress",
-        session_key="agent:main:feishu:group:oc_chat:topic_17585",
-        event_message_id="om_triggering_user_message",
+        session_id="sess-relay-thread",
+        session_key="agent:main:discord:thread:chan-parent:msg-anchor-1",
+        event_message_id="msg-anchor-1",
     )
 
     assert result["final_response"] == "done"
-    assert adapter.sent
-    assert adapter.sent[0]["reply_to"] == "om_triggering_user_message"
-    assert adapter.sent[0]["metadata"] == {"thread_id": "topic_17585"}
-    assert adapter.edits
-    assert adapter.edits[0]["message_id"] == "progress-1"
+    assert adapter.sent, "expected at least one progress send"
+    # Every progress send must carry the anchor so the connector threads it.
+    for call in adapter.sent:
+        assert call["reply_to"] == "msg-anchor-1", call
+        assert (call["metadata"] or {}).get("reply_to_message_id") == "msg-anchor-1", call
+        # Discord lifecycle/status sends are marked non-conversational.
+        assert (call["metadata"] or {}).get("non_conversational") is True, call
+
+
+@pytest.mark.asyncio
+async def test_progress_no_anchor_for_native_discord_thread_event(monkeypatch, tmp_path):
+    """A message ARRIVING in an existing Discord thread (not the relay
+    auto-thread lane) must NOT get the synthetic prospective anchor — it already
+    routes by its real thread. Guards against over-broadening the relay fix."""
+    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
+    import yaml
+    (tmp_path / "config.yaml").write_text(
+        yaml.dump({"display": {"platforms": {"discord": {"tool_progress": "all"}}}}),
+        encoding="utf-8",
+    )
+
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = FakeAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    adapter = ProgressCaptureAdapter(platform=Platform.RELAY)
+    runner = _make_runner(adapter)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
+
+    # No prospective_thread_id (event is IN a real thread already).
+    source = SessionSource(
+        platform=Platform.DISCORD,
+        chat_id="real-thread-9",
+        chat_type="thread",
+        thread_id="real-thread-9",
+        delivered_via_upstream_relay=True,
+    )
+
+    result = await runner._run_agent(
+        message="continue",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-in-thread",
+        session_key="agent:main:discord:thread:real-thread-9:real-thread-9",
+        event_message_id="msg-2",
+    )
+
+    assert result["final_response"] == "done"
+    # The relay-prospective synthetic anchor path must NOT engage; progress
+    # routes by the real thread's own metadata, not a forced reply_to anchor.
+    for call in adapter.sent:
+        meta = call["metadata"] or {}
+        # The real thread id drives routing; we did not inject the anchor
+        # reply_to that the prospective lane uses.
+        assert meta.get("thread_id") == "real-thread-9" or call["reply_to"] != "msg-2", call
 
 
 # ---------------------------------------------------------------------------
 # Preview truncation tests (all/new mode respects tool_preview_length)
 # ---------------------------------------------------------------------------
+
+
+def _extract_progress_preview(content: str) -> str | None:
+    """Extract the argument-preview portion from a tool-progress message.
+
+    Handles both render styles:
+    - Legacy / custom tools:  ``🔧 tool_name: "<preview>"`` (quoted)
+    - Friendly built-in verb: ``💻 Running <preview>`` (verb prefix, no quotes)
+    """
+    import re
+
+    # Legacy quoted form takes precedence when present.
+    match = re.search(r'"(.+)"', content)
+    if match:
+        return match.group(1)
+    # Friendly form: "<emoji> <verb> <preview>". The terminal verb is "Running".
+    marker = " Running "
+    idx = content.find(marker)
+    if idx != -1:
+        return content[idx + len(marker):].strip()
+    return None
 
 
 def _run_long_preview_helper(monkeypatch, tmp_path, preview_length=0):
@@ -766,48 +728,72 @@ def _run_long_preview_helper(monkeypatch, tmp_path, preview_length=0):
     return adapter, result
 
 
-def test_all_mode_default_truncation_40_chars(monkeypatch, tmp_path):
-    """When tool_preview_length is 0 (default), all/new mode truncates to 40 chars."""
-    adapter, result = _run_long_preview_helper(monkeypatch, tmp_path, preview_length=0)
-    assert result["final_response"] == "done"
-    assert adapter.sent
-    content = adapter.sent[0]["content"]
-    # The long command should be truncated — total preview <= 40 chars
-    assert "..." in content
-    # Extract the preview part between quotes
-    import re
-    match = re.search(r'"(.+)"', content)
-    assert match, f"No quoted preview found in: {content}"
-    preview_text = match.group(1)
-    assert len(preview_text) <= 40, f"Preview too long ({len(preview_text)}): {preview_text}"
-
-
 def test_all_mode_respects_custom_preview_length(monkeypatch, tmp_path):
     """When tool_preview_length is explicitly set (e.g. 120), all/new mode uses that."""
     adapter, result = _run_long_preview_helper(monkeypatch, tmp_path, preview_length=120)
     assert result["final_response"] == "done"
     assert adapter.sent
     content = adapter.sent[0]["content"]
-    # With 120-char cap, the command (165 chars) should still be truncated but longer
-    import re
-    match = re.search(r'"(.+)"', content)
-    assert match, f"No quoted preview found in: {content}"
-    preview_text = match.group(1)
+    # With 120-char cap, the command (165 chars) should still be truncated but longer.
+    preview_text = _extract_progress_preview(content)
+    assert preview_text is not None, f"No preview found in: {content}"
     # Should be longer than the 40-char default
     assert len(preview_text) > 40, f"Preview suspiciously short ({len(preview_text)}): {preview_text}"
     # But still capped at 120
     assert len(preview_text) <= 120, f"Preview too long ({len(preview_text)}): {preview_text}"
 
 
-def test_all_mode_no_truncation_when_preview_fits(monkeypatch, tmp_path):
-    """Short previews (under the cap) are not truncated."""
-    # Set a generous cap — the LongPreviewAgent's command is ~165 chars
-    adapter, result = _run_long_preview_helper(monkeypatch, tmp_path, preview_length=200)
+def test_discord_truncated_tool_url_links_to_full_destination(monkeypatch, tmp_path):
+    """The real gateway path must retain the URL beyond its visible cap."""
+    import yaml
+
+    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
+
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = UrlPreviewAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    (tmp_path / "config.yaml").write_text(
+        yaml.dump({"display": {"tool_preview_length": 0}}),
+        encoding="utf-8",
+    )
+
+    adapter = DiscordProgressCaptureAdapter()
+    runner = _make_runner(adapter)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(
+        gateway_run,
+        "_resolve_runtime_agent_kwargs",
+        lambda: {"api_key": "***"},
+    )
+
+    source = SessionSource(
+        platform=Platform.DISCORD,
+        chat_id="12345",
+        chat_type="dm",
+        thread_id=None,
+    )
+    result = asyncio.get_event_loop().run_until_complete(
+        runner._run_agent(
+            message="hello",
+            context_prompt="",
+            history=[],
+            source=source,
+            session_id="sess-discord-url",
+            session_key="agent:main:discord:dm:12345",
+        )
+    )
+
     assert result["final_response"] == "done"
     assert adapter.sent
-    content = adapter.sent[0]["content"]
-    # With a 200-char cap, the 165-char command should NOT be truncated
-    assert "..." not in content, f"Preview was truncated when it shouldn't be: {content}"
+    visible = UrlPreviewAgent.URL[:37] + "..."
+    label = visible.removeprefix("https://")
+    assert f"[{label}](<{UrlPreviewAgent.URL}>)" in adapter.sent[0]["content"]
 
 
 class CommentaryAgent:
@@ -840,6 +826,24 @@ class PreviewedResponseAgent:
             self.interim_assistant_callback("You're welcome.", already_streamed=False)
         return {
             "final_response": "You're welcome.",
+            "response_previewed": True,
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+class PreviewedSplitAfterCommentaryAgent:
+    def __init__(self, **kwargs):
+        self.interim_assistant_callback = kwargs.get("interim_assistant_callback")
+        self.session_id = kwargs.get("session_id")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        if self.interim_assistant_callback:
+            self.interim_assistant_callback("I'll inspect the repo first.", already_streamed=False)
+        self.session_id = f"{self.session_id}-child"
+        return {
+            "final_response": "Final answer after compression.",
             "response_previewed": True,
             "messages": [],
             "api_calls": 1,
@@ -883,6 +887,75 @@ class QueuedCommentaryAgent:
         }
 
 
+class QueuedMediaAgent:
+    """Return an explicit image attachment before a queued follow-up."""
+
+    calls = 0
+    media_path = None
+
+    def __init__(self, **kwargs):
+        self.stream_delta_callback = kwargs.get("stream_delta_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        type(self).calls += 1
+        if type(self).calls == 1:
+            final_response = f"first response\nMEDIA:{type(self).media_path}"
+            if self.stream_delta_callback:
+                self.stream_delta_callback("first response")
+        else:
+            final_response = "follow-up processed"
+            if self.stream_delta_callback:
+                self.stream_delta_callback(final_response)
+        return {
+            "final_response": final_response,
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+class QueuedSilenceAgent:
+    """First turn is intentionally silent; queued follow-up still runs."""
+
+    calls = 0
+
+    def __init__(self, **kwargs):
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        type(self).calls += 1
+        return {
+            "final_response": "NO_REPLY" if type(self).calls == 1 else "follow-up processed",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+class QueuedFailedEmptyAgent:
+    """First turn fails empty; its normalized error must send before follow-up."""
+
+    calls = 0
+
+    def __init__(self, **kwargs):
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        type(self).calls += 1
+        if type(self).calls == 1:
+            return {
+                "final_response": "",
+                "messages": [],
+                "api_calls": 1,
+                "failed": True,
+                "error": "provider exploded",
+            }
+        return {
+            "final_response": "follow-up processed",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
 class BackgroundReviewAgent:
     def __init__(self, **kwargs):
         self.background_review_callback = kwargs.get("background_review_callback")
@@ -919,162 +992,6 @@ class VerboseAgent:
         }
 
 
-class TransactionPanelAgent:
-    def __init__(self, **kwargs):
-        self.tool_progress_callback = kwargs.get("tool_progress_callback")
-        self.tools = []
-
-    def run_conversation(self, message, conversation_history=None, task_id=None):
-        self.tool_progress_callback("tool.started", "read_file", "gateway/run.py", {"path": "gateway/run.py"})
-        time.sleep(0.35)
-        self.tool_progress_callback("tool.started", "search_files", "tool_progress", {"pattern": "tool_progress"})
-        time.sleep(0.35)
-        return {
-            "final_response": "done",
-            "messages": [],
-            "api_calls": 1,
-        }
-
-
-class BurstTaskTrackerProgressAgent:
-    def __init__(self, **kwargs):
-        self.tool_progress_callback = kwargs.get("tool_progress_callback")
-        self.tools = []
-
-    def run_conversation(self, message, conversation_history=None, task_id=None):
-        for idx in range(12):
-            self.tool_progress_callback(
-                "tool.started",
-                "read_file",
-                f"gateway/run.py:{idx}",
-                {"path": "gateway/run.py", "idx": idx},
-            )
-        time.sleep(2.3)
-        return {
-            "final_response": "done",
-            "messages": [],
-            "api_calls": 1,
-        }
-
-
-class RetryablePatchCatchupAgent:
-    def __init__(self, **kwargs):
-        self.tool_progress_callback = kwargs.get("tool_progress_callback")
-        self.tools = []
-
-    def run_conversation(self, message, conversation_history=None, task_id=None):
-        self.tool_progress_callback("tool.started", "read_file", "gateway/run.py", {"path": "gateway/run.py"})
-        time.sleep(2.3)
-        self.tool_progress_callback("tool.started", "search_files", "tool_progress", {"pattern": "tool_progress"})
-        time.sleep(0.2)
-        return {
-            "final_response": "done",
-            "messages": [],
-            "api_calls": 1,
-        }
-
-
-class ContextUsagePanelAgent(TransactionPanelAgent):
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        self.context_compressor = SimpleNamespace(
-            last_prompt_tokens=40_960,
-            peak_prompt_tokens=65_536,
-            context_length=128_000,
-            threshold_tokens=102_400,
-            compression_count=2,
-        )
-
-
-class SingleProgressFastReturnAgent:
-    def __init__(self, **kwargs):
-        self.tool_progress_callback = kwargs.get("tool_progress_callback")
-        self.tools = []
-
-    def run_conversation(self, message, conversation_history=None, task_id=None):
-        self.tool_progress_callback("tool.started", "read_file", "gateway/run.py", {"path": "gateway/run.py"})
-        time.sleep(0.4)
-        return {
-            "final_response": "done",
-            "messages": [],
-            "api_calls": 1,
-        }
-
-
-class OptionalProgressAgent:
-    def __init__(self, **kwargs):
-        self.tool_progress_callback = kwargs.get("tool_progress_callback")
-        self.tools = []
-
-    def run_conversation(self, message, conversation_history=None, task_id=None):
-        if self.tool_progress_callback:
-            self.tool_progress_callback("tool.started", "read_file", "gateway/run.py", {"path": "gateway/run.py"})
-            time.sleep(0.35)
-            self.tool_progress_callback("tool.started", "search_files", "tool_progress", {"pattern": "tool_progress"})
-        time.sleep(0.35)
-        return {
-            "final_response": "done",
-            "messages": [],
-            "api_calls": 1,
-        }
-
-
-class PersistentProgressAgent:
-    def __init__(self, **kwargs):
-        self.tool_progress_callback = kwargs.get("tool_progress_callback")
-        self.tools = []
-
-    def run_conversation(self, message, conversation_history=None, task_id=None):
-        sensitive_value = "persist-" + "secret"
-        self.tool_progress_callback(
-            "tool.started",
-            "terminal",
-            "curl https://example.invalid/?access_token=" + sensitive_value + "&ok=yes",
-            {"api_key": sensitive_value, "command": "pytest"},
-        )
-        time.sleep(0.2)
-        self.tool_progress_callback(
-            "tool.completed",
-            "terminal",
-            "done",
-            {},
-            duration=0.25,
-            is_error=False,
-        )
-        time.sleep(0.2)
-        return {
-            "final_response": "done",
-            "messages": [],
-            "api_calls": 1,
-        }
-
-
-class SubagentProgressAgent:
-    def __init__(self, **kwargs):
-        self.tool_progress_callback = kwargs.get("tool_progress_callback")
-        self.tools = []
-
-    def run_conversation(self, message, conversation_history=None, task_id=None):
-        self.tool_progress_callback("subagent.start", preview="Inspect progress tests", subagent_id="sub-1")
-        time.sleep(0.2)
-        self.tool_progress_callback(
-            "subagent.tool",
-            "search_files",
-            "test_progress",
-            {"pattern": "test_progress"},
-            subagent_id="sub-1",
-            goal="Inspect progress tests",
-        )
-        time.sleep(0.2)
-        self.tool_progress_callback("subagent.complete", preview="Done", subagent_id="sub-1")
-        time.sleep(0.2)
-        return {
-            "final_response": "done",
-            "messages": [],
-            "api_calls": 1,
-        }
-
-
 async def _run_with_agent(
     monkeypatch,
     tmp_path,
@@ -1082,14 +999,14 @@ async def _run_with_agent(
     *,
     session_id,
     pending_text=None,
-    message="hello",
     config_data=None,
     platform=Platform.TELEGRAM,
     chat_id="-1001",
     chat_type="group",
     thread_id="17585",
     adapter_cls=ProgressCaptureAdapter,
-    progress_transaction=None,
+    user_id=None,
+    scope_id=None,
 ):
     if config_data:
         import yaml
@@ -1116,6 +1033,8 @@ async def _run_with_agent(
         chat_id=chat_id,
         chat_type=chat_type,
         thread_id=thread_id,
+        user_id=user_id,
+        scope_id=scope_id,
     )
     session_key = f"agent:main:{platform.value}:{chat_type}:{chat_id}"
     if thread_id:
@@ -1129,123 +1048,119 @@ async def _run_with_agent(
         )
 
     result = await runner._run_agent(
-        message=message,
+        message="hello",
         context_prompt="",
         history=[],
         source=source,
         session_id=session_id,
         session_key=session_key,
-        _progress_transaction=progress_transaction,
     )
     return adapter, result
 
 
 @pytest.mark.asyncio
-async def test_run_agent_rolls_progress_bubble_before_platform_limit(monkeypatch, tmp_path):
-    """Tool progress should start a second editable bubble before Telegram's limit.
+async def test_slack_native_progress_correlates_concurrent_duplicate_tools_by_id(
+    monkeypatch, tmp_path
+):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        DuplicateNativeToolsAgent,
+        session_id="sess-native-ids",
+        config_data={
+            "display": {"platforms": {"slack": {"tool_progress": "off"}}}
+        },
+        platform=Platform.SLACK,
+        chat_id="C1",
+        thread_id="thread-1",
+        adapter_cls=NativeTaskCardAdapter,
+        user_id="U1",
+        scope_id="T1",
+    )
 
-    Regression: once the first progress bubble grew past the platform limit,
-    the gateway kept trying to edit that same oversized full transcript.  The
-    Telegram adapter then split-and-sent a fresh continuation on every update,
-    causing a noisy trail of one-line messages instead of a new editable bubble.
-    """
+    assert result["final_response"] == "done"
+    assert adapter.native_updates
+    second_completed = next(
+        update
+        for update in adapter.native_updates
+        if {task["id"]: task["status"] for task in update["tasks"]}
+        == {"call-a": "in_progress", "call-b": "error"}
+    )
+    assert second_completed["metadata"]["recipient_team_id"] == "T1"
+    assert second_completed["metadata"]["recipient_user_id"] == "U1"
+    assert adapter.native_updates[-1]["tasks"] == [
+        {
+            "id": "call-a",
+            "title": "web_search - alpha",
+            "status": "complete",
+        },
+        {
+            "id": "call-b",
+            "title": "web_search - beta",
+            "status": "error",
+        },
+    ]
+    assert adapter.sent == []
+    assert adapter.native_stops == 1
+
+
+@pytest.mark.asyncio
+async def test_slack_native_failure_keeps_editing_one_live_text_fallback(
+    monkeypatch, tmp_path
+):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        DuplicateNativeToolsAgent,
+        session_id="sess-native-fallback",
+        platform=Platform.SLACK,
+        chat_id="C1",
+        thread_id="thread-1",
+        adapter_cls=FailingNativeTaskCardAdapter,
+        user_id="U1",
+        scope_id="T1",
+    )
+
+    assert result["final_response"] == "done"
+    assert len(adapter.native_updates) == 1
+    assert len(adapter.sent) == 1
+    assert adapter.sent[0]["content"].endswith("web_search - alpha - running")
+    assert len(adapter.edits) >= 2
+    assert {edit["message_id"] for edit in adapter.edits} == {"progress-1"}
+    assert adapter.edits[-1]["content"].endswith("web_search - beta - error")
+    assert "web_search - alpha - complete" in adapter.edits[-1]["content"]
+    assert adapter.native_stops == 1
+
+
+@pytest.mark.asyncio
+async def test_retryable_overflow_edit_keeps_editable_bubble_identity(monkeypatch, tmp_path):
+    """A transient split edit must retain can_edit and the current message ID."""
     adapter, result = await _run_with_agent(
         monkeypatch,
         tmp_path,
         ManyProgressLinesAgent,
-        session_id="sess-progress-overflow-rollover",
+        session_id="sess-progress-retry-overflow-same-message",
         config_data={
             "display": {
                 "tool_progress": "all",
                 "interim_assistant_messages": False,
-                "tool_preview_length": 60,
             }
         },
-        adapter_cls=SmallLimitProgressAdapter,
+        platform=Platform.SLACK,
+        chat_id="C123",
+        chat_type="direct",
+        thread_id="1700000000.000100",
+        adapter_cls=RetryableOverflowEditProgressAdapter,
     )
 
     assert result["final_response"] == "done"
-    assert isinstance(adapter, SmallLimitProgressAdapter)
-    assert len(adapter.sent) >= 2, "expected a fresh progress bubble after the first filled"
+    assert isinstance(adapter, RetryableOverflowEditProgressAdapter)
+    assert adapter.retryable_edit_failures == 1
+    assert len(adapter.sent) >= 2
+    assert adapter.edits[0]["message_id"] == "progress-1"
+    assert any(call["message_id"] == "progress-1" for call in adapter.edits[1:])
     assert adapter.oversized_sends == []
     assert adapter.oversized_edits == []
-    all_bubbles = [call["content"] for call in adapter.sent + adapter.edits]
-    assert all(len(text) <= adapter.MAX_MESSAGE_LENGTH for text in all_bubbles)
-
-
-@pytest.mark.asyncio
-async def test_run_agent_surfaces_real_interim_commentary(monkeypatch, tmp_path):
-    adapter, result = await _run_with_agent(
-        monkeypatch,
-        tmp_path,
-        CommentaryAgent,
-        session_id="sess-commentary",
-        config_data={"display": {"interim_assistant_messages": True}},
-    )
-
-    assert result.get("already_sent") is not True
-    assert any(call["content"] == "I'll inspect the repo first." for call in adapter.sent)
-
-
-@pytest.mark.asyncio
-async def test_run_agent_surfaces_interim_commentary_by_default(monkeypatch, tmp_path):
-    adapter, result = await _run_with_agent(
-        monkeypatch,
-        tmp_path,
-        CommentaryAgent,
-        session_id="sess-commentary-default-on",
-    )
-
-    assert any(call["content"] == "I'll inspect the repo first." for call in adapter.sent)
-
-
-@pytest.mark.asyncio
-async def test_run_agent_suppresses_interim_commentary_when_disabled(monkeypatch, tmp_path):
-    adapter, result = await _run_with_agent(
-        monkeypatch,
-        tmp_path,
-        CommentaryAgent,
-        session_id="sess-commentary-disabled",
-        config_data={"display": {"interim_assistant_messages": False}},
-    )
-
-    assert result.get("already_sent") is not True
-    assert not any(call["content"] == "I'll inspect the repo first." for call in adapter.sent)
-
-
-@pytest.mark.asyncio
-async def test_run_agent_tool_progress_does_not_control_interim_commentary(monkeypatch, tmp_path):
-    """tool_progress=all with interim_assistant_messages=false should not surface commentary."""
-    adapter, result = await _run_with_agent(
-        monkeypatch,
-        tmp_path,
-        CommentaryAgent,
-        session_id="sess-commentary-tool-progress",
-        config_data={"display": {"tool_progress": "all", "interim_assistant_messages": False}},
-    )
-
-    assert result.get("already_sent") is not True
-    assert not any(call["content"] == "I'll inspect the repo first." for call in adapter.sent)
-
-
-@pytest.mark.asyncio
-async def test_run_agent_streaming_does_not_enable_completed_interim_commentary(
-    monkeypatch, tmp_path
-):
-    """Streaming alone with interim_assistant_messages=false should not surface commentary."""
-    adapter, result = await _run_with_agent(
-        monkeypatch,
-        tmp_path,
-        CommentaryAgent,
-        session_id="sess-commentary-streaming",
-        config_data={
-            "display": {"tool_progress": "off", "interim_assistant_messages": False},
-            "streaming": {"enabled": True},
-        },
-    )
-
-    assert result.get("already_sent") is True
-    assert not any(call["content"] == "I'll inspect the repo first." for call in adapter.sent)
 
 
 @pytest.mark.asyncio
@@ -1267,85 +1182,6 @@ async def test_display_streaming_does_not_enable_gateway_streaming(monkeypatch, 
     assert result.get("already_sent") is not True
     assert adapter.edits == []
     assert [call["content"] for call in adapter.sent] == ["I'll inspect the repo first."]
-
-
-@pytest.mark.asyncio
-async def test_run_agent_interim_commentary_works_with_tool_progress_off(monkeypatch, tmp_path):
-    adapter, result = await _run_with_agent(
-        monkeypatch,
-        tmp_path,
-        CommentaryAgent,
-        session_id="sess-commentary-explicit-on",
-        config_data={
-            "display": {
-                "tool_progress": "off",
-                "interim_assistant_messages": True,
-            },
-        },
-    )
-
-    assert result.get("already_sent") is not True
-    assert any(call["content"] == "I'll inspect the repo first." for call in adapter.sent)
-
-
-@pytest.mark.asyncio
-async def test_run_agent_bluebubbles_uses_commentary_send_path_for_quick_replies(monkeypatch, tmp_path):
-    adapter, result = await _run_with_agent(
-        monkeypatch,
-        tmp_path,
-        CommentaryAgent,
-        session_id="sess-bluebubbles-commentary",
-        config_data={"display": {"interim_assistant_messages": True}},
-        platform=Platform.BLUEBUBBLES,
-        chat_id="iMessage;-;user@example.com",
-        chat_type="dm",
-        thread_id=None,
-        adapter_cls=NonEditingProgressCaptureAdapter,
-    )
-
-    assert result.get("already_sent") is not True
-    assert [call["content"] for call in adapter.sent] == ["I'll inspect the repo first."]
-    assert adapter.edits == []
-
-
-@pytest.mark.asyncio
-async def test_run_agent_previewed_final_marks_already_sent(monkeypatch, tmp_path):
-    adapter, result = await _run_with_agent(
-        monkeypatch,
-        tmp_path,
-        PreviewedResponseAgent,
-        session_id="sess-previewed",
-        config_data={"display": {"interim_assistant_messages": True}},
-    )
-
-    assert result.get("already_sent") is True
-    assert result["delivery_state"]["final_text"] == {"sent": True, "reason": "response_previewed"}
-    assert [call["content"] for call in adapter.sent] == ["You're welcome."]
-
-
-@pytest.mark.asyncio
-async def test_run_agent_matrix_streaming_omits_cursor(monkeypatch, tmp_path):
-    adapter, result = await _run_with_agent(
-        monkeypatch,
-        tmp_path,
-        StreamingRefineAgent,
-        session_id="sess-matrix-streaming",
-        config_data={
-            "display": {"tool_progress": "off", "interim_assistant_messages": False},
-            "streaming": {"enabled": True, "edit_interval": 0.01, "buffer_threshold": 1},
-        },
-        platform=Platform.MATRIX,
-        chat_id="!room:matrix.example.org",
-        chat_type="group",
-        thread_id="$thread",
-    )
-
-    assert result.get("already_sent") is True
-    assert result["delivery_state"]["final_text"] == {"sent": True, "reason": "stream_final_response"}
-    all_text = [call["content"] for call in adapter.sent] + [call["content"] for call in adapter.edits]
-    assert all_text, "expected streamed Matrix content to be sent or edited"
-    assert all("▉" not in text for text in all_text)
-    assert any("Continuing to refine:" in text for text in all_text)
 
 
 class TransformedStreamAgent:
@@ -1423,6 +1259,130 @@ async def test_run_agent_queued_message_does_not_treat_commentary_as_final(monke
 
 
 @pytest.mark.asyncio
+async def test_run_agent_queued_message_delivers_first_response_media(monkeypatch, tmp_path):
+    """Queued follow-ups must preserve explicit attachments from the first turn."""
+    media_path = tmp_path / "queued-first-response.png"
+    media_path.write_bytes(b"not-a-real-png-but-a-real-file")
+    QueuedMediaAgent.calls = 0
+    QueuedMediaAgent.media_path = media_path
+
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        QueuedMediaAgent,
+        session_id="sess-queued-media",
+        pending_text="queued follow-up",
+        platform=Platform.DISCORD,
+        chat_id="discord-thread",
+        chat_type="group",
+        thread_id="discord-thread",
+        adapter_cls=MediaCaptureProgressAdapter,
+    )
+
+    assert result["final_response"] == "follow-up processed"
+    assert isinstance(adapter, MediaCaptureProgressAdapter)
+    assert {
+        "sent_texts": [call["content"] for call in adapter.sent],
+        "image_batches": adapter.image_batches,
+    } == {
+        "sent_texts": ["first response"],
+        "image_batches": [
+            {
+                "chat_id": "discord-thread",
+                "images": [(media_path.as_uri(), "")],
+                "metadata": {"thread_id": "discord-thread"},
+            }
+        ],
+    }
+
+
+@pytest.mark.asyncio
+async def test_run_agent_queued_message_delivers_streamed_first_response_media(
+    monkeypatch, tmp_path,
+):
+    """Streaming first-turn text must not suppress its explicit attachment."""
+    media_path = tmp_path / "queued-streamed-first-response.png"
+    media_path.write_bytes(b"not-a-real-png-but-a-real-file")
+    QueuedMediaAgent.calls = 0
+    QueuedMediaAgent.media_path = media_path
+
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        QueuedMediaAgent,
+        session_id="sess-queued-streamed-media",
+        pending_text="queued follow-up",
+        config_data={
+            "display": {"tool_progress": "off", "interim_assistant_messages": False},
+            "streaming": {"enabled": True, "edit_interval": 0.01, "buffer_threshold": 1},
+        },
+        platform=Platform.DISCORD,
+        chat_id="discord-thread",
+        chat_type="group",
+        thread_id="discord-thread",
+        adapter_cls=MediaCaptureProgressAdapter,
+    )
+
+    assert result["final_response"] == "follow-up processed"
+    assert isinstance(adapter, MediaCaptureProgressAdapter)
+    all_text = [call["content"] for call in adapter.sent + adapter.edits]
+    assert all("MEDIA:" not in text for text in all_text)
+    assert adapter.image_batches == [
+        {
+            "chat_id": "discord-thread",
+            "images": [(media_path.as_uri(), "")],
+            "metadata": {"thread_id": "discord-thread"},
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_run_agent_suppresses_silent_first_turn_and_processes_queued_followup(
+    monkeypatch, tmp_path,
+):
+    """Regression: queued direct-send must not leak NO_REPLY to the channel."""
+    QueuedSilenceAgent.calls = 0
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        QueuedSilenceAgent,
+        session_id="sess-queued-silence",
+        pending_text="queued follow-up",
+        platform=Platform.SLACK,
+        chat_id="C123",
+        thread_id="1712345678.000100",
+    )
+
+    sent_texts = [call["content"] for call in adapter.sent]
+    assert QueuedSilenceAgent.calls == 2
+    assert result["final_response"] == "follow-up processed"
+    assert "NO_REPLY" not in sent_texts
+
+
+@pytest.mark.asyncio
+async def test_run_agent_sends_normalized_failure_before_queued_followup(
+    monkeypatch, tmp_path,
+):
+    """Queued delivery uses finalized output, not the raw empty agent result."""
+    QueuedFailedEmptyAgent.calls = 0
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        QueuedFailedEmptyAgent,
+        session_id="sess-queued-failed-empty",
+        pending_text="queued follow-up",
+        platform=Platform.SLACK,
+        chat_id="C123",
+        thread_id="1712345678.000100",
+    )
+
+    sent_texts = [call["content"] for call in adapter.sent]
+    assert QueuedFailedEmptyAgent.calls == 2
+    assert result["final_response"] == "follow-up processed"
+    assert any("The request failed: provider exploded" in text for text in sent_texts)
+
+
+@pytest.mark.asyncio
 async def test_run_agent_defers_background_review_notification_until_release(monkeypatch, tmp_path):
     adapter, result = await _run_with_agent(
         monkeypatch,
@@ -1480,6 +1440,62 @@ async def test_base_processing_releases_post_delivery_callback_after_main_send()
     sent_texts = [call["content"] for call in adapter.sent]
     assert sent_texts == ["done", "💾 Skill 'prospect-scanner' created."]
     assert released == [True]
+
+
+@pytest.mark.asyncio
+async def test_base_processing_stops_typing_before_hung_post_delivery_callback(
+    monkeypatch,
+):
+    """A stuck post-delivery callback must not keep the typing task alive."""
+    monkeypatch.setattr(base_platform, "_POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS", 0.01)
+    adapter = ProgressCaptureAdapter()
+    events = []
+
+    async def _handler(event):
+        return "done"
+
+    async def _post_delivery_cb():
+        events.append("callback-start")
+        await asyncio.Event().wait()
+
+    async def _stop_typing(chat_id):
+        events.append("typing-stopped")
+        await ProgressCaptureAdapter.stop_typing(adapter, chat_id)
+
+    adapter.set_message_handler(_handler)
+    adapter.stop_typing = _stop_typing
+
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="-1001",
+        chat_type="group",
+        thread_id="17585",
+    )
+    event = MessageEvent(
+        text="hello",
+        message_type=MessageType.TEXT,
+        source=source,
+        message_id="msg-1",
+    )
+    session_key = "agent:main:telegram:group:-1001:17585"
+    adapter._active_sessions[session_key] = asyncio.Event()
+    adapter._post_delivery_callbacks[session_key] = _post_delivery_cb
+
+    await asyncio.wait_for(
+        adapter._process_message_background(event, session_key), timeout=1.0
+    )
+
+    assert [call["content"] for call in adapter.sent] == ["done"]
+    # Invariant: typing must stop before the (hung) post-delivery callback
+    # starts.  Don't pin the exact stop_typing call count — the shared
+    # cleanup path may make more than one bounded stop attempt.
+    assert "typing-stopped" in events
+    assert "callback-start" in events
+    assert events.index("typing-stopped") < events.index("callback-start")
+    assert events[: events.index("callback-start")] == (
+        ["typing-stopped"] * events.index("callback-start")
+    )
+    assert any(call["metadata"] == {"stopped": True} for call in adapter.typing)
 
 
 @pytest.mark.asyncio
@@ -1652,1391 +1668,6 @@ async def test_verbose_mode_does_not_truncate_args_by_default(monkeypatch, tmp_p
     assert VerboseAgent.LONG_CODE in all_content
 
 
-@pytest.mark.asyncio
-async def test_verbose_mode_respects_explicit_tool_preview_length(monkeypatch, tmp_path):
-    """When tool_preview_length is set to a positive value, verbose truncates to that."""
-    adapter, result = await _run_with_agent(
-        monkeypatch,
-        tmp_path,
-        VerboseAgent,
-        session_id="sess-verbose-explicit-cap",
-        config_data={"display": {"tool_progress": "verbose", "tool_preview_length": 50}},
-    )
-
-    assert result["final_response"] == "done"
-    all_content = " ".join(call["content"] for call in adapter.sent)
-    all_content += " ".join(call["content"] for call in adapter.edits)
-    # Should be truncated — full 300-char string NOT present
-    assert VerboseAgent.LONG_CODE not in all_content
-    # But should still contain the truncated portion with "..."
-    assert "..." in all_content
-
-
-@pytest.mark.asyncio
-async def test_feishu_task_tracker_card_mode_sends_and_patches_one_card(monkeypatch, tmp_path):
-    adapter, result = await _run_with_agent(
-        monkeypatch,
-        tmp_path,
-        TransactionPanelAgent,
-        session_id="sess-feishu-progress-card",
-        platform=Platform.FEISHU,
-        chat_id="oc_1",
-        chat_type="dm",
-        thread_id=None,
-        adapter_cls=FeishuProgressCardCaptureAdapter,
-        config_data={
-            "display": {
-                "tool_progress": "all",
-                "task_tracker": {"enabled": True, "mode": "feishu_card", "max_operations": 8},
-            },
-        },
-    )
-
-    assert result["final_response"] == "done"
-    assert len(adapter.cards_sent) == 1
-    assert adapter.cards_patched
-    final_card = adapter.cards_patched[-1]["card"]
-    rendered = json.dumps(final_card, ensure_ascii=False)
-    assert adapter.cards_patched[-1]["finalize"] is True
-    assert "Task Workbench" in rendered
-    assert "Completed" in rendered
-    assert "read_file" in rendered
-    assert "search_files" in rendered
-    assert adapter.edits == []
-
-
-@pytest.mark.asyncio
-async def test_feishu_task_tracker_card_mode_reuses_one_card_for_queued_followup(monkeypatch, tmp_path):
-    adapter, result = await _run_with_agent(
-        monkeypatch,
-        tmp_path,
-        TransactionPanelAgent,
-        session_id="sess-feishu-progress-card-queued-followup",
-        pending_text="continue the same task",
-        platform=Platform.FEISHU,
-        chat_id="oc_1",
-        chat_type="dm",
-        thread_id=None,
-        adapter_cls=FeishuProgressCardCaptureAdapter,
-        config_data={
-            "display": {
-                "tool_progress": "all",
-                "task_tracker": {"enabled": True, "mode": "feishu_card", "max_operations": 8},
-            },
-        },
-    )
-
-    assert result["final_response"] == "done"
-    assert len(adapter.cards_sent) == 1
-    assert adapter.cards_patched
-    assert [call["message_id"] for call in adapter.cards_patched] == ["om_card_1"] * len(adapter.cards_patched)
-    assert sum(1 for call in adapter.cards_patched if call["finalize"]) == 1
-    final_card = adapter.cards_patched[-1]["card"]
-    rendered = json.dumps(final_card, ensure_ascii=False)
-    assert "Completed" in rendered
-    assert "Running" not in rendered
-    assert adapter.edits == []
-
-
-@pytest.mark.asyncio
-async def test_feishu_task_tracker_card_mode_final_card_includes_context_usage(monkeypatch, tmp_path):
-    adapter, result = await _run_with_agent(
-        monkeypatch,
-        tmp_path,
-        ContextUsagePanelAgent,
-        session_id="sess-feishu-progress-card-context",
-        platform=Platform.FEISHU,
-        chat_id="oc_1",
-        chat_type="dm",
-        thread_id=None,
-        adapter_cls=FeishuProgressCardCaptureAdapter,
-        config_data={
-            "display": {
-                "tool_progress": "all",
-                "task_tracker": {"enabled": True, "mode": "feishu_card", "max_operations": 8},
-            },
-        },
-    )
-
-    assert result["final_response"] == "done"
-    final_card = adapter.cards_patched[-1]["card"]
-    rendered = json.dumps(final_card, ensure_ascii=False)
-    assert "Context" in rendered
-    assert "40,960 / 128,000" in rendered
-    assert "peak 65,536" in rendered
-    assert "compressions 2" in rendered
-
-
-@pytest.mark.asyncio
-async def test_feishu_task_tracker_card_mode_final_patch_failure_sends_compact_notice(monkeypatch, tmp_path):
-    adapter, result = await _run_with_agent(
-        monkeypatch,
-        tmp_path,
-        TransactionPanelAgent,
-        session_id="sess-feishu-progress-card-fallback",
-        platform=Platform.FEISHU,
-        chat_id="oc_1",
-        chat_type="dm",
-        thread_id=None,
-        adapter_cls=FeishuFinalPatchFailureAdapter,
-        config_data={
-            "display": {
-                "tool_progress": "all",
-                "task_tracker": {"enabled": True, "mode": "feishu_card", "max_operations": 8},
-            },
-        },
-    )
-
-    assert result["final_response"] == "done"
-    assert adapter.cards_sent
-    assert any(call["finalize"] for call in adapter.cards_patched)
-    assert len(adapter.sent) == 1
-    _assert_compact_card_failure_notice_only(adapter.sent[0]["content"])
-
-
-@pytest.mark.asyncio
-async def test_feishu_task_tracker_card_mode_initial_send_failure_sends_only_compact_notice(monkeypatch, tmp_path):
-    adapter, result = await _run_with_agent(
-        monkeypatch,
-        tmp_path,
-        TransactionPanelAgent,
-        session_id="sess-feishu-progress-card-initial-send-fallback",
-        platform=Platform.FEISHU,
-        chat_id="oc_1",
-        chat_type="dm",
-        thread_id=None,
-        adapter_cls=FeishuInitialCardFailureAdapter,
-        config_data={
-            "display": {
-                "tool_progress": "all",
-                "task_tracker": {"enabled": True, "mode": "feishu_card", "max_operations": 8},
-            },
-        },
-    )
-
-    assert result["final_response"] == "done"
-    assert len(adapter.cards_sent) == 1
-    assert len(adapter.sent) == 1
-    _assert_compact_card_failure_notice_only(adapter.sent[0]["content"])
-
-
-@pytest.mark.asyncio
-async def test_feishu_task_tracker_card_mode_patch_failure_does_not_spam_chat(monkeypatch, tmp_path):
-    adapter, result = await _run_with_agent(
-        monkeypatch,
-        tmp_path,
-        TransactionPanelAgent,
-        session_id="sess-feishu-progress-card-patch-fallback-once",
-        platform=Platform.FEISHU,
-        chat_id="oc_1",
-        chat_type="dm",
-        thread_id=None,
-        adapter_cls=FeishuPatchFailureAdapter,
-        config_data={
-            "display": {
-                "tool_progress": "all",
-                "task_tracker": {"enabled": True, "mode": "feishu_card", "max_operations": 8},
-            },
-        },
-    )
-
-    assert result["final_response"] == "done"
-    assert adapter.cards_sent
-    assert adapter.cards_patched
-    assert len(adapter.sent) == 1
-    _assert_compact_card_failure_notice_only(adapter.sent[0]["content"])
-
-
-@pytest.mark.asyncio
-async def test_feishu_task_tracker_card_mode_retryable_patch_failure_catches_up_at_final(
-    monkeypatch, tmp_path
-):
-    adapter, result = await _run_with_agent(
-        monkeypatch,
-        tmp_path,
-        RetryablePatchCatchupAgent,
-        session_id="sess-feishu-progress-card-retryable-patch-catchup",
-        platform=Platform.FEISHU,
-        chat_id="oc_1",
-        chat_type="dm",
-        thread_id=None,
-        adapter_cls=FeishuRetryableIntermediatePatchFailureAdapter,
-        config_data={
-            "display": {
-                "tool_progress": "all",
-                "task_tracker": {"enabled": True, "mode": "feishu_card", "max_operations": 8},
-            },
-        },
-    )
-
-    assert result["final_response"] == "done"
-    assert len(adapter.cards_sent) == 1
-    assert any(not call["finalize"] for call in adapter.cards_patched)
-    assert adapter.cards_patched[-1]["finalize"] is True
-    assert adapter.sent == []
-    rendered = json.dumps(adapter.cards_patched[-1]["card"], ensure_ascii=False)
-    assert "Completed" in rendered
-    assert "search_files" in rendered
-
-
-@pytest.mark.asyncio
-async def test_feishu_task_tracker_card_mode_coalesces_burst_render_signals(monkeypatch, tmp_path):
-    adapter, result = await _run_with_agent(
-        monkeypatch,
-        tmp_path,
-        BurstTaskTrackerProgressAgent,
-        session_id="sess-feishu-progress-card-coalesce-burst",
-        platform=Platform.FEISHU,
-        chat_id="oc_1",
-        chat_type="dm",
-        thread_id=None,
-        adapter_cls=FeishuProgressCardCaptureAdapter,
-        config_data={
-            "display": {
-                "tool_progress": "all",
-                "task_tracker": {"enabled": True, "mode": "feishu_card", "max_operations": 8},
-            },
-        },
-    )
-
-    assert result["final_response"] == "done"
-    assert len(adapter.cards_sent) == 1
-    non_final_patches = [call for call in adapter.cards_patched if not call["finalize"]]
-    assert len(non_final_patches) <= 1
-    assert len(non_final_patches) < 12
-    assert adapter.cards_patched[-1]["finalize"] is True
-    rendered = json.dumps(adapter.cards_patched[-1]["card"], ensure_ascii=False)
-    assert "Completed" in rendered
-
-
-@pytest.mark.asyncio
-async def test_non_feishu_feishu_card_mode_falls_back_to_text_progress(monkeypatch, tmp_path):
-    adapter, result = await _run_with_agent(
-        monkeypatch,
-        tmp_path,
-        TransactionPanelAgent,
-        session_id="sess-non-feishu-card-mode-text-fallback",
-        platform=Platform.TELEGRAM,
-        chat_id="12345",
-        chat_type="dm",
-        thread_id=None,
-        config_data={
-            "display": {
-                "tool_progress": "all",
-                "task_tracker": {"enabled": True, "mode": "feishu_card", "max_operations": 8},
-            },
-        },
-    )
-
-    assert result["final_response"] == "done"
-    all_panels = "\n".join([call["content"] for call in adapter.sent] + [call["content"] for call in adapter.edits])
-    assert "Transaction" in all_panels
-    assert "Completed" in all_panels
-    assert "read_file" in all_panels
-
-
-@pytest.mark.asyncio
-async def test_flowweaver_shadow_tap_collects_progress_when_visible_progress_is_off(monkeypatch, tmp_path):
-    from gateway.flowweaver_shadow import FLOWWEAVER_SHADOW_SNAPSHOT_KEY
-
-    adapter, result = await _run_with_agent(
-        monkeypatch,
-        tmp_path,
-        OptionalProgressAgent,
-        session_id="sess-flowweaver-shadow-progress-off",
-        config_data={
-            "display": {
-                "tool_progress": "off",
-                "task_tracker": {
-                    "enabled": False,
-                    "flowweaver_shadow": True,
-                    "max_operations": 8,
-                },
-            },
-        },
-    )
-
-    assert result["final_response"] == "done"
-    assert adapter.sent == []
-    assert adapter.edits == []
-    shadow = result[FLOWWEAVER_SHADOW_SNAPSHOT_KEY]
-    assert shadow["type"] == "flowweaver.handle.v0"
-    assert shadow["transaction"]["status"] == "succeeded"
-    assert shadow["snapshot"]["status"] == "succeeded"
-    assert len(shadow["transaction"]["operations"]) == 2
-    assert "gateway/run.py" not in repr(shadow)
-    assert "tool_progress" not in repr(shadow)
-
-
-@pytest.mark.asyncio
-async def test_flowweaver_shadow_tap_attaches_consumer_capture_without_visible_side_effects(monkeypatch, tmp_path):
-    from gateway.flowweaver_shadow import (
-        FLOWWEAVER_SHADOW_CAPTURE_KEY,
-        FLOWWEAVER_SHADOW_SNAPSHOT_KEY,
-        get_flowweaver_shadow_capture,
-    )
-
-    adapter, result = await _run_with_agent(
-        monkeypatch,
-        tmp_path,
-        OptionalProgressAgent,
-        session_id="sess-flowweaver-shadow-capture",
-        config_data={
-            "display": {
-                "tool_progress": "off",
-                "task_tracker": {
-                    "enabled": False,
-                    "flowweaver_shadow": True,
-                    "max_operations": 8,
-                },
-            },
-        },
-    )
-
-    assert result["final_response"] == "done"
-    assert adapter.sent == []
-    assert adapter.edits == []
-    snapshot = result[FLOWWEAVER_SHADOW_SNAPSHOT_KEY]
-    capture = result[FLOWWEAVER_SHADOW_CAPTURE_KEY]
-    assert capture["transaction_id"] == snapshot["transaction_id"]
-    assert capture["correlation_id"] == snapshot["correlation_id"]
-    assert capture["snapshot_id"] == snapshot["snapshot_id"]
-    assert capture["lifecycle"]["visible_side_effects"] == []
-    assert capture["consumer"]["forbidden_side_effects"] == [
-        "send",
-        "edit",
-        "render",
-        "persist",
-        "temporal",
-    ]
-    view = get_flowweaver_shadow_capture(result)
-    assert view is not None
-    assert view["snapshot_ref"] == {
-        "snapshot_key": FLOWWEAVER_SHADOW_SNAPSHOT_KEY,
-        "transaction_id": snapshot["transaction_id"],
-        "correlation_id": snapshot["correlation_id"],
-        "snapshot_id": snapshot["snapshot_id"],
-    }
-    assert view["capture"] is capture
-
-
-@pytest.mark.asyncio
-async def test_flowweaver_shadow_tap_audit_ready_without_visible_side_effects(monkeypatch, tmp_path):
-    from gateway.flowweaver_shadow import (
-        FLOWWEAVER_SHADOW_AUDIT_READY,
-        audit_flowweaver_shadow_capture,
-    )
-
-    adapter, result = await _run_with_agent(
-        monkeypatch,
-        tmp_path,
-        OptionalProgressAgent,
-        session_id="sess-flowweaver-shadow-audit",
-        config_data={
-            "display": {
-                "tool_progress": "off",
-                "task_tracker": {
-                    "enabled": False,
-                    "flowweaver_shadow": True,
-                    "max_operations": 8,
-                },
-            },
-        },
-    )
-
-    audit = audit_flowweaver_shadow_capture(result)
-
-    assert result["final_response"] == "done"
-    assert adapter.sent == []
-    assert adapter.edits == []
-    assert audit["verdict"] == FLOWWEAVER_SHADOW_AUDIT_READY
-    assert audit["reason"] == "ok"
-    assert audit["side_effects"] == []
-    assert "snapshot" not in audit
-    assert "capture" not in audit
-    assert "deliveries" not in repr(audit)
-    assert "om_" not in repr(audit)
-
-
-@pytest.mark.asyncio
-async def test_flowweaver_shadow_tap_replay_probe_without_visible_side_effects(monkeypatch, tmp_path):
-    from gateway.flowweaver_shadow import (
-        FLOWWEAVER_SHADOW_REPLAY_REPLAYED,
-        replay_flowweaver_shadow_capture,
-    )
-
-    adapter, result = await _run_with_agent(
-        monkeypatch,
-        tmp_path,
-        OptionalProgressAgent,
-        session_id="sess-flowweaver-shadow-replay",
-        config_data={
-            "display": {
-                "tool_progress": "off",
-                "task_tracker": {
-                    "enabled": False,
-                    "flowweaver_shadow": True,
-                    "max_operations": 8,
-                },
-            },
-        },
-    )
-
-    replay = replay_flowweaver_shadow_capture(result, attempts=3)
-
-    assert result["final_response"] == "done"
-    assert adapter.sent == []
-    assert adapter.edits == []
-    assert replay["verdict"] == FLOWWEAVER_SHADOW_REPLAY_REPLAYED
-    assert replay["reason"] == "ok"
-    assert replay["replay_count"] == 3
-    assert replay["side_effects"] == []
-    assert "snapshot" not in replay
-    assert "capture" not in replay
-    assert "deliveries" not in repr(replay)
-    assert "om_" not in repr(replay)
-
-
-@pytest.mark.asyncio
-async def test_flowweaver_shadow_tap_replay_corpus_without_visible_side_effects(monkeypatch, tmp_path):
-    from gateway.flowweaver_shadow import (
-        FLOWWEAVER_SHADOW_REPLAY_CORPUS_PASSED,
-        replay_flowweaver_shadow_corpus,
-    )
-
-    adapter, result = await _run_with_agent(
-        monkeypatch,
-        tmp_path,
-        OptionalProgressAgent,
-        session_id="sess-flowweaver-shadow-replay-corpus",
-        config_data={
-            "display": {
-                "tool_progress": "off",
-                "task_tracker": {
-                    "enabled": False,
-                    "flowweaver_shadow": True,
-                    "max_operations": 8,
-                },
-            },
-        },
-    )
-
-    corpus = replay_flowweaver_shadow_corpus([result], attempts=2)
-
-    rendered = repr(corpus).lower()
-    assert result["final_response"] == "done"
-    assert adapter.sent == []
-    assert adapter.edits == []
-    assert corpus["verdict"] == FLOWWEAVER_SHADOW_REPLAY_CORPUS_PASSED
-    assert corpus["reason"] == "ok"
-    assert corpus["entry_count"] == 1
-    assert corpus["entries"][0]["verdict"] == "replayed"
-    assert corpus["side_effects"] == []
-    assert "snapshot_ref" not in corpus["entries"][0]
-    assert "snapshot" not in corpus["entries"][0]
-    assert "capture" not in corpus["entries"][0]
-    assert "transaction" not in corpus["entries"][0]
-    assert "deliveries" not in rendered
-    assert "artifacts" not in rendered
-    assert "om_" not in rendered
-    assert "oc_" not in rendered
-    assert "ou_" not in rendered
-    assert "chat" not in rendered
-    assert "user" not in rendered
-    assert "message" not in rendered
-
-
-@pytest.mark.asyncio
-async def test_flowweaver_mock_durable_consumer_without_visible_side_effects(monkeypatch, tmp_path):
-    from gateway.flowweaver_mock_durable import (
-        FLOWWEAVER_MOCK_DURABLE_ACCEPTED,
-        consume_flowweaver_shadow_corpus_as_mock_durable_state,
-    )
-    from gateway.flowweaver_shadow import (
-        describe_flowweaver_shadow_consumer_contract,
-        replay_flowweaver_shadow_corpus,
-    )
-
-    adapter, result = await _run_with_agent(
-        monkeypatch,
-        tmp_path,
-        OptionalProgressAgent,
-        session_id="sess-flowweaver-mock-durable-consumer",
-        config_data={
-            "display": {
-                "tool_progress": "off",
-                "task_tracker": {
-                    "enabled": False,
-                    "flowweaver_shadow": True,
-                    "max_operations": 8,
-                },
-            },
-        },
-    )
-
-    corpus = replay_flowweaver_shadow_corpus([result], attempts=2)
-    projection = consume_flowweaver_shadow_corpus_as_mock_durable_state(
-        describe_flowweaver_shadow_consumer_contract(),
-        corpus,
-    )
-
-    rendered = repr(projection).lower()
-    assert result["final_response"] == "done"
-    assert adapter.sent == []
-    assert adapter.edits == []
-    assert projection["verdict"] == FLOWWEAVER_MOCK_DURABLE_ACCEPTED
-    assert projection["entry_count"] == 1
-    assert projection["side_effects"] == []
-    assert projection["checks"]["side_effects_absent"] is True
-    assert "snapshot" not in rendered
-    assert "capture" not in rendered
-    assert "om_" not in rendered
-    assert "oc_" not in rendered
-    assert "ou_" not in rendered
-    assert "chat" not in rendered
-    assert "user" not in rendered
-    assert "message" not in rendered
-
-
-@pytest.mark.asyncio
-async def test_flowweaver_shadow_dry_run_default_off_no_result_key(monkeypatch, tmp_path):
-    from gateway.flowweaver_shadow import FLOWWEAVER_SHADOW_SNAPSHOT_KEY
-    from gateway.flowweaver_shadow_dry_run import FLOWWEAVER_SHADOW_DRY_RUN_RESULT_KEY
-
-    adapter, result = await _run_with_agent(
-        monkeypatch,
-        tmp_path,
-        OptionalProgressAgent,
-        session_id="sess-flowweaver-shadow-dry-run-default-off",
-        config_data={
-            "display": {
-                "tool_progress": "off",
-                "task_tracker": {
-                    "enabled": False,
-                    "flowweaver_shadow": True,
-                    "max_operations": 8,
-                },
-            },
-        },
-    )
-
-    assert result["final_response"] == "done"
-    assert adapter.sent == []
-    assert adapter.edits == []
-    assert FLOWWEAVER_SHADOW_SNAPSHOT_KEY in result
-    assert FLOWWEAVER_SHADOW_DRY_RUN_RESULT_KEY not in result
-
-
-@pytest.mark.asyncio
-async def test_flowweaver_shadow_dry_run_requires_explicit_dry_run_gate(monkeypatch, tmp_path):
-    from gateway.flowweaver_shadow import FLOWWEAVER_SHADOW_SNAPSHOT_KEY
-    from gateway.flowweaver_shadow_dry_run import FLOWWEAVER_SHADOW_DRY_RUN_RESULT_KEY
-
-    adapter, result = await _run_with_agent(
-        monkeypatch,
-        tmp_path,
-        OptionalProgressAgent,
-        session_id="sess-flowweaver-shadow-dry-run-shadow-missing",
-        config_data={
-            "display": {
-                "tool_progress": "off",
-                "task_tracker": {
-                    "enabled": False,
-                    "flowweaver_shadow": False,
-                    "flowweaver_shadow_dry_run": True,
-                    "max_operations": 8,
-                },
-            },
-        },
-    )
-
-    assert result["final_response"] == "done"
-    assert adapter.sent == []
-    assert adapter.edits == []
-    assert FLOWWEAVER_SHADOW_SNAPSHOT_KEY not in result
-    assert FLOWWEAVER_SHADOW_DRY_RUN_RESULT_KEY not in result
-
-
-@pytest.mark.asyncio
-async def test_flowweaver_shadow_dry_run_runs_without_visible_side_effects(monkeypatch, tmp_path):
-    from gateway.flowweaver_shadow_dry_run import (
-        FLOWWEAVER_SHADOW_DRY_RUN_PASSED,
-        FLOWWEAVER_SHADOW_DRY_RUN_RESULT_KEY,
-    )
-
-    adapter, result = await _run_with_agent(
-        monkeypatch,
-        tmp_path,
-        OptionalProgressAgent,
-        session_id="sess-flowweaver-shadow-dry-run-side-effects",
-        config_data={
-            "display": {
-                "tool_progress": "off",
-                "task_tracker": {
-                    "enabled": False,
-                    "flowweaver_shadow": True,
-                    "flowweaver_shadow_dry_run": True,
-                    "max_operations": 8,
-                },
-            },
-        },
-    )
-
-    dry_run = result[FLOWWEAVER_SHADOW_DRY_RUN_RESULT_KEY]
-    rendered = repr(dry_run).lower()
-    assert result["final_response"] == "done"
-    assert adapter.sent == []
-    assert adapter.edits == []
-    assert dry_run["verdict"] == FLOWWEAVER_SHADOW_DRY_RUN_PASSED
-    assert dry_run["entry_count"] == 1
-    assert dry_run["record_counts"] == {"intents": 1, "artifacts": 1, "deliveries": 1}
-    assert dry_run["side_effects"] == []
-    assert "snapshot" not in rendered
-    assert "flowweaver_shadow_capture" not in rendered
-    assert "om_" not in rendered
-    assert "oc_" not in rendered
-    assert "ou_" not in rendered
-    assert "chat" not in rendered
-    assert "user" not in rendered
-    assert "message" not in rendered
-
-
-@pytest.mark.asyncio
-async def test_flowweaver_shadow_dry_run_preserves_legacy_tool_progress_when_visible(monkeypatch, tmp_path):
-    from gateway.flowweaver_shadow_dry_run import FLOWWEAVER_SHADOW_DRY_RUN_RESULT_KEY
-
-    adapter, result = await _run_with_agent(
-        monkeypatch,
-        tmp_path,
-        OptionalProgressAgent,
-        session_id="sess-flowweaver-shadow-dry-run-visible-progress",
-        config_data={
-            "display": {
-                "tool_progress": "all",
-                "task_tracker": {
-                    "enabled": False,
-                    "flowweaver_shadow": True,
-                    "flowweaver_shadow_dry_run": True,
-                },
-            },
-        },
-    )
-
-    visible_progress = "\n".join(
-        [call["content"] for call in adapter.sent]
-        + [call["content"] for call in adapter.edits]
-    )
-    assert result["final_response"] == "done"
-    assert FLOWWEAVER_SHADOW_DRY_RUN_RESULT_KEY in result
-    assert "read_file" in visible_progress
-    assert "search_files" in visible_progress
-    assert "Transaction" not in visible_progress
-    assert "**Status:**" not in visible_progress
-
-
-@pytest.mark.asyncio
-async def test_flowweaver_shadow_dry_run_feishu_card_mode_does_not_send_or_patch_when_tracker_disabled(monkeypatch, tmp_path):
-    from gateway.flowweaver_shadow_dry_run import (
-        FLOWWEAVER_SHADOW_DRY_RUN_PASSED,
-        FLOWWEAVER_SHADOW_DRY_RUN_RESULT_KEY,
-    )
-
-    adapter, result = await _run_with_agent(
-        monkeypatch,
-        tmp_path,
-        OptionalProgressAgent,
-        session_id="sess-flowweaver-shadow-dry-run-feishu-card-off",
-        platform=Platform.FEISHU,
-        chat_id="oc_1",
-        chat_type="dm",
-        thread_id=None,
-        adapter_cls=FeishuProgressCardCaptureAdapter,
-        config_data={
-            "display": {
-                "tool_progress": "off",
-                "task_tracker": {
-                    "enabled": False,
-                    "mode": "feishu_card",
-                    "flowweaver_shadow": True,
-                    "flowweaver_shadow_dry_run": True,
-                    "max_operations": 8,
-                },
-            },
-        },
-    )
-
-    dry_run = result[FLOWWEAVER_SHADOW_DRY_RUN_RESULT_KEY]
-    assert result["final_response"] == "done"
-    assert adapter.sent == []
-    assert adapter.edits == []
-    assert adapter.cards_sent == []
-    assert adapter.cards_patched == []
-    assert dry_run["verdict"] == FLOWWEAVER_SHADOW_DRY_RUN_PASSED
-    assert dry_run["side_effects"] == []
-
-
-@pytest.mark.asyncio
-async def test_flowweaver_shadow_dry_run_config_matrix_preserves_visibility_boundaries(monkeypatch, tmp_path):
-    from gateway.flowweaver_shadow import FLOWWEAVER_SHADOW_SNAPSHOT_KEY
-    from gateway.flowweaver_shadow_dry_run import FLOWWEAVER_SHADOW_DRY_RUN_RESULT_KEY
-
-    cases = [
-        (
-            "shadow-off-dry-run-on",
-            {"tool_progress": "off", "task_tracker": {"enabled": False, "flowweaver_shadow": False, "flowweaver_shadow_dry_run": True}},
-            {"shadow": False, "dry_run": False, "visible": False, "tracker": False},
-        ),
-        (
-            "shadow-on-dry-run-off",
-            {"tool_progress": "off", "task_tracker": {"enabled": False, "flowweaver_shadow": True, "flowweaver_shadow_dry_run": False}},
-            {"shadow": True, "dry_run": False, "visible": False, "tracker": False},
-        ),
-        (
-            "both-on-progress-off-tracker-off",
-            {"tool_progress": "off", "task_tracker": {"enabled": False, "flowweaver_shadow": True, "flowweaver_shadow_dry_run": True}},
-            {"shadow": True, "dry_run": True, "visible": False, "tracker": False},
-        ),
-        (
-            "both-on-progress-all-tracker-off",
-            {"tool_progress": "all", "task_tracker": {"enabled": False, "flowweaver_shadow": True, "flowweaver_shadow_dry_run": True}},
-            {"shadow": True, "dry_run": True, "visible": True, "tracker": False},
-        ),
-        (
-            "both-on-tracker-on",
-            {"tool_progress": "off", "task_tracker": {"enabled": True, "mode": "text", "flowweaver_shadow": True, "flowweaver_shadow_dry_run": True, "max_operations": 8}},
-            {"shadow": True, "dry_run": True, "visible": True, "tracker": True},
-        ),
-    ]
-
-    for name, display_config, expected in cases:
-        case_tmp = tmp_path / name
-        case_tmp.mkdir()
-        adapter, result = await _run_with_agent(
-            monkeypatch,
-            case_tmp,
-            OptionalProgressAgent,
-            session_id=f"sess-flowweaver-shadow-dry-run-matrix-{name}",
-            config_data={"display": display_config},
-        )
-        visible = "\n".join([call["content"] for call in adapter.sent] + [call["content"] for call in adapter.edits])
-
-        assert (FLOWWEAVER_SHADOW_SNAPSHOT_KEY in result) is expected["shadow"], name
-        assert (FLOWWEAVER_SHADOW_DRY_RUN_RESULT_KEY in result) is expected["dry_run"], name
-        assert bool(adapter.sent or adapter.edits) is expected["visible"], name
-        if expected["dry_run"]:
-            assert result[FLOWWEAVER_SHADOW_DRY_RUN_RESULT_KEY]["verdict"] == "passed", name
-        if expected["tracker"]:
-            assert "Transaction" in visible, name
-        elif display_config["tool_progress"] == "all":
-            assert "read_file" in visible, name
-            assert "Transaction" not in visible, name
-        else:
-            assert "Transaction" not in visible, name
-
-    feishu_base = {
-        "display": {
-            "tool_progress": "off",
-            "task_tracker": {
-                "enabled": True,
-                "mode": "feishu_card",
-                "flowweaver_shadow": True,
-                "max_operations": 8,
-            },
-        },
-    }
-    feishu_without_tmp = tmp_path / "feishu-without-dry-run"
-    feishu_without_tmp.mkdir()
-    adapter_without_dry_run, result_without_dry_run = await _run_with_agent(
-        monkeypatch,
-        feishu_without_tmp,
-        OptionalProgressAgent,
-        session_id="sess-flowweaver-shadow-dry-run-feishu-base",
-        platform=Platform.FEISHU,
-        chat_id="oc_1",
-        chat_type="dm",
-        thread_id=None,
-        adapter_cls=FeishuProgressCardCaptureAdapter,
-        config_data=feishu_base,
-    )
-    feishu_with_dry_run = json.loads(json.dumps(feishu_base))
-    feishu_with_dry_run["display"]["task_tracker"]["flowweaver_shadow_dry_run"] = True
-    feishu_with_tmp = tmp_path / "feishu-with-dry-run"
-    feishu_with_tmp.mkdir()
-    adapter_with_dry_run, result_with_dry_run = await _run_with_agent(
-        monkeypatch,
-        feishu_with_tmp,
-        OptionalProgressAgent,
-        session_id="sess-flowweaver-shadow-dry-run-feishu-enabled",
-        platform=Platform.FEISHU,
-        chat_id="oc_1",
-        chat_type="dm",
-        thread_id=None,
-        adapter_cls=FeishuProgressCardCaptureAdapter,
-        config_data=feishu_with_dry_run,
-    )
-
-    assert FLOWWEAVER_SHADOW_DRY_RUN_RESULT_KEY not in result_without_dry_run
-    assert FLOWWEAVER_SHADOW_DRY_RUN_RESULT_KEY in result_with_dry_run
-    assert len(adapter_with_dry_run.cards_sent) == len(adapter_without_dry_run.cards_sent)
-    assert len(adapter_with_dry_run.cards_patched) == len(adapter_without_dry_run.cards_patched)
-    assert adapter_with_dry_run.sent == adapter_without_dry_run.sent == []
-    assert adapter_with_dry_run.edits == adapter_without_dry_run.edits == []
-
-
-@pytest.mark.asyncio
-async def test_flowweaver_shadow_tap_default_off_preserves_existing_no_progress_behavior(monkeypatch, tmp_path):
-    from gateway.flowweaver_shadow import FLOWWEAVER_SHADOW_SNAPSHOT_KEY
-
-    adapter, result = await _run_with_agent(
-        monkeypatch,
-        tmp_path,
-        OptionalProgressAgent,
-        session_id="sess-flowweaver-shadow-default-off",
-        config_data={
-            "display": {
-                "tool_progress": "off",
-                "task_tracker": {"enabled": False},
-            },
-        },
-    )
-
-    assert result["final_response"] == "done"
-    assert adapter.sent == []
-    assert adapter.edits == []
-    assert FLOWWEAVER_SHADOW_SNAPSHOT_KEY not in result
-
-
-@pytest.mark.asyncio
-async def test_flowweaver_shadow_tap_streamed_final_text_counts_as_answered_coverage(monkeypatch, tmp_path):
-    from gateway.flowweaver_shadow import FLOWWEAVER_SHADOW_SNAPSHOT_KEY
-
-    adapter, result = await _run_with_agent(
-        monkeypatch,
-        tmp_path,
-        StreamingRefineAgent,
-        session_id="sess-flowweaver-shadow-streamed-final",
-        config_data={
-            "display": {
-                "tool_progress": "off",
-                "interim_assistant_messages": False,
-                "task_tracker": {
-                    "enabled": False,
-                    "flowweaver_shadow": True,
-                },
-            },
-            "streaming": {"enabled": True, "edit_interval": 0.01, "buffer_threshold": 1},
-        },
-        platform=Platform.MATRIX,
-        chat_id="!room:matrix.example.org",
-        chat_type="group",
-        thread_id="$thread",
-    )
-
-    assert result.get("already_sent") is True
-    assert result["delivery_state"]["final_text"] == {"sent": True, "reason": "stream_final_response"}
-    shadow = result[FLOWWEAVER_SHADOW_SNAPSHOT_KEY]
-    assert shadow["transaction"]["final_text"]["status"] == "succeeded"
-    assert shadow["transaction"]["intent_coverage"][0]["mode"] == "answered"
-    assert shadow["transaction"]["deliveries"][0]["surface"] == "final_text"
-    assert any(
-        "Continuing to refine:" in call["content"]
-        for call in adapter.sent + adapter.edits
-    )
-
-
-@pytest.mark.asyncio
-async def test_flowweaver_shadow_tap_preserves_legacy_tool_progress_when_progress_is_visible(monkeypatch, tmp_path):
-    from gateway.flowweaver_shadow import FLOWWEAVER_SHADOW_SNAPSHOT_KEY
-
-    adapter, result = await _run_with_agent(
-        monkeypatch,
-        tmp_path,
-        OptionalProgressAgent,
-        session_id="sess-flowweaver-shadow-visible-progress",
-        config_data={
-            "display": {
-                "tool_progress": "all",
-                "task_tracker": {
-                    "enabled": False,
-                    "flowweaver_shadow": True,
-                },
-            },
-        },
-    )
-
-    visible_progress = "\n".join(
-        [call["content"] for call in adapter.sent]
-        + [call["content"] for call in adapter.edits]
-    )
-    assert result["final_response"] == "done"
-    assert FLOWWEAVER_SHADOW_SNAPSHOT_KEY in result
-    assert "read_file" in visible_progress
-    assert "Transaction" not in visible_progress
-    assert "**Status:**" not in visible_progress
-
-
-@pytest.mark.asyncio
-async def test_task_tracker_panel_shows_transaction_id_not_raw_user_text(monkeypatch, tmp_path):
-    adapter, result = await _run_with_agent(
-        monkeypatch,
-        tmp_path,
-        TransactionPanelAgent,
-        message="再试一次。今晚下雨吗？",
-        session_id="sess-task-tracker-task-id",
-        config_data={
-            "display": {
-                "tool_progress": "all",
-                "task_tracker": {"enabled": True, "mode": "text", "max_operations": 8},
-            },
-        },
-    )
-
-    assert result["final_response"] == "done"
-    all_panels = "\n".join([call["content"] for call in adapter.sent] + [call["content"] for call in adapter.edits])
-    assert "再试一次。今晚下雨吗？" not in all_panels
-    assert "今晚" not in all_panels
-    assert "task-" in all_panels
-    assert "sess-task-tracker-task-id" not in all_panels
-
-
-@pytest.mark.asyncio
-async def test_feishu_task_tracker_card_shows_canonical_task_id(monkeypatch, tmp_path):
-    adapter, result = await _run_with_agent(
-        monkeypatch,
-        tmp_path,
-        TransactionPanelAgent,
-        message="事务摘要的文字长度不要限制过短，尤其是多语言场景中。核心目标是把事情说清楚，语义密度尽可能大，信息损失小，信息熵增小。",
-        session_id="sess-feishu-task-id",
-        platform=Platform.FEISHU,
-        chat_id="oc_1",
-        chat_type="dm",
-        thread_id=None,
-        adapter_cls=FeishuProgressCardCaptureAdapter,
-        config_data={
-            "display": {
-                "tool_progress": "all",
-                "task_tracker": {"enabled": True, "mode": "feishu_card", "max_operations": 8},
-            },
-        },
-    )
-
-    assert result["final_response"] == "done"
-    final_card = adapter.cards_patched[-1]["card"]
-    details = final_card["elements"][0]["content"]
-    rendered = json.dumps(final_card, ensure_ascii=False)
-    assert "**🆔 任务 ID：**" in details
-    assert "task\\-" in details
-    assert "sess\\-feishu\\-task\\-id" not in details
-    assert "📌" not in rendered
-    assert "核心目标是把事情说清楚" not in rendered
-    assert "语义密度" not in rendered
-
-
-@pytest.mark.asyncio
-async def test_feishu_task_tracker_assigns_distinct_task_ids_within_one_session(monkeypatch, tmp_path):
-    config_data = {
-        "display": {
-            "tool_progress": "all",
-            "task_tracker": {"enabled": True, "mode": "feishu_card", "language": "zh"},
-        }
-    }
-    first_adapter, _ = await _run_with_agent(
-        monkeypatch,
-        tmp_path,
-        TransactionPanelAgent,
-        message="第一个任务",
-        session_id="shared-session",
-        platform=Platform.FEISHU,
-        chat_id="oc_1",
-        chat_type="dm",
-        thread_id=None,
-        adapter_cls=FeishuProgressCardCaptureAdapter,
-        config_data=config_data,
-    )
-    first_details = first_adapter.cards_patched[-1]["card"]["elements"][0]["content"]
-    second_adapter, _ = await _run_with_agent(
-        monkeypatch,
-        tmp_path,
-        TransactionPanelAgent,
-        message="第二个任务",
-        session_id="shared-session",
-        platform=Platform.FEISHU,
-        chat_id="oc_1",
-        chat_type="dm",
-        thread_id=None,
-        adapter_cls=FeishuProgressCardCaptureAdapter,
-        config_data=config_data,
-    )
-
-    second_details = second_adapter.cards_patched[-1]["card"]["elements"][0]["content"]
-    assert "shared\\-session" not in first_details
-    assert "shared\\-session" not in second_details
-    assert first_details.splitlines()[0] != second_details.splitlines()[0]
-
-
-@pytest.mark.asyncio
-async def test_legacy_progress_transaction_without_id_gets_single_canonical_task_id(monkeypatch, tmp_path):
-    """A pre-#239 shared transaction shape ({"queue": ...} without transaction_id)
-    must receive exactly one canonical task ID instead of silently disabling the
-    task tracker, and follow-up frames reusing the dict must see the same ID."""
-    import queue as queue_module
-    import re
-
-    legacy_transaction = {"queue": queue_module.Queue()}
-    config_data = {
-        "display": {
-            "tool_progress": "all",
-            "task_tracker": {"enabled": True, "mode": "text", "max_operations": 8},
-        },
-    }
-
-    _, result = await _run_with_agent(
-        monkeypatch,
-        tmp_path,
-        SingleProgressFastReturnAgent,
-        session_id="sess-legacy-transaction-shape",
-        config_data=config_data,
-        progress_transaction=legacy_transaction,
-    )
-
-    assert result["final_response"] == "done"
-    minted_id = legacy_transaction.get("transaction_id")
-    assert minted_id is not None, "legacy {'queue': ...} transaction never received a transaction_id"
-    assert re.fullmatch(r"task-[0-9a-f]{32}", minted_id)
-    tracker = legacy_transaction.get("tracker")
-    assert tracker is not None, "task tracker setup was disabled for the legacy transaction shape"
-    assert tracker.transaction_id == minted_id
-
-    _, followup_result = await _run_with_agent(
-        monkeypatch,
-        tmp_path,
-        SingleProgressFastReturnAgent,
-        session_id="sess-legacy-transaction-shape",
-        config_data=config_data,
-        progress_transaction=legacy_transaction,
-    )
-
-    assert followup_result["final_response"] == "done"
-    assert legacy_transaction["transaction_id"] == minted_id
-    assert legacy_transaction["tracker"] is tracker
-
-
-@pytest.mark.asyncio
-async def test_progress_transaction_with_existing_id_keeps_it_unchanged(monkeypatch, tmp_path):
-    import queue as queue_module
-
-    provided_id = "task-" + "f" * 32
-    shared_transaction = {"queue": queue_module.Queue(), "transaction_id": provided_id}
-
-    _, result = await _run_with_agent(
-        monkeypatch,
-        tmp_path,
-        SingleProgressFastReturnAgent,
-        session_id="sess-existing-transaction-id",
-        config_data={
-            "display": {
-                "tool_progress": "all",
-                "task_tracker": {"enabled": True, "mode": "text", "max_operations": 8},
-            },
-        },
-        progress_transaction=shared_transaction,
-    )
-
-    assert result["final_response"] == "done"
-    assert shared_transaction["transaction_id"] == provided_id
-    assert shared_transaction["tracker"].transaction_id == provided_id
-
-
-@pytest.mark.asyncio
-async def test_task_tracker_panel_replaces_raw_tool_progress_when_enabled(monkeypatch, tmp_path):
-    adapter, result = await _run_with_agent(
-        monkeypatch,
-        tmp_path,
-        TransactionPanelAgent,
-        session_id="sess-task-tracker-panel",
-        config_data={
-            "display": {
-                "tool_progress": "all",
-                "task_tracker": {"enabled": True, "mode": "text", "max_operations": 8},
-            },
-        },
-    )
-
-    assert result["final_response"] == "done"
-    assert adapter.sent
-    first_panel = adapter.sent[0]["content"]
-    all_panels = "\n".join([call["content"] for call in adapter.sent] + [call["content"] for call in adapter.edits])
-    assert "📌" in first_panel
-    assert "Transaction" in first_panel
-    assert "task-" in first_panel
-    assert "sess-task-tracker-panel" not in first_panel
-    assert "hello" not in first_panel
-    assert "read_file" in all_panels
-    assert "search_files" in all_panels
-    assert "Completed" in all_panels
-    assert '📖 read_file: "gateway/run.py"' not in all_panels
-
-
-@pytest.mark.asyncio
-async def test_task_tracker_falls_back_when_final_completed_edit_fails(monkeypatch, tmp_path):
-    adapter, result = await _run_with_agent(
-        monkeypatch,
-        tmp_path,
-        TransactionPanelAgent,
-        session_id="sess-task-tracker-final-edit-fallback",
-        adapter_cls=FinalProgressEditFailureAdapter,
-        config_data={
-            "display": {
-                "tool_progress": "all",
-                "task_tracker": {"enabled": True, "mode": "text", "max_operations": 8},
-            },
-        },
-    )
-
-    assert result["final_response"] == "done"
-    assert any("**Status:** Running" in call["content"] for call in adapter.sent)
-    assert any("**Status:** Completed" in call["content"] for call in adapter.edits)
-    assert any("**Status:** Completed" in call["content"] for call in adapter.sent[1:])
-
-
-@pytest.mark.asyncio
-async def test_task_tracker_final_completed_panel_is_flushed_before_progress_task_cancel(monkeypatch, tmp_path):
-    adapter, result = await _run_with_agent(
-        monkeypatch,
-        tmp_path,
-        TransactionPanelAgent,
-        session_id="sess-task-tracker-explicit-final-flush",
-        adapter_cls=CancellingTaskDropsFinalAdapter,
-        config_data={
-            "display": {
-                "tool_progress": "all",
-                "task_tracker": {"enabled": True, "mode": "text", "max_operations": 8},
-            },
-        },
-    )
-
-    assert result["final_response"] == "done"
-    assert adapter.dropped_completed_updates == []
-    assert adapter.visible_completed_updates
-    assert "**Status:** Completed" in adapter.visible_completed_updates[-1]
-
-
-@pytest.mark.asyncio
-async def test_task_tracker_final_flush_ignores_stale_running_update_ack(monkeypatch, tmp_path):
-    adapter, result = await _run_with_agent(
-        monkeypatch,
-        tmp_path,
-        TransactionPanelAgent,
-        session_id="sess-task-tracker-ignore-stale-running-ack",
-        adapter_cls=SlowInFlightRunningUpdateAdapter,
-        config_data={
-            "display": {
-                "tool_progress": "all",
-                "task_tracker": {"enabled": True, "mode": "text", "max_operations": 8},
-            },
-        },
-    )
-
-    assert result["final_response"] == "done"
-    assert adapter.delayed_running_send
-    assert adapter.visible_completed_updates
-    assert "**Status:** Completed" in adapter.visible_completed_updates[-1]
-
-
-@pytest.mark.asyncio
-async def test_task_tracker_final_flush_bypasses_progress_edit_throttle(monkeypatch, tmp_path):
-    adapter, result = await _run_with_agent(
-        monkeypatch,
-        tmp_path,
-        SingleProgressFastReturnAgent,
-        session_id="sess-task-tracker-final-flush-throttle",
-        adapter_cls=CancellingTaskDropsFinalAdapter,
-        config_data={
-            "display": {
-                "tool_progress": "all",
-                "task_tracker": {"enabled": True, "mode": "text", "max_operations": 8},
-            },
-        },
-    )
-
-    assert result["final_response"] == "done"
-    assert adapter.visible_completed_updates
-    assert "**Status:** Completed" in adapter.visible_completed_updates[-1]
-
-
-@pytest.mark.asyncio
-async def test_task_tracker_panel_includes_configured_dashboard_link_without_secrets(monkeypatch, tmp_path):
-    adapter, result = await _run_with_agent(
-        monkeypatch,
-        tmp_path,
-        TransactionPanelAgent,
-        session_id="sess-task-tracker-dashboard-link",
-        config_data={
-            "display": {
-                "tool_progress": "all",
-                "task_tracker": {
-                    "enabled": True,
-                    "mode": "text",
-                    "max_operations": 8,
-                    "dashboard_url": (
-                        "https://dashboard.example.local:9119/app?session_"
-                        + "token=abc"
-                        + "123#sec"
-                        + "ret"
-                    ),
-                },
-            },
-        },
-    )
-
-    assert result["final_response"] == "done"
-    all_panels = "\n".join([call["content"] for call in adapter.sent] + [call["content"] for call in adapter.edits])
-    assert "Dashboard" in all_panels
-    assert "https://dashboard.example.local:9119/app/progress" in all_panels
-    assert "session_token" not in all_panels
-    assert "abc123" not in all_panels
-    assert "#secret" not in all_panels
-
-
-@pytest.mark.asyncio
-async def test_task_tracker_panel_omits_unsafe_dashboard_link(monkeypatch, tmp_path):
-    adapter, result = await _run_with_agent(
-        monkeypatch,
-        tmp_path,
-        TransactionPanelAgent,
-        session_id="sess-task-tracker-unsafe-dashboard-link",
-        config_data={
-            "display": {
-                "tool_progress": "all",
-                "task_tracker": {
-                    "enabled": True,
-                    "mode": "text",
-                    "max_operations": 8,
-                    "dashboard_url": "javascript:alert('x')",
-                },
-            },
-        },
-    )
-
-    assert result["final_response"] == "done"
-    all_panels = "\n".join([call["content"] for call in adapter.sent] + [call["content"] for call in adapter.edits])
-    assert "Dashboard" not in all_panels
-    assert "javascript:" not in all_panels
-
-
-@pytest.mark.asyncio
-async def test_task_tracker_panel_respects_tool_progress_off(monkeypatch, tmp_path):
-    adapter, result = await _run_with_agent(
-        monkeypatch,
-        tmp_path,
-        TransactionPanelAgent,
-        session_id="sess-task-tracker-off",
-        config_data={
-            "display": {
-                "tool_progress": "off",
-                "task_tracker": {"enabled": True, "mode": "text", "max_operations": 8},
-            },
-        },
-    )
-
-    assert result["final_response"] == "done"
-    all_panels = "\n".join([call["content"] for call in adapter.sent] + [call["content"] for call in adapter.edits])
-    assert "Transaction" in all_panels
-    assert "read_file" not in all_panels
-    assert "search_files" not in all_panels
-
-
-@pytest.mark.asyncio
-async def test_task_tracker_panel_renders_subagent_progress_events(monkeypatch, tmp_path):
-    adapter, result = await _run_with_agent(
-        monkeypatch,
-        tmp_path,
-        SubagentProgressAgent,
-        session_id="sess-task-tracker-subagent",
-        config_data={
-            "display": {
-                "tool_progress": "all",
-                "task_tracker": {"enabled": True, "mode": "text", "max_operations": 8},
-            },
-        },
-    )
-
-    assert result["final_response"] == "done"
-    all_panels = "\n".join([call["content"] for call in adapter.sent] + [call["content"] for call in adapter.edits])
-    assert "subagent start" in all_panels
-    assert "subagent tool: search_files" in all_panels
-    assert "subagent complete" in all_panels
-
-
-@pytest.mark.asyncio
-async def test_task_tracker_persists_progress_events_when_enabled(monkeypatch, tmp_path):
-    store_path = tmp_path / "progress" / "events.jsonl"
-
-    adapter, result = await _run_with_agent(
-        monkeypatch,
-        tmp_path,
-        PersistentProgressAgent,
-        session_id="sess-task-tracker-persist",
-        config_data={
-            "display": {
-                "tool_progress": "all",
-                "task_tracker": {
-                    "enabled": True,
-                    "mode": "text",
-                    "persist_events": True,
-                    "event_store": "jsonl",
-                    "event_store_path": str(store_path),
-                },
-            },
-        },
-    )
-
-    assert result["final_response"] == "done"
-    assert store_path.exists()
-    records = [json.loads(line) for line in store_path.read_text(encoding="utf-8").splitlines()]
-    rendered = json.dumps(records, ensure_ascii=False)
-    assert len(records) >= 2
-    assert records[-1]["record_type"] == "progress.snapshot"
-    assert records[-1]["transaction"]["status"] == "completed"
-    assert records[0]["transaction"]["id"].startswith("task-")
-    assert records[0]["transaction"]["id"] != "sess-task-tracker-persist"
-    assert records[0]["operation"]["event_type"] == "tool.started"
-    assert any(record.get("operation", {}).get("event_type") == "tool.completed" for record in records)
-    assert "terminal" in rendered
-    assert "ok=yes" in rendered
-    assert "persist-secret" not in rendered
-    assert "[REDACTED]" in rendered
-
-
-@pytest.mark.asyncio
-async def test_task_tracker_does_not_persist_progress_events_when_disabled(monkeypatch, tmp_path):
-    store_path = tmp_path / "progress" / "events.jsonl"
-
-    adapter, result = await _run_with_agent(
-        monkeypatch,
-        tmp_path,
-        PersistentProgressAgent,
-        session_id="sess-task-tracker-no-persist",
-        config_data={
-            "display": {
-                "tool_progress": "all",
-                "task_tracker": {
-                    "enabled": True,
-                    "mode": "text",
-                    "persist_events": False,
-                    "event_store": "jsonl",
-                    "event_store_path": str(store_path),
-                },
-            },
-        },
-    )
-
-    assert result["final_response"] == "done"
-    assert adapter.sent
-    assert not store_path.exists()
-
-
-# Upstream v0.17.0 terminal progress rendering regressions retained during Sachima merge.
 class CodeBlockProgressAdapter(ProgressCaptureAdapter):
     """A markdown-capable progress adapter (declares supports_code_blocks)."""
 
@@ -3279,3 +1910,212 @@ async def test_consecutive_terminal_progress_collapses_headers(monkeypatch, tmp_
     # Exactly TWO terminal headers: one for the first run of three calls,
     # one for the terminal call after web_search broke the streak.
     assert final.count("terminal\n```") == 2
+
+
+class TestSlackReplyInThreadProgressRouting:
+    """#18859: reply_in_thread=false must stop progress from creating threads."""
+
+    def test_slack_reply_in_thread_false_drops_synthetic_thread(self):
+        from gateway.run import _resolve_progress_thread_id
+
+        # source.thread_id == event ts is the adapter's synthetic
+        # session-keying thread for top-level messages — not a real thread.
+        assert _resolve_progress_thread_id(
+            Platform.SLACK,
+            source_thread_id="1700000000.000100",
+            event_message_id="1700000000.000100",
+            reply_in_thread=False,
+        ) is None
+
+    def test_buzz_uses_event_message_id_as_progress_thread(self):
+        """Buzz has no native thread_id; progress must reply-to the trigger."""
+        from gateway.run import _resolve_progress_thread_id
+
+        assert _resolve_progress_thread_id(
+            "buzz",
+            source_thread_id=None,
+            event_message_id="evt-trigger-001",
+            reply_in_thread=True,
+        ) == "evt-trigger-001"
+
+
+class TaskWorkbenchGatewayAgent:
+    """Exercise the real gateway callback/config/final-flush path."""
+
+    def __init__(self, **kwargs):
+        from tools.todo_tool import TodoStore
+
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+        self.model = "test/model"
+        self.max_iterations = 20
+        self._api_call_count = 0
+        self._todo_store = TodoStore()
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        self._todo_store.bind_transaction(self._todo_transaction_id)
+        self._todo_store.write(
+            [
+                {
+                    "id": "release",
+                    "content": "Release candidate",
+                    "status": "in_progress",
+                    "executor": "codex",
+                }
+            ]
+        )
+        self.tool_progress_callback(
+            "tool.started", "terminal", "run release checks", {"command": "tests"}
+        )
+        time.sleep(0.1)
+        self._api_call_count = 2
+        self._todo_store.write(
+            [
+                {
+                    "id": "release",
+                    "content": "Release candidate",
+                    "status": "completed",
+                    "executor": "codex",
+                }
+            ]
+        )
+        self.tool_progress_callback(
+            "tool.completed", "terminal", "checks passed", {}, duration=0.1
+        )
+        return {
+            "final_response": "done",
+            "messages": [],
+            "api_calls": 2,
+        }
+
+
+class TaskWorkbenchFeishuAdapter(ProgressCaptureAdapter):
+    def __init__(self, platform=Platform.FEISHU):
+        super().__init__(platform=platform)
+        self.cards_sent = []
+        self.cards_patched = []
+
+    async def send_interactive_card(
+        self, chat_id, card, *, reply_to=None, metadata=None
+    ) -> SendResult:
+        self.cards_sent.append(
+            {
+                "chat_id": chat_id,
+                "card": card,
+                "reply_to": reply_to,
+                "metadata": metadata,
+            }
+        )
+        return SendResult(success=True, message_id="workbench-card-1")
+
+    async def patch_interactive_card(
+        self, chat_id, message_id, card, *, finalize=False
+    ) -> SendResult:
+        self.cards_patched.append(
+            {
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "card": card,
+                "finalize": finalize,
+            }
+        )
+        return SendResult(success=True, message_id=message_id)
+
+
+@pytest.mark.asyncio
+async def test_task_workbench_replaces_raw_progress_and_flushes_final_panel(
+    monkeypatch, tmp_path
+):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        TaskWorkbenchGatewayAgent,
+        session_id="persistent-session",
+        config_data={
+            "display": {
+                "tool_progress": "off",
+                "task_tracker": {"enabled": True, "mode": "text"},
+            }
+        },
+    )
+
+    assert result["final_response"] == "done"
+    assert len(adapter.sent) == 1
+    assert adapter.edits
+    final = adapter.edits[-1]["content"]
+    assert "**Status:** Completed" in final
+    assert "persistent-session" not in final
+    assert "Release candidate" in final
+    assert "[codex]" in final
+    assert "💻 Running" not in "\n".join(
+        entry["content"] for entry in adapter.sent + adapter.edits
+    )
+
+
+@pytest.mark.asyncio
+async def test_feishu_task_workbench_keeps_one_card_identity(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        TaskWorkbenchGatewayAgent,
+        session_id="persistent-session",
+        config_data={
+            "display": {
+                "tool_progress": "off",
+                "task_tracker": {
+                    "enabled": True,
+                    "mode": "feishu_card",
+                    "language": "zh",
+                },
+            }
+        },
+        platform=Platform.FEISHU,
+        adapter_cls=TaskWorkbenchFeishuAdapter,
+    )
+
+    assert result["final_response"] == "done"
+    assert len(adapter.cards_sent) == 1
+    assert adapter.cards_patched
+    assert {item["message_id"] for item in adapter.cards_patched} == {
+        "workbench-card-1"
+    }
+    assert adapter.cards_patched[-1]["finalize"] is True
+    rendered = json.dumps(adapter.cards_patched[-1]["card"], ensure_ascii=False)
+    assert "已完成" in rendered
+    assert "Release candidate" in rendered
+
+
+@pytest.mark.asyncio
+async def test_task_workbench_persists_real_gateway_transaction(monkeypatch, tmp_path):
+    event_path = tmp_path / "progress" / "events.jsonl"
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        TaskWorkbenchGatewayAgent,
+        session_id="persistent-session",
+        config_data={
+            "display": {
+                "tool_progress": "off",
+                "task_tracker": {
+                    "enabled": True,
+                    "mode": "text",
+                    "persist_events": True,
+                    "event_store": "jsonl",
+                    "event_store_path": str(event_path),
+                },
+            }
+        },
+    )
+
+    assert result["final_response"] == "done"
+    records = [
+        json.loads(line)
+        for line in event_path.read_text(encoding="utf-8").splitlines()
+    ]
+    transaction_ids = {record["transaction"]["id"] for record in records}
+    assert len(transaction_ids) == 1
+    transaction_id = transaction_ids.pop()
+    assert transaction_id.startswith("task-")
+    assert transaction_id != "persistent-session"
+    assert records[-1]["record_type"] == "progress.snapshot"
+    assert records[-1]["transaction"]["status"] == "completed"

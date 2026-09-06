@@ -2,7 +2,7 @@
 
 import json
 
-from tools.todo_tool import TODO_SCHEMA, TodoStore, todo_tool
+from tools.todo_tool import TodoStore, todo_tool
 
 
 class TestWriteAndRead:
@@ -14,15 +14,10 @@ class TestWriteAndRead:
         ]
         result = store.write(items)
         assert len(result) == 2
-        assert result[0]["id"] == "1"
-        assert result[1]["status"] == "in_progress"
+        assert result[0]["id"] == "2"
+        assert result[0]["status"] == "in_progress"
+        assert result[1]["id"] == "1"
 
-    def test_read_returns_copy(self):
-        store = TodoStore()
-        store.write([{"id": "1", "content": "Task", "status": "pending"}])
-        items = store.read()
-        items[0]["content"] = "MUTATED"
-        assert store.read()[0]["content"] == "Task"
 
     def test_write_deduplicates_duplicate_ids(self):
         store = TodoStore()
@@ -32,8 +27,21 @@ class TestWriteAndRead:
             {"id": "1", "content": "Latest version", "status": "in_progress"},
         ])
         assert result == [
-            {"id": "2", "content": "Other task", "status": "pending"},
             {"id": "1", "content": "Latest version", "status": "in_progress"},
+            {"id": "2", "content": "Other task", "status": "pending"},
+        ]
+
+    def test_write_moves_active_item_before_earlier_pending_step(self):
+        store = TodoStore()
+        result = store.write([
+            {"id": "1", "content": "Already done", "status": "completed"},
+            {"id": "2", "content": "Verify freed space", "status": "pending"},
+            {"id": "3", "content": "Move archives to Trash", "status": "in_progress"},
+        ])
+        assert result == [
+            {"id": "1", "content": "Already done", "status": "completed"},
+            {"id": "3", "content": "Move archives to Trash", "status": "in_progress"},
+            {"id": "2", "content": "Verify freed space", "status": "pending"},
         ]
 
 
@@ -72,76 +80,6 @@ class TestFormatForInjection:
         assert "context compression" in text.lower()
 
 
-class TestTodoLifecycleInjection:
-    def test_active_and_resumed_todos_inject_after_compression(self):
-        store = TodoStore()
-        store.write([{"id": "1", "content": "Continue work", "status": "pending"}])
-        store.mark_lifecycle("active")
-
-        assert "Continue work" in store.format_for_injection()
-
-        store.mark_lifecycle("resumed")
-        assert "Continue work" in store.format_for_injection()
-
-    def test_completed_archived_and_suspended_todos_do_not_inject_as_current_state(self):
-        store = TodoStore()
-        store.write([{"id": "1", "content": "Old work", "status": "pending"}])
-
-        for state in ("completed", "archived", "suspended", "cancelled"):
-            store.mark_lifecycle(state, reason="waiting_external")
-            assert store.format_for_injection() is None
-
-    def test_all_completed_or_cancelled_todos_do_not_inject_without_explicit_lifecycle(self):
-        store = TodoStore()
-        store.write([{"id": "1", "content": "Done work", "status": "completed"}])
-        assert store.format_for_injection() is None
-
-        store.write([{"id": "2", "content": "Cancelled work", "status": "cancelled"}])
-        assert store.format_for_injection() is None
-
-    def test_tool_output_includes_backward_compatible_lifecycle_metadata(self):
-        store = TodoStore()
-        store.write([{"id": "1", "content": "Task", "status": "pending"}])
-        store.bind_transaction("tx-1")
-        store.mark_lifecycle("active")
-
-        result = json.loads(todo_tool(store=store))
-
-        assert result["todos"] == [{"id": "1", "content": "Task", "status": "pending"}]
-        assert result["summary"]["pending"] == 1
-        assert result["todo_lifecycle"]["state"] == "active"
-        assert result["todo_lifecycle"]["transaction_id"] == "tx-1"
-
-    def test_tool_output_derives_lifecycle_from_item_statuses_without_new_schema(self):
-        store = TodoStore()
-        store.write([{"id": "1", "content": "Finished", "status": "completed"}])
-
-        completed = json.loads(todo_tool(store=store))
-
-        assert completed["todo_lifecycle"]["state"] == "completed"
-        assert completed["todo_lifecycle"]["completed_count"] == 1
-        assert completed["todo_lifecycle"]["remaining_count"] == 0
-
-        store.write([{"id": "2", "content": "Continue", "status": "pending"}])
-        active = json.loads(todo_tool(store=store))
-
-        assert active["todo_lifecycle"]["state"] == "active"
-        assert active["todo_lifecycle"]["completed_count"] == 0
-        assert active["todo_lifecycle"]["remaining_count"] == 1
-
-    def test_replace_after_terminal_lifecycle_starts_new_active_todo_state(self):
-        store = TodoStore()
-        store.write([{"id": "old", "content": "Old task", "status": "pending"}])
-        store.mark_lifecycle("completed")
-
-        store.write([{"id": "new", "content": "New task", "status": "pending"}])
-        result = json.loads(todo_tool(store=store))
-
-        assert result["todo_lifecycle"]["state"] == "active"
-        assert result["todo_lifecycle"]["remaining_count"] == 1
-        assert "New task" in store.format_for_injection()
-
-
 class TestMergeMode:
     def test_update_existing_by_id(self):
         store = TodoStore()
@@ -167,6 +105,23 @@ class TestMergeMode:
         items = store.read()
         assert len(items) == 2
 
+    def test_merge_reorders_active_item_ahead_of_earlier_pending_step(self):
+        store = TodoStore()
+        store.write([
+            {"id": "1", "content": "Completed", "status": "completed"},
+            {"id": "2", "content": "Verify freed space", "status": "pending"},
+            {"id": "3", "content": "Move archives to Trash", "status": "pending"},
+        ])
+        result = store.write(
+            [{"id": "3", "status": "in_progress"}],
+            merge=True,
+        )
+        assert result == [
+            {"id": "1", "content": "Completed", "status": "completed"},
+            {"id": "3", "content": "Move archives to Trash", "status": "in_progress"},
+            {"id": "2", "content": "Verify freed space", "status": "pending"},
+        ]
+
 
 class TestTodoToolFunction:
     def test_read_mode(self):
@@ -175,223 +130,36 @@ class TestTodoToolFunction:
         result = json.loads(todo_tool(store=store))
         assert result["summary"]["total"] == 1
         assert result["summary"]["pending"] == 1
+        assert result["revision"] == 1
 
-    def test_write_mode(self):
-        store = TodoStore()
-        result = json.loads(todo_tool(
-            todos=[{"id": "1", "content": "New", "status": "in_progress"}],
-            store=store,
-        ))
-        assert result["summary"]["in_progress"] == 1
 
     def test_no_store_returns_error(self):
         result = json.loads(todo_tool())
         assert "error" in result
 
 
-class TestParentId:
-    """V2 grouping: optional parent_id links a child to a sibling item."""
-
-    def test_parent_id_preserved_for_child(self):
+class TestTodoStoreSnapshots:
+    def test_revision_only_advances_when_state_changes(self):
         store = TodoStore()
-        store.write([
-            {"id": "pr", "content": "PR verification", "status": "in_progress"},
-            {"id": "test", "content": "Local tests", "status": "completed", "parent_id": "pr"},
-            {"id": "codex", "content": "Codex review", "status": "pending", "parent_id": "pr"},
-        ])
-        items = store.read()
-        assert items[1]["parent_id"] == "pr"
-        assert items[2]["parent_id"] == "pr"
-        # Top-level items have no parent_id key at all (backward-compatible shape).
-        assert "parent_id" not in items[0]
+        items = [{"id": "1", "content": "Task", "status": "pending"}]
 
-    def test_top_level_items_have_no_parent_id_key(self):
+        store.write(items)
+        first = store.snapshot()
+        store.write(items)
+
+        assert first["revision"] == 1
+        assert store.snapshot() == first
+
+    def test_restore_adopts_a_trusted_revision(self):
         store = TodoStore()
-        result = store.write([
-            {"id": "1", "content": "First", "status": "pending"},
-            {"id": "2", "content": "Second", "status": "pending"},
-        ])
-        assert result == [
-            {"id": "1", "content": "First", "status": "pending"},
-            {"id": "2", "content": "Second", "status": "pending"},
-        ]
+        store.restore(
+            [{"id": "1", "content": "Task", "status": "pending"}], revision=7
+        )
 
-    def test_self_parent_is_dropped(self):
-        store = TodoStore()
-        store.write([{"id": "a", "content": "Self ref", "status": "pending", "parent_id": "a"}])
-        assert "parent_id" not in store.read()[0]
+        assert store.snapshot()["revision"] == 7
 
-    def test_empty_parent_is_dropped(self):
-        store = TodoStore()
-        store.write([
-            {"id": "a", "content": "Parent", "status": "pending"},
-            {"id": "b", "content": "Child", "status": "pending", "parent_id": "   "},
-        ])
-        assert "parent_id" not in store.read()[1]
-
-    def test_unknown_parent_is_dropped(self):
-        store = TodoStore()
-        store.write([
-            {"id": "a", "content": "Parent", "status": "pending"},
-            {"id": "b", "content": "Child", "status": "pending", "parent_id": "missing"},
-        ])
-        # An unresolved parent falls back to a top-level item rather than dangling.
-        assert "parent_id" not in store.read()[1]
-
-    def test_parent_id_pointing_to_child_is_dropped(self):
-        store = TodoStore()
-        store.write([
-            {"id": "a", "content": "Root", "status": "pending"},
-            {"id": "b", "content": "Child", "status": "pending", "parent_id": "a"},
-            {"id": "c", "content": "Grandchild", "status": "pending", "parent_id": "b"},
-        ])
-        items = {item["id"]: item for item in store.read()}
-        assert items["b"]["parent_id"] == "a"
-        assert "parent_id" not in items["c"]
-
-    def test_parent_cycle_is_dropped(self):
-        store = TodoStore()
-        store.write([
-            {"id": "a", "content": "Cycle A", "status": "pending", "parent_id": "b"},
-            {"id": "b", "content": "Cycle B", "status": "pending", "parent_id": "a"},
-        ])
-        assert all("parent_id" not in item for item in store.read())
-
-    def test_parent_dropped_by_item_cap_is_pruned(self):
-        from tools.todo_tool import MAX_TODO_ITEMS
-        # Child sits first (survives); its parent is pushed beyond the item cap
-        # and truncated. The surviving child must not keep a dangling link.
-        todos = [{"id": "child", "content": "child", "status": "pending", "parent_id": "late-parent"}]
-        todos += [{"id": str(i), "content": f"task {i}", "status": "pending"} for i in range(MAX_TODO_ITEMS)]
-        todos.append({"id": "late-parent", "content": "parent", "status": "pending"})
-        store = TodoStore()
-        store.write(todos)
-        items = store.read()
-        assert len(items) == MAX_TODO_ITEMS
-        assert items[0]["id"] == "child"
-        assert "parent_id" not in items[0]
-        known = {it["id"] for it in items}
-        assert all(it.get("parent_id", "child") in known for it in items if "parent_id" in it)
-
-    def test_merge_can_update_parent_id(self):
-        store = TodoStore()
-        store.write([
-            {"id": "pr", "content": "PR verification", "status": "in_progress"},
-            {"id": "test", "content": "Local tests", "status": "completed"},
-        ])
-        store.write([{"id": "test", "parent_id": "pr"}], merge=True)
-        items = store.read()
-        assert items[1]["parent_id"] == "pr"
-        # Other fields are untouched by the parent-only merge.
-        assert items[1]["content"] == "Local tests"
-        assert items[1]["status"] == "completed"
-
-    def test_merge_can_detach_parent_id(self):
-        store = TodoStore()
-        store.write([
-            {"id": "pr", "content": "PR verification", "status": "in_progress"},
-            {"id": "test", "content": "Local tests", "status": "completed", "parent_id": "pr"},
-        ])
-        store.write([{"id": "test", "parent_id": ""}], merge=True)
-        assert "parent_id" not in store.read()[1]
-
-
-class TestExecutor:
-    """Optional executor label: explicit, validated, display-only metadata."""
-
-    def test_executor_round_trips_through_write_read_and_tool_reply(self):
-        store = TodoStore()
-        store.write([
-            {"id": "1", "content": "Run tests", "status": "pending", "executor": "codex"},
-        ])
-        assert store.read()[0]["executor"] == "codex"
-        reply = json.loads(todo_tool(store=store))
-        assert reply["todos"][0]["executor"] == "codex"
-
-    def test_items_without_executor_keep_legacy_shape(self):
-        store = TodoStore()
-        result = store.write([{"id": "1", "content": "Task", "status": "pending"}])
-        assert result == [{"id": "1", "content": "Task", "status": "pending"}]
-
-    def test_executor_is_case_normalized(self):
-        store = TodoStore()
-        store.write([{"id": "1", "content": "Task", "status": "pending", "executor": "Claude"}])
-        assert store.read()[0]["executor"] == "claude"
-
-    def test_invalid_executor_drops_field_but_keeps_item(self):
-        invalid_values = [
-            "two words",
-            "x" * 200,
-            "https://evil.example/agent",
-            "sk-" + "a" * 24,
-            "Bearer abc123",
-            123,
-            "",
-        ]
-        for value in invalid_values:
-            store = TodoStore()
-            store.write([{"id": "1", "content": "Task", "status": "pending", "executor": value}])
-            item = store.read()[0]
-            assert item["content"] == "Task"
-            assert "executor" not in item
-
-    def test_merge_can_set_executor_on_existing_item(self):
-        store = TodoStore()
-        store.write([{"id": "1", "content": "Task", "status": "pending"}])
-        store.write([{"id": "1", "executor": "codex"}], merge=True)
-        item = store.read()[0]
-        assert item["executor"] == "codex"
-        # Other fields are untouched by the executor-only merge.
-        assert item["content"] == "Task"
-        assert item["status"] == "pending"
-
-    def test_merge_can_clear_executor_with_empty_or_invalid_value(self):
-        for clearing_value in ("", "not a valid label!"):
-            store = TodoStore()
-            store.write([
-                {"id": "1", "content": "Task", "status": "pending", "executor": "codex"},
-            ])
-            store.write([{"id": "1", "executor": clearing_value}], merge=True)
-            assert "executor" not in store.read()[0]
-
-    def test_merge_without_executor_key_leaves_label_unchanged(self):
-        store = TodoStore()
-        store.write([
-            {"id": "1", "content": "Task", "status": "pending", "executor": "codex"},
-        ])
-        store.write([{"id": "1", "status": "completed"}], merge=True)
-        item = store.read()[0]
-        assert item["executor"] == "codex"
-        assert item["status"] == "completed"
-
-    def test_dedupe_keeps_last_occurrence_executor(self):
-        store = TodoStore()
-        store.write([
-            {"id": "1", "content": "First", "status": "pending", "executor": "claude"},
-            {"id": "1", "content": "Latest", "status": "pending", "executor": "codex"},
-        ])
-        items = store.read()
-        assert len(items) == 1
-        assert items[0]["executor"] == "codex"
-
-    def test_hermes_agent_executor_normalizes_to_hermes(self):
-        # Legacy long label writes/replays store and display as ``hermes``.
-        store = TodoStore()
-        store.write([
-            {"id": "1", "content": "Task", "status": "pending", "executor": "hermes-agent"},
-        ])
-        assert store.read()[0]["executor"] == "hermes"
-
-    def test_format_for_injection_renders_executor_badge_before_content(self):
-        store = TodoStore()
-        store.write([
-            {"id": "1", "content": "Delegated work", "status": "in_progress", "executor": "codex"},
-            {"id": "2", "content": "Own work", "status": "pending"},
-        ])
-        text = store.format_for_injection()
-        assert "- [>] 1. [codex] Delegated work (in_progress)" in text
-        assert "- [ ] 2. Own work (pending)" in text
-        assert "executor:" not in text
+        store.write([{"id": "1", "content": "Task", "status": "completed"}])
+        assert store.snapshot()["revision"] == 8
 
 
 class TestTodoStoreBounds:
@@ -421,14 +189,6 @@ class TestTodoStoreBounds:
         # Before the fix this was ~50085 chars; now it tracks the cap.
         assert len(inj) < MAX_TODO_CONTENT_CHARS + 200
 
-    def test_merge_update_content_is_capped(self):
-        """The merge path updates content directly, bypassing _validate —
-        verify it is capped too."""
-        from tools.todo_tool import MAX_TODO_CONTENT_CHARS
-        store = TodoStore()
-        store.write([{"id": "1", "content": "short", "status": "pending"}])
-        store.write([{"id": "1", "content": "B" * 50001}], merge=True)
-        assert len(store.read()[0]["content"]) <= MAX_TODO_CONTENT_CHARS
 
     def test_item_count_is_bounded(self):
         from tools.todo_tool import MAX_TODO_ITEMS
@@ -450,41 +210,3 @@ class TestTodoStoreBounds:
         items = store.read()
         assert [i["content"] for i in items] == ["write the report", "review PR"]
         assert "[truncated]" not in items[0]["content"]
-
-
-class TestSiblingParallelContract:
-    """Tool-contract text for the sibling-parallel TODO model.
-
-    The schema must describe parallel work as multiple sibling leaf items
-    in_progress under one shared parent (the aggregate goal), each leaf
-    carrying at most one executor — and must not claim a global single
-    in_progress limit nor promise any agent scheduling.
-    """
-
-    def test_schema_drops_global_single_in_progress_claim(self):
-        assert "Only ONE item in_progress" not in TODO_SCHEMA["description"]
-
-    def test_schema_states_sibling_parallel_pattern(self):
-        description = TODO_SCHEMA["description"]
-        assert "multiple sibling leaf items" in description
-        assert "aggregate goal" in description
-        assert "at most one executor" in description
-        # State/display only — writing todos never schedules real agents.
-        assert "does not launch or schedule" in description
-
-    def test_schema_keeps_single_executor_field_without_executors_list(self):
-        item_properties = TODO_SCHEMA["parameters"]["properties"]["todos"]["items"]["properties"]
-        assert item_properties["executor"]["type"] == "string"
-        assert "executors" not in item_properties
-
-    def test_store_keeps_sibling_leaves_in_progress_concurrently(self):
-        store = TodoStore()
-        store.write([
-            {"id": "goal", "content": "Ship parallel review", "status": "in_progress"},
-            {"id": "fix", "content": "Author fix", "status": "in_progress", "parent_id": "goal", "executor": "claude"},
-            {"id": "review", "content": "Independent review", "status": "in_progress", "parent_id": "goal", "executor": "codex"},
-        ])
-        items = store.read()
-        assert [item["status"] for item in items] == ["in_progress"] * 3
-        assert [item.get("parent_id") for item in items] == [None, "goal", "goal"]
-        assert [item.get("executor") for item in items] == [None, "claude", "codex"]

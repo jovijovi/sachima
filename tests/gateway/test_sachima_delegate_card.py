@@ -122,7 +122,7 @@ def _log_block(card: dict) -> str:
 def test_running_patch_interval_is_derived_from_source_constants():
     """Floor, default, and maximum come from arithmetic over real constants."""
 
-    from gateway.platforms.feishu import _FEISHU_SEND_ATTEMPTS
+    from plugins.platforms.feishu.adapter import _FEISHU_SEND_ATTEMPTS
     from gateway.sachima_delegate import (
         _DEFAULT_OBSERVE_INTERVAL_SECONDS,
         _MAX_CONSECUTIVE_OBSERVE_FAILURES,
@@ -1672,12 +1672,12 @@ def test_bounded_payload_measures_the_serialized_content_the_adapter_sends():
 def test_the_payload_bound_is_the_adapters_own_one_message_limit():
     """No guessed constant: the bound is what the delivery already reads."""
 
-    from gateway.platforms.feishu import FeishuAdapter
+    from plugins.platforms.feishu.adapter import FeishuAdapter
 
     limit = int(FeishuAdapter.MAX_MESSAGE_LENGTH)
-    # ``single_message_text_limit()`` is the platform-neutral accessor the
+    # ``max_message_length_for_chat()`` is the platform-neutral accessor the
     # delegate delivery passes to this module, so the two must agree.
-    assert FeishuAdapter.single_message_text_limit(FeishuAdapter) == limit
+    assert FeishuAdapter.max_message_length_for_chat(FeishuAdapter, "oc_chat") == limit
 
     # A realistic three-round card fits inside it with room to spare, which is
     # why no verified Feishu constraint requires lowering the round window.
@@ -1703,7 +1703,7 @@ def test_the_payload_bound_is_the_adapters_own_one_message_limit():
 def test_the_projection_layer_makes_one_adapter_call_per_revision():
     """The adapter owns transport retry; this module owns exactly one payload."""
 
-    from gateway.platforms.feishu import _FEISHU_SEND_ATTEMPTS
+    from plugins.platforms.feishu.adapter import _FEISHU_SEND_ATTEMPTS
 
     # The floor exists so a coalescing window never opens a second adapter call
     # while the first is still inside that ladder.

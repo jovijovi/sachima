@@ -90,10 +90,12 @@ __all__ = [
     "SupervisorTurnBackend",
     "SupervisorTurnResult",
     "TaskOperationLocks",
+    "TurnSourceSink",
     "derive_turn_ref",
     "serialize_supervisor_turn_result",
     "validate_supervisor_turn_backend",
     "validate_supervisor_turn_result",
+    "validate_turn_source_sink",
 ]
 
 # --------------------------------------------------------------------------- #
@@ -388,11 +390,13 @@ _BACKEND_FACTORY_ALLOWLIST: tuple[tuple[str, str, str], ...] = (
 )
 
 
-def _allowed_backend_types() -> tuple[type, ...]:
+def _allowed_types(allowlist: tuple[tuple[str, str, str], ...]) -> tuple[type, ...]:
+    """Resolve one ``(kind, module, attribute)`` allowlist to concrete types."""
+
     import importlib
 
     allowed: list[type] = []
-    for _kind, module_name, attribute in _BACKEND_FACTORY_ALLOWLIST:
+    for _kind, module_name, attribute in allowlist:
         try:
             module = importlib.import_module(module_name)
         except BaseException:
@@ -402,6 +406,10 @@ def _allowed_backend_types() -> tuple[type, ...]:
         if type(candidate) is type:
             allowed.append(candidate)
     return tuple(allowed)
+
+
+def _allowed_backend_types() -> tuple[type, ...]:
+    return _allowed_types(_BACKEND_FACTORY_ALLOWLIST)
 
 
 def validate_supervisor_turn_backend(backend: Any) -> Any:
@@ -417,6 +425,69 @@ def validate_supervisor_turn_backend(backend: Any) -> Any:
     if type(backend) not in _allowed_backend_types():
         _invalid()
     return backend
+
+
+# --------------------------------------------------------------------------- #
+# The neutral read-model source sink
+# --------------------------------------------------------------------------- #
+@runtime_checkable
+class TurnSourceSink(Protocol):
+    """Where a dispatched turn's tagged private locator is published.
+
+    The dispatcher binds each accepted turn's private locator into a
+    host-owned store so a reader can follow that turn's stream. *Which* store
+    that is, is not the dispatcher's business — modelling it as a concrete
+    read-model type would make the turn seam depend on a presentation layer
+    that is composed later and separately approved.
+
+    So the dependency runs the other way, through the same exact-type factory
+    allowlist :func:`validate_supervisor_turn_backend` uses. Structural
+    conformance is necessary and **not** sufficient.
+    """
+
+    def bind_source(
+        self,
+        task_id: str,
+        session_id: str,
+        source_kind: str,
+        private_locator: str,
+        artifact_ref: str,
+        *,
+        last_seen_cursor: int | None = None,
+    ) -> Any: ...
+
+
+#: The exact-type factory allowlist for the source sink, in the same
+#: ``(kind, module, attribute)`` shape and resolved by the same lazy helper as
+#: the backend allowlist above.
+#:
+#: The single entry names the host-owned live-progress binding store. Until
+#: that module is composed into the tree the allowlist resolves to nothing and
+#: every sink is refused — an unresolvable factory admits nothing, exactly as
+#: it does for backends, so a dispatcher composed without a read model simply
+#: has no sink rather than a permissive one.
+_SOURCE_SINK_FACTORY_ALLOWLIST: tuple[tuple[str, str, str], ...] = (
+    (
+        "live_progress",
+        "sachima_supervisor.runtime_spine.live_progress_sources",
+        "LiveProgressSourceBindings",
+    ),
+)
+
+
+def validate_turn_source_sink(sink: Any) -> Any:
+    """Admit only an allowlisted concrete source sink, and return it unchanged.
+
+    An **exact-type** check, for the same reason and with the same force as
+    :func:`validate_supervisor_turn_backend`: a protocol-shaped duck type and a
+    subclass of an allowlisted type are both refused, so a hostile object
+    cannot become the place a turn's private locator is written. Never echoes
+    the rejected object.
+    """
+
+    if type(sink) not in _allowed_types(_SOURCE_SINK_FACTORY_ALLOWLIST):
+        _invalid()
+    return sink
 
 
 # --------------------------------------------------------------------------- #
