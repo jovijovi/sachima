@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Mapping
+from contextvars import copy_context
 import logging
 import queue
 import threading
@@ -85,6 +86,8 @@ class TaskWorkbenchRuntime:
         self._render_lock = threading.Lock()
         self._final_flushed = asyncio.Event()
         self._finalized = False
+        self._account_limits_lock = threading.Lock()
+        self._account_limits_started = False
 
     @classmethod
     def get_or_create(
@@ -146,6 +149,8 @@ class TaskWorkbenchRuntime:
         except Exception:
             logger.debug("Task Workbench model metadata refresh failed", exc_info=True)
 
+        self._schedule_account_limits(agent)
+
         compressor = getattr(agent, "context_compressor", None)
         if compressor is not None:
             current = _safe_nonnegative_int(
@@ -181,6 +186,54 @@ class TaskWorkbenchRuntime:
             copy_agent_todo_progress(self.tracker, agent)
         except Exception:
             logger.debug("Task Workbench TODO refresh failed", exc_info=True)
+
+    def _schedule_account_limits(self, agent: Any) -> None:
+        """Fetch once per logical turn without blocking callbacks or shutdown."""
+
+        if self.mode != "feishu_card":
+            return
+        provider = getattr(agent, "provider", None)
+        if provider not in {"openai-codex", "anthropic", "openrouter"}:
+            return
+        with self._account_limits_lock:
+            if self._finalized or self._account_limits_started:
+                return
+            self._account_limits_started = True
+            try:
+                # Preserve the calling profile's context. Native provider helpers
+                # bound their I/O; a slow lookup must not hold the agent worker
+                # or the event loop's default executor open during shutdown.
+                threading.Thread(
+                    target=copy_context().run,
+                    args=(
+                        self._fetch_account_limits,
+                        provider,
+                        getattr(agent, "base_url", None),
+                        getattr(agent, "api_key", None),
+                    ),
+                    name="task-workbench-quota",
+                    daemon=True,
+                ).start()
+            except Exception:
+                logger.debug("Task Workbench account quota scheduling failed")
+
+    def _fetch_account_limits(self, provider: str, base_url: Any, api_key: Any) -> None:
+        try:
+            from agent.account_usage import fetch_account_usage, render_account_usage_lines
+
+            snapshot = fetch_account_usage(provider, base_url=base_url, api_key=api_key)
+            if snapshot is None:
+                return
+            lines = render_account_usage_lines(snapshot, markdown=False)
+            with self._account_limits_lock:
+                # Never change a settled card or enqueue work after final flush.
+                if self._finalized:
+                    return
+                self.tracker.update_display_metadata(account_limit_lines=lines)
+                self._queue_render()
+        except Exception:
+            # Provider errors can contain credentials and request URLs.
+            logger.debug("Task Workbench account quota unavailable")
 
     def record_callback_event(
         self,
@@ -223,9 +276,10 @@ class TaskWorkbenchRuntime:
     ) -> None:
         """Persist and visibly flush the terminal snapshot exactly once."""
 
-        if self._finalized:
-            return
-        self._finalized = True
+        with self._account_limits_lock:
+            if self._finalized:
+                return
+            self._finalized = True
         current_rounds = result.get("api_calls") if isinstance(result, dict) else None
         self._mark_todo_lifecycle(agent, is_error=is_error)
         self.refresh_from_agent(agent, current_rounds=current_rounds)
