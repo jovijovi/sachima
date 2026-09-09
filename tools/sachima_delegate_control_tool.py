@@ -116,11 +116,25 @@ _ACTIONS = (
     "continue",
     "recover",
     "result",
+    "settle",
+    "continue_authorized",
+    "pause_continuation",
+    "resume_continuation",
 )
 
 #: The one action that needs no task of its own, so it is also the one that
 #: skips the "does this task belong to you" check below.
 _TASKLESS_ACTIONS = frozenset({"agents", "create"})
+_INTERNAL_INPUT_ACTIONS = frozenset(
+    {
+        "agents",
+        "status",
+        "result",
+        "settle",
+        "continue_authorized",
+        "pause_continuation",
+    }
+)
 
 
 def enabled_control_surface() -> str | None:
@@ -260,6 +274,13 @@ def _handle_delegate_control(args: dict, **kw) -> str:
     trusted = _trusted_session()
     if trusted is None:
         return tool_error(SACHIMA_DELEGATE_CONTROL_NO_SESSION)
+    from gateway.session_context import session_input_is_internal
+
+    if session_input_is_internal() and action not in _INTERNAL_INPUT_ACTIONS:
+        # A synthetic completion is authority to inspect and report its exact
+        # result, plus consume authority recorded earlier. It cannot authorize
+        # a manual submit, retry, cancellation, or resume by naming one.
+        return tool_error(SACHIMA_DELEGATE_CONTROL_FORBIDDEN)
 
     task_ref = args.get("task_ref")
     binding = None
@@ -321,6 +342,25 @@ def _handle_delegate_control(args: dict, **kw) -> str:
             task_title = sanitize_card_line(args.get("task_title"))
             round_title = sanitize_card_line(args.get("round_title"))
             origin = _trusted_origin(trusted)
+            continuation_task = args.get("continuation_task")
+            continuation_round_title = sanitize_card_line(
+                args.get("continuation_round_title")
+            )
+            continuation_summary = args.get("continuation_summary")
+            continuation_plan_ref = args.get("continuation_plan_ref")
+            continuation_stop_condition = args.get("continuation_stop_condition")
+            continuation_agent_id = args.get("continuation_agent_id")
+            continuation_requested = any(
+                value is not None
+                for value in (
+                    continuation_task,
+                    args.get("continuation_round_title"),
+                    continuation_summary,
+                    continuation_plan_ref,
+                    continuation_stop_condition,
+                    continuation_agent_id,
+                )
+            )
             if (
                 type(task_text) is not str
                 or not task_text.strip()
@@ -328,6 +368,38 @@ def _handle_delegate_control(args: dict, **kw) -> str:
                 or not round_title
                 or agent_id is None
                 or origin is None
+                or (
+                    continuation_requested
+                    and (
+                        type(continuation_task) is not str
+                        or not continuation_task.strip()
+                        or not continuation_round_title
+                        or type(continuation_summary) is not str
+                        or not continuation_summary.strip()
+                        or not origin.reply_anchor
+                        or (
+                            continuation_plan_ref is not None
+                            and (
+                                type(continuation_plan_ref) is not str
+                                or not continuation_plan_ref.strip()
+                            )
+                        )
+                        or (
+                            continuation_stop_condition is not None
+                            and (
+                                type(continuation_stop_condition) is not str
+                                or not continuation_stop_condition.strip()
+                            )
+                        )
+                        or (
+                            continuation_agent_id is not None
+                            and (
+                                type(continuation_agent_id) is not str
+                                or not continuation_agent_id
+                            )
+                        )
+                    )
+                )
             ):
                 # Creation names its AGENT. There is no default to fall back
                 # to, so an omitted id is invalid input rather than an
@@ -356,6 +428,41 @@ def _handle_delegate_control(args: dict, **kw) -> str:
                         admitted_role=args.get("role"),
                         task_title=task_title,
                         round_title=round_title,
+                        authorization_ref=(
+                            origin.reply_anchor if continuation_requested else None
+                        ),
+                        continuation_task=(
+                            continuation_task.strip()
+                            if continuation_requested
+                            else None
+                        ),
+                        continuation_summary=(
+                            continuation_summary.strip()
+                            if continuation_requested
+                            else None
+                        ),
+                        continuation_plan_ref=(
+                            continuation_plan_ref.strip()
+                            if continuation_requested
+                            and continuation_plan_ref is not None
+                            else None
+                        ),
+                        continuation_round_title=(
+                            continuation_round_title
+                            if continuation_requested
+                            else None
+                        ),
+                        continuation_stop_condition=(
+                            continuation_stop_condition.strip()
+                            if continuation_requested
+                            and continuation_stop_condition is not None
+                            else None
+                        ),
+                        continuation_agent_id=(
+                            continuation_agent_id
+                            if continuation_requested
+                            else None
+                        ),
                     )
                 ).as_dict()
         elif action == "status":
@@ -370,6 +477,21 @@ def _handle_delegate_control(args: dict, **kw) -> str:
             payload = coordinator.run_on_lifecycle_loop(
                 lambda: coordinator.recover(task_ref)
             ).as_dict()
+        elif action in {"pause_continuation", "resume_continuation"}:
+            origin = _trusted_origin(trusted)
+            if origin is None or not origin.reply_anchor:
+                return tool_error(SACHIMA_DELEGATE_CONTROL_INVALID)
+            operation = (
+                coordinator.pause_continuation
+                if action == "pause_continuation"
+                else coordinator.resume_continuation
+            )
+            payload = coordinator.run_on_lifecycle_loop(
+                lambda: operation(
+                    task_ref,
+                    disposition_ref=origin.reply_anchor,
+                )
+            )
         elif action == "continue":
             task_text = args.get("task")
             # A continuation opens a round, so it names that round on the same
@@ -408,10 +530,64 @@ def _handle_delegate_control(args: dict, **kw) -> str:
                         round_title=round_title,
                     )
                 ).as_dict()
-        else:
-            payload = coordinator.result(task_ref)
+        elif action == "result":
+            turn_key = args.get("turn_key")
+            event_id = args.get("event_id")
+            if (turn_key is None) != (event_id is None):
+                return tool_error(SACHIMA_DELEGATE_CONTROL_INVALID)
+            if turn_key is not None and (
+                type(turn_key) is not str
+                or not turn_key
+                or type(event_id) is not str
+                or not event_id
+            ):
+                return tool_error(SACHIMA_DELEGATE_CONTROL_INVALID)
+            payload = coordinator.result(
+                task_ref,
+                turn_key=turn_key,
+                event_id=event_id,
+            )
             if payload is None:
                 return tool_error(SACHIMA_DELEGATE_CONTROL_INVALID)
+        elif action == "settle":
+            exact = {
+                name: args.get(name)
+                for name in (
+                    "turn_key",
+                    "event_id",
+                    "processing_id",
+                    "conclusion",
+                    "evidence_ref",
+                )
+            }
+            if any(type(value) is not str or not value for value in exact.values()):
+                return tool_error(SACHIMA_DELEGATE_CONTROL_INVALID)
+            payload = coordinator.settle_result(task_ref=task_ref, **exact)
+        else:
+            turn_key = args.get("turn_key")
+            event_id = args.get("event_id")
+            processing_id = args.get("processing_id")
+            origin = _trusted_origin(trusted)
+            if (
+                type(turn_key) is not str
+                or not turn_key
+                or type(event_id) is not str
+                or not event_id
+                or type(processing_id) is not str
+                or not processing_id
+                or origin is None
+            ):
+                return tool_error(SACHIMA_DELEGATE_CONTROL_INVALID)
+            payload = coordinator.run_on_lifecycle_loop(
+                lambda: coordinator.continue_authorized(
+                    task_ref=task_ref,
+                    turn_key=turn_key,
+                    event_id=event_id,
+                    processing_id=processing_id,
+                    origin=origin,
+                    continuity=trusted,
+                )
+            )
     except Exception:
         # One stable code only — never the raised text, which can carry private
         # config refs, chat ids, or remote message bodies.
@@ -429,9 +605,11 @@ DELEGATE_CONTROL_SCHEMA = {
         "run, then create or steer one delegated task in THIS conversation — "
         "agents (read-only: who is registered, who is runnable, who holds "
         "which role), create, status, cancel (the Run only), "
-        "continue (a later Run in the same task and Session, or a linked new "
+        "continue (a manual later Run in the same task and Session, or a linked new "
         "task when switching AGENT), recover (an uncertain submission), or "
-        "result (the durable answer). Requires the explicit "
+        "result (the durable answer), settle (stage an exact verified report), "
+        "continue_authorized (consume the host-recorded next step), or the explicit "
+        "pause_continuation/resume_continuation disposition controls. Requires the explicit "
         f"{SACHIMA_LIVE_PROGRESS_SURFACE_ENV}=hermes_internal gate and a "
         "host-bound delegate coordinator; otherwise it fails closed with a "
         "stable code."
@@ -447,6 +625,27 @@ DELEGATE_CONTROL_SCHEMA = {
             "task_ref": {
                 "type": "string",
                 "description": "The delegated task ref (dtask_...) from the acceptance.",
+            },
+            "turn_key": {
+                "type": "string",
+                "description": (
+                    "For exact result processing: the dturn_... identity carried "
+                    "by the trusted completion event."
+                ),
+            },
+            "event_id": {
+                "type": "string",
+                "description": (
+                    "For exact result processing: the devt_... terminal identity "
+                    "carried by the trusted completion event."
+                ),
+            },
+            "processing_id": {
+                "type": "string",
+                "description": (
+                    "For settle or continue_authorized: the dprocess_... claim "
+                    "included with this main-model turn."
+                ),
             },
             "task": {
                 "type": "string",
@@ -513,6 +712,54 @@ DELEGATE_CONTROL_SCHEMA = {
                     "id creates a linked new task under that AGENT. An id "
                     "that is not both registered with the daemon and covered "
                     "by an execution preset here is refused and nothing runs."
+                ),
+            },
+            "continuation_task": {
+                "type": "string",
+                "description": (
+                    "For create only: the complete text of one next step the "
+                    "user already authorized. It is stored privately and cannot "
+                    "be replaced by continue_authorized."
+                ),
+            },
+            "continuation_round_title": {
+                "type": "string",
+                "description": (
+                    "For create with continuation_task: the short display line "
+                    "for that one authorized follow-up round."
+                ),
+            },
+            "continuation_summary": {
+                "type": "string",
+                "description": (
+                    "For create with continuation_task: a bounded explanation "
+                    "of the user's already-granted scope."
+                ),
+            },
+            "continuation_plan_ref": {
+                "type": "string",
+                "description": "Optional plan/version reference for that authorization.",
+            },
+            "continuation_stop_condition": {
+                "type": "string",
+                "description": "Optional stop condition recorded with that authorization.",
+            },
+            "continuation_agent_id": {
+                "type": "string",
+                "description": (
+                    "Optional canonical AGENT id for the authorized next step; "
+                    "eligibility is re-proven immediately before submission."
+                ),
+            },
+            "conclusion": {
+                "type": "string",
+                "enum": ["reported"],
+                "description": "For settle: the explicit business conclusion.",
+            },
+            "evidence_ref": {
+                "type": "string",
+                "description": (
+                    "For settle: the exact full_result_ref that was read and verified."
                 ),
             },
         },

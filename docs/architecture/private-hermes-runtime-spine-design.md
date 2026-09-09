@@ -195,3 +195,66 @@ Until one of those is real, the single spine plus two flags is sufficient.
    refused/blocked until the lease releases.
 9. **Orphan reaper** — a genuinely dead session (no liveness, not permission-wait) is
    reclaimed and emits a terminal event.
+
+## 12. Delegation terminal continuation
+
+The Gateway can project a newly completed native delegation back into its
+original logical conversation so Hermes can read the exact result and report
+it without another user message. This source capability is off by default:
+
+    sachima:
+      delegation:
+        completion_wakeup:
+          enabled: false
+
+The setting belongs in `~/.hermes/config.yaml` and is read when the Gateway
+starts. Enabling it is a separate runtime operation. A task records the setting
+when it is admitted, so first enable does not turn historical results into an
+automatic backlog. A task admitted while enabled retains its pending intent
+across a normal restart.
+
+Automatic wakeup grants permission to verify and report the completed result.
+It does not grant permission to modify files, retry work, submit another Run,
+or deploy. One optional next step may be stored only when the originating user
+message already authorized it; the full instruction stays in the existing
+private payload store and the task record keeps its host-trusted authorization
+reference. `pause_continuation` durably prevents a new follow-up before another
+side effect. `resume_continuation` restores only that previously recorded
+authority and is accepted only from a natural user turn. A synthetic wake may
+read status/results, settle an exact report, consume the step recorded at
+admission, or reduce authority by pausing; it cannot create a manual task,
+continue, cancel, recover, or resume one. Both disposition actions are
+restricted to the task's trusted logical conversation and record the host
+message reference that changed the disposition.
+
+Terminal results remain available by their exact Task, Turn, and event
+identities even when no summary provider is configured. Reading a result,
+provider receipt, card update, or normal model return does not settle the
+business action. A report is settled only after its exact adapter delivery
+receipt. If the Gateway restarts between report staging and that receipt, the
+record becomes `sachima_delegate_report_delivery_unknown` and is not sent
+again automatically.
+
+An authorized follow-up uses a stable operation identity. Restart recovery
+looks for the existing operation Turn before doing anything else. A matching
+accepted Turn is reconciled without another submission; absence of a Turn
+proves the process stopped before the submission boundary and can return to
+the bounded wake path; conflicting evidence becomes a visible blocked state.
+This is a narrow guarantee for native delegation admission, not an
+exactly-once claim for arbitrary external side effects.
+
+`/new` and other explicit user session boundaries supersede stored follow-up
+authority while retaining the result for inspection. Compression follows the
+existing persisted Session lineage. When a natural user message arrives ahead
+of a queued wake, that message owns the next turn and carries the same exact
+result references, so the user's latest correction is applied before any new
+side effect.
+
+To roll back, set `sachima.delegation.completion_wakeup.enabled` to `false` and
+restart the Gateway through the normal operator procedure. No new automatic
+wake claims are taken. An unstarted pending or queued wake moves to ordinary-turn
+retrieval, and a later re-enable does not replay it automatically. An already
+issued stable operation is reconciled and never blindly replayed. Results,
+status cards, dispositions, and receipts are retained. This source delivery
+does not enable the setting, restart a service, or constitute live provider/IM
+acceptance.

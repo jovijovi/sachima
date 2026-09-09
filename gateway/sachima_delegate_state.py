@@ -72,16 +72,20 @@ from gateway.sachima_delegate_summary import (
 __all__ = [
     "CANCELLATION_STATES",
     "CARD_RECORD_KIND",
+    "CONTINUATION_DISPOSITIONS",
     "DELEGATE_PAYLOAD_REF_PREFIX",
     "DELEGATE_STATE_VERSION",
     "LIFECYCLE_STATES",
     "OBSERVATION_STATES",
+    "OPERATION_STATES",
     "RECEIPT_STATES",
     "SACHIMA_DELEGATE_STATE_CONFLICT",
     "SACHIMA_DELEGATE_STATE_INVALID",
     "SACHIMA_DELEGATE_STATE_STABLE_CODES",
     "SACHIMA_DELEGATE_STATE_UNREADABLE",
     "SINK_STATES",
+    "BUSINESS_STATES",
+    "WAKEUP_STATES",
     "SUMMARY_RECORD_KIND",
     "DelegateCapacity",
     "DelegateOrigin",
@@ -125,6 +129,34 @@ OBSERVATION_STATES = ("unarmed", "armed", "terminal_seen")
 #: The IM sink uses the full delivery vocabulary; the Hermes sink uses the
 #: first three only, because a local handoff cannot fail the way a send can.
 SINK_STATES = ("pending", "in_flight", "confirmed", "failed", "uncertain")
+#: Automatic wake delivery and business processing deliberately do not share a
+#: state. Adapter acceptance, provider arrival, and a verified report/action
+#: receipt are three different facts.
+WAKEUP_STATES = (
+    "not_admitted",
+    "pending",
+    "in_flight",
+    "queued",
+    "processing",
+    "provider_reached",
+    "blocked",
+    "settled",
+)
+BUSINESS_STATES = (
+    "pending",
+    "report_pending",
+    "reported",
+    "continued",
+    "blocked",
+)
+CONTINUATION_DISPOSITIONS = (
+    "report_only",
+    "authorized",
+    "paused",
+    "consumed",
+    "superseded",
+)
+OPERATION_STATES = ("none", "in_flight", "accepted", "uncertain")
 
 DELEGATE_PAYLOAD_REF_PREFIX = "dlg_"
 _TASK_REF_PREFIX = "dtask_"
@@ -328,6 +360,10 @@ class DelegateTurnRecord:
     #: task with no assigned role renders an honest "not specified" rather than
     #: a plausible-looking label.
     admitted_role: str | None = None
+    #: Stable host-derived identity for an authorized continuation. Manual
+    #: turns carry none. It is sealed with the Turn so a lost receipt can find
+    #: the already-created Run instead of creating another one.
+    operation_id: str | None = None
     accepted_at: str | None = None
     lifecycle: str = "prepared"
     cancellation: str = "none"
@@ -360,6 +396,7 @@ class DelegateTurnRecord:
         _optional_text(self.round_title)
         if self.admitted_role is not None:
             _safe_text(self.admitted_role, maximum=64)
+        _optional_ref(self.operation_id)
         _optional_text(self.accepted_at, maximum=64)
         _member(self.lifecycle, LIFECYCLE_STATES)
         _member(self.cancellation, CANCELLATION_STATES)
@@ -394,6 +431,7 @@ class DelegateTurnRecord:
             "task_description": self.task_description,
             "round_title": self.round_title,
             "admitted_role": self.admitted_role,
+            "operation_id": self.operation_id,
             "accepted_at": self.accepted_at,
             "lifecycle": self.lifecycle,
             "cancellation": self.cancellation,
@@ -429,6 +467,7 @@ class DelegateTurnRecord:
             task_description=document.get("task_description"),
             round_title=document.get("round_title"),
             admitted_role=document.get("admitted_role"),
+            operation_id=document.get("operation_id"),
             accepted_at=document.get("accepted_at"),
             lifecycle=document.get("lifecycle", "prepared"),
             cancellation=document.get("cancellation", "none"),
@@ -461,6 +500,24 @@ class DelegateTaskBinding:
     #: Task recorded before this field simply carries ``None``, which the card
     #: renders as its honest "not provided" value.
     task_title: str | None = None
+    #: Captured when the Task is admitted. Turning the feature on later must
+    #: not reinterpret an older Task as an automatic-wakeup backlog.
+    completion_wakeup: bool = False
+    #: Host-trusted evidence and the one pre-authorized next step. The complete
+    #: task text stays in the existing private payload store; this record holds
+    #: only its opaque ref and a bounded explanation for later verification.
+    authorization_ref: str | None = field(default=None, repr=False)
+    continuation_payload_ref: str | None = field(default=None, repr=False)
+    continuation_summary: str | None = None
+    continuation_plan_ref: str | None = None
+    continuation_round_title: str | None = None
+    continuation_stop_condition: str | None = None
+    continuation_agent_id: str | None = None
+    continuation_disposition: str = "report_only"
+    #: Host-trusted message reference that most recently paused or resumed the
+    #: stored authority. It is audit evidence only; it never grants authority
+    #: and is never accepted as a model-supplied argument.
+    continuation_disposition_ref: str | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         _safe_ref(self.task_ref)
@@ -479,6 +536,28 @@ class DelegateTaskBinding:
             raise _invalid()
         _optional_ref(self.linked_from)
         _optional_text(self.task_title)
+        if type(self.completion_wakeup) is not bool:
+            raise _invalid()
+        _optional_text(self.authorization_ref)
+        _optional_ref(self.continuation_payload_ref)
+        _optional_text(self.continuation_summary)
+        _optional_text(self.continuation_plan_ref)
+        _optional_text(self.continuation_round_title)
+        _optional_text(self.continuation_stop_condition)
+        if self.continuation_agent_id is not None:
+            _safe_agent_id(self.continuation_agent_id)
+        _member(self.continuation_disposition, CONTINUATION_DISPOSITIONS)
+        _optional_text(self.continuation_disposition_ref)
+        required = (
+            self.authorization_ref,
+            self.continuation_payload_ref,
+            self.continuation_summary,
+            self.continuation_round_title,
+        )
+        if any(value is not None for value in required) and not all(required):
+            raise _invalid()
+        if self.continuation_disposition == "authorized" and not all(required):
+            raise _invalid()
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -493,6 +572,16 @@ class DelegateTaskBinding:
             "terminal": self.terminal,
             "linked_from": self.linked_from,
             "task_title": self.task_title,
+            "completion_wakeup": self.completion_wakeup,
+            "authorization_ref": self.authorization_ref,
+            "continuation_payload_ref": self.continuation_payload_ref,
+            "continuation_summary": self.continuation_summary,
+            "continuation_plan_ref": self.continuation_plan_ref,
+            "continuation_round_title": self.continuation_round_title,
+            "continuation_stop_condition": self.continuation_stop_condition,
+            "continuation_agent_id": self.continuation_agent_id,
+            "continuation_disposition": self.continuation_disposition,
+            "continuation_disposition_ref": self.continuation_disposition_ref,
         }
 
     @classmethod
@@ -514,6 +603,20 @@ class DelegateTaskBinding:
             terminal=document.get("terminal", False),
             linked_from=document.get("linked_from"),
             task_title=document.get("task_title"),
+            completion_wakeup=document.get("completion_wakeup", False),
+            authorization_ref=document.get("authorization_ref"),
+            continuation_payload_ref=document.get("continuation_payload_ref"),
+            continuation_summary=document.get("continuation_summary"),
+            continuation_plan_ref=document.get("continuation_plan_ref"),
+            continuation_round_title=document.get("continuation_round_title"),
+            continuation_stop_condition=document.get("continuation_stop_condition"),
+            continuation_agent_id=document.get("continuation_agent_id"),
+            continuation_disposition=document.get(
+                "continuation_disposition", "report_only"
+            ),
+            continuation_disposition_ref=document.get(
+                "continuation_disposition_ref"
+            ),
         )
 
 
@@ -541,6 +644,25 @@ class DelegateResultEvent:
     hermes_sink: str = "pending"
     im_message_id: str | None = field(default=None, repr=False)
     im_diagnostic: str | None = None
+    #: Durable automatic-wake delivery state. Old records read as
+    #: ``not_admitted`` and therefore never become a first-enable backlog.
+    wakeup_state: str = "not_admitted"
+    wakeup_claim_id: str | None = field(default=None, repr=False)
+    wakeup_attempts: int = 0
+    wakeup_diagnostic: str | None = None
+    #: The exact main-model processing claim that took this result. It is
+    #: distinct from provider arrival and from the business receipt below.
+    processing_id: str | None = None
+    processing_session_id: str | None = field(default=None, repr=False)
+    business_state: str = "pending"
+    business_processing_id: str | None = field(default=None, repr=False)
+    business_evidence_ref: str | None = None
+    business_diagnostic: str | None = None
+    operation_id: str | None = field(default=None, repr=False)
+    operation_state: str = "none"
+    operation_task_ref: str | None = None
+    operation_turn_key: str | None = None
+    operation_diagnostic: str | None = None
 
     def __post_init__(self) -> None:
         _safe_ref(self.event_id)
@@ -557,6 +679,22 @@ class DelegateResultEvent:
         _member(self.hermes_sink, SINK_STATES[:3])
         _optional_text(self.im_message_id)
         _optional_text(self.im_diagnostic)
+        _member(self.wakeup_state, WAKEUP_STATES)
+        _optional_ref(self.wakeup_claim_id)
+        if type(self.wakeup_attempts) is not int or self.wakeup_attempts < 0:
+            raise _invalid()
+        _optional_text(self.wakeup_diagnostic)
+        _optional_ref(self.processing_id)
+        _optional_text(self.processing_session_id)
+        _member(self.business_state, BUSINESS_STATES)
+        _optional_ref(self.business_processing_id)
+        _optional_ref(self.business_evidence_ref)
+        _optional_text(self.business_diagnostic)
+        _optional_ref(self.operation_id)
+        _member(self.operation_state, OPERATION_STATES)
+        _optional_ref(self.operation_task_ref)
+        _optional_ref(self.operation_turn_key)
+        _optional_text(self.operation_diagnostic)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -573,6 +711,21 @@ class DelegateResultEvent:
             "hermes_sink": self.hermes_sink,
             "im_message_id": self.im_message_id,
             "im_diagnostic": self.im_diagnostic,
+            "wakeup_state": self.wakeup_state,
+            "wakeup_claim_id": self.wakeup_claim_id,
+            "wakeup_attempts": self.wakeup_attempts,
+            "wakeup_diagnostic": self.wakeup_diagnostic,
+            "processing_id": self.processing_id,
+            "processing_session_id": self.processing_session_id,
+            "business_state": self.business_state,
+            "business_processing_id": self.business_processing_id,
+            "business_evidence_ref": self.business_evidence_ref,
+            "business_diagnostic": self.business_diagnostic,
+            "operation_id": self.operation_id,
+            "operation_state": self.operation_state,
+            "operation_task_ref": self.operation_task_ref,
+            "operation_turn_key": self.operation_turn_key,
+            "operation_diagnostic": self.operation_diagnostic,
         }
 
     @classmethod
@@ -593,6 +746,21 @@ class DelegateResultEvent:
             hermes_sink=document.get("hermes_sink", "pending"),
             im_message_id=document.get("im_message_id"),
             im_diagnostic=document.get("im_diagnostic"),
+            wakeup_state=document.get("wakeup_state", "not_admitted"),
+            wakeup_claim_id=document.get("wakeup_claim_id"),
+            wakeup_attempts=document.get("wakeup_attempts", 0),
+            wakeup_diagnostic=document.get("wakeup_diagnostic"),
+            processing_id=document.get("processing_id"),
+            processing_session_id=document.get("processing_session_id"),
+            business_state=document.get("business_state", "pending"),
+            business_processing_id=document.get("business_processing_id"),
+            business_evidence_ref=document.get("business_evidence_ref"),
+            business_diagnostic=document.get("business_diagnostic"),
+            operation_id=document.get("operation_id"),
+            operation_state=document.get("operation_state", "none"),
+            operation_task_ref=document.get("operation_task_ref"),
+            operation_turn_key=document.get("operation_turn_key"),
+            operation_diagnostic=document.get("operation_diagnostic"),
         )
 
 
@@ -888,6 +1056,7 @@ class DelegateStateStore:
             "spine_session_id",
             "launch_refs",
             "round_title",
+            "operation_id",
         }
         if set(fields) & forbidden:
             raise _conflict()
@@ -948,6 +1117,12 @@ class DelegateStateStore:
     def new_event_id(self) -> str:
         return _new_ref(_EVENT_ID_PREFIX)
 
+    def new_wakeup_claim_id(self) -> str:
+        return _new_ref("dwclaim_")
+
+    def new_processing_id(self) -> str:
+        return _new_ref("dprocess_")
+
     def put_result(self, event: DelegateResultEvent) -> DelegateResultEvent:
         if type(event) is not DelegateResultEvent:
             raise _invalid()
@@ -1003,6 +1178,19 @@ class DelegateStateStore:
         return tuple(events)
 
     def update_result(self, event_id: Any, **fields: Any) -> DelegateResultEvent:
+        forbidden = {
+            "event_id",
+            "turn_key",
+            "task_ref",
+            "session_id",
+            "terminal",
+            "full_result_ref",
+            "terminal_at",
+            "truncated",
+            "truncate_reason",
+        }
+        if set(fields) & forbidden:
+            raise _conflict()
         with self._lock:
             existing = self.read_result(event_id)
             if existing is None:

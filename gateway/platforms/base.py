@@ -5743,12 +5743,36 @@ class BasePlatformAdapter(ABC):
     async def _run_processing_hook(self, hook_name: str, *args: Any, **kwargs: Any) -> None:
         """Run a lifecycle hook without letting failures break message flow."""
         hook = getattr(self, hook_name, None)
-        if not callable(hook):
+        if callable(hook):
+            try:
+                await hook(*args, **kwargs)
+            except Exception as e:
+                logger.warning("[%s] %s hook failed: %s", self.name, hook_name, e)
+
+        # A trusted synthetic turn may stage a business receipt that is true
+        # only after this adapter has actually delivered the final response.
+        # Keep that one-shot callback on the event already owned by this turn;
+        # platform hooks retain their historical behavior and failures remain
+        # isolated from message processing.
+        if hook_name != "on_processing_complete" or len(args) < 2:
+            return
+        event = args[0]
+        metadata = getattr(event, "metadata", None)
+        if not isinstance(metadata, dict):
+            return
+        callback = metadata.pop("_gateway_processing_outcome_callback", None)
+        if not callable(callback):
             return
         try:
-            await hook(*args, **kwargs)
+            result = callback(event, args[1])
+            if inspect.isawaitable(result):
+                await result
         except Exception as e:
-            logger.warning("[%s] %s hook failed: %s", self.name, hook_name, e)
+            logger.warning(
+                "[%s] internal processing outcome callback failed: %s",
+                self.name,
+                e,
+            )
 
     @staticmethod
     def _is_retryable_error(error: Optional[str]) -> bool:

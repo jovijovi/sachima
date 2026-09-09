@@ -476,10 +476,22 @@ def test_the_registered_tool_is_still_the_one_default_off_control_surface() -> N
         "continue",
         "recover",
         "result",
+        "settle",
+        "continue_authorized",
+        "pause_continuation",
+        "resume_continuation",
     }
     # Discovery is read-only and needs no task of its own; everything that
     # touches an existing task still proves the task is this conversation's.
     assert control_mod._TASKLESS_ACTIONS == {"agents", "create"}
+    assert control_mod._INTERNAL_INPUT_ACTIONS == {
+        "agents",
+        "status",
+        "result",
+        "settle",
+        "continue_authorized",
+        "pause_continuation",
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -1382,3 +1394,494 @@ def test_discovery_never_returns_refs_permissions_or_task_text(control) -> None:
     raw = control_mod._handle_delegate_control({"action": "agents"})
     for private in ("ws_", "policy_", "grant_", "permissions", "sha256:", "socket"):
         assert private not in raw
+
+
+# --------------------------------------------------------------------------- #
+# Package B — exact result, host-bound continuation, explicit settlement
+# --------------------------------------------------------------------------- #
+def _create_and_complete(
+    control,
+    *,
+    final_message="package B exact result",
+    status="completed",
+    truncated=False,
+    **create_args,
+):
+    args = {
+        "action": "create",
+        "agent_id": "codex",
+        "task": TASK_TEXT_CANARY,
+        "task_title": TASK_TITLE_CANARY,
+        **create_args,
+    }
+    task_ref = _call(**args)["result"]["task_ref"]
+    index = control.facade.submit_count() - 1
+    run_id = control.facade.run_ids[index]
+    control.facade.terminals[run_id] = {
+        "run_id": run_id,
+        "status": status,
+        "final_message": final_message,
+        "truncated": truncated,
+        "truncate_reason": "limit" if truncated else None,
+    }
+    deadline = time.monotonic() + 30.0
+    while time.monotonic() < deadline:
+        binding = control.coordinator.state.read_task(task_ref)
+        event = control.coordinator.state.result_for_turn(binding.current_turn_key)
+        summary = (
+            control.coordinator.state.summary_for_event(event.event_id)
+            if event is not None
+            else None
+        )
+        if event is not None and summary is not None and summary.settled:
+            return task_ref, binding.current_turn_key, event
+        time.sleep(0.02)
+    raise AssertionError("the Package B Run never reached a terminal")
+
+
+def _provider_claim(control, event):
+    claim = control.coordinator.claim_hermes_context(SESSION_ID)
+    assert claim is not None
+    assert event.event_id in claim.event_ids
+    assert control.coordinator.confirm_hermes_context(
+        SESSION_ID,
+        processing_id=claim.processing_id,
+        event_ids=claim.event_ids,
+    ) == len(claim.event_ids)
+    return claim
+
+
+def test_package_b_schema_has_no_model_authorized_boolean_and_names_exact_actions():
+    properties = control_mod.DELEGATE_CONTROL_SCHEMA["parameters"]["properties"]
+    actions = properties["action"]["enum"]
+
+    assert "authorized" not in properties
+    assert "event_id" in properties
+    assert "processing_id" in properties
+    assert "settle" in actions
+    assert "continue_authorized" in actions
+
+
+def test_package_b_exact_event_read_cannot_drift_to_a_newer_turn(control) -> None:
+    task_ref, first_turn, first_event = _create_and_complete(
+        control, final_message="old exact answer"
+    )
+    _call(
+        action="continue",
+        task_ref=task_ref,
+        task="run a newer manual round",
+        round_title="运行较新的手动轮次",
+    )
+    newer_run_id = control.facade.run_ids[1]
+    control.facade.terminals[newer_run_id] = {
+        "run_id": newer_run_id,
+        "status": "completed",
+        "final_message": "new exact answer",
+        "truncated": False,
+        "truncate_reason": None,
+    }
+    deadline = time.monotonic() + 30.0
+    while time.monotonic() < deadline:
+        current_key = control.coordinator.state.read_task(task_ref).current_turn_key
+        current_event = control.coordinator.state.result_for_turn(current_key)
+        if current_event is not None:
+            break
+        time.sleep(0.02)
+    else:
+        raise AssertionError("the newer Run never reached terminal")
+
+    exact = _call(
+        action="result",
+        task_ref=task_ref,
+        turn_key=first_turn,
+        event_id=first_event.event_id,
+    )["result"]
+    latest = _call(action="result", task_ref=task_ref)["result"]
+
+    assert exact["event_id"] == first_event.event_id
+    assert exact["turn_key"] == first_turn
+    assert exact["full_result"] == "old exact answer"
+    assert latest["event_id"] == current_event.event_id
+    assert latest["full_result"] == "new exact answer"
+
+
+def test_package_b_no_summary_still_returns_complete_exact_result(control) -> None:
+    task_ref, turn_key, event = _create_and_complete(
+        control, final_message="whole answer with no summary provider"
+    )
+
+    result = _call(
+        action="result",
+        task_ref=task_ref,
+        turn_key=turn_key,
+        event_id=event.event_id,
+    )["result"]
+
+    assert result["terminal"] == "completed"
+    assert result["full_result"] == "whole answer with no summary provider"
+    assert result["truncated"] is False
+    assert result["summary_status"] == "unavailable"
+
+
+def test_package_b_read_provider_and_model_finish_do_not_business_settle(control) -> None:
+    task_ref, turn_key, event = _create_and_complete(control)
+    claim = _provider_claim(control, event)
+
+    _call(
+        action="result",
+        task_ref=task_ref,
+        turn_key=turn_key,
+        event_id=event.event_id,
+    )
+    after_read = control.coordinator.state.read_result(event.event_id)
+    assert after_read.hermes_sink == "confirmed"
+    assert after_read.business_state == "pending"
+
+    staged = _call(
+        action="settle",
+        task_ref=task_ref,
+        turn_key=turn_key,
+        event_id=event.event_id,
+        processing_id=claim.processing_id,
+        conclusion="reported",
+        evidence_ref=event.full_result_ref,
+    )["result"]
+    assert staged["business_state"] == "report_pending"
+    assert control.coordinator.state.read_result(event.event_id).business_state == (
+        "report_pending"
+    )
+
+    # Only the real response delivery boundary completes the explicit report.
+    assert control.coordinator.complete_report_delivery(
+        claim.event_ids, delivered=True
+    ) == 1
+    settled = control.coordinator.state.read_result(event.event_id)
+    assert settled.business_state == "reported"
+    assert settled.wakeup_state == "settled"
+
+
+def test_package_b_single_delegation_is_report_only_without_new_run(control) -> None:
+    task_ref, turn_key, event = _create_and_complete(control)
+    claim = _provider_claim(control, event)
+    submits = control.facade.submit_count()
+
+    answer = _call(
+        action="continue_authorized",
+        task_ref=task_ref,
+        turn_key=turn_key,
+        event_id=event.event_id,
+        processing_id=claim.processing_id,
+    )["result"]
+
+    assert answer["refusal"] == "sachima_delegate_no_continuation_authority"
+    assert control.facade.submit_count() == submits
+    assert control.coordinator.state.read_result(event.event_id).business_state == (
+        "pending"
+    )
+
+
+def test_package_b_host_authorization_ref_drives_one_receipted_next_step(control) -> None:
+    task_ref, turn_key, event = _create_and_complete(
+        control,
+        continuation_task="perform the already-approved verification round",
+        continuation_round_title="执行已批准的核验轮次",
+        continuation_summary="User approved one verification round after result review.",
+        continuation_plan_ref="plan-v1",
+        continuation_stop_condition="Stop after reporting the verification result.",
+    )
+    binding = control.coordinator.state.read_task(task_ref)
+    assert binding.authorization_ref == "om_anchor"
+    assert binding.continuation_disposition == "authorized"
+    claim = _provider_claim(control, event)
+
+    receipt = _call(
+        action="continue_authorized",
+        task_ref=task_ref,
+        turn_key=turn_key,
+        event_id=event.event_id,
+        processing_id=claim.processing_id,
+    )["result"]
+
+    assert receipt["operation_id"].startswith("dop_")
+    assert receipt["task_ref"] == task_ref
+    assert receipt["turn_key"] != turn_key
+    assert receipt["operation_state"] == "accepted"
+    assert control.facade.submit_count() == 2
+    settled = control.coordinator.state.read_result(event.event_id)
+    assert settled.business_state == "continued"
+    assert settled.operation_id == receipt["operation_id"]
+    assert settled.operation_turn_key == receipt["turn_key"]
+    assert control.coordinator.state.read_task(task_ref).continuation_disposition == (
+        "consumed"
+    )
+
+
+@pytest.mark.parametrize(
+    ("status", "truncated"),
+    [("failed", False), ("cancelled", False), ("completed", True)],
+)
+def test_package_b_nonacceptable_terminal_never_auto_continues(
+    control, status, truncated
+) -> None:
+    task_ref, turn_key, event = _create_and_complete(
+        control,
+        status=status,
+        truncated=truncated,
+        continuation_task="retry or repair it",
+        continuation_round_title="重试或修复",
+        continuation_summary="Only continue after an acceptable completed result.",
+    )
+    claim = _provider_claim(control, event)
+    submits = control.facade.submit_count()
+
+    answer = _call(
+        action="continue_authorized",
+        task_ref=task_ref,
+        turn_key=turn_key,
+        event_id=event.event_id,
+        processing_id=claim.processing_id,
+    )["result"]
+
+    assert answer["refusal"] == "sachima_delegate_result_not_acceptable"
+    assert control.facade.submit_count() == submits
+    assert control.coordinator.state.read_result(event.event_id).business_state == (
+        "pending"
+    )
+
+
+def test_package_b_empty_completed_result_never_auto_continues(control) -> None:
+    task_ref, turn_key, event = _create_and_complete(
+        control,
+        final_message="  \n\t",
+        continuation_task="perform the approved follow-up",
+        continuation_round_title="执行已批准的后续",
+        continuation_summary="Continue only after a complete non-empty result.",
+    )
+    claim = _provider_claim(control, event)
+    submits = control.facade.submit_count()
+
+    answer = _call(
+        action="continue_authorized",
+        task_ref=task_ref,
+        turn_key=turn_key,
+        event_id=event.event_id,
+        processing_id=claim.processing_id,
+    )["result"]
+
+    assert answer["refusal"] == "sachima_delegate_result_not_acceptable"
+    assert control.facade.submit_count() == submits
+    assert control.coordinator.state.read_result(event.event_id).business_state == (
+        "pending"
+    )
+
+
+def test_package_b_lost_continuation_receipt_reconciles_operation_without_replay(
+    control, monkeypatch
+) -> None:
+    task_ref, turn_key, event = _create_and_complete(
+        control,
+        continuation_task="perform exactly one approved follow-up",
+        continuation_round_title="执行一次已批准的后续",
+        continuation_summary="One follow-up Run is authorized.",
+    )
+    claim = _provider_claim(control, event)
+    original_update = control.coordinator.state.update_result
+    lost_once = False
+
+    def _lose_receipt(event_id, **fields):
+        nonlocal lost_once
+        if fields.get("operation_state") == "accepted" and not lost_once:
+            lost_once = True
+            raise RuntimeError("simulated crash after accepted Run")
+        return original_update(event_id, **fields)
+
+    monkeypatch.setattr(control.coordinator.state, "update_result", _lose_receipt)
+    args = dict(
+        action="continue_authorized",
+        task_ref=task_ref,
+        turn_key=turn_key,
+        event_id=event.event_id,
+        processing_id=claim.processing_id,
+    )
+    first = _call(**args)
+    assert first["error"] == control_mod.SACHIMA_DELEGATE_CONTROL_INVALID
+    assert control.facade.submit_count() == 2
+
+    second = _call(**args)["result"]
+    assert second["operation_state"] == "accepted"
+    assert control.facade.submit_count() == 2
+    assert control.coordinator.state.read_result(event.event_id).business_state == (
+        "continued"
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Package C — durable stop/resume and newer-intent precedence
+# --------------------------------------------------------------------------- #
+def test_package_c_schema_names_explicit_continuation_pause_and_resume() -> None:
+    actions = control_mod.DELEGATE_CONTROL_SCHEMA["parameters"]["properties"][
+        "action"
+    ]["enum"]
+    assert "pause_continuation" in actions
+    assert "resume_continuation" in actions
+
+
+def test_package_c_pause_changes_disposition_before_any_next_side_effect(control) -> None:
+    task_ref, turn_key, event = _create_and_complete(
+        control,
+        continuation_task="perform the one approved post-check",
+        continuation_round_title="执行已批准的后续核验",
+        continuation_summary="One post-check is approved after exact review.",
+    )
+    claim = _provider_claim(control, event)
+    submits = control.facade.submit_count()
+
+    paused = _call(action="pause_continuation", task_ref=task_ref)["result"]
+    assert paused["continuation_disposition"] == "paused"
+    assert paused["disposition_ref"] == "om_anchor"
+
+    refused = _call(
+        action="continue_authorized",
+        task_ref=task_ref,
+        turn_key=turn_key,
+        event_id=event.event_id,
+        processing_id=claim.processing_id,
+    )["result"]
+    assert refused["refusal"] == "sachima_delegate_continuation_paused"
+    assert control.facade.submit_count() == submits
+
+    resumed = _call(action="resume_continuation", task_ref=task_ref)["result"]
+    assert resumed["continuation_disposition"] == "authorized"
+    receipt = _call(
+        action="continue_authorized",
+        task_ref=task_ref,
+        turn_key=turn_key,
+        event_id=event.event_id,
+        processing_id=claim.processing_id,
+    )["result"]
+    assert receipt["operation_state"] == "accepted"
+    assert control.facade.submit_count() == submits + 1
+
+
+def test_package_c_internal_wake_cannot_resume_paused_authority(
+    control,
+    monkeypatch,
+) -> None:
+    task_ref, _turn_key, _event = _create_and_complete(
+        control,
+        continuation_task="perform the one approved post-check",
+        continuation_round_title="执行已批准的后续核验",
+        continuation_summary="One post-check is approved after exact review.",
+    )
+    _call(action="pause_continuation", task_ref=task_ref)
+    import gateway.session_context as session_context
+
+    monkeypatch.setattr(
+        session_context,
+        "session_input_is_internal",
+        lambda: True,
+        raising=False,
+    )
+
+    refused = _call(action="resume_continuation", task_ref=task_ref)
+    assert refused["error"] == control_mod.SACHIMA_DELEGATE_CONTROL_FORBIDDEN
+    assert control.coordinator.state.read_task(task_ref).continuation_disposition == (
+        "paused"
+    )
+
+
+@pytest.mark.parametrize("action", ["create", "continue", "cancel", "recover"])
+def test_package_c_internal_wake_cannot_invent_manual_control_authority(
+    control,
+    monkeypatch,
+    action,
+) -> None:
+    task_ref, _turn_key, _event = _create_and_complete(control)
+    import gateway.session_context as session_context
+
+    monkeypatch.setattr(
+        session_context,
+        "session_input_is_internal",
+        lambda: True,
+    )
+    submits = control.facade.submit_count()
+    args = {"action": action, "task_ref": task_ref}
+    if action == "create":
+        args.update(
+            task=TASK_TEXT_CANARY,
+            task_title=TASK_TITLE_CANARY,
+            round_title=ROUND_TITLE_CANARY,
+            agent_id="codex",
+        )
+        args.pop("task_ref")
+    elif action == "continue":
+        args.update(task="an unauthorized synthetic follow-up")
+
+    refused = _call(**args)
+    assert refused["error"] == control_mod.SACHIMA_DELEGATE_CONTROL_FORBIDDEN
+    assert control.facade.submit_count() == submits
+
+
+def test_package_c_manual_newer_round_supersedes_delayed_auto_continuation(
+    control,
+) -> None:
+    task_ref, turn_key, event = _create_and_complete(
+        control,
+        continuation_task="perform the stale pre-authorized follow-up",
+        continuation_round_title="执行旧的已授权后续",
+        continuation_summary="This step is valid only while its source is current.",
+    )
+    claim = _provider_claim(control, event)
+    _call(
+        action="continue",
+        task_ref=task_ref,
+        task="the user supplied a newer corrected round",
+        round_title="执行用户更新后的轮次",
+    )
+    submits = control.facade.submit_count()
+
+    refused = _call(
+        action="continue_authorized",
+        task_ref=task_ref,
+        turn_key=turn_key,
+        event_id=event.event_id,
+        processing_id=claim.processing_id,
+    )["result"]
+
+    assert refused["refusal"] == "sachima_delegate_continuation_superseded"
+    assert control.facade.submit_count() == submits
+    assert control.coordinator.state.read_task(task_ref).continuation_disposition == (
+        "superseded"
+    )
+
+
+def test_package_c_one_processing_claim_cannot_both_report_and_continue(control) -> None:
+    task_ref, turn_key, event = _create_and_complete(
+        control,
+        continuation_task="perform one authorized follow-up",
+        continuation_round_title="执行一次已授权后续",
+        continuation_summary="The exact follow-up was authorized in advance.",
+    )
+    claim = _provider_claim(control, event)
+    submits = control.facade.submit_count()
+
+    staged = _call(
+        action="settle",
+        task_ref=task_ref,
+        turn_key=turn_key,
+        event_id=event.event_id,
+        processing_id=claim.processing_id,
+        conclusion="reported",
+        evidence_ref=event.full_result_ref,
+    )["result"]
+    assert staged["business_state"] == "report_pending"
+
+    refused = _call(
+        action="continue_authorized",
+        task_ref=task_ref,
+        turn_key=turn_key,
+        event_id=event.event_id,
+        processing_id=claim.processing_id,
+    )["result"]
+    assert refused["refusal"] == "sachima_delegate_processing_mismatch"
+    assert control.facade.submit_count() == submits

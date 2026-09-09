@@ -942,6 +942,10 @@ class GatewayConfig:
 
     # User-defined quick commands (slash commands that bypass the agent loop)
     quick_commands: Dict[str, Any] = field(default_factory=dict)
+
+    # Native Sachima delegation terminal wake. Source support ships default
+    # off; enabling it is an operator action in config.yaml, never an env gate.
+    sachima_completion_wakeup_enabled: bool = False
     
     # Storage paths
     sessions_dir: Path = field(default_factory=lambda: get_hermes_home() / "sessions")
@@ -1142,6 +1146,13 @@ class GatewayConfig:
             },
             "reset_triggers": self.reset_triggers,
             "quick_commands": self.quick_commands,
+            "sachima": {
+                "delegation": {
+                    "completion_wakeup": {
+                        "enabled": self.sachima_completion_wakeup_enabled,
+                    },
+                },
+            },
             "sessions_dir": str(self.sessions_dir),
             "write_sessions_json": self.write_sessions_json,
             "always_log_local": self.always_log_local,
@@ -1222,6 +1233,29 @@ class GatewayConfig:
         multiplex_profiles = data.get("multiplex_profiles")
         raw_gateway = data.get("gateway")
         nested_gateway = raw_gateway if isinstance(raw_gateway, dict) else {}
+        if "sachima_completion_wakeup_enabled" in data:
+            sachima_completion_wakeup_raw = data.get(
+                "sachima_completion_wakeup_enabled"
+            )
+        else:
+            sachima_data = data.get("sachima")
+            if not isinstance(sachima_data, dict):
+                sachima_data = nested_gateway.get("sachima")
+            delegation_data = (
+                sachima_data.get("delegation")
+                if isinstance(sachima_data, dict)
+                else None
+            )
+            completion_wakeup_data = (
+                delegation_data.get("completion_wakeup")
+                if isinstance(delegation_data, dict)
+                else None
+            )
+            sachima_completion_wakeup_raw = (
+                completion_wakeup_data.get("enabled")
+                if isinstance(completion_wakeup_data, dict)
+                else None
+            )
         if "multiplex_profile_allowlist" in data:
             multiplex_profile_allowlist = data.get("multiplex_profile_allowlist")
         else:
@@ -1325,6 +1359,9 @@ class GatewayConfig:
             reset_by_platform=reset_by_platform,
             reset_triggers=data.get("reset_triggers", ["/new", "/reset"]),
             quick_commands=quick_commands,
+            sachima_completion_wakeup_enabled=_coerce_bool(
+                sachima_completion_wakeup_raw, False
+            ),
             sessions_dir=sessions_dir,
             write_sessions_json=_coerce_bool(data.get("write_sessions_json"), True),
             always_log_local=_coerce_bool(data.get("always_log_local"), True),
@@ -1520,6 +1557,12 @@ def load_gateway_config() -> GatewayConfig:
                     gw_data["systemd_watchdog_seconds"] = gateway_section[
                         "systemd_watchdog_seconds"
                     ]
+
+            sachima_cfg = yaml_cfg.get("sachima")
+            if "sachima" not in yaml_cfg and isinstance(gateway_section, dict):
+                sachima_cfg = gateway_section.get("sachima")
+            if isinstance(sachima_cfg, dict):
+                gw_data["sachima"] = sachima_cfg
 
             if "max_concurrent_sessions" in yaml_cfg:
                 gw_data["max_concurrent_sessions"] = yaml_cfg["max_concurrent_sessions"]
