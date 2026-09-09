@@ -184,6 +184,9 @@ def _reply_anchor_for_event(event) -> str | None:
     platform = _platform_name(getattr(source, "platform", None))
     thread_id = getattr(source, "thread_id", None)
     raw_message = getattr(event, "raw_message", None)
+    message_id = getattr(event, "message_id", None)
+    if getattr(event, "message_id_is_reply_anchor", True) is not True:
+        message_id = None
     if (
         platform == "slack"
         and isinstance(raw_message, dict)
@@ -198,12 +201,12 @@ def _reply_anchor_for_event(event) -> str | None:
     if platform == "telegram" and thread_id and getattr(source, "chat_type", None) == "dm":
         # Reply to the triggering user message. Replying to Telegram's earlier
         # topic seed/anchor can render the bot response outside the active lane.
-        return getattr(event, "message_id", None) or getattr(event, "reply_to_message_id", None)
+        return message_id or getattr(event, "reply_to_message_id", None)
     if platform == "telegram" and thread_id:
         return None
     if platform == "feishu" and thread_id and getattr(event, "reply_to_message_id", None):
         return getattr(event, "reply_to_message_id", None)
-    return getattr(event, "message_id", None)
+    return message_id
 
 
 def should_send_media_as_audio(platform, ext: str, is_voice: bool = False) -> bool:
@@ -2511,10 +2514,15 @@ class MessageEvent:
     timestamp: datetime = field(default_factory=datetime.now)
 
     # Whether this event may resolve gateway commands or pending control
-    # prompts. Kept last to preserve positional construction compatibility.
+    # prompts. Kept in its established positional slot for compatibility.
     # Proactive plugin events set this to False so untrusted payload text
     # remains conversational input.
     allow_gateway_control: bool = True
+
+    # Whether ``message_id`` is a platform-issued identifier that may be used
+    # as a native reply target. Internal producers can retain a correlation id
+    # on the event while explicitly keeping it out of platform reply APIs.
+    message_id_is_reply_anchor: bool = True
     
     def is_command(self) -> bool:
         """Check if this is a command message (e.g., /new, /reset)."""

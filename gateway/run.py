@@ -28004,6 +28004,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 message_id=str(evt.get("message_id") or "").strip() or None,
                 metadata=metadata,
                 allow_gateway_control=bool(evt.get("allow_gateway_control", True)),
+                message_id_is_reply_anchor=(
+                    evt.get("message_id_is_reply_anchor", True) is True
+                ),
             )
             logger.info(
                 "Watch pattern notification — injecting for %s chat=%s thread=%s",
