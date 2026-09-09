@@ -3568,6 +3568,7 @@ class FeishuAdapter(GitHubPrApprovalMixin, BasePlatformAdapter):
             user_name=sender_profile["user_name"],
             thread_id=thread_id,
             user_id_alt=sender_profile["user_id_alt"],
+            message_id=message_id,
             is_bot=is_bot,
         )
         normalized = MessageEvent(

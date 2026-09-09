@@ -31,16 +31,22 @@ canaries only, never behavior.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 
+import gateway.session_context as session_context
 import gateway.sachima_delegate as delegate_mod
 import tools.sachima_delegate_control_tool as control_mod
+from gateway.config import GatewayConfig, Platform, PlatformConfig
+from gateway.platforms.base import MessageType
+from gateway.run import GatewayRunner
 from gateway.sachima_agent_execution_presets import (
     AGENT_EXECUTION_PRESETS_TYPE,
     ENGINEERING_BASELINE_PERMISSIONS,
@@ -59,6 +65,8 @@ from gateway.sachima_agent_role_policy import (
 )
 from gateway.sachima_delegate import SachimaDelegateCoordinator
 from gateway.sachima_delegate_state import DelegateStateStore, delegate_state_root
+from gateway.session import SessionStore, build_session_context
+from plugins.platforms.feishu.adapter import FeishuAdapter
 from sachima_supervisor.runtime_spine.agent_run_supervisor_execution_binding import (
     bind_arsd_execution,
 )
@@ -92,6 +100,17 @@ V3_OPERATIONS = [
     "session_status",
     "submit",
 ]
+
+_REAL_GET_SESSION_ENV = session_context.get_session_env
+
+FEISHU_AUTHORIZED_TASK = (
+    "Inspect the current authorization handoff.\n"
+    "Keep this complete second line in the external AGENT task body."
+)
+FEISHU_AUTHORIZED_FOLLOW_UP = (
+    "After verifying the exact terminal result, perform the one authorized follow-up.\n"
+    "Keep this complete second line in the private continuation payload."
+)
 
 
 class _Facade:
@@ -415,6 +434,175 @@ def _payload_count(coordinator) -> int:
     """Task bytes actually on disk — the first durable effect a create has."""
 
     return _durable_records(coordinator, "payloads")
+
+
+async def _normalize_feishu_message(message_id: str):
+    """Run one ordinary Feishu message through its real source builder."""
+
+    adapter = FeishuAdapter.__new__(FeishuAdapter)
+    adapter.config = PlatformConfig()
+    adapter.platform = Platform.FEISHU
+    adapter._extract_message_content = AsyncMock(
+        return_value=("authorize delegated work", MessageType.TEXT, [], [], [])
+    )
+    adapter.get_chat_info = AsyncMock(
+        return_value={"name": "Authorization Test", "chat_type": "p2p"}
+    )
+    adapter._resolve_sender_profile = AsyncMock(
+        return_value={
+            "user_id": "user_authorizer",
+            "user_name": "Authorizer",
+            "user_id_alt": None,
+        }
+    )
+    adapter._dispatch_inbound_event = AsyncMock()
+    message = SimpleNamespace(
+        chat_id="oc_chat",
+        thread_id=None,
+        root_id=None,
+        parent_id=None,
+        upper_message_id=None,
+    )
+
+    await adapter._process_inbound_message(
+        data=message,
+        message=message,
+        sender_id=SimpleNamespace(open_id="user_authorizer"),
+        chat_type="p2p",
+        message_id=message_id,
+    )
+
+    adapter._dispatch_inbound_event.assert_awaited_once()
+    return adapter._dispatch_inbound_event.await_args.args[0]
+
+
+@pytest.fixture
+def feishu_control(control, tmp_path, monkeypatch):
+    """Bind native control to a real isolated SessionStore and ContextVars."""
+
+    hermes_home = tmp_path / "hermes-home"
+    hermes_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    for name in (
+        "HERMES_SESSION_ID",
+        "HERMES_SESSION_KEY",
+        "HERMES_SESSION_MESSAGE_ID",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(session_context, "get_session_env", _REAL_GET_SESSION_ENV)
+
+    config = GatewayConfig()
+    store = SessionStore(tmp_path / "sessions", config)
+    control_mod.bind_delegate_control_session_store(store)
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner.adapters = {}
+    active_tokens: list[Any] = []
+
+    def bind(event):
+        if active_tokens:
+            runner._clear_session_env(active_tokens)
+            active_tokens.clear()
+        entry = store.get_or_create_session(event.source)
+        context = build_session_context(event.source, config, entry)
+        context.input_internal = event.internal is True
+        active_tokens.extend(runner._set_session_env(context))
+        return entry
+
+    try:
+        yield SimpleNamespace(control=control, bind=bind, store=store)
+    finally:
+        if active_tokens:
+            runner._clear_session_env(active_tokens)
+        store.close_all_db_handles()
+
+
+def _create_with_authorized_follow_up() -> dict[str, Any]:
+    return _call(
+        action="create",
+        agent_id="codex",
+        task=FEISHU_AUTHORIZED_TASK,
+        task_title="核对当前消息授权锚点",
+        round_title="执行已授权的第一轮",
+        continuation_task=FEISHU_AUTHORIZED_FOLLOW_UP,
+        continuation_round_title="执行已授权的后续轮次",
+        continuation_summary="The current user message authorized exactly one follow-up.",
+        continuation_stop_condition="Stop after that follow-up and report its result.",
+        continuation_agent_id="codex",
+    )
+
+
+def test_feishu_current_message_id_authorizes_and_seals_follow_up(
+    feishu_control,
+) -> None:
+    message_id = "om_current_authorization"
+    event = asyncio.run(_normalize_feishu_message(message_id))
+
+    assert event.message_id == message_id
+    assert event.source.message_id == message_id
+    feishu_control.bind(event)
+    assert _REAL_GET_SESSION_ENV("HERMES_SESSION_MESSAGE_ID") == message_id
+
+    answer = _create_with_authorized_follow_up()
+    binding = feishu_control.control.coordinator.state.read_task(
+        answer["result"]["task_ref"]
+    )
+    turn = feishu_control.control.coordinator.state.read_turn(
+        binding.current_turn_key
+    )
+
+    assert answer["result"]["lifecycle"] == "admitted"
+    assert binding.authorization_ref == message_id
+    assert binding.continuation_disposition == "authorized"
+    assert (
+        feishu_control.control.coordinator.state.read_payload(turn.payload_ref)
+        == FEISHU_AUTHORIZED_TASK
+    )
+    assert (
+        feishu_control.control.coordinator.state.read_payload(
+            binding.continuation_payload_ref
+        )
+        == FEISHU_AUTHORIZED_FOLLOW_UP
+    )
+    assert (
+        feishu_control.control.facade.submitted[0]["prompt_text"]
+        == FEISHU_AUTHORIZED_TASK
+    )
+
+
+def test_feishu_missing_message_anchor_refuses_before_durable_effects(
+    feishu_control,
+) -> None:
+    event = asyncio.run(_normalize_feishu_message(""))
+
+    assert event.source.message_id is None
+    feishu_control.bind(event)
+    answer = _create_with_authorized_follow_up()
+
+    assert answer == {"error": "sachima_delegate_control_invalid"}
+    assert feishu_control.control.facade.submit_count() == 0
+    assert _durable_counts(feishu_control.control.coordinator) == (0, 0)
+    assert _payload_count(feishu_control.control.coordinator) == 0
+
+
+def test_feishu_successive_messages_bind_their_own_ids(feishu_control) -> None:
+    authorization_refs = []
+
+    for message_id in ("om_first_authorization", "om_second_authorization"):
+        event = asyncio.run(_normalize_feishu_message(message_id))
+        assert event.source.message_id == message_id
+        feishu_control.bind(event)
+        assert _REAL_GET_SESSION_ENV("HERMES_SESSION_MESSAGE_ID") == message_id
+        answer = _create_with_authorized_follow_up()
+        binding = feishu_control.control.coordinator.state.read_task(
+            answer["result"]["task_ref"]
+        )
+        authorization_refs.append(binding.authorization_ref)
+
+    assert authorization_refs == [
+        "om_first_authorization",
+        "om_second_authorization",
+    ]
+    assert feishu_control.control.facade.submit_count() == 2
 
 
 # --------------------------------------------------------------------------- #
