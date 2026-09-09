@@ -158,6 +158,25 @@ def test_concurrent_claims_share_the_same_narrow_delivery_seam():
     adapter.handle_message.assert_awaited_once()
 
 
+def test_package_c_existing_completion_channel_gets_no_sachima_business_callback():
+    """The new receipt is source-specific; old completion events stay unchanged."""
+
+    adapter = SimpleNamespace(handle_message=AsyncMock())
+    runner = _runner(adapter)
+
+    delivered = asyncio.run(
+        runner._deliver_completion_notification(
+            "ordinary async completion",
+            _async_event("deleg_package_c_ordinary"),
+        )
+    )
+
+    assert delivered is True
+    injected = adapter.handle_message.await_args.args[0]
+    assert "_gateway_processing_outcome_callback" not in injected.metadata
+    assert "sachima_delegate_event_ids" not in injected.metadata
+
+
 def test_failed_async_injection_is_retried_and_only_success_is_acked(
     monkeypatch, isolated_registry,
 ):

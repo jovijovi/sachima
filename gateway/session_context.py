@@ -101,6 +101,12 @@ _SESSION_UI_SESSION_ID: ContextVar = ContextVar("HERMES_UI_SESSION_ID", default=
 # so background-process notifications stay inside the originating Telegram
 # private-chat topic (those lanes route only with thread id + reply anchor).
 _SESSION_MESSAGE_ID: ContextVar = ContextVar("HERMES_SESSION_MESSAGE_ID", default=_UNSET)
+# Host-set turn provenance used by authorization-sensitive internal controls.
+# This is deliberately not in _VAR_MAP and has no os.environ fallback: a
+# process environment value must never make a synthetic event look natural.
+_SESSION_INPUT_INTERNAL: ContextVar = ContextVar(
+    "hermes_session_input_internal", default=_UNSET
+)
 
 _SESSION_PROFILE: ContextVar = ContextVar("HERMES_SESSION_PROFILE", default=_UNSET)
 _BROWSER_CONTROL_PRINCIPAL: ContextVar = ContextVar(
@@ -241,6 +247,7 @@ def set_session_vars(
     browser_control_transport_family: str = "",
     cwd: str = "",
     async_delivery: bool = True,
+    input_internal: bool = False,
     ui_session_id: str = "",
     cron_session: Any = _UNSET,
 ) -> list:
@@ -258,6 +265,9 @@ def set_session_vars(
     background completion back to the agent after the turn ends (see
     ``_SESSION_ASYNC_DELIVERY`` / ``async_delivery_supported``). Stateless
     request/response adapters (the API server) pass ``False``.
+
+    ``input_internal`` is private host provenance for this turn. It has no
+    process-environment fallback and is not included in provider context.
 
     ``cron_session`` is tri-state: ``_UNSET`` preserves legacy
     ``os.environ["HERMES_CRON_SESSION"]`` fallback, ``"1"`` marks a cron job,
@@ -283,6 +293,7 @@ def set_session_vars(
         _SESSION_ID.set(session_id),
         _SESSION_UI_SESSION_ID.set(ui_session_id),
         _SESSION_MESSAGE_ID.set(message_id),
+        _SESSION_INPUT_INTERNAL.set(input_internal is True),
         _SESSION_PROFILE.set(profile),
         _BROWSER_CONTROL_PRINCIPAL.set(browser_control_principal),
         _BROWSER_CONTROL_TRANSPORT_FAMILY.set(browser_control_transport_family),
@@ -330,6 +341,7 @@ def clear_session_vars(tokens: list) -> None:
         _CRON_SESSION,
     ):
         var.set("")
+    _SESSION_INPUT_INTERNAL.set(False)
     # Reset async-delivery capability to the "never set" sentinel rather than a
     # falsy value: a cleared context should fall back to the default-supported
     # behavior (CLI / unaware paths), not be mistaken for an opted-out
@@ -383,6 +395,7 @@ def reset_session_vars() -> None:
     # same inheritance-leak reason as the mapped vars above — see clear_session_vars,
     # which resets this var on the handler-exit path for the symmetric concern.
     _SESSION_ASYNC_DELIVERY.set(_UNSET)
+    _SESSION_INPUT_INTERNAL.set(_UNSET)
     try:
         from agent.runtime_cwd import clear_session_cwd
 
@@ -415,6 +428,12 @@ def get_session_env(name: str, default: str = "") -> str:
             return value
     # Fall back to os.environ for CLI, cron, and test compatibility
     return os.getenv(name, default)
+
+
+def session_input_is_internal() -> bool:
+    """Return host-bound provenance for the currently executing Gateway turn."""
+
+    return _SESSION_INPUT_INTERNAL.get() is True
 
 
 # ---------------------------------------------------------------------------

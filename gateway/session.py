@@ -333,6 +333,10 @@ class SessionContext:
     session_id: str = ""
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
+    # Per-turn host provenance for authorization-sensitive controls. It is
+    # intentionally omitted from to_dict(): provider context and the cached
+    # system prompt must not vary with whether this turn was synthetic.
+    input_internal: bool = False
     
     def to_dict(self) -> Dict[str, Any]:
         return {

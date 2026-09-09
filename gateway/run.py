@@ -7417,10 +7417,28 @@ class _DelegateResultHandoff:
     against the rotated one would strand the consumed result ``in_flight``.
     """
 
-    __slots__ = ("session_id", "_consumed", "_settled", "_lock")
+    __slots__ = (
+        "session_id",
+        "processing_id",
+        "event_ids",
+        "_on_provider_attempt",
+        "_consumed",
+        "_settled",
+        "_lock",
+    )
 
-    def __init__(self, session_id: str) -> None:
+    def __init__(
+        self,
+        session_id: str,
+        *,
+        processing_id: str | None = None,
+        event_ids: tuple[str, ...] = (),
+        on_provider_attempt: Optional[Callable[[], None]] = None,
+    ) -> None:
         self.session_id = session_id
+        self.processing_id = processing_id
+        self.event_ids = event_ids
+        self._on_provider_attempt = on_provider_attempt
         self._consumed = False
         self._settled = False
         self._lock = threading.Lock()
@@ -7433,8 +7451,19 @@ class _DelegateResultHandoff:
 
     def mark_provider_attempt(self) -> None:
         """Latch "this turn reached a model". Idempotent, thread-safe."""
+        first = False
         with self._lock:
-            self._consumed = True
+            if not self._consumed:
+                self._consumed = True
+                first = True
+        if first and self._on_provider_attempt is not None:
+            try:
+                self._on_provider_attempt()
+            except Exception:
+                logger.debug(
+                    "delegate provider-boundary persistence failed",
+                    exc_info=True,
+                )
 
     def take_for_settlement(self) -> bool:
         """True for the one caller that owns settling this claim."""
@@ -8002,6 +8031,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # two are separate.  The control tool resolves a caller's Session from
         # trusted gateway context, and its key->id fallback needs this host's
         # own store.  Guarded so an import failure cannot touch startup.
+        self._sachima_delegate_wakeup = None
         try:
             from gateway.sachima_delegate import set_delegate_delivery_factory
             from tools.sachima_delegate_control_tool import (
@@ -8012,6 +8042,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             bind_delegate_control_session_store(self.session_store)
         except Exception:
             logger.debug("sachima delegate host binding skipped", exc_info=True)
+
+
+    async def _close_sachima_delegate_wakeup(self) -> None:
+        dispatcher = getattr(self, "_sachima_delegate_wakeup", None)
+        self._sachima_delegate_wakeup = None
+        if dispatcher is None:
+            return
+        try:
+            await dispatcher.close()
+        except Exception:
+            logger.debug("Sachima delegate wake bridge close skipped", exc_info=True)
 
 
     async def _retire_owned_delegate_coordinator(self) -> bool:
@@ -11072,6 +11113,82 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 for key in security_metadata_keys
             )
         )
+        existing_wake_ids = (
+            (getattr(existing, "metadata", None) or {}).get(
+                "sachima_delegate_event_ids"
+            )
+            if existing is not None
+            else None
+        )
+        incoming_wake_ids = (event.metadata or {}).get(
+            "sachima_delegate_event_ids"
+        )
+        if (
+            existing is not None
+            and getattr(existing, "internal", False) is True
+            and isinstance(existing_wake_ids, list)
+            and existing_wake_ids
+            and getattr(event, "internal", False) is False
+        ):
+            # A natural message is the newest authority in this conversation.
+            # Let it own the already-queued turn while carrying forward only
+            # the exact result identities and the one-shot delivery receipt.
+            # Its text, user identity, and gateway-control authority stay the
+            # user's; the discarded synthetic event grants nothing.
+            if not isinstance(event.metadata, dict):
+                event.metadata = {}
+            existing_metadata = getattr(existing, "metadata", None) or {}
+            for metadata_key in (
+                "sachima_delegate_event_ids",
+                "sachima_delegate_task_refs",
+                "sachima_delegate_turn_keys",
+                "sachima_delegate_continuation_refs",
+            ):
+                values = existing_metadata.get(metadata_key)
+                if isinstance(values, list):
+                    event.metadata[metadata_key] = list(values)
+            callback = existing_metadata.get(
+                "_gateway_processing_outcome_callback"
+            )
+            if callable(callback):
+                event.metadata["_gateway_processing_outcome_callback"] = callback
+            pending_slot[session_key] = event
+            return
+        if (
+            same_security_context
+            and isinstance(existing_wake_ids, list)
+            and existing_wake_ids
+            and isinstance(incoming_wake_ids, list)
+            and incoming_wake_ids
+        ):
+            # Native delegate terminals are a pending *set*, not newline text.
+            # Preserve every exact identity while keeping a single FIFO turn.
+            for metadata_key in (
+                "sachima_delegate_event_ids",
+                "sachima_delegate_task_refs",
+                "sachima_delegate_turn_keys",
+                "sachima_delegate_continuation_refs",
+            ):
+                merged: list[str] = []
+                for value in (
+                    (existing.metadata or {}).get(metadata_key, []),
+                    (event.metadata or {}).get(metadata_key, []),
+                ):
+                    if isinstance(value, list):
+                        for item in value:
+                            if isinstance(item, str) and item not in merged:
+                                merged.append(item)
+                existing.metadata[metadata_key] = merged
+            refs = ", ".join(existing.metadata["sachima_delegate_event_ids"])
+            existing.text = (
+                "[Sachima delegation terminal notification]\n"
+                f"Exact result event ids: {refs}.\n"
+                "This trusted internal event is a request to verify and report "
+                "already-authorized work; it is not a new user authorization. "
+                "Read each exact event through sachima_delegate_control before "
+                "settling it or using any stored continuation authority."
+            )
+            return
         if same_security_context and (
             getattr(existing, "message_type", None) == MessageType.PHOTO
             or event.message_type == MessageType.PHOTO
@@ -14500,10 +14617,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 self._owned_delegate_coordinator = rebound_coordinator
             _delegate_coordinator = rebound_coordinator
             if _delegate_coordinator is not None:
+                from gateway.sachima_delegate_wakeup import (
+                    SachimaDelegateWakeupDispatcher,
+                )
+
+                _delegate_coordinator._configure_completion_wakeup(
+                    self.config.sachima_completion_wakeup_enabled
+                )
+                self._sachima_delegate_wakeup = SachimaDelegateWakeupDispatcher(
+                    _delegate_coordinator,
+                    deliver=self._deliver_sachima_delegate_wakeup,
+                    enabled=self.config.sachima_completion_wakeup_enabled,
+                )
+                _delegate_coordinator._set_completion_wakeup_notifier(
+                    self._sachima_delegate_wakeup.notify
+                )
                 _delegate_coordinator.bind_lifecycle_loop(
                     asyncio.get_running_loop()
                 )
                 await _delegate_coordinator.restore()
+                await self._sachima_delegate_wakeup.recover()
         except Exception:
             # Optional composition still cannot crash Gateway startup, but a
             # graph that did not finish restoration must admit no new work.
@@ -14517,6 +14650,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # clear the host bindings it registered.
             logger.warning("Sachima delegate startup restoration failed")
             try:
+                await self._close_sachima_delegate_wakeup()
                 if getattr(self, "_owned_delegate_coordinator", None) is not None:
                     await self._retire_owned_delegate_coordinator()
                 else:
@@ -16422,6 +16556,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # still up: its observers settle through them, and stopping them
             # first would strand a Run mid-observation.
             try:
+                await self._close_sachima_delegate_wakeup()
                 await self._retire_owned_delegate_coordinator()
             except Exception:
                 logger.debug(
@@ -20959,6 +21094,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         
         # Build session context
         context = build_session_context(source, self.config, session_entry)
+        context.input_internal = event.internal is True
         
         # Set session context variables for tools (task-local, concurrency-safe)
         _session_env_tokens = self._set_session_env(context)
@@ -22517,8 +22653,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         _delegate_continuity = self._delegate_result_continuity(session_entry)
         _delegate_claim_session_id = session_entry.session_id
         _delegate_handoff = None
-        _delegate_result_text = self._consume_delegate_result_context(
-            _delegate_claim_session_id, continuity=_delegate_continuity
+        _delegate_result_text, _delegate_processing_claim = (
+            self._consume_delegate_result_context(
+                _delegate_claim_session_id,
+                continuity=_delegate_continuity,
+                include_claim=True,
+            )
         )
         if _delegate_result_text:
             # Folded into the user turn that is about to be sent, exactly like
@@ -22526,8 +22666,38 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # never a synthetic user turn, and never a mutation of a running
             # one. The marker keeps the user's own words identifiable as the
             # new message rather than part of the delegate report.
-            _delegate_handoff = _DelegateResultHandoff(_delegate_claim_session_id)
             message_text = f"{_delegate_result_text}\n\n[New message] {message_text}"
+            _delegate_handoff = _DelegateResultHandoff(
+                _delegate_claim_session_id,
+                processing_id=_delegate_processing_claim.processing_id,
+                event_ids=_delegate_processing_claim.event_ids,
+                on_provider_attempt=lambda: self._settle_delegate_result_context(
+                    _delegate_claim_session_id,
+                    consumed=True,
+                    continuity=_delegate_continuity,
+                    processing_id=_delegate_processing_claim.processing_id,
+                    event_ids=_delegate_processing_claim.event_ids,
+                ),
+            )
+            # The exact claim may be won by a natural message before its
+            # synthetic wake reaches the session queue. Whichever turn wins
+            # must close an explicit report at that turn's real adapter-send
+            # boundary, so bind the same one-shot receipt callback here too.
+            if not isinstance(event.metadata, dict):
+                event.metadata = {}
+            receipt_event_ids: list[str] = []
+            for values in (
+                event.metadata.get("sachima_delegate_event_ids", ()),
+                _delegate_processing_claim.event_ids,
+            ):
+                if isinstance(values, (list, tuple)):
+                    for item in values:
+                        if isinstance(item, str) and item not in receipt_event_ids:
+                            receipt_event_ids.append(item)
+            event.metadata["sachima_delegate_event_ids"] = receipt_event_ids
+            event.metadata["_gateway_processing_outcome_callback"] = (
+                self._complete_sachima_delegate_processing
+            )
 
         try:
             # Emit agent:start hook
@@ -23154,6 +23324,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # content the user hasn't seen (streaming only sent earlier
             # partial output before the failure).  Without this guard,
             # users see the agent "stop responding without explanation."
+            if isinstance(getattr(event, "metadata", None), dict):
+                event.metadata["_gateway_model_turn_completed"] = bool(
+                    not agent_result.get("failed")
+                    and (response or agent_result.get("already_sent"))
+                )
             if agent_result.get("already_sent") and not agent_result.get("failed"):
                 if response:
                     _media_adapter = self._adapter_for_source(source)
@@ -23318,6 +23493,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _delegate_handoff.session_id,
                     consumed=_delegate_handoff.consumed,
                     continuity=_delegate_continuity,
+                    processing_id=_delegate_handoff.processing_id,
+                    event_ids=_delegate_handoff.event_ids,
                 )
             # Restore session context variables to their pre-handler state
             self._clear_session_env(_session_env_tokens)
@@ -26343,8 +26520,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return None
 
     def _consume_delegate_result_context(
-        self, session_id: str, *, continuity: Any = None
-    ) -> str:
+        self,
+        session_id: str,
+        *,
+        continuity: Any = None,
+        include_claim: bool = False,
+    ) -> Any:
         """External AGENT results owed to this Session's **next** ordinary turn.
 
         Returns the bounded projection text (or ``""``), marking each result's
@@ -26359,17 +26540,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             coordinator = bound_delegate_coordinator()
             if coordinator is None or not session_id:
-                return ""
-            lines = coordinator.pending_hermes_context(
+                return ("", None) if include_claim else ""
+            claim = coordinator.claim_hermes_context(
                 session_id, continuity=continuity
             )
-            return "\n\n".join(lines) if lines else ""
+            text = claim.text if claim is not None else ""
+            return (text, claim) if include_claim else text
         except Exception:
             logger.debug("delegate result context skipped", exc_info=True)
-            return ""
+            return ("", None) if include_claim else ""
 
     def _settle_delegate_result_context(
-        self, session_id: str, *, consumed: bool, continuity: Any = None
+        self,
+        session_id: str,
+        *,
+        consumed: bool,
+        continuity: Any = None,
+        processing_id: str | None = None,
+        event_ids: tuple[str, ...] | None = None,
     ) -> None:
         """Confirm a consumed handoff, or return an interrupted one to pending.
 
@@ -26384,9 +26572,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if coordinator is None or not session_id:
                 return
             if consumed:
-                coordinator.confirm_hermes_context(session_id, continuity=continuity)
+                coordinator.confirm_hermes_context(
+                    session_id,
+                    continuity=continuity,
+                    processing_id=processing_id,
+                    event_ids=event_ids,
+                )
             else:
-                coordinator.release_hermes_context(session_id, continuity=continuity)
+                coordinator.release_hermes_context(
+                    session_id,
+                    continuity=continuity,
+                    processing_id=processing_id,
+                    event_ids=event_ids,
+                )
         except Exception:
             logger.debug("delegate result context settlement skipped", exc_info=True)
 
@@ -27084,6 +27282,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             message_id=str(context.source.message_id) if context.source.message_id else "",
             profile=getattr(context.source, "profile", "") or "",
             async_delivery=_async_delivery,
+            input_internal=context.input_internal,
             cron_session="",
         )
 
@@ -27783,6 +27982,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             parent_session_id = str(evt.get("parent_session_id") or "").strip()
             if parent_session_id:
                 metadata["gateway_session_id"] = parent_session_id
+            for key in (
+                "gateway_session_key",
+                "gateway_session_strict",
+                "sachima_delegate_claim_id",
+                "sachima_delegate_event_ids",
+                "sachima_delegate_task_refs",
+                "sachima_delegate_turn_keys",
+                "sachima_delegate_continuation_refs",
+            ):
+                if key in evt:
+                    metadata[key] = evt[key]
+            outcome_callback = evt.get("_gateway_processing_outcome_callback")
+            if callable(outcome_callback):
+                metadata["_gateway_processing_outcome_callback"] = outcome_callback
             synth_event = MessageEvent(
                 text=synth_text,
                 message_type=MessageType.TEXT,
@@ -27790,6 +28003,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 internal=True,
                 message_id=str(evt.get("message_id") or "").strip() or None,
                 metadata=metadata,
+                allow_gateway_control=bool(evt.get("allow_gateway_control", True)),
             )
             logger.info(
                 "Watch pattern notification — injecting for %s chat=%s thread=%s",
@@ -27899,6 +28113,69 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if tip is None or tip.get("ended_at"):
             return "retry"
         return "deliver"
+
+    def _complete_sachima_delegate_processing(
+        self,
+        event: MessageEvent,
+        outcome: Any,
+    ) -> None:
+        """Settle an explicit report against this synthetic turn's real send."""
+
+        dispatcher = getattr(self, "_sachima_delegate_wakeup", None)
+        event_ids = (event.metadata or {}).get("sachima_delegate_event_ids", ())
+        if dispatcher is None or not isinstance(event_ids, (list, tuple)):
+            return
+        exact_ids = tuple(
+            item for item in event_ids if isinstance(item, str) and item
+        )
+        if not exact_ids:
+            return
+        dispatcher.complete_report_delivery(
+            exact_ids,
+            delivered=(
+                getattr(outcome, "value", outcome) == "success"
+                and event.metadata.get("_gateway_model_turn_completed") is True
+            ),
+        )
+
+    async def _deliver_sachima_delegate_wakeup(self, batch: Any) -> str:
+        """Inject one claimed native-delegation batch into its logical Session.
+
+        Session continuity and adapter ingress remain owned by the same
+        completion path used for other internal events. Adapter acceptance is
+        only a queue/delivery fact; the coordinator records provider arrival
+        and business settlement separately.
+        """
+
+        from gateway.sachima_delegate_wakeup import (
+            WAKEUP_DELIVERY_ACCEPTED,
+            WAKEUP_DELIVERY_BLOCKED,
+            WAKEUP_DELIVERY_RETRY,
+            WAKEUP_DELIVERY_SUPERSEDED,
+        )
+
+        evt = batch.as_gateway_event()
+        evt["sachima_delegate_claim_id"] = batch.claim_id
+        evt["sachima_delegate_event_ids"] = list(batch.event_ids)
+        evt["sachima_delegate_task_refs"] = list(batch.task_refs)
+        evt["sachima_delegate_turn_keys"] = list(batch.turn_keys)
+        evt["_gateway_processing_outcome_callback"] = (
+            self._complete_sachima_delegate_processing
+        )
+        parent_session_id = str(evt.get("parent_session_id") or "").strip()
+        if not parent_session_id:
+            return WAKEUP_DELIVERY_BLOCKED
+        verdict = await self._classify_completion_target(parent_session_id)
+        if verdict == "terminal":
+            return WAKEUP_DELIVERY_SUPERSEDED
+        if verdict == "retry":
+            return WAKEUP_DELIVERY_RETRY
+        injected = await self._inject_watch_notification(batch.message_text(), evt)
+        if injected is True:
+            return WAKEUP_DELIVERY_ACCEPTED
+        if injected is False:
+            return WAKEUP_DELIVERY_RETRY
+        return WAKEUP_DELIVERY_BLOCKED
 
     async def _deliver_completion_notification(
         self, synth_text: str, evt: dict,

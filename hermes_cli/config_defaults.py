@@ -3165,6 +3165,17 @@ DEFAULT_CONFIG = {
         },
     },
 
+    # Native Sachima delegation continuation. Source support is present but
+    # automatic terminal wake remains opt-in; enabling it is a separate
+    # operator/runtime action.
+    "sachima": {
+        "delegation": {
+            "completion_wakeup": {
+                "enabled": False,
+            },
+        },
+    },
+
     # Gateway settings — control how messaging platforms (Telegram, Discord,
     # Slack, etc.) deliver agent-produced files as native attachments.
     "gateway": {

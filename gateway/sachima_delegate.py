@@ -61,6 +61,7 @@ import asyncio
 import concurrent.futures
 import contextvars
 import functools
+import hashlib
 import inspect
 import logging
 import os
@@ -86,6 +87,7 @@ from gateway.sachima_agent_execution_presets import (
     AgentExecutionPreset,
     AgentExecutionPresets,
     admit_agent_execution,
+    canonical_agent_id,
     empty_agent_execution_presets,
     load_agent_execution_presets,
     requested_configuration,
@@ -170,9 +172,18 @@ __all__ = [
     "SACHIMA_DELEGATE_INVALID_TARGET",
     "SACHIMA_DELEGATE_INVALID_TASK_TEXT",
     "SACHIMA_DELEGATE_NO_DELIVERY",
+    "SACHIMA_DELEGATE_NO_CONTINUATION_AUTHORITY",
     "SACHIMA_DELEGATE_NOT_CONTINUABLE",
     "SACHIMA_DELEGATE_OBSERVATION_LOST",
     "SACHIMA_DELEGATE_RECOVERY_REQUIRED",
+    "SACHIMA_DELEGATE_REPORT_DELIVERY_FAILED",
+    "SACHIMA_DELEGATE_REPORT_DELIVERY_UNKNOWN",
+    "SACHIMA_DELEGATE_RESULT_IDENTITY_MISMATCH",
+    "SACHIMA_DELEGATE_RESULT_NOT_ACCEPTABLE",
+    "SACHIMA_DELEGATE_PROCESSING_MISMATCH",
+    "SACHIMA_DELEGATE_CONTINUATION_PAUSED",
+    "SACHIMA_DELEGATE_CONTINUATION_SUPERSEDED",
+    "SACHIMA_DELEGATE_OPERATION_UNCERTAIN",
     "SACHIMA_DELEGATE_STABLE_CODES",
     "SACHIMA_DELEGATE_SUMMARY_UNAVAILABLE",
     "SACHIMA_DELEGATE_UNBOUND",
@@ -180,6 +191,7 @@ __all__ = [
     "SACHIMA_DELEGATE_UNKNOWN_TASK",
     "DelegateCompositionError",
     "DelegateDelivery",
+    "DelegateHermesContextClaim",
     "DelegateOutcome",
     "SachimaDelegateCoordinator",
     "bind_delegate_coordinator",
@@ -208,6 +220,25 @@ SACHIMA_DELEGATE_NO_DELIVERY = "sachima_delegate_no_delivery"
 SACHIMA_DELEGATE_INVARIANT = "sachima_delegate_invariant"
 SACHIMA_DELEGATE_SUMMARY_UNAVAILABLE = "sachima_delegate_summary_unavailable"
 SACHIMA_DELEGATE_CARD_UNAVAILABLE = "sachima_delegate_card_unavailable"
+SACHIMA_DELEGATE_NO_CONTINUATION_AUTHORITY = (
+    "sachima_delegate_no_continuation_authority"
+)
+SACHIMA_DELEGATE_RESULT_NOT_ACCEPTABLE = "sachima_delegate_result_not_acceptable"
+SACHIMA_DELEGATE_RESULT_IDENTITY_MISMATCH = (
+    "sachima_delegate_result_identity_mismatch"
+)
+SACHIMA_DELEGATE_PROCESSING_MISMATCH = "sachima_delegate_processing_mismatch"
+SACHIMA_DELEGATE_REPORT_DELIVERY_FAILED = (
+    "sachima_delegate_report_delivery_failed"
+)
+SACHIMA_DELEGATE_REPORT_DELIVERY_UNKNOWN = (
+    "sachima_delegate_report_delivery_unknown"
+)
+SACHIMA_DELEGATE_CONTINUATION_PAUSED = "sachima_delegate_continuation_paused"
+SACHIMA_DELEGATE_CONTINUATION_SUPERSEDED = (
+    "sachima_delegate_continuation_superseded"
+)
+SACHIMA_DELEGATE_OPERATION_UNCERTAIN = "sachima_delegate_operation_uncertain"
 
 SACHIMA_DELEGATE_STABLE_CODES = frozenset(
     {
@@ -229,6 +260,15 @@ SACHIMA_DELEGATE_STABLE_CODES = frozenset(
         SACHIMA_DELEGATE_INVARIANT,
         SACHIMA_DELEGATE_SUMMARY_UNAVAILABLE,
         SACHIMA_DELEGATE_CARD_UNAVAILABLE,
+        SACHIMA_DELEGATE_NO_CONTINUATION_AUTHORITY,
+        SACHIMA_DELEGATE_RESULT_NOT_ACCEPTABLE,
+        SACHIMA_DELEGATE_RESULT_IDENTITY_MISMATCH,
+        SACHIMA_DELEGATE_PROCESSING_MISMATCH,
+        SACHIMA_DELEGATE_REPORT_DELIVERY_FAILED,
+        SACHIMA_DELEGATE_REPORT_DELIVERY_UNKNOWN,
+        SACHIMA_DELEGATE_CONTINUATION_PAUSED,
+        SACHIMA_DELEGATE_CONTINUATION_SUPERSEDED,
+        SACHIMA_DELEGATE_OPERATION_UNCERTAIN,
     }
 )
 
@@ -365,6 +405,20 @@ class DelegateOutcome:
         }
 
 
+@dataclass(frozen=True)
+class DelegateHermesContextClaim:
+    """One exact group of result events claimed for one main-model turn."""
+
+    processing_id: str
+    session_id: str
+    event_ids: tuple[str, ...]
+    lines: tuple[str, ...]
+
+    @property
+    def text(self) -> str:
+        return "\n\n".join(self.lines)
+
+
 def _new_task_id() -> str:
     """One fresh spine task id per delegated task."""
 
@@ -476,6 +530,7 @@ class SachimaDelegateCoordinator:
         summary_timeout: float = SUMMARY_PROVIDER_TIMEOUT_SECONDS,
         card_locale: str = "zh",
         running_patch_interval: Any = None,
+        completion_wakeup_enabled: bool = False,
     ) -> None:
         self._binding = binding
         self._config = config
@@ -532,6 +587,13 @@ class SachimaDelegateCoordinator:
         )
         self._restore_lock = asyncio.Lock()
         self._lifecycle_loop: asyncio.AbstractEventLoop | None = None
+        # Host configuration is captured at Task admission. The notifier is a
+        # thin Gateway bridge installed after adapters exist; no notifier means
+        # the durable intent simply waits for recovery or an ordinary turn.
+        self._completion_wakeup_enabled = completion_wakeup_enabled is True
+        self._completion_wakeup_notifier: (
+            Callable[[DelegateResultEvent], Awaitable[None]] | None
+        ) = None
 
     # -- read-only identity ------------------------------------------------- #
     @property
@@ -557,6 +619,19 @@ class SachimaDelegateCoordinator:
     @property
     def capacity(self) -> DelegateCapacity:
         return self._capacity
+
+    def _configure_completion_wakeup(self, enabled: bool) -> None:
+        """Set the admission-time wake policy before accepting another Task."""
+
+        self._completion_wakeup_enabled = enabled is True
+
+    def _set_completion_wakeup_notifier(
+        self,
+        notifier: Callable[[DelegateResultEvent], Awaitable[None]] | None,
+    ) -> None:
+        """Install the Gateway-owned terminal notification bridge."""
+
+        self._completion_wakeup_notifier = notifier
 
     @property
     def summary_provider(self) -> DelegateResultSummaryProvider | None:
@@ -860,6 +935,13 @@ class SachimaDelegateCoordinator:
         admitted_role: Any = None,
         task_title: Any = None,
         round_title: Any = None,
+        authorization_ref: Any = None,
+        continuation_task: Any = None,
+        continuation_summary: Any = None,
+        continuation_plan_ref: Any = None,
+        continuation_round_title: Any = None,
+        continuation_stop_condition: Any = None,
+        continuation_agent_id: Any = None,
     ) -> DelegateOutcome:
         """Register one delegated task and drive its first turn to a disposition.
 
@@ -889,6 +971,13 @@ class SachimaDelegateCoordinator:
             admitted_role=admitted_role,
             task_title=task_title,
             round_title=round_title,
+            authorization_ref=authorization_ref,
+            continuation_task=continuation_task,
+            continuation_summary=continuation_summary,
+            continuation_plan_ref=continuation_plan_ref,
+            continuation_round_title=continuation_round_title,
+            continuation_stop_condition=continuation_stop_condition,
+            continuation_agent_id=continuation_agent_id,
         )
 
     async def _create(
@@ -902,6 +991,14 @@ class SachimaDelegateCoordinator:
         admitted_role: Any,
         task_title: Any,
         round_title: Any,
+        authorization_ref: Any = None,
+        continuation_task: Any = None,
+        continuation_summary: Any = None,
+        continuation_plan_ref: Any = None,
+        continuation_round_title: Any = None,
+        continuation_stop_condition: Any = None,
+        continuation_agent_id: Any = None,
+        operation_id: str | None = None,
     ) -> DelegateOutcome:
         """The body of :meth:`create`, for an entry that is already admitted.
 
@@ -916,6 +1013,51 @@ class SachimaDelegateCoordinator:
         ):
             raise ValueError(SACHIMA_DELEGATE_INVALID_TARGET)
 
+        continuation_values = (
+            authorization_ref,
+            continuation_task,
+            continuation_summary,
+            continuation_plan_ref,
+            continuation_round_title,
+            continuation_stop_condition,
+            continuation_agent_id,
+        )
+        continuation_requested = any(value is not None for value in continuation_values)
+        continuation_round = sanitize_card_line(continuation_round_title)
+        if continuation_requested:
+            if (
+                type(authorization_ref) is not str
+                or not authorization_ref.strip()
+                or len(authorization_ref) > 512
+                or type(continuation_task) is not str
+                or not continuation_task.strip()
+                or type(continuation_summary) is not str
+                or not continuation_summary.strip()
+                or len(continuation_summary) > 512
+                or not continuation_round
+                or (
+                    continuation_plan_ref is not None
+                    and (
+                        type(continuation_plan_ref) is not str
+                        or not continuation_plan_ref.strip()
+                        or len(continuation_plan_ref) > 512
+                    )
+                )
+                or (
+                    continuation_stop_condition is not None
+                    and (
+                        type(continuation_stop_condition) is not str
+                        or not continuation_stop_condition.strip()
+                        or len(continuation_stop_condition) > 512
+                    )
+                )
+                or (
+                    continuation_agent_id is not None
+                    and canonical_agent_id(continuation_agent_id) is None
+                )
+            ):
+                raise ValueError(SACHIMA_DELEGATE_INVALID_TARGET)
+
         from sachima_supervisor.runtime_spine.arsd_supervisor_backend import (
             derive_arsd_backend_handle,
         )
@@ -923,8 +1065,13 @@ class SachimaDelegateCoordinator:
 
         requested = requested_configuration(self._config, preset)
         payload_ref = self._state.put_payload(task_text)
+        continuation_payload_ref = None
         task_id = _new_task_id()
         try:
+            if continuation_requested:
+                continuation_payload_ref = self._state.put_payload(
+                    continuation_task.strip()
+                )
             spec = build_launch_spec(
                 task_id=task_id,
                 agent_kind=_DELEGATE_AGENT_KIND,
@@ -936,6 +1083,8 @@ class SachimaDelegateCoordinator:
             handle = derive_arsd_backend_handle(task_id)
         except BaseException:
             self._state.discard_payload(payload_ref)
+            if continuation_payload_ref is not None:
+                self._state.discard_payload(continuation_payload_ref)
             raise
 
         task_ref = self._state.new_task_ref()
@@ -959,6 +1108,7 @@ class SachimaDelegateCoordinator:
                 # one and never derived from the ask beside it.
                 round_title=sanitize_card_line(round_title),
                 admitted_role=self._sealed_role(preset.agent_id, admitted_role),
+                operation_id=operation_id,
             )
         )
         binding = self._state.put_task(
@@ -973,6 +1123,34 @@ class SachimaDelegateCoordinator:
                 current_turn_key=turn.turn_key,
                 linked_from=linked_from,
                 task_title=sanitize_card_line(task_title),
+                completion_wakeup=self._completion_wakeup_enabled,
+                authorization_ref=(
+                    authorization_ref.strip() if continuation_requested else None
+                ),
+                continuation_payload_ref=continuation_payload_ref,
+                continuation_summary=(
+                    continuation_summary.strip() if continuation_requested else None
+                ),
+                continuation_plan_ref=(
+                    continuation_plan_ref.strip()
+                    if continuation_requested and continuation_plan_ref is not None
+                    else None
+                ),
+                continuation_round_title=(
+                    continuation_round if continuation_requested else None
+                ),
+                continuation_stop_condition=(
+                    continuation_stop_condition.strip()
+                    if continuation_requested
+                    and continuation_stop_condition is not None
+                    else None
+                ),
+                continuation_agent_id=(
+                    continuation_agent_id if continuation_requested else None
+                ),
+                continuation_disposition=(
+                    "authorized" if continuation_requested else "report_only"
+                ),
             )
         )
         # The Task/origin binding is durable, so the card — and with it the
@@ -996,6 +1174,8 @@ class SachimaDelegateCoordinator:
         admitted_role: Any = None,
         continuity: Any = None,
         round_title: Any = None,
+        operation_id: str | None = None,
+        authorized_event_id: str | None = None,
     ) -> DelegateOutcome:
         """Continue the same task, in the same Sessions, under the same AGENT.
 
@@ -1032,6 +1212,77 @@ class SachimaDelegateCoordinator:
             binding = self._state.read_task(task_ref)
             if binding is None:
                 return DelegateOutcome(diagnostic=SACHIMA_DELEGATE_UNKNOWN_TASK)
+            if operation_id is not None:
+                matches = tuple(
+                    turn
+                    for turn in self._state.list_turns()
+                    if turn.operation_id == operation_id
+                )
+                if len(matches) > 1:
+                    return DelegateOutcome(
+                        task_ref=binding.task_ref,
+                        diagnostic=SACHIMA_DELEGATE_INVARIANT,
+                    )
+                if matches:
+                    operation_turn = matches[0]
+                    if operation_turn.lifecycle in {"prepared", "recovery_required"}:
+                        mode = (
+                            "recover"
+                            if operation_turn.lifecycle == "recovery_required"
+                            else "dispatch"
+                        )
+                        return await self._exclusive(
+                            operation_turn.turn_key,
+                            lambda: self._drive(
+                                operation_turn.turn_key,
+                                mode=mode,
+                                delivery=delivery,
+                            ),
+                        )
+                    operation_event = self._state.result_for_turn(
+                        operation_turn.turn_key
+                    )
+                    return self._outcome(
+                        operation_turn,
+                        terminal=(
+                            operation_event.terminal
+                            if operation_event is not None
+                            else None
+                        ),
+                    )
+            if authorized_event_id is not None:
+                source_event = self._state.read_result(authorized_event_id)
+                if (
+                    source_event is None
+                    or source_event.task_ref != binding.task_ref
+                    or source_event.turn_key not in binding.turn_keys
+                ):
+                    return DelegateOutcome(
+                        task_ref=binding.task_ref,
+                        diagnostic=SACHIMA_DELEGATE_RESULT_IDENTITY_MISMATCH,
+                    )
+                if binding.continuation_disposition == "paused":
+                    return DelegateOutcome(
+                        task_ref=binding.task_ref,
+                        turn_key=source_event.turn_key,
+                        diagnostic=SACHIMA_DELEGATE_CONTINUATION_PAUSED,
+                    )
+                if binding.continuation_disposition != "authorized":
+                    return DelegateOutcome(
+                        task_ref=binding.task_ref,
+                        turn_key=source_event.turn_key,
+                        diagnostic=SACHIMA_DELEGATE_NO_CONTINUATION_AUTHORITY,
+                    )
+                if binding.current_turn_key != source_event.turn_key:
+                    self._state.update_task(
+                        binding.task_ref,
+                        continuation_disposition="superseded",
+                    )
+                    return DelegateOutcome(
+                        task_ref=binding.task_ref,
+                        turn_key=source_event.turn_key,
+                        diagnostic=SACHIMA_DELEGATE_CONTINUATION_SUPERSEDED,
+                    )
             current = (
                 self._state.read_turn(binding.current_turn_key)
                 if binding.current_turn_key
@@ -1097,6 +1348,7 @@ class SachimaDelegateCoordinator:
                     # the linked Task with it — unlike the headline above, which
                     # is the source Task's and is inherited verbatim.
                     round_title=round_title,
+                    operation_id=operation_id,
                 )
             if preset is None:
                 preset = self._presets.preset(binding.agent_id)
@@ -1131,6 +1383,7 @@ class SachimaDelegateCoordinator:
                     # the round before, or clipped out of the ask above.
                     round_title=sanitize_card_line(round_title),
                     admitted_role=self._sealed_role(binding.agent_id, admitted_role),
+                    operation_id=operation_id,
                 )
             )
             self._state.update_task(
@@ -1673,6 +1926,15 @@ class SachimaDelegateCoordinator:
                 terminal_at=_utc_status_time(),
                 truncated=bool(getattr(result, "truncated", False)) or clipped,
                 truncate_reason=getattr(result, "truncate_reason", None),
+                wakeup_state=(
+                    "pending"
+                    if (
+                        (task := self._state.read_task(turn.task_ref)) is not None
+                        and task.completion_wakeup
+                        and self._completion_wakeup_enabled
+                    )
+                    else "not_admitted"
+                ),
             )
         )
         return await self._finalize_terminal_event(turn, event)
@@ -1719,6 +1981,14 @@ class SachimaDelegateCoordinator:
         # cannot end up describing one terminal two different ways.
         await self._settle_summary(event, task_description=task_description)
         await self._reconcile_im_sink(event, turn)
+        notifier = self._completion_wakeup_notifier
+        if notifier is not None and event.wakeup_state == "pending":
+            try:
+                await notifier(event)
+            except BaseException:
+                # Result truth and both existing sinks are already durable.
+                # A failed bridge stays pending for startup recovery.
+                logger.warning("sachima_delegate_wakeup_unavailable")
         return self._outcome(turn, terminal=event.terminal)
 
     # -- the derived summary (plan §4, §5) ---------------------------------- #
@@ -1994,6 +2264,71 @@ class SachimaDelegateCoordinator:
             return False
         return turn is not None and _claimed_by(turn.origin, continuity)
 
+    def _claim_hermes_context(
+        self, session_id: str, *, continuity: Any = None
+    ) -> DelegateHermesContextClaim | None:
+        processing_id: str | None = None
+        event_ids: list[str] = []
+        lines: list[str] = []
+        for event in self._state.list_results():
+            if (
+                event.hermes_sink != "pending"
+                or event.business_state != "pending"
+                or not self._owed_to(event, session_id, continuity)
+            ):
+                continue
+            summary = self._summary_for_event(event)
+            if summary is None or not summary.settled:
+                continue
+            if processing_id is None:
+                processing_id = self._state.new_processing_id()
+            source_digest = self._current_source_digest(event.full_result_ref)
+            wakeup_state = (
+                "processing"
+                if event.wakeup_state in {"pending", "in_flight", "queued"}
+                else event.wakeup_state
+            )
+            self._state.update_result(
+                event.event_id,
+                hermes_sink="in_flight",
+                wakeup_state=wakeup_state,
+                processing_id=processing_id,
+                processing_session_id=session_id,
+            )
+            envelope = build_result_envelope(
+                event_id=event.event_id,
+                task_ref=event.task_ref,
+                turn_ref=None,
+                session_id=event.session_id,
+                terminal=event.terminal,
+                full_result_ref=event.full_result_ref,
+                truncated=event.truncated,
+                truncate_reason=event.truncate_reason,
+            )
+            projection = build_hermes_context(
+                envelope,
+                summary,
+                source_digest=source_digest,
+            )
+            lines.append(f"{projection}\nprocessing_id={processing_id}")
+            event_ids.append(event.event_id)
+        if processing_id is None:
+            return None
+        return DelegateHermesContextClaim(
+            processing_id=processing_id,
+            session_id=session_id,
+            event_ids=tuple(event_ids),
+            lines=tuple(lines),
+        )
+
+    @_lifecycle_admitted
+    def claim_hermes_context(
+        self, session_id: str, *, continuity: Any = None
+    ) -> DelegateHermesContextClaim | None:
+        """Claim exact result identities for one forthcoming model turn."""
+
+        return self._claim_hermes_context(session_id, continuity=continuity)
+
     @_lifecycle_admitted
     def pending_hermes_context(
         self, session_id: str, *, continuity: Any = None
@@ -2015,40 +2350,18 @@ class SachimaDelegateCoordinator:
         to this turn as well; without one, only this exact Session's results are.
         """
 
-        lines: list[str] = []
-        for event in self._state.list_results():
-            if event.hermes_sink != "pending" or not self._owed_to(
-                event, session_id, continuity
-            ):
-                continue
-            summary = self._summary_for_event(event)
-            if summary is None or not summary.settled:
-                # Not yet projectable. It stays ``pending`` and is owed to a
-                # later turn rather than being handed over half-settled.
-                continue
-            source_digest = self._current_source_digest(event.full_result_ref)
-            self._state.update_result(event.event_id, hermes_sink="in_flight")
-            envelope = build_result_envelope(
-                event_id=event.event_id,
-                task_ref=event.task_ref,
-                turn_ref=None,
-                session_id=event.session_id,
-                terminal=event.terminal,
-                full_result_ref=event.full_result_ref,
-                truncated=event.truncated,
-                truncate_reason=event.truncate_reason,
-            )
-            lines.append(
-                build_hermes_context(
-                    envelope,
-                    summary,
-                    source_digest=source_digest,
-                )
-            )
-        return tuple(lines)
+        claim = self._claim_hermes_context(session_id, continuity=continuity)
+        return claim.lines if claim is not None else ()
 
     @_lifecycle_admitted
-    def confirm_hermes_context(self, session_id: str, *, continuity: Any = None) -> int:
+    def confirm_hermes_context(
+        self,
+        session_id: str,
+        *,
+        continuity: Any = None,
+        processing_id: str | None = None,
+        event_ids: tuple[str, ...] | None = None,
+    ) -> int:
         """Confirm the handoff **after** the next model turn consumed it.
 
         Settlement asks the same question the claim did, so a handoff a
@@ -2056,26 +2369,59 @@ class SachimaDelegateCoordinator:
         """
 
         confirmed = 0
+        selected = set(event_ids) if event_ids is not None else None
         for event in self._state.list_results():
-            if event.hermes_sink != "in_flight" or not self._owed_to(
-                event, session_id, continuity
+            if (
+                event.hermes_sink != "in_flight"
+                or (processing_id is not None and event.processing_id != processing_id)
+                or (selected is not None and event.event_id not in selected)
+                or not self._owed_to(event, session_id, continuity)
             ):
                 continue
-            self._state.update_result(event.event_id, hermes_sink="confirmed")
+            self._state.update_result(
+                event.event_id,
+                hermes_sink="confirmed",
+                wakeup_state=(
+                    "provider_reached"
+                    if event.wakeup_state == "processing"
+                    else event.wakeup_state
+                ),
+            )
             confirmed += 1
         return confirmed
 
     @_lifecycle_admitted
-    def release_hermes_context(self, session_id: str, *, continuity: Any = None) -> int:
+    def release_hermes_context(
+        self,
+        session_id: str,
+        *,
+        continuity: Any = None,
+        processing_id: str | None = None,
+        event_ids: tuple[str, ...] | None = None,
+    ) -> int:
         """Return an interrupted handoff to ``pending`` for a later turn."""
 
         released = 0
+        selected = set(event_ids) if event_ids is not None else None
         for event in self._state.list_results():
-            if event.hermes_sink != "in_flight" or not self._owed_to(
-                event, session_id, continuity
+            if (
+                event.hermes_sink != "in_flight"
+                or (processing_id is not None and event.processing_id != processing_id)
+                or (selected is not None and event.event_id not in selected)
+                or not self._owed_to(event, session_id, continuity)
             ):
                 continue
-            self._state.update_result(event.event_id, hermes_sink="pending")
+            self._state.update_result(
+                event.event_id,
+                hermes_sink="pending",
+                wakeup_state=(
+                    "pending"
+                    if event.wakeup_state == "processing"
+                    else event.wakeup_state
+                ),
+                processing_id=None,
+                processing_session_id=None,
+            )
             released += 1
         return released
 
@@ -2121,9 +2467,75 @@ class SachimaDelegateCoordinator:
             lambda: self._drive(turn.turn_key, mode="recover", delivery=delivery),
         )
 
+    def _exact_result_event(
+        self,
+        task_ref: str,
+        turn_key: str,
+        event_id: str,
+    ) -> tuple[DelegateTaskBinding, DelegateResultEvent] | None:
+        """Resolve one immutable Task/Turn/Event triple, or refuse drift."""
+
+        binding = self._state.read_task(task_ref)
+        event = self._state.read_result(event_id)
+        if (
+            binding is None
+            or turn_key not in binding.turn_keys
+            or event is None
+            or event.task_ref != binding.task_ref
+            or event.turn_key != turn_key
+        ):
+            return None
+        return binding, event
+
+    def _result_payload(self, event: DelegateResultEvent) -> dict[str, Any]:
+        payload = event.as_dict()
+        try:
+            payload["full_result"] = self._state.read_full_result(
+                event.full_result_ref
+            )
+        except DelegateStateError:
+            payload["full_result"] = ""
+        summary = self._summary_for_event(event)
+        payload["summary_status"] = (
+            summary.summary_status if summary is not None else "unavailable"
+        )
+        if summary is not None:
+            payload["summary_ref"] = summary.summary_ref
+            payload["summary_unavailable_reason"] = summary.unavailable_reason
+        binding = self._state.read_task(event.task_ref)
+        if binding is not None:
+            has_context = binding.continuation_payload_ref is not None
+            payload["continuation"] = {
+                "disposition": binding.continuation_disposition,
+                "authorization_ref": binding.authorization_ref,
+                "context_ref": binding.continuation_payload_ref,
+                "summary": binding.continuation_summary,
+                "plan_ref": binding.continuation_plan_ref,
+                "round_title": binding.continuation_round_title,
+                "stop_condition": binding.continuation_stop_condition,
+                "agent_id": (
+                    binding.continuation_agent_id or binding.agent_id
+                    if has_context
+                    else None
+                ),
+            }
+        return payload
+
     @_lifecycle_admitted
-    def result(self, task_ref: str) -> dict[str, Any] | None:
-        """The durable result of this task's latest settled terminal."""
+    def result(
+        self,
+        task_ref: str,
+        *,
+        turn_key: str | None = None,
+        event_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Read an exact terminal, or retain the legacy latest-result query."""
+
+        if turn_key is not None or event_id is not None:
+            if type(turn_key) is not str or type(event_id) is not str:
+                return None
+            exact = self._exact_result_event(task_ref, turn_key, event_id)
+            return self._result_payload(exact[1]) if exact is not None else None
 
         binding = self._state.read_task(task_ref)
         if binding is None:
@@ -2137,19 +2549,612 @@ class SachimaDelegateCoordinator:
                 return self._outcome(
                     current, diagnostic=SACHIMA_DELEGATE_BLOCKED
                 ).as_dict()
-        for turn_key in reversed(binding.turn_keys):
-            event = self._state.result_for_turn(turn_key)
+        for candidate_turn_key in reversed(binding.turn_keys):
+            event = self._state.result_for_turn(candidate_turn_key)
+            if event is not None:
+                return self._result_payload(event)
+        return None
+
+    @staticmethod
+    def _continuation_disposition_receipt(
+        binding: DelegateTaskBinding,
+    ) -> dict[str, Any]:
+        return {
+            "task_ref": binding.task_ref,
+            "continuation_disposition": binding.continuation_disposition,
+            "disposition_ref": binding.continuation_disposition_ref,
+        }
+
+    @_lifecycle_admitted
+    async def pause_continuation(
+        self,
+        task_ref: str,
+        *,
+        disposition_ref: str,
+    ) -> dict[str, Any]:
+        """Durably stop new use of one task's stored continuation authority."""
+
+        await self._ensure_restored()
+        if type(disposition_ref) is not str or not disposition_ref.strip():
+            return {"refusal": SACHIMA_DELEGATE_NO_CONTINUATION_AUTHORITY}
+        async with self._task_gate(task_ref):
+            binding = self._state.read_task(task_ref)
+            if binding is None:
+                return {"refusal": SACHIMA_DELEGATE_UNKNOWN_TASK}
+            if binding.continuation_disposition == "paused":
+                return self._continuation_disposition_receipt(binding)
+            if binding.continuation_disposition == "superseded":
+                return {"refusal": SACHIMA_DELEGATE_CONTINUATION_SUPERSEDED}
+            if binding.continuation_disposition != "authorized":
+                return {"refusal": SACHIMA_DELEGATE_NO_CONTINUATION_AUTHORITY}
+            if any(
+                event.task_ref == binding.task_ref
+                and event.operation_state in {"in_flight", "accepted"}
+                for event in self._state.list_results()
+            ):
+                # The stable operation claim is written before the next Turn is
+                # opened. Once it exists, pause cannot honestly promise that no
+                # side effect was accepted; reconciliation owns that boundary.
+                return {"refusal": SACHIMA_DELEGATE_OPERATION_UNCERTAIN}
+            binding = self._state.update_task(
+                binding.task_ref,
+                continuation_disposition="paused",
+                continuation_disposition_ref=disposition_ref.strip(),
+            )
+            return self._continuation_disposition_receipt(binding)
+
+    @_lifecycle_admitted
+    async def resume_continuation(
+        self,
+        task_ref: str,
+        *,
+        disposition_ref: str,
+    ) -> dict[str, Any]:
+        """Restore only authority that this host previously paused."""
+
+        await self._ensure_restored()
+        if type(disposition_ref) is not str or not disposition_ref.strip():
+            return {"refusal": SACHIMA_DELEGATE_NO_CONTINUATION_AUTHORITY}
+        async with self._task_gate(task_ref):
+            binding = self._state.read_task(task_ref)
+            if binding is None:
+                return {"refusal": SACHIMA_DELEGATE_UNKNOWN_TASK}
+            if binding.continuation_disposition == "authorized":
+                return self._continuation_disposition_receipt(binding)
+            if binding.continuation_disposition == "superseded":
+                return {"refusal": SACHIMA_DELEGATE_CONTINUATION_SUPERSEDED}
+            if binding.continuation_disposition != "paused":
+                return {"refusal": SACHIMA_DELEGATE_NO_CONTINUATION_AUTHORITY}
+            required = (
+                binding.authorization_ref,
+                binding.continuation_payload_ref,
+                binding.continuation_summary,
+                binding.continuation_round_title,
+            )
+            if not all(required):
+                return {"refusal": SACHIMA_DELEGATE_NO_CONTINUATION_AUTHORITY}
+            binding = self._state.update_task(
+                binding.task_ref,
+                continuation_disposition="authorized",
+                continuation_disposition_ref=disposition_ref.strip(),
+            )
+            return self._continuation_disposition_receipt(binding)
+
+    @_lifecycle_admitted
+    def settle_result(
+        self,
+        *,
+        task_ref: str,
+        turn_key: str,
+        event_id: str,
+        processing_id: str,
+        conclusion: str,
+        evidence_ref: str,
+    ) -> dict[str, Any]:
+        """Stage an explicit exact-result report for the adapter receipt."""
+
+        exact = self._exact_result_event(task_ref, turn_key, event_id)
+        if exact is None:
+            return {"refusal": SACHIMA_DELEGATE_RESULT_IDENTITY_MISMATCH}
+        _binding, event = exact
+        if (
+            event.hermes_sink != "confirmed"
+            or event.processing_id != processing_id
+            or event.processing_session_id is None
+        ):
+            return {"refusal": SACHIMA_DELEGATE_PROCESSING_MISMATCH}
+        if event.operation_state != "none":
+            return {"refusal": SACHIMA_DELEGATE_PROCESSING_MISMATCH}
+        if conclusion != "reported" or evidence_ref != event.full_result_ref:
+            return {"refusal": SACHIMA_DELEGATE_RESULT_IDENTITY_MISMATCH}
+        if event.business_state in {"reported", "report_pending"}:
+            if (
+                event.business_processing_id == processing_id
+                and event.business_evidence_ref == evidence_ref
+            ):
+                return event.as_dict()
+            return {"refusal": SACHIMA_DELEGATE_PROCESSING_MISMATCH}
+        if event.business_state != "pending":
+            return {"refusal": SACHIMA_DELEGATE_RESULT_IDENTITY_MISMATCH}
+        return self._state.update_result(
+            event.event_id,
+            business_state="report_pending",
+            business_processing_id=processing_id,
+            business_evidence_ref=evidence_ref,
+            business_diagnostic=None,
+        ).as_dict()
+
+    @_lifecycle_admitted
+    def complete_report_delivery(
+        self,
+        event_ids: tuple[str, ...],
+        *,
+        delivered: bool | None,
+    ) -> int:
+        """Settle staged reports only at the real adapter delivery boundary."""
+
+        settled = 0
+        for event_id in dict.fromkeys(event_ids):
+            event = self._state.read_result(event_id)
+            if event is None or event.business_state != "report_pending":
+                continue
+            if delivered is True:
+                self._state.update_result(
+                    event.event_id,
+                    business_state="reported",
+                    business_diagnostic=None,
+                    wakeup_state="settled",
+                    wakeup_diagnostic=None,
+                )
+            elif delivered is False:
+                self._state.update_result(
+                    event.event_id,
+                    business_state="blocked",
+                    business_diagnostic=SACHIMA_DELEGATE_REPORT_DELIVERY_FAILED,
+                    wakeup_state="blocked",
+                    wakeup_diagnostic=SACHIMA_DELEGATE_REPORT_DELIVERY_FAILED,
+                )
+            else:
+                # The process died after staging the exact report but before
+                # persisting the adapter receipt. Sending it again could create
+                # a duplicate; calling it delivered could hide a lost report.
+                self._state.update_result(
+                    event.event_id,
+                    business_state="blocked",
+                    business_diagnostic=SACHIMA_DELEGATE_REPORT_DELIVERY_UNKNOWN,
+                    wakeup_state="blocked",
+                    wakeup_diagnostic=SACHIMA_DELEGATE_REPORT_DELIVERY_UNKNOWN,
+                )
+            settled += 1
+        return settled
+
+    @_lifecycle_admitted
+    async def _supersede_wakeup_events(
+        self,
+        event_ids: tuple[str, ...],
+    ) -> int:
+        """Stop stored authority when its original logical Session is closed."""
+
+        await self._ensure_restored()
+        changed = 0
+        for event_id in dict.fromkeys(event_ids):
+            event = self._state.read_result(event_id)
             if event is None:
                 continue
-            payload = event.as_dict()
+            async with self._task_gate(event.task_ref):
+                event = self._state.read_result(event_id)
+                binding = self._state.read_task(event.task_ref) if event else None
+                if event is None or binding is None:
+                    continue
+                if (
+                    binding.continuation_disposition in {"authorized", "paused"}
+                    and event.operation_state not in {"in_flight", "accepted"}
+                ):
+                    self._state.update_task(
+                        binding.task_ref,
+                        continuation_disposition="superseded",
+                    )
+                if event.business_state == "pending":
+                    self._state.update_result(
+                        event.event_id,
+                        business_state="blocked",
+                        business_diagnostic=SACHIMA_DELEGATE_CONTINUATION_SUPERSEDED,
+                        wakeup_state="blocked",
+                        wakeup_claim_id=None,
+                        wakeup_diagnostic=SACHIMA_DELEGATE_CONTINUATION_SUPERSEDED,
+                    )
+                changed += 1
+        return changed
+
+    @_lifecycle_admitted
+    async def _reconcile_continuation_operations(self) -> dict[str, int]:
+        """Resolve crash windows around one stable authorized continuation.
+
+        A persisted Turn carrying the operation id is the acceptance receipt.
+        With no such Turn, the crash happened before submission became
+        possible, so the exact result can safely return to the normal bounded
+        wake path. Ambiguous or terminally failed evidence is made visible and
+        is never replayed.
+        """
+
+        await self._ensure_restored()
+        counts = {"reconciled": 0, "retry": 0, "uncertain": 0, "superseded": 0}
+        for snapshot in self._state.list_results():
+            if snapshot.operation_state not in {"in_flight", "accepted"}:
+                continue
+            async with self._task_gate(snapshot.task_ref):
+                event = self._state.read_result(snapshot.event_id)
+                binding = self._state.read_task(snapshot.task_ref)
+                if (
+                    event is None
+                    or binding is None
+                    or event.operation_state not in {"in_flight", "accepted"}
+                ):
+                    continue
+
+                expected_operation_id = self._authorized_operation_id(event, binding)
+                if event.operation_id != expected_operation_id:
+                    self._state.update_result(
+                        event.event_id,
+                        operation_state="uncertain",
+                        operation_diagnostic=SACHIMA_DELEGATE_OPERATION_UNCERTAIN,
+                        business_state="blocked",
+                        business_diagnostic=SACHIMA_DELEGATE_OPERATION_UNCERTAIN,
+                        wakeup_state="blocked",
+                        wakeup_claim_id=None,
+                        wakeup_diagnostic=SACHIMA_DELEGATE_OPERATION_UNCERTAIN,
+                    )
+                    counts["uncertain"] += 1
+                    continue
+
+                matches = tuple(
+                    turn
+                    for turn in self._state.list_turns()
+                    if turn.operation_id == event.operation_id
+                )
+                if len(matches) > 1:
+                    self._state.update_result(
+                        event.event_id,
+                        operation_state="uncertain",
+                        operation_diagnostic=SACHIMA_DELEGATE_INVARIANT,
+                        business_state="blocked",
+                        business_diagnostic=SACHIMA_DELEGATE_INVARIANT,
+                        wakeup_state="blocked",
+                        wakeup_claim_id=None,
+                        wakeup_diagnostic=SACHIMA_DELEGATE_INVARIANT,
+                    )
+                    counts["uncertain"] += 1
+                    continue
+
+                if not matches:
+                    if event.operation_state == "accepted":
+                        self._state.update_result(
+                            event.event_id,
+                            operation_state="uncertain",
+                            operation_diagnostic=SACHIMA_DELEGATE_OPERATION_UNCERTAIN,
+                            business_state="blocked",
+                            business_diagnostic=SACHIMA_DELEGATE_OPERATION_UNCERTAIN,
+                            wakeup_state="blocked",
+                            wakeup_claim_id=None,
+                            wakeup_diagnostic=SACHIMA_DELEGATE_OPERATION_UNCERTAIN,
+                        )
+                        counts["uncertain"] += 1
+                        continue
+                    if binding.current_turn_key != event.turn_key:
+                        self._state.update_task(
+                            binding.task_ref,
+                            continuation_disposition="superseded",
+                        )
+                        self._state.update_result(
+                            event.event_id,
+                            operation_state="none",
+                            operation_task_ref=None,
+                            operation_turn_key=None,
+                            operation_diagnostic=SACHIMA_DELEGATE_CONTINUATION_SUPERSEDED,
+                            business_state="blocked",
+                            business_processing_id=None,
+                            business_evidence_ref=None,
+                            business_diagnostic=SACHIMA_DELEGATE_CONTINUATION_SUPERSEDED,
+                            wakeup_state="blocked",
+                            wakeup_claim_id=None,
+                            wakeup_diagnostic=SACHIMA_DELEGATE_CONTINUATION_SUPERSEDED,
+                        )
+                        counts["superseded"] += 1
+                        continue
+                    if binding.continuation_disposition != "authorized":
+                        diagnostic = (
+                            SACHIMA_DELEGATE_CONTINUATION_PAUSED
+                            if binding.continuation_disposition == "paused"
+                            else SACHIMA_DELEGATE_CONTINUATION_SUPERSEDED
+                            if binding.continuation_disposition == "superseded"
+                            else SACHIMA_DELEGATE_NO_CONTINUATION_AUTHORITY
+                        )
+                        self._state.update_result(
+                            event.event_id,
+                            operation_state="none",
+                            operation_task_ref=None,
+                            operation_turn_key=None,
+                            operation_diagnostic=diagnostic,
+                            business_state="pending",
+                            business_processing_id=None,
+                            business_evidence_ref=None,
+                            business_diagnostic=diagnostic,
+                            wakeup_state="blocked",
+                            wakeup_claim_id=None,
+                            wakeup_diagnostic=diagnostic,
+                        )
+                        counts["superseded"] += 1
+                        continue
+
+                    # Turn creation precedes every possible submit. Its absence
+                    # proves the operation did not cross the side-effect
+                    # boundary; release the old model claim and retry normally.
+                    self._state.update_result(
+                        event.event_id,
+                        hermes_sink="pending",
+                        processing_id=None,
+                        processing_session_id=None,
+                        business_state="pending",
+                        business_processing_id=None,
+                        business_evidence_ref=None,
+                        business_diagnostic=None,
+                        wakeup_state="pending",
+                        wakeup_claim_id=None,
+                        wakeup_diagnostic=SACHIMA_DELEGATE_RECOVERY_REQUIRED,
+                        operation_state="none",
+                        operation_task_ref=None,
+                        operation_turn_key=None,
+                        operation_diagnostic=SACHIMA_DELEGATE_RECOVERY_REQUIRED,
+                    )
+                    counts["retry"] += 1
+                    continue
+
+                operation_turn = matches[0]
+                operation_binding = self._state.read_task(operation_turn.task_ref)
+                related = operation_turn.task_ref == binding.task_ref or (
+                    operation_binding is not None
+                    and operation_binding.linked_from == event.event_id
+                )
+                if not related:
+                    self._state.update_result(
+                        event.event_id,
+                        operation_state="uncertain",
+                        operation_diagnostic=SACHIMA_DELEGATE_OPERATION_UNCERTAIN,
+                        business_state="blocked",
+                        business_diagnostic=SACHIMA_DELEGATE_OPERATION_UNCERTAIN,
+                        wakeup_state="blocked",
+                        wakeup_claim_id=None,
+                        wakeup_diagnostic=SACHIMA_DELEGATE_OPERATION_UNCERTAIN,
+                    )
+                    counts["uncertain"] += 1
+                    continue
+
+                if operation_turn.lifecycle in {"admitted", "terminal"}:
+                    self._state.update_result(
+                        event.event_id,
+                        operation_state="accepted",
+                        operation_task_ref=operation_turn.task_ref,
+                        operation_turn_key=operation_turn.turn_key,
+                        operation_diagnostic=None,
+                        business_state="continued",
+                        business_processing_id=event.processing_id,
+                        business_evidence_ref=operation_turn.turn_key,
+                        business_diagnostic=None,
+                        wakeup_state="settled",
+                        wakeup_claim_id=None,
+                        wakeup_diagnostic=None,
+                    )
+                    if binding.continuation_disposition != "consumed":
+                        self._state.update_task(
+                            binding.task_ref,
+                            continuation_disposition="consumed",
+                        )
+                    counts["reconciled"] += 1
+                    continue
+
+                if (
+                    event.operation_state == "in_flight"
+                    and operation_turn.lifecycle
+                    in {"prepared", "recovery_required"}
+                    and binding.continuation_disposition == "authorized"
+                ):
+                    # Re-enter through the main-model claim. continue_task will
+                    # find this same operation Turn and recover it instead of
+                    # opening a second Turn or inventing a new operation id.
+                    self._state.update_result(
+                        event.event_id,
+                        hermes_sink="pending",
+                        processing_id=None,
+                        processing_session_id=None,
+                        business_state="pending",
+                        business_processing_id=None,
+                        business_evidence_ref=None,
+                        business_diagnostic=None,
+                        wakeup_state="pending",
+                        wakeup_claim_id=None,
+                        wakeup_diagnostic=SACHIMA_DELEGATE_RECOVERY_REQUIRED,
+                        operation_task_ref=operation_turn.task_ref,
+                        operation_turn_key=operation_turn.turn_key,
+                        operation_diagnostic=SACHIMA_DELEGATE_RECOVERY_REQUIRED,
+                    )
+                    counts["retry"] += 1
+                    continue
+
+                diagnostic = (
+                    operation_turn.diagnostic or SACHIMA_DELEGATE_OPERATION_UNCERTAIN
+                )
+                self._state.update_result(
+                    event.event_id,
+                    operation_state="uncertain",
+                    operation_task_ref=operation_turn.task_ref,
+                    operation_turn_key=operation_turn.turn_key,
+                    operation_diagnostic=diagnostic,
+                    business_state="blocked",
+                    business_diagnostic=diagnostic,
+                    wakeup_state="blocked",
+                    wakeup_claim_id=None,
+                    wakeup_diagnostic=diagnostic,
+                )
+                counts["uncertain"] += 1
+        return counts
+
+    @staticmethod
+    def _authorized_operation_id(
+        event: DelegateResultEvent,
+        binding: DelegateTaskBinding,
+    ) -> str:
+        material = "\0".join(
+            (
+                event.event_id,
+                binding.authorization_ref or "",
+                binding.continuation_payload_ref or "",
+            )
+        )
+        return "dop_" + hashlib.sha256(material.encode("utf-8")).hexdigest()[:32]
+
+    @staticmethod
+    def _operation_receipt(event: DelegateResultEvent) -> dict[str, Any]:
+        return {
+            "operation_id": event.operation_id,
+            "operation_state": event.operation_state,
+            "task_ref": event.operation_task_ref,
+            "turn_key": event.operation_turn_key,
+        }
+
+    @_lifecycle_admitted
+    async def continue_authorized(
+        self,
+        *,
+        task_ref: str,
+        turn_key: str,
+        event_id: str,
+        processing_id: str,
+        origin: DelegateOrigin,
+        continuity: Any = None,
+    ) -> dict[str, Any]:
+        """Execute the one host-recorded next step with a stable operation id."""
+
+        await self._ensure_restored()
+        # The disposition check and stable operation claim share the same task
+        # gate as pause and Turn creation. Whichever transition wins is durable
+        # before the other can cross the next side-effect boundary.
+        async with self._task_gate(task_ref):
+            exact = self._exact_result_event(task_ref, turn_key, event_id)
+            if exact is None:
+                return {"refusal": SACHIMA_DELEGATE_RESULT_IDENTITY_MISMATCH}
+            binding, event = exact
+            if (
+                event.hermes_sink != "confirmed"
+                or event.processing_id != processing_id
+                or event.processing_session_id is None
+            ):
+                return {"refusal": SACHIMA_DELEGATE_PROCESSING_MISMATCH}
+            if event.operation_state == "accepted":
+                if binding.continuation_disposition != "consumed":
+                    self._state.update_task(
+                        binding.task_ref, continuation_disposition="consumed"
+                    )
+                return self._operation_receipt(event)
+            if event.business_state != "pending":
+                return {"refusal": SACHIMA_DELEGATE_PROCESSING_MISMATCH}
             try:
-                payload["full_result"] = self._state.read_full_result(
-                    event.full_result_ref
+                exact_result = self._state.read_full_result(event.full_result_ref)
+            except DelegateStateError:
+                exact_result = None
+            if event.terminal != "completed" or source_gate_reason(
+                source_text=exact_result,
+                truncated=event.truncated,
+                # Provider availability is irrelevant here: the continuation
+                # consumes the canonical full result, not its optional summary.
+                has_provider=True,
+            ) is not None:
+                return {"refusal": SACHIMA_DELEGATE_RESULT_NOT_ACCEPTABLE}
+            if binding.continuation_disposition == "paused":
+                return {"refusal": SACHIMA_DELEGATE_CONTINUATION_PAUSED}
+            if binding.continuation_disposition == "superseded":
+                return {"refusal": SACHIMA_DELEGATE_CONTINUATION_SUPERSEDED}
+            if binding.continuation_disposition != "authorized":
+                return {"refusal": SACHIMA_DELEGATE_NO_CONTINUATION_AUTHORITY}
+            if (
+                binding.continuation_payload_ref is None
+                or binding.authorization_ref is None
+                or binding.continuation_round_title is None
+            ):
+                return {"refusal": SACHIMA_DELEGATE_NO_CONTINUATION_AUTHORITY}
+            try:
+                task_text = self._state.read_payload(
+                    binding.continuation_payload_ref
                 )
             except DelegateStateError:
-                payload["full_result"] = ""
-            return payload
-        return None
+                return {"refusal": SACHIMA_DELEGATE_UNKNOWN_PAYLOAD_REF}
+
+            target_agent = binding.continuation_agent_id or binding.agent_id
+            admission = self.admit_agent(target_agent, task_text=task_text)
+            if not admission.admitted:
+                self._state.update_result(
+                    event.event_id,
+                    operation_diagnostic=admission.refusal,
+                )
+                return {
+                    "refusal": (
+                        admission.refusal or SACHIMA_DELEGATE_OPERATION_UNCERTAIN
+                    )
+                }
+
+            expected_operation_id = self._authorized_operation_id(event, binding)
+            if (
+                event.operation_id is not None
+                and event.operation_id != expected_operation_id
+            ):
+                return {"refusal": SACHIMA_DELEGATE_OPERATION_UNCERTAIN}
+            operation_id = event.operation_id or expected_operation_id
+            self._state.update_result(
+                event.event_id,
+                operation_id=operation_id,
+                operation_state="in_flight",
+                operation_diagnostic=None,
+            )
+        outcome = await self.continue_task(
+            binding.task_ref,
+            task_text,
+            preset=admission.preset,
+            origin=origin,
+            continuity=continuity,
+            round_title=binding.continuation_round_title,
+            operation_id=operation_id,
+            authorized_event_id=event.event_id,
+        )
+        if outcome.lifecycle not in {"admitted", "terminal"} or not outcome.turn_key:
+            diagnostic = outcome.diagnostic or SACHIMA_DELEGATE_OPERATION_UNCERTAIN
+            self._state.update_result(
+                event.event_id,
+                operation_state="uncertain",
+                operation_diagnostic=diagnostic,
+                business_state="blocked",
+                business_diagnostic=diagnostic,
+                wakeup_state="blocked",
+                wakeup_diagnostic=diagnostic,
+            )
+            return {"refusal": diagnostic, "operation_id": operation_id}
+
+        accepted = self._state.update_result(
+            event.event_id,
+            operation_state="accepted",
+            operation_task_ref=outcome.task_ref,
+            operation_turn_key=outcome.turn_key,
+            operation_diagnostic=None,
+            business_state="continued",
+            business_processing_id=processing_id,
+            business_evidence_ref=outcome.turn_key,
+            business_diagnostic=None,
+            wakeup_state="settled",
+            wakeup_diagnostic=None,
+        )
+        self._state.update_task(
+            binding.task_ref,
+            continuation_disposition="consumed",
+        )
+        return self._operation_receipt(accepted)
 
     async def _reconcile(self, turn_key: str) -> DelegateOutcome:
         """Reconcile one turn: trusted terminal evidence closes it, or nothing."""
@@ -2448,7 +3453,17 @@ class SachimaDelegateCoordinator:
                 if await self._reconcile_restored_card(event):
                     moved += 1
             if event.hermes_sink == "in_flight":
-                event = self._state.update_result(event.event_id, hermes_sink="pending")
+                event = self._state.update_result(
+                    event.event_id,
+                    hermes_sink="pending",
+                    wakeup_state=(
+                        "pending"
+                        if event.wakeup_state == "processing"
+                        else event.wakeup_state
+                    ),
+                    processing_id=None,
+                    processing_session_id=None,
+                )
                 moved += 1
             if event.im_sink == "pending":
                 turn = self._state.read_turn(event.turn_key)
@@ -3248,6 +4263,7 @@ def bind_delegate_coordinator(
     role_policy: AgentRolePolicy | None = None,
     delivery_factory: Callable[[DelegateOrigin], DelegateDelivery | None] | None = None,
     summary_provider: DelegateResultSummaryProvider | None = None,
+    completion_wakeup_enabled: bool = False,
 ) -> SachimaDelegateCoordinator:
     """Bind one coordinator over an already-composed execution bundle.
 
@@ -3272,6 +4288,7 @@ def bind_delegate_coordinator(
         ),
         summary_provider=summary_provider,
         running_patch_interval=configured_running_patch_interval(config),
+        completion_wakeup_enabled=completion_wakeup_enabled,
     )
     return _coordinator
 
@@ -3359,6 +4376,7 @@ def compose_delegate_coordinator(
     env: Mapping[str, str] | None = None,
     executor: Any = None,
     bindings: Any = None,
+    completion_wakeup_enabled: bool = False,
 ) -> SachimaDelegateCoordinator | None:
     """Compose and bind the resident delegation graph, or compose nothing.
 
@@ -3415,4 +4433,5 @@ def compose_delegate_coordinator(
         config,
         presets=presets,
         role_policy=role_policy,
+        completion_wakeup_enabled=completion_wakeup_enabled,
     )

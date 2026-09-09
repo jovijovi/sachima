@@ -1291,12 +1291,25 @@ async def test_compression_replacing_the_session_id_still_settles_the_claimed_on
     entry = runner.session_store.get_or_create_session.return_value
     claimed_session_id = entry.session_id
 
-    settlements: list[tuple[str, bool]] = []
+    settlements: list[tuple[str, bool, str | None, tuple[str, ...] | None]] = []
     _settle = runner._settle_delegate_result_context
 
-    def _record(session_id, *, consumed, continuity=None):
-        settlements.append((session_id, consumed))
-        return _settle(session_id, consumed=consumed, continuity=continuity)
+    def _record(
+        session_id,
+        *,
+        consumed,
+        continuity=None,
+        processing_id=None,
+        event_ids=None,
+    ):
+        settlements.append((session_id, consumed, processing_id, event_ids))
+        return _settle(
+            session_id,
+            consumed=consumed,
+            continuity=continuity,
+            processing_id=processing_id,
+            event_ids=event_ids,
+        )
 
     runner._settle_delegate_result_context = _record
 
@@ -1308,8 +1321,13 @@ async def test_compression_replacing_the_session_id_still_settles_the_claimed_on
     runner._run_agent = AsyncMock(side_effect=_compresses_mid_turn)
     await runner._handle_message_with_agent(message, source, HANDOFF_SESSION_KEY, 1)
 
-    assert settlements == [(claimed_session_id, True)]
-    assert coordinator.state.read_result(event.event_id).hermes_sink == "confirmed"
+    settled = coordinator.state.read_result(event.event_id)
+    assert settlements
+    assert all(item[0] == claimed_session_id for item in settlements)
+    assert all(item[1] is True for item in settlements)
+    assert all(item[2] == settled.processing_id for item in settlements)
+    assert all(item[3] == (event.event_id,) for item in settlements)
+    assert settled.hermes_sink == "confirmed"
 
 
 class _InterruptThenProviderAgent:
