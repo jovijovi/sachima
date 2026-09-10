@@ -86,6 +86,10 @@ class DelegateWakeupBatch:
             "gateway_session_key": self.session_key,
             "gateway_session_strict": False,
             "allow_gateway_control": False,
+            # This is an internal correlation id, not a platform message id.
+            # Keep it on MessageEvent for event identity while excluding it
+            # from native reply construction.
+            "message_id_is_reply_anchor": False,
             "message_id": f"sachima-wakeup-{self.claim_id}",
         }
 
