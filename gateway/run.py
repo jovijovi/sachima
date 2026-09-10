@@ -3024,6 +3024,7 @@ from gateway.platforms.base import (
     EphemeralReply,
     MessageEvent,
     MessageType,
+    ProcessingOutcome,
     _prefix_within_utf16_limit,
     _reply_anchor_for_event,
     build_auto_tts_output_path,
@@ -7389,6 +7390,15 @@ class TurnRunner:
 # DB-backed commands and is how many suites construct a bare runner).  A plain
 # ``None`` cannot express both.  Mirrors ``gateway.session._DB_UNPINNED``.
 _SESSION_DB_UNPINNED = object()
+
+
+@dataclasses.dataclass(frozen=True)
+class _DelegateClaimContext:
+    """Stable Session and adapter event shared by one in-band turn chain."""
+
+    session_id: str
+    continuity: Any
+    processing_event: MessageEvent
 
 
 class _DelegateResultHandoff:
@@ -22652,52 +22662,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # consumed result ``in_flight`` forever.
         _delegate_continuity = self._delegate_result_continuity(session_entry)
         _delegate_claim_session_id = session_entry.session_id
-        _delegate_handoff = None
-        _delegate_result_text, _delegate_processing_claim = (
-            self._consume_delegate_result_context(
-                _delegate_claim_session_id,
-                continuity=_delegate_continuity,
-                include_claim=True,
-            )
+        _delegate_claim_context = _DelegateClaimContext(
+            session_id=_delegate_claim_session_id,
+            continuity=_delegate_continuity,
+            processing_event=event,
         )
-        if _delegate_result_text:
-            # Folded into the user turn that is about to be sent, exactly like
-            # history backfill context — never the long-lived system prompt,
-            # never a synthetic user turn, and never a mutation of a running
-            # one. The marker keeps the user's own words identifiable as the
-            # new message rather than part of the delegate report.
-            message_text = f"{_delegate_result_text}\n\n[New message] {message_text}"
-            _delegate_handoff = _DelegateResultHandoff(
-                _delegate_claim_session_id,
-                processing_id=_delegate_processing_claim.processing_id,
-                event_ids=_delegate_processing_claim.event_ids,
-                on_provider_attempt=lambda: self._settle_delegate_result_context(
-                    _delegate_claim_session_id,
-                    consumed=True,
-                    continuity=_delegate_continuity,
-                    processing_id=_delegate_processing_claim.processing_id,
-                    event_ids=_delegate_processing_claim.event_ids,
-                ),
-            )
-            # The exact claim may be won by a natural message before its
-            # synthetic wake reaches the session queue. Whichever turn wins
-            # must close an explicit report at that turn's real adapter-send
-            # boundary, so bind the same one-shot receipt callback here too.
-            if not isinstance(event.metadata, dict):
-                event.metadata = {}
-            receipt_event_ids: list[str] = []
-            for values in (
-                event.metadata.get("sachima_delegate_event_ids", ()),
-                _delegate_processing_claim.event_ids,
-            ):
-                if isinstance(values, (list, tuple)):
-                    for item in values:
-                        if isinstance(item, str) and item not in receipt_event_ids:
-                            receipt_event_ids.append(item)
-            event.metadata["sachima_delegate_event_ids"] = receipt_event_ids
-            event.metadata["_gateway_processing_outcome_callback"] = (
-                self._complete_sachima_delegate_processing
-            )
+        # Fold claimed results into the user turn that is about to be sent,
+        # exactly like history backfill context: never the long-lived system
+        # prompt and never a mutation of a running turn.
+        message_text, _delegate_handoff = self._claim_delegate_results_for_turn(
+            message_text,
+            _delegate_claim_context,
+        )
 
         try:
             # Emit agent:start hook
@@ -22734,6 +22710,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 persist_user_display_kind=persist_user_display_kind,
                 message_type=event.message_type,
                 delegate_handoff=_delegate_handoff,
+                _delegate_claim_context=_delegate_claim_context,
             )
             _turn_seconds = time.monotonic() - _turn_started_monotonic
 
@@ -24888,8 +24865,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         text_already_delivered: bool = False,
         deliver_media: bool = True,
         stream_consumer=None,
-    ) -> None:
-        """Deliver a queued response using the normal text+attachment split."""
+    ) -> bool:
+        """Deliver a queued response and return confirmed text delivery."""
+        text_delivered = bool(text_already_delivered)
         if not text_already_delivered:
             text_content = _strip_response_attachments_for_direct_send(response, adapter)
             if text_content:
@@ -24917,6 +24895,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         )
                         if getattr(_edit_res, "success", False):
                             _reconciled = True
+                            text_delivered = True
                             logger.info(
                                 "Queued-lane final reconciled by editing message %s in place (no duplicate send).",
                                 _sc_msg_id,
@@ -24927,10 +24906,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             _qe,
                         )
                 if not _reconciled:
-                    await adapter.send(
+                    send_result = await adapter.send(
                         source.chat_id,
                         text_content,
                         metadata=metadata,
+                    )
+                    text_delivered = bool(
+                        getattr(send_result, "success", False)
                     )
 
         # Failed turns still deliver their (normalized failure) text above,
@@ -24938,7 +24920,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # the ``not agent_result.get("failed")`` guard on the completed-turn
         # delivery path.
         if not deliver_media:
-            return
+            return text_delivered
 
         synthetic_event = MessageEvent(
             text="",
@@ -24951,6 +24933,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             adapter,
             thread_metadata=metadata,
         )
+        return text_delivered
 
     async def _run_background_task(
         self,
@@ -26587,6 +26570,152 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
         except Exception:
             logger.debug("delegate result context settlement skipped", exc_info=True)
+
+    def _claim_delegate_results_for_turn(
+        self,
+        message: str,
+        claim_context: _DelegateClaimContext,
+    ) -> tuple[str, Optional[_DelegateResultHandoff]]:
+        """Claim results available for one logical turn and bind its receipt."""
+
+        result_text, claim = self._consume_delegate_result_context(
+            claim_context.session_id,
+            continuity=claim_context.continuity,
+            include_claim=True,
+        )
+        if not result_text or claim is None:
+            return message, None
+
+        handoff = _DelegateResultHandoff(
+            claim_context.session_id,
+            processing_id=claim.processing_id,
+            event_ids=claim.event_ids,
+            on_provider_attempt=lambda: self._settle_delegate_result_context(
+                claim_context.session_id,
+                consumed=True,
+                continuity=claim_context.continuity,
+                processing_id=claim.processing_id,
+                event_ids=claim.event_ids,
+            ),
+        )
+        self._bind_delegate_processing_receipt(
+            claim_context.processing_event,
+            claim.event_ids,
+        )
+        return f"{result_text}\n\n[New message] {message}", handoff
+
+    def _bind_delegate_processing_receipt(
+        self,
+        event: MessageEvent,
+        event_ids: tuple[str, ...],
+    ) -> None:
+        """Bind one logical turn's exact result IDs to its eventual send."""
+
+        if not isinstance(event.metadata, dict):
+            event.metadata = {}
+        exact_ids = list(dict.fromkeys(
+            item for item in event_ids if isinstance(item, str) and item
+        ))
+        event.metadata["sachima_delegate_event_ids"] = exact_ids
+        event.metadata["_gateway_processing_outcome_callback"] = (
+            self._complete_sachima_delegate_processing
+        )
+
+    async def _complete_queued_delegate_delivery(
+        self,
+        claim_context: Optional[_DelegateClaimContext],
+        adapter: Any,
+        *,
+        delivered: bool,
+        model_turn_completed: bool,
+    ) -> None:
+        """Settle the claim bound to an intermediate queued-turn response."""
+
+        if claim_context is None:
+            return
+        event = claim_context.processing_event
+        metadata = getattr(event, "metadata", None)
+        if not isinstance(metadata, dict):
+            return
+        callback = metadata.get("_gateway_processing_outcome_callback")
+        if not callable(callback):
+            return
+        metadata["_gateway_model_turn_completed"] = bool(model_turn_completed)
+        callback_runner = getattr(
+            adapter,
+            "_run_internal_processing_outcome_callback",
+            None,
+        )
+        if callable(callback_runner):
+            await callback_runner(
+                event,
+                ProcessingOutcome.SUCCESS if delivered else ProcessingOutcome.FAILURE,
+            )
+            return
+
+        # All production adapters inherit BasePlatformAdapter. Keep the private
+        # queue boundary usable for narrow duck-typed adapters as well.
+        metadata.pop("_gateway_processing_outcome_callback", None)
+        result = callback(
+            event,
+            ProcessingOutcome.SUCCESS if delivered else ProcessingOutcome.FAILURE,
+        )
+        if inspect.isawaitable(result):
+            await result
+
+    def _discard_claimed_delegate_wakeups(
+        self,
+        session_key: str,
+        adapter: Any,
+        event_ids: tuple[str, ...],
+    ) -> int:
+        """Drop queued native wakes fully owned by the current fresh claim."""
+
+        claimed = {item for item in event_ids if isinstance(item, str) and item}
+        if not claimed or adapter is None:
+            return 0
+
+        def _is_redundant(event: Any) -> bool:
+            if (
+                event is None
+                or getattr(event, "internal", False) is not True
+                or getattr(event, "allow_gateway_control", True) is not False
+            ):
+                return False
+            ids = (getattr(event, "metadata", None) or {}).get(
+                "sachima_delegate_event_ids"
+            )
+            exact = {
+                item for item in ids or () if isinstance(item, str) and item
+            } if isinstance(ids, (list, tuple)) else set()
+            return bool(exact) and exact.issubset(claimed)
+
+        removed = 0
+        pending_slot = getattr(adapter, "_pending_messages", None)
+        head_removed = False
+        if isinstance(pending_slot, dict) and _is_redundant(
+            pending_slot.get(session_key)
+        ):
+            pending_slot.pop(session_key, None)
+            head_removed = True
+            removed += 1
+
+        queue_state = self._peek_session_state(session_key)
+        overflow = (
+            queue_state.conversation.queued_events if queue_state is not None else []
+        )
+        if overflow:
+            kept = []
+            for queued_event in overflow:
+                if _is_redundant(queued_event):
+                    removed += 1
+                else:
+                    kept.append(queued_event)
+            queue_state.conversation.queued_events = kept
+
+        if head_removed and overflow and queue_state.conversation.queued_events:
+            pending_slot[session_key] = queue_state.conversation.queued_events.pop(0)
+        return removed
 
 
     # ------------------------------------------------------------------
@@ -30861,6 +30990,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         persist_user_display_kind: Optional[str] = None,
         message_type: Optional[str] = None,
         delegate_handoff: Optional["_DelegateResultHandoff"] = None,
+        _delegate_claim_context: Optional["_DelegateClaimContext"] = None,
         _progress_transaction: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Profile-scoping wrapper around the agent run.
@@ -30883,6 +31013,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 persist_user_display_kind=persist_user_display_kind,
                 message_type=message_type,
                 delegate_handoff=delegate_handoff,
+                _delegate_claim_context=_delegate_claim_context,
                 _progress_transaction=_progress_transaction,
             )
 
@@ -30898,6 +31029,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 persist_user_display_kind=persist_user_display_kind,
                 message_type=message_type,
                 delegate_handoff=delegate_handoff,
+                _delegate_claim_context=_delegate_claim_context,
                 _progress_transaction=_progress_transaction,
             )
 
@@ -31043,6 +31175,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         persist_user_display_kind: Optional[str] = None,
         message_type: Optional[str] = None,
         delegate_handoff: Optional["_DelegateResultHandoff"] = None,
+        _delegate_claim_context: Optional["_DelegateClaimContext"] = None,
         _progress_transaction: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
@@ -32502,6 +32635,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     return result_holder[0] or {"final_response": response, "messages": history}
 
                 was_interrupted = result.get("interrupted")
+                prior_delivery_confirmed = False
+                prior_model_turn_completed = False
                 if not was_interrupted:
                     # Queued message after normal completion — deliver the first
                     # response before processing the queued follow-up.
@@ -32526,6 +32661,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _delivery_result = response if isinstance(response, dict) else (result or {})
                     _previewed = bool(_delivery_result.get("response_previewed"))
                     first_response = _delivery_result.get("final_response", "")
+                    prior_model_turn_completed = bool(
+                        not _delivery_result.get("failed")
+                        and (first_response or _delivery_result.get("already_sent"))
+                    )
                     _already_streamed = _stream_confirmed_final_delivery(
                         _sc,
                         first_response,
@@ -32558,15 +32697,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                     "Queued follow-up for session %s: final stream delivery not confirmed; sending first response before continuing.",
                                     session_key or "?",
                                 )
-                            await self._deliver_queued_first_response(
-                                first_response,
-                                source=source,
-                                adapter=adapter,
-                                metadata=_status_thread_metadata,
-                                event_message_id=event_message_id,
-                                text_already_delivered=_already_streamed,
-                                deliver_media=not _delivery_result.get("failed"),
-                                stream_consumer=_sc,
+                            prior_delivery_confirmed = (
+                                await self._deliver_queued_first_response(
+                                    first_response,
+                                    source=source,
+                                    adapter=adapter,
+                                    metadata=_status_thread_metadata,
+                                    event_message_id=event_message_id,
+                                    text_already_delivered=_already_streamed,
+                                    deliver_media=not _delivery_result.get("failed"),
+                                    stream_consumer=_sc,
+                                )
                             )
                         except Exception as e:
                             logger.warning("Failed to send first response before queued message: %s", e)
@@ -32598,6 +32739,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # else: interrupted — discard the interrupted response ("Operation
                 # interrupted." is just noise; the user already knows they sent a
                 # new message).
+
+                # The outer Base processing task will deliver only the final
+                # response returned by the whole in-band chain. Close the prior
+                # logical turn here, at the direct-send result above, before its
+                # event is rebound to the queued turn's fresh claim. An
+                # unconsumed interrupted handoff remains attached to the retry.
+                if delegate_handoff is None or delegate_handoff.consumed:
+                    await self._complete_queued_delegate_delivery(
+                        _delegate_claim_context,
+                        adapter,
+                        delivered=prior_delivery_confirmed,
+                        model_turn_completed=prior_model_turn_completed,
+                    )
 
                 updated_history = result.get("messages", history)
                 next_source = source
@@ -32642,6 +32796,32 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     next_channel_prompt = getattr(pending_event, "channel_prompt", None)
                     next_message_type = getattr(pending_event, "message_type", None)
 
+                # A handoff that never reached a provider still belongs to the
+                # interrupted attempt and rides into this retry. Once consumed,
+                # it cannot own results that became available for a later
+                # logical turn: claim those now under a fresh processing id.
+                next_delegate_handoff = delegate_handoff
+                owns_fresh_delegate_handoff = False
+                if delegate_handoff is not None and delegate_handoff.consumed:
+                    next_delegate_handoff = None
+                if (
+                    _delegate_claim_context is not None
+                    and (delegate_handoff is None or delegate_handoff.consumed)
+                ):
+                    next_message, next_delegate_handoff = (
+                        self._claim_delegate_results_for_turn(
+                            next_message,
+                            _delegate_claim_context,
+                        )
+                    )
+                    if next_delegate_handoff is not None:
+                        owns_fresh_delegate_handoff = True
+                        self._discard_claimed_delegate_wakeups(
+                            next_session_key,
+                            adapter,
+                            next_delegate_handoff.event_ids,
+                        )
+
                 # Clear the completed streaming marker from the prior logical
                 # turn so the recursive turn's streaming TTS is not suppressed
                 # by the prior turn's completion (#60671).
@@ -32684,27 +32864,43 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # what the follow-up's guard will consult.  Fail-safe in helper.
                 await self._refresh_agent_cache_message_count(session_key, session_id)
 
-                followup_result = await self._run_agent(
-                    message=next_message,
-                    context_prompt=context_prompt,
-                    history=updated_history,
-                    source=next_source,
-                    session_id=session_id,
-                    session_key=next_session_key,
-                    run_generation=run_generation,
-                    _interrupt_depth=_interrupt_depth + 1,
-                    event_message_id=next_message_id,
-                    channel_prompt=next_channel_prompt,
-                    message_type=next_message_type,
-                    # The attempt that was interrupted may never have reached a
-                    # provider; the follow-up is the one that does. The claim
-                    # has to ride into it, or the turn that really called the
-                    # model would leave no trace and the result would be
-                    # released as if nothing had been shown to anyone.
-                    delegate_handoff=delegate_handoff,
-                    _progress_transaction=progress_transaction,
-                )
-                return _preserve_queued_followup_history_offset(result, followup_result)
+                try:
+                    followup_result = await self._run_agent(
+                        message=next_message,
+                        context_prompt=context_prompt,
+                        history=updated_history,
+                        source=next_source,
+                        session_id=session_id,
+                        session_key=next_session_key,
+                        run_generation=run_generation,
+                        _interrupt_depth=_interrupt_depth + 1,
+                        event_message_id=next_message_id,
+                        channel_prompt=next_channel_prompt,
+                        message_type=next_message_type,
+                        # A still-unconsumed interrupted claim rides into the
+                        # attempt that can reach the provider. A consumed claim
+                        # was replaced above by this logical turn's fresh claim.
+                        delegate_handoff=next_delegate_handoff,
+                        _delegate_claim_context=_delegate_claim_context,
+                        _progress_transaction=progress_transaction,
+                    )
+                    return _preserve_queued_followup_history_offset(
+                        result,
+                        followup_result,
+                    )
+                finally:
+                    if (
+                        owns_fresh_delegate_handoff
+                        and next_delegate_handoff is not None
+                        and next_delegate_handoff.take_for_settlement()
+                    ):
+                        self._settle_delegate_result_context(
+                            next_delegate_handoff.session_id,
+                            consumed=next_delegate_handoff.consumed,
+                            continuity=_delegate_claim_context.continuity,
+                            processing_id=next_delegate_handoff.processing_id,
+                            event_ids=next_delegate_handoff.event_ids,
+                        )
         finally:
             # Stop progress sender, interrupt monitor, and notification task
             if task_workbench is not None and progress_transaction_owner:

@@ -5757,14 +5757,23 @@ class BasePlatformAdapter(ABC):
             except Exception as e:
                 logger.warning("[%s] %s hook failed: %s", self.name, hook_name, e)
 
+        if hook_name != "on_processing_complete" or len(args) < 2:
+            return
+        await self._run_internal_processing_outcome_callback(args[0], args[1])
+
+    async def _run_internal_processing_outcome_callback(
+        self,
+        event: MessageEvent,
+        outcome: ProcessingOutcome,
+    ) -> None:
+        """Settle one business receipt at this adapter delivery boundary."""
+
         # A trusted synthetic turn may stage a business receipt that is true
         # only after this adapter has actually delivered the final response.
         # Keep that one-shot callback on the event already owned by this turn;
         # platform hooks retain their historical behavior and failures remain
-        # isolated from message processing.
-        if hook_name != "on_processing_complete" or len(args) < 2:
-            return
-        event = args[0]
+        # isolated from message processing. Gateway's in-band queue drain uses
+        # this same boundary for the intermediate response it sends directly.
         metadata = getattr(event, "metadata", None)
         if not isinstance(metadata, dict):
             return
@@ -5772,7 +5781,7 @@ class BasePlatformAdapter(ABC):
         if not callable(callback):
             return
         try:
-            result = callback(event, args[1])
+            result = callback(event, outcome)
             if inspect.isawaitable(result):
                 await result
         except Exception as e:

@@ -1491,18 +1491,48 @@ async def test_the_handoff_rides_into_the_interrupt_followup_that_reaches_the_mo
 
 
 def test_the_gateway_folds_the_result_into_the_next_user_turn_only():
-    """It rides the next user message — never the system prompt, never a
-    synthetic user turn, and never a mutation of a running one."""
+    """A claim prefixes only the forthcoming user message and binds its IDs."""
 
-    src = _run_source()
-    # The call site, not the definition.
-    index = src.rindex("self._consume_delegate_result_context(")
-    block = src[index : index + 700]
-    assert "[New message]" in block
-    assert "message_text" in block
-    assert "system_prompt" not in block
-    assert "conversation_history" not in block
-    assert "_settle_delegate_result_context" in src
+    from gateway.platforms.base import MessageEvent
+    from gateway.run import GatewayRunner, _DelegateClaimContext
+
+    runner = object.__new__(GatewayRunner)
+    claim = SimpleNamespace(
+        processing_id="dprocess_folded",
+        event_ids=("devt_folded",),
+    )
+    runner._consume_delegate_result_context = MagicMock(
+        return_value=("[external-agent-result] exact result", claim)
+    )
+    runner._settle_delegate_result_context = MagicMock()
+    runner._bind_delegate_processing_receipt = MagicMock()
+    event = MessageEvent(
+        text="what happened?",
+        source=_source(),
+        message_id="m-folded",
+    )
+    context = _DelegateClaimContext(
+        session_id="session-folded",
+        continuity=None,
+        processing_event=event,
+    )
+
+    message, handoff = runner._claim_delegate_results_for_turn(
+        "what happened?",
+        context,
+    )
+
+    assert message == (
+        "[external-agent-result] exact result\n\n"
+        "[New message] what happened?"
+    )
+    assert handoff is not None
+    assert handoff.processing_id == "dprocess_folded"
+    assert handoff.event_ids == ("devt_folded",)
+    runner._bind_delegate_processing_receipt.assert_called_once_with(
+        event,
+        ("devt_folded",),
+    )
 
 
 def test_the_handoff_latch_holds_under_concurrent_provider_attempts():
