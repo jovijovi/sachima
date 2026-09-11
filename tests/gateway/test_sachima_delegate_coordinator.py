@@ -4190,29 +4190,37 @@ async def test_a_pre_accept_failure_keeps_a_terminal_card_and_the_task_identity(
     assert _titles(delivery)[-1] == "委派任务 · 未受理"
 
 
+ROUTED_VERIFIER_MODEL = "routed-verifier-model[1m]"
+VERIFIER_MATRIX_YAML = f"""\
+schema_version: 1
+default_agents: {{}}
+routes:
+  - agent_id: codex
+    role_id: session_reuse_verifier
+    availability: Available
+    model: "{ROUTED_VERIFIER_MODEL}"
+    effort: high
+    fallback: null
+"""
+
+
+def _routing_matrix(tmp_path, text: str = VERIFIER_MATRIX_YAML):
+    """One shared routing matrix file, as the host would declare it."""
+
+    from gateway.sachima_agent_role_routing_matrix import RoleRoutingMatrixSource
+
+    path = tmp_path / "routing-matrix.yaml"
+    path.write_text(text, encoding="utf-8")
+    return RoleRoutingMatrixSource(str(path))
+
+
 @pytest.mark.asyncio
-async def test_the_admitted_role_is_sealed_from_the_role_policy_or_left_unspecified(
-    tmp_path,
-):
-    from gateway.sachima_agent_role_policy import (
-        AGENT_ROLE_POLICY_TYPE,
-        build_agent_role_policy,
-    )
+async def test_the_admitted_role_is_sealed_from_the_routing_matrix_route(tmp_path):
+    """A supplied role is the matrix route it selects: sealed, and submitted."""
 
     delivery = _CardDelivery()
     coordinator, facade = _coordinator(tmp_path, delivery=delivery)
-    coordinator._role_policy = build_agent_role_policy(
-        {
-            "type": AGENT_ROLE_POLICY_TYPE,
-            "assignments": [
-                {
-                    "agent_id": "codex",
-                    "division": "engineering",
-                    "roles": ["session_reuse_verifier"],
-                }
-            ],
-        }
-    )
+    coordinator._routing_matrix = _routing_matrix(tmp_path)
     outcome = await coordinator.create(
         task_text=TASK_TEXT_CANARY,
         preset=_preset(coordinator),
@@ -4220,18 +4228,31 @@ async def test_the_admitted_role_is_sealed_from_the_role_policy_or_left_unspecif
         delivery=delivery.channel(),
         admitted_role="session_reuse_verifier",
     )
-    assert (
-        coordinator.state.read_turn(outcome.turn_key).admitted_role
-        == "session_reuse_verifier"
-    )
+    turn = coordinator.state.read_turn(outcome.turn_key)
+    assert turn.admitted_role == "session_reuse_verifier"
+    assert turn.requested_model == ROUTED_VERIFIER_MODEL
+    assert turn.requested_effort == "high"
+    assert turn.route_source_digest is not None
+    # The card and the actual submit say the same thing.
     assert "👤 **角色**： session_reuse_verifier" in _card_text(delivery.last_card)
+    assert facade.submitted[0]["request"]["requested_model"] == ROUTED_VERIFIER_MODEL
+    assert facade.submitted[0]["request"]["requested_effort"] == "high"
     facade.terminalize(0)
 
 
 @pytest.mark.asyncio
-async def test_a_role_the_agent_does_not_hold_is_never_sealed(tmp_path):
+async def test_a_role_with_no_route_is_refused_before_anything_durable_exists(tmp_path):
+    """A role the matrix does not route is refused — never run AGENT-wide."""
+
+    from gateway.sachima_agent_role_routing_matrix import (
+        SACHIMA_ROLE_ROUTE_MISSING,
+        SACHIMA_ROLE_ROUTING_MATRIX_UNCONFIGURED,
+    )
+
     delivery = _CardDelivery()
     coordinator, facade = _coordinator(tmp_path, delivery=delivery)
+
+    # No matrix composed at all.
     outcome = await coordinator.create(
         task_text=TASK_TEXT_CANARY,
         preset=_preset(coordinator),
@@ -4239,9 +4260,26 @@ async def test_a_role_the_agent_does_not_hold_is_never_sealed(tmp_path):
         delivery=delivery.channel(),
         admitted_role="pretend_role",
     )
-    assert coordinator.state.read_turn(outcome.turn_key).admitted_role is None
-    assert "👤 **角色**： 未指定" in _card_text(delivery.last_card)
-    facade.terminalize(0)
+    assert outcome.diagnostic == SACHIMA_ROLE_ROUTING_MATRIX_UNCONFIGURED
+    assert outcome.task_ref is None and outcome.turn_key is None
+
+    # A matrix that routes other pairs, but not this one.
+    coordinator._routing_matrix = _routing_matrix(tmp_path)
+    outcome = await coordinator.create(
+        task_text=TASK_TEXT_CANARY,
+        preset=_preset(coordinator),
+        origin=_origin(),
+        delivery=delivery.channel(),
+        admitted_role="pretend_role",
+    )
+    assert outcome.diagnostic == SACHIMA_ROLE_ROUTE_MISSING
+    assert outcome.task_ref is None
+
+    # Nothing durable and nothing visible survived either refusal.
+    assert not coordinator.state.list_tasks()
+    assert not coordinator.state.list_turns()
+    assert facade.submit_count() == 0
+    assert delivery.sent_cards == [] and delivery.receipts == []
 
 
 @pytest.mark.asyncio
@@ -5274,25 +5312,9 @@ async def test_session_origin_comes_from_admission_evidence_not_round_position(
 async def test_the_role_line_follows_the_current_round_not_the_first_one(tmp_path):
     """The card shows the role *this* round was admitted under, or none."""
 
-    from gateway.sachima_agent_role_policy import (
-        AGENT_ROLE_POLICY_TYPE,
-        build_agent_role_policy,
-    )
-
     delivery = _CardDelivery()
     coordinator, facade = _coordinator(tmp_path, delivery=delivery)
-    coordinator._role_policy = build_agent_role_policy(
-        {
-            "type": AGENT_ROLE_POLICY_TYPE,
-            "assignments": [
-                {
-                    "agent_id": "codex",
-                    "division": "engineering",
-                    "roles": ["session_reuse_verifier"],
-                }
-            ],
-        }
-    )
+    coordinator._routing_matrix = _routing_matrix(tmp_path)
     outcome = await coordinator.create(
         task_text="建立上下文",
         preset=_preset(coordinator),

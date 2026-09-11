@@ -121,6 +121,8 @@ from .arsd_socket_contract import (
     ArsdSubmitAccepted,
     ArsdSupervisorConfig,
     ArsdTerminalResult,
+    _safe_config_text,
+    _safe_effort_token,
     _safe_wire_token,
     arsd_submit_payload_digest,
     build_arsd_submit_payload,
@@ -432,6 +434,30 @@ class _RunPolicy:
 
 
 @dataclass(frozen=True)
+class _RunRequestSeal:
+    """The literal pair ONE dispatch was sealed under, and its provenance.
+
+    Set by the coordinator from the Turn's own durable record for exactly one
+    ``dispatch_ref`` before that dispatch, consumed by its submit, and handed
+    back the same way before its explicit recovery. In memory only: the ledger
+    records the three digests, never the literals.
+    """
+
+    requested_model: str
+    requested_effort: str
+    route_source_digest: str
+
+
+#: The three ``resolver_refs`` keys a sealed dispatch records. All or none: a
+#: record carrying some of them is not one this backend wrote.
+_SEAL_REF_KEYS = (
+    "requested_model_digest",
+    "requested_effort_digest",
+    "route_source_digest",
+)
+
+
+@dataclass(frozen=True)
 class ArsdRunCancelOutcome:
     """What one Run-scoped cancel actually proved.
 
@@ -521,6 +547,10 @@ class ArsdSupervisorBackend:
         self._lock = threading.RLock()
         self._by_task: dict[str, _TaskEntry] = {}
         self._by_handle: dict[str, _TaskEntry] = {}
+        #: Per-dispatch sealed request literals, keyed by ``(task_id,
+        #: dispatch_ref)``. Never serialized: a restart re-seals from the
+        #: coordinator's durable Turn record before it dispatches or recovers.
+        self._seals: dict[tuple[str, str], _RunRequestSeal] = {}
         #: The most recent negotiation this backend actually passed. Set by
         #: :meth:`_negotiate` itself, so it is never a value nobody validated.
         self._server_info: ArsdServerInfo | None = None
@@ -606,6 +636,62 @@ class ArsdSupervisorBackend:
             # A first attachment in THIS process is not a first attachment of
             # the task: reconcile whatever the durable ledger already holds.
             return self._register(safe_task, handle, policy)
+
+    def seal_run_request(
+        self,
+        task_id: str,
+        dispatch_ref: str,
+        *,
+        requested_model: Any = None,
+        requested_effort: Any = None,
+        route_source_digest: Any = None,
+    ) -> None:
+        """Seal the literal model/effort ONE dispatch submits under — or clear it.
+
+        A role route's exact pair is a property of the Run. The coordinator
+        seals it here, from its durable Turn record, for this exact
+        ``dispatch_ref`` immediately before the dispatch, and hands the same
+        seal back immediately before an explicit recovery. All three values
+        are required together; all three ``None`` clears any seal for the
+        dispatch, which leaves the AGENT-wide path exactly as it was. A
+        partial seal is refused: a Run carrying one literal from a route and
+        the other from a map is a request nobody configured.
+
+        Literals are validated on the request's own grammar here — before any
+        ledger write and before the daemon is touched — and never echoed.
+        """
+
+        entry = self._require_task(task_id)
+        dispatch = _safe_id(dispatch_ref, code=RUNTIME_ARSD_INVALID_REQUEST)
+        key = (entry.task_id, dispatch)
+        values = (requested_model, requested_effort, route_source_digest)
+        if all(value is None for value in values):
+            with self._lock:
+                self._seals.pop(key, None)
+            return
+        if any(value is None for value in values):
+            _invalid_request()
+        seal = _RunRequestSeal(
+            requested_model=_safe_config_text(
+                requested_model, code=RUNTIME_ARSD_INVALID_REQUEST
+            ),
+            requested_effort=_safe_effort_token(
+                requested_effort, code=RUNTIME_ARSD_INVALID_REQUEST
+            ),
+            route_source_digest=_safe_digest(
+                route_source_digest, code=RUNTIME_ARSD_INVALID_REQUEST
+            ),
+        )
+        with self._lock:
+            self._seals[key] = seal
+
+    def _seal_for(self, safe_task: str, dispatch: str) -> _RunRequestSeal | None:
+        with self._lock:
+            return self._seals.get((safe_task, dispatch))
+
+    def _release_seal(self, safe_task: str, dispatch: str) -> None:
+        with self._lock:
+            self._seals.pop((safe_task, dispatch), None)
 
     def attach_existing(self, task_id: str, *, binding: Any = None) -> str:
         """Re-attach a task from its durable binding alone — never respawn.
@@ -1018,6 +1104,9 @@ class ArsdSupervisorBackend:
         with self._task_locks.hold(entry.task_id):
             with self._lock:
                 policy = entry.policy
+            # The literal pair sealed for THIS dispatch, if a role route was
+            # applied; ``None`` is the AGENT-wide path, unchanged.
+            seal = self._seal_for(entry.task_id, dispatch)
 
             # An uncertain submission blocks this task's next Run, before any
             # socket call: the ordinary path may neither resend that dispatch
@@ -1031,7 +1120,7 @@ class ArsdSupervisorBackend:
             ars_session_id = self._reusable_session(entry.task_id)
             info = self._negotiate()
             payload = self._build_payload(
-                policy, prompt=prompt, ars_session_id=ars_session_id
+                policy, prompt=prompt, ars_session_id=ars_session_id, seal=seal
             )
             digest = arsd_submit_payload_digest(payload)
             # A run-limits choice this daemon would refuse fails closed here,
@@ -1055,12 +1144,17 @@ class ArsdSupervisorBackend:
                     prompt=prompt,
                     prompt_ref=prompt_ref,
                     session_ref=session,
+                    seal=seal,
                 ),
             )
             ack = self._submit(request_id, payload)
-            return self._finalize(
+            dispatched = self._finalize(
                 entry, dispatch, ack, expected_session_id=ars_session_id
             )
+            # Consumed by the acceptance it was sealed for. A lost ack keeps
+            # it, and a restart re-seals from the durable Turn either way.
+            self._release_seal(entry.task_id, dispatch)
+            return dispatched
 
     def latest_accepted_turn(
         self, task_id: str, *, session_ref: str
@@ -1152,20 +1246,60 @@ class ArsdSupervisorBackend:
             # touched: a resend under another Session or another turn kind is
             # not a recovery of this dispatch, whatever it does to the digest.
             self._require_recorded_identity(intent, session_ref=session, turn_kind=kind)
+            # The literals this dispatch was sealed under must be handed back
+            # exactly — or not at all when it sealed none — before the
+            # resolver runs and before any socket call.
+            seal = self._seal_for(entry.task_id, dispatch)
+            self._require_recorded_request_seal(intent, seal)
 
-            payload = self._rebuild_payload(entry.task_id, intent)
+            payload = self._rebuild_payload(entry.task_id, intent, seal=seal)
             if arsd_submit_payload_digest(payload) != intent.payload_digest:
                 _binding_conflict()
 
             ack = self._submit(intent.request_id, payload)
             # The frozen payload states what this recovery asked for; the ack
             # must answer about that same Session.
-            return self._finalize(
+            recovered = self._finalize(
                 entry,
                 dispatch,
                 ack,
                 expected_session_id=payload["request"].get("session_id"),
             )
+            self._release_seal(entry.task_id, dispatch)
+            return recovered
+
+    @staticmethod
+    def _require_recorded_request_seal(
+        intent: ArsdRunBinding, seal: _RunRequestSeal | None
+    ) -> None:
+        """Refuse a recovery that is not under the literals this dispatch sealed.
+
+        The intent recorded the digests of what it submitted. A recovery must
+        be handed the same seal back — same model, same effort, same matrix
+        version — or none at all when the dispatch sealed none. Anything else
+        is a different request wearing this ``request_id``: recovering under
+        the AGENT-wide maps, or under a route edited since, would silently
+        change the request a person was told was submitted. The rebuilt
+        payload digest remains the final byte-equivalence witness after this
+        check; this one names the cause before anything is spent.
+        """
+
+        recorded = dict(intent.resolver_refs)
+        present = [key for key in _SEAL_REF_KEYS if key in recorded]
+        if not present:
+            if seal is not None:
+                _binding_conflict()
+            return
+        if len(present) != len(_SEAL_REF_KEYS) or seal is None:
+            _binding_conflict()
+        expected = {
+            "requested_model_digest": _literal_digest(seal.requested_model),
+            "requested_effort_digest": _literal_digest(seal.requested_effort),
+            "route_source_digest": seal.route_source_digest,
+        }
+        for key, value in expected.items():
+            if recorded.get(key) != value:
+                _binding_conflict()
 
     @staticmethod
     def _require_recorded_identity(
@@ -1390,6 +1524,7 @@ class ArsdSupervisorBackend:
         prompt: str,
         prompt_ref: str,
         session_ref: str,
+        seal: _RunRequestSeal | None = None,
     ) -> dict[str, str]:
         """The refs a recovery rebuilds — and re-identifies — this payload from.
 
@@ -1398,6 +1533,11 @@ class ArsdSupervisorBackend:
         not need. ``prompt_ref``, ``session_ref`` and ``turn_kind`` are written
         unconditionally: they are what makes a later resend provably the same
         request rather than a new one wearing its ``request_id``.
+
+        A sealed dispatch adds the digests of its two literals and the matrix
+        version they came from — digests, because the ledger is refs-only and
+        a model selector is free text. The literals themselves live on the
+        coordinator's durable Turn record, which is what re-seals a recovery.
         """
 
         refs = {
@@ -1425,21 +1565,35 @@ class ArsdSupervisorBackend:
             "prompt_digest": _prompt_digest(prompt),
             "prompt_ref": prompt_ref,
         }
+        if seal is not None:
+            refs["requested_model_digest"] = _literal_digest(seal.requested_model)
+            refs["requested_effort_digest"] = _literal_digest(seal.requested_effort)
+            refs["route_source_digest"] = seal.route_source_digest
         return refs
 
     def _build_payload(
-        self, policy: _RunPolicy, *, prompt: str, ars_session_id: str | None
+        self,
+        policy: _RunPolicy,
+        *,
+        prompt: str,
+        ars_session_id: str | None,
+        seal: _RunRequestSeal | None = None,
     ) -> dict[str, Any]:
         """The exact submit payload for one Run.
 
         ``requested_model`` / ``requested_effort`` are re-resolved from the
         policy maps here, on every Run: they are properties of the Run, never
-        of the Session, and nothing observed from a past Run feeds back in.
+        of the Session, and nothing observed from a past Run feeds back in. A
+        dispatch sealed under a role route submits that route's literal pair
+        instead of the map values — and only those two fields.
         """
 
         session_kwargs: dict[str, Any] = (
             {} if ars_session_id is None else {"session_id": ars_session_id}
         )
+        if seal is not None:
+            session_kwargs["requested_model"] = seal.requested_model
+            session_kwargs["requested_effort"] = seal.requested_effort
         return build_arsd_submit_payload(
             self._config,
             agent_policy_ref=policy.agent_policy_ref,
@@ -1451,7 +1605,13 @@ class ArsdSupervisorBackend:
             **session_kwargs,
         )
 
-    def _rebuild_payload(self, safe_task: str, intent: ArsdRunBinding) -> dict[str, Any]:
+    def _rebuild_payload(
+        self,
+        safe_task: str,
+        intent: ArsdRunBinding,
+        *,
+        seal: _RunRequestSeal | None = None,
+    ) -> dict[str, Any]:
         refs = dict(intent.resolver_refs)
         if self._prompt_resolver is None:
             _binding_conflict()
@@ -1472,6 +1632,7 @@ class ArsdSupervisorBackend:
                 self._policy_from_refs(refs),
                 prompt=prompt,
                 ars_session_id=ars_session_id,
+                seal=seal,
             )
         except SpineError:
             _binding_conflict()
@@ -1760,5 +1921,14 @@ def _prompt_digest(prompt: str) -> str:
 
     return _safe_digest(
         "sha256:" + hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
+        code=RUNTIME_ARSD_INVALID_REQUEST,
+    )
+
+
+def _literal_digest(text: str) -> str:
+    """The recorded witness of one sealed request literal — never the literal."""
+
+    return _safe_digest(
+        "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest(),
         code=RUNTIME_ARSD_INVALID_REQUEST,
     )

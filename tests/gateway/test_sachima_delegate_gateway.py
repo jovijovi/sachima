@@ -2083,6 +2083,46 @@ def test_a_declared_composition_missing_a_document_fails_closed(
     assert delegate_mod.bound_delegate_coordinator() is None
 
 
+def test_a_declared_routing_matrix_is_optional_validated_once_and_bound(
+    tmp_path, monkeypatch, _unbound, _offline_arsd
+):
+    """The fourth document: absent means no role routing; declared, it binds."""
+
+    from gateway.sachima_agent_role_routing_matrix import (
+        SACHIMA_ROLE_ROUTING_MATRIX_FILE_ENV,
+        RoleRoutingMatrixSource,
+    )
+
+    config = _config(tmp_path)
+    _declare_composition(monkeypatch, *_composition_files(tmp_path, config))
+    monkeypatch.delenv(SACHIMA_ROLE_ROUTING_MATRIX_FILE_ENV, raising=False)
+    assert delegate_mod.compose_delegate_coordinator().routing_matrix is None
+    delegate_mod.unbind_delegate_coordinator()
+
+    matrix = tmp_path / "composition" / "routing-matrix.yaml"
+    matrix.write_text(
+        "schema_version: 1\ndefault_agents: {}\nroutes:\n"
+        f"  - agent_id: {AGENT_ID}\n    role_id: code_review\n"
+        '    availability: Available\n    model: "routed-model[1m]"\n'
+        "    effort: high\n    fallback: null\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(SACHIMA_ROLE_ROUTING_MATRIX_FILE_ENV, str(matrix))
+    coordinator = delegate_mod.compose_delegate_coordinator()
+    assert type(coordinator.routing_matrix) is RoleRoutingMatrixSource
+    route = coordinator.routing_matrix.load().route(AGENT_ID, "code_review")
+    assert route is not None and route.model == "routed-model[1m]"
+    delegate_mod.unbind_delegate_coordinator()
+
+    # Declared but unusable fails the whole composition closed, like the
+    # three required documents do: a host that asked for role routing and
+    # cannot have it must not serve a Gateway that looks like it has one.
+    matrix.write_text("routes: [\n", encoding="utf-8")
+    with pytest.raises(delegate_mod.DelegateCompositionError):
+        delegate_mod.compose_delegate_coordinator()
+    assert delegate_mod.bound_delegate_coordinator() is None
+
+
 def test_a_disabled_arsd_config_is_a_declaration_that_composes_nothing(
     tmp_path, monkeypatch, _unbound, _offline_arsd
 ):
