@@ -206,6 +206,28 @@ def _optional_ref(value: Any) -> str | None:
     return _safe_ref(value)
 
 
+_SAFE_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+#: The role token grammar, mirrored from ``sachima_agent_role_policy`` so a
+#: sealed role is always a token and never free text.
+_SAFE_ROLE_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+
+
+def _optional_digest(value: Any) -> str | None:
+    if value is None:
+        return None
+    if type(value) is not str or _SAFE_DIGEST_RE.fullmatch(value) is None:
+        raise _invalid()
+    return value
+
+
+def _optional_role(value: Any) -> str | None:
+    if value is None:
+        return None
+    if type(value) is not str or _SAFE_ROLE_RE.fullmatch(value) is None:
+        raise _invalid()
+    return value
+
+
 def _safe_agent_id(value: Any) -> str:
     """The canonical ARS ``agent_id`` sealed into a task.
 
@@ -364,6 +386,12 @@ class DelegateTurnRecord:
     #: turns carry none. It is sealed with the Turn so a lost receipt can find
     #: the already-created Run instead of creating another one.
     operation_id: str | None = None
+    #: The ``sha256:`` digest of the routing-matrix bytes this Turn's
+    #: ``requested_model`` / ``requested_effort`` were sealed from, when a role
+    #: route was applied; ``None`` for the AGENT-wide path. Provenance only: it
+    #: is what makes "the matrix changed since" a statable fact and what the
+    #: backend re-seals a recovery against. It is never re-resolved.
+    route_source_digest: str | None = None
     accepted_at: str | None = None
     lifecycle: str = "prepared"
     cancellation: str = "none"
@@ -397,6 +425,7 @@ class DelegateTurnRecord:
         if self.admitted_role is not None:
             _safe_text(self.admitted_role, maximum=64)
         _optional_ref(self.operation_id)
+        _optional_digest(self.route_source_digest)
         _optional_text(self.accepted_at, maximum=64)
         _member(self.lifecycle, LIFECYCLE_STATES)
         _member(self.cancellation, CANCELLATION_STATES)
@@ -432,6 +461,7 @@ class DelegateTurnRecord:
             "round_title": self.round_title,
             "admitted_role": self.admitted_role,
             "operation_id": self.operation_id,
+            "route_source_digest": self.route_source_digest,
             "accepted_at": self.accepted_at,
             "lifecycle": self.lifecycle,
             "cancellation": self.cancellation,
@@ -468,6 +498,7 @@ class DelegateTurnRecord:
             round_title=document.get("round_title"),
             admitted_role=document.get("admitted_role"),
             operation_id=document.get("operation_id"),
+            route_source_digest=document.get("route_source_digest"),
             accepted_at=document.get("accepted_at"),
             lifecycle=document.get("lifecycle", "prepared"),
             cancellation=document.get("cancellation", "none"),
@@ -513,6 +544,12 @@ class DelegateTaskBinding:
     continuation_round_title: str | None = None
     continuation_stop_condition: str | None = None
     continuation_agent_id: str | None = None
+    #: The exact role the authorized next step runs under, when the
+    #: authorization named one. Absent, the continuation inherits the role its
+    #: source Turn was sealed under. It pins the (AGENT, role) *combination*;
+    #: the model/effort for that combination come from the routing matrix as
+    #: it is when the follow-up is submitted, never from a literal frozen here.
+    continuation_role: str | None = None
     continuation_disposition: str = "report_only"
     #: Host-trusted message reference that most recently paused or resumed the
     #: stored authority. It is audit evidence only; it never grants authority
@@ -546,6 +583,7 @@ class DelegateTaskBinding:
         _optional_text(self.continuation_stop_condition)
         if self.continuation_agent_id is not None:
             _safe_agent_id(self.continuation_agent_id)
+        _optional_role(self.continuation_role)
         _member(self.continuation_disposition, CONTINUATION_DISPOSITIONS)
         _optional_text(self.continuation_disposition_ref)
         required = (
@@ -580,6 +618,7 @@ class DelegateTaskBinding:
             "continuation_round_title": self.continuation_round_title,
             "continuation_stop_condition": self.continuation_stop_condition,
             "continuation_agent_id": self.continuation_agent_id,
+            "continuation_role": self.continuation_role,
             "continuation_disposition": self.continuation_disposition,
             "continuation_disposition_ref": self.continuation_disposition_ref,
         }
@@ -611,6 +650,7 @@ class DelegateTaskBinding:
             continuation_round_title=document.get("continuation_round_title"),
             continuation_stop_condition=document.get("continuation_stop_condition"),
             continuation_agent_id=document.get("continuation_agent_id"),
+            continuation_role=document.get("continuation_role"),
             continuation_disposition=document.get(
                 "continuation_disposition", "report_only"
             ),

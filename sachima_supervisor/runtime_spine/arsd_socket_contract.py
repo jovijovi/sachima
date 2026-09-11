@@ -1037,11 +1037,20 @@ def build_arsd_submit_payload(
     input_refs: Any = (),
     cwd: Any = None,
     retry_of_run_id: Any = None,
+    requested_model: Any = None,
+    requested_effort: Any = None,
 ) -> dict[str, Any]:
     """Build the exact Socket API v3 ``submit`` payload for one admitted turn.
 
     Every policy-facing value resolves through the enabled config's closed
     maps — an unknown ref fails closed; nothing is passed through verbatim.
+    The one exception is deliberate and narrow: ``requested_model`` /
+    ``requested_effort``, when given, are the literal pair a **role route**
+    sealed for this Run and replace the map values for exactly those two
+    fields. They are validated on the request's own grammar (the same rules
+    the config maps are held to), the refs still have to resolve, and
+    nothing else in the request moves — a route configures a Run, it is not
+    a permission to execute.
     The result is caller-owned wire material (prompt text and private paths
     included): it must go to :meth:`ArsdClientFacade.submit` only and never
     into events, projections, logs, or serialized state. ``retry_of_run_id``
@@ -1086,6 +1095,15 @@ def build_arsd_submit_payload(
     # is derived from it.
     agent_id = _resolve_ref(validated.agent_by_policy_ref, agent_policy_ref)
     grant = _grant_for_policy(validated, agent_policy_ref)
+    # The AGENT-wide pair always resolves — an unknown ref fails closed even
+    # when a sealed literal is about to replace its value — and a supplied
+    # literal is validated here rather than passed through.
+    model = _resolve_ref(validated.model_by_policy_ref, model_policy_ref)
+    effort = _resolve_ref(validated.effort_by_policy_ref, effort_policy_ref)
+    if requested_model is not None:
+        model = _safe_config_text(requested_model, code=RUNTIME_ARSD_INVALID_REQUEST)
+    if requested_effort is not None:
+        effort = _safe_effort_token(requested_effort, code=RUNTIME_ARSD_INVALID_REQUEST)
 
     request: dict[str, Any] = {
         "owner": validated.owner,
@@ -1093,12 +1111,8 @@ def build_arsd_submit_payload(
         "agent_id": agent_id,
         "expected_binding_hash": binding_hash,
         "input_refs": _wire_input_refs(input_refs),
-        "requested_model": _resolve_ref(
-            validated.model_by_policy_ref, model_policy_ref
-        ),
-        "requested_effort": _resolve_ref(
-            validated.effort_by_policy_ref, effort_policy_ref
-        ),
+        "requested_model": model,
+        "requested_effort": effort,
         "grant_ref": grant.grant_ref,
         "grant_hash": grant.grant_hash,
         "grant_role_hash": grant.grant_role_hash,

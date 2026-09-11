@@ -350,6 +350,7 @@ def _handle_delegate_control(args: dict, **kw) -> str:
             continuation_plan_ref = args.get("continuation_plan_ref")
             continuation_stop_condition = args.get("continuation_stop_condition")
             continuation_agent_id = args.get("continuation_agent_id")
+            continuation_role = args.get("continuation_role")
             continuation_requested = any(
                 value is not None
                 for value in (
@@ -359,6 +360,7 @@ def _handle_delegate_control(args: dict, **kw) -> str:
                     continuation_plan_ref,
                     continuation_stop_condition,
                     continuation_agent_id,
+                    continuation_role,
                 )
             )
             if (
@@ -398,6 +400,13 @@ def _handle_delegate_control(args: dict, **kw) -> str:
                                 or not continuation_agent_id
                             )
                         )
+                        or (
+                            continuation_role is not None
+                            and (
+                                type(continuation_role) is not str
+                                or not continuation_role
+                            )
+                        )
                     )
                 )
             ):
@@ -422,9 +431,11 @@ def _handle_delegate_control(args: dict, **kw) -> str:
                         task_text=task_text.strip(),
                         preset=admission.preset,
                         origin=origin,
-                        # Sealed only when the validated role policy really
-                        # assigns this role to this exact AGENT; otherwise the
-                        # task carries none and the status card says so.
+                        # A supplied role selects this AGENT's route from the
+                        # shared routing matrix and seals its exact model and
+                        # effort; a role with no Available route is refused
+                        # with the matrix's own code. Absent, the AGENT-wide
+                        # preset applies unchanged.
                         admitted_role=args.get("role"),
                         task_title=task_title,
                         round_title=round_title,
@@ -462,6 +473,9 @@ def _handle_delegate_control(args: dict, **kw) -> str:
                             continuation_agent_id
                             if continuation_requested
                             else None
+                        ),
+                        continuation_role=(
+                            continuation_role if continuation_requested else None
                         ),
                     )
                 ).as_dict()
@@ -688,9 +702,12 @@ DELEGATE_CONTROL_SCHEMA = {
                     "one eligible AGENT is returned as the selection; zero or "
                     "several come back as a stable code plus the candidates, "
                     "which is your cue to ask the user rather than pick. For "
-                    "'create' or 'continue' it is optional and records which "
-                    "role the AGENT was admitted under; a role the AGENT does "
-                    "not actually hold is not sealed and changes nothing."
+                    "'create' or 'continue' it is optional: supplied, it "
+                    "selects the AGENT's route for that role from the shared "
+                    "routing matrix and the Run is submitted under that "
+                    "route's exact model and effort; a role with no Available "
+                    "route is refused with a stable code and nothing runs. "
+                    "Omitted, the AGENT-wide preset applies."
                 ),
             },
             "division": {
@@ -749,6 +766,15 @@ DELEGATE_CONTROL_SCHEMA = {
                 "description": (
                     "Optional canonical AGENT id for the authorized next step; "
                     "eligibility is re-proven immediately before submission."
+                ),
+            },
+            "continuation_role": {
+                "type": "string",
+                "description": (
+                    "Optional exact role token for the authorized next step; "
+                    "omitted, the follow-up inherits the role this round was "
+                    "admitted under. Its model/effort are resolved from the "
+                    "routing matrix when the follow-up is submitted."
                 ),
             },
             "conclusion": {

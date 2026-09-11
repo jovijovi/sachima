@@ -4740,3 +4740,68 @@ def test_the_effort_sentinel_is_admitted_in_the_effort_field_only() -> None:
     with pytest.raises(SpineError) as view_error:
         _validate_session_view(_session_view(agent_id=EFFORT_NA))
     assert view_error.value.code == RUNTIME_ARSD_PROTOCOL_VIOLATION
+
+
+# --------------------------------------------------------------------------- #
+# Sealed per-Run literals: a role route's exact model/effort replaces the
+# AGENT-wide map value in the built request, on the request's own grammar.
+# --------------------------------------------------------------------------- #
+ROUTED_MODEL = "routed-model-5[1m]"
+ROUTED_EFFORT = "xhigh"
+
+
+def test_submit_payload_literal_overrides_replace_the_map_values_exactly() -> None:
+    baseline = _build_payload()
+    routed = _build_payload(requested_model=ROUTED_MODEL, requested_effort=ROUTED_EFFORT)
+
+    assert routed["request"]["requested_model"] == ROUTED_MODEL
+    assert routed["request"]["requested_effort"] == ROUTED_EFFORT
+    # Exactly two fields move. Workspace, agent, grant, limits, and every
+    # other field are the AGENT's: a route configures a Run, it is not a
+    # permission to execute.
+    for key, value in baseline["request"].items():
+        if key not in {"requested_model", "requested_effort"}:
+            assert routed["request"][key] == value, key
+    assert {k: v for k, v in routed.items() if k != "request"} == {
+        k: v for k, v in baseline.items() if k != "request"
+    }
+    # Each literal overrides independently; the other still resolves from
+    # its map.
+    model_only = _build_payload(requested_model=ROUTED_MODEL)
+    assert model_only["request"]["requested_model"] == ROUTED_MODEL
+    assert model_only["request"]["requested_effort"] == baseline["request"]["requested_effort"]
+    effort_only = _build_payload(requested_effort=EFFORT_NA)
+    assert effort_only["request"]["requested_model"] == baseline["request"]["requested_model"]
+    assert effort_only["request"]["requested_effort"] == EFFORT_NA
+
+
+def test_submit_payload_literal_overrides_do_not_relax_ref_resolution() -> None:
+    """An override is not a way to submit under a ref nobody approved."""
+
+    with pytest.raises(SpineError) as excinfo:
+        _build_payload(model_policy_ref="policy_unknown", requested_model=ROUTED_MODEL)
+    assert excinfo.value.code == RUNTIME_ARSD_INVALID_REQUEST
+    with pytest.raises(SpineError) as excinfo:
+        _build_payload(effort_policy_ref="policy_unknown", requested_effort=ROUTED_EFFORT)
+    assert excinfo.value.code == RUNTIME_ARSD_INVALID_REQUEST
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        pytest.param({"requested_model": ""}, id="model-empty"),
+        pytest.param({"requested_model": "a\nb"}, id="model-control-char"),
+        pytest.param({"requested_model": "m" * 513}, id="model-over-bound"),
+        pytest.param({"requested_model": 5}, id="model-not-text"),
+        pytest.param({"requested_effort": "very high"}, id="effort-space"),
+        pytest.param({"requested_effort": "n/a"}, id="effort-sentinel-case"),
+        pytest.param({"requested_effort": ""}, id="effort-empty"),
+    ],
+)
+def test_submit_payload_literal_overrides_are_validated_on_the_request_grammar(
+    overrides,
+) -> None:
+    with pytest.raises(SpineError) as excinfo:
+        _build_payload(**overrides)
+    assert excinfo.value.code == RUNTIME_ARSD_INVALID_REQUEST
+    assert excinfo.value.__cause__ is None

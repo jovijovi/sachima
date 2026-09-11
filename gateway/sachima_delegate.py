@@ -78,7 +78,18 @@ from gateway.sachima_agent_role_policy import (
     build_agent_eligibility_view,
     empty_agent_role_policy,
     load_agent_role_policy,
+    role_token,
     select_agent_by_role,
+)
+from gateway.sachima_agent_role_routing_matrix import (
+    SACHIMA_ROLE_ROUTE_MISSING,
+    SACHIMA_ROLE_ROUTE_PAUSED,
+    SACHIMA_ROLE_ROUTING_MATRIX_FILE_ENV,
+    SACHIMA_ROLE_ROUTING_MATRIX_INVALID,
+    SACHIMA_ROLE_ROUTING_MATRIX_UNCONFIGURED,
+    RoleRoutingMatrixSource,
+    configured_routing_matrix_source,
+    resolve_role_route,
 )
 from gateway.sachima_agent_execution_presets import (
     SACHIMA_AGENT_NO_PRESET,
@@ -189,6 +200,11 @@ __all__ = [
     "SACHIMA_DELEGATE_UNBOUND",
     "SACHIMA_DELEGATE_UNKNOWN_PAYLOAD_REF",
     "SACHIMA_DELEGATE_UNKNOWN_TASK",
+    "SACHIMA_ROLE_ROUTE_MISSING",
+    "SACHIMA_ROLE_ROUTE_PAUSED",
+    "SACHIMA_ROLE_ROUTING_MATRIX_FILE_ENV",
+    "SACHIMA_ROLE_ROUTING_MATRIX_INVALID",
+    "SACHIMA_ROLE_ROUTING_MATRIX_UNCONFIGURED",
     "DelegateCompositionError",
     "DelegateDelivery",
     "DelegateHermesContextClaim",
@@ -250,6 +266,13 @@ SACHIMA_DELEGATE_STABLE_CODES = frozenset(
         # continuation whose sealed AGENT has no preset any more says so with
         # the same code admission would have used.
         SACHIMA_AGENT_NO_PRESET,
+        # Owned by the role-routing matrix module, reachable from here: a
+        # role-bearing create/continue is refused with the matrix's own code
+        # before anything durable exists.
+        SACHIMA_ROLE_ROUTING_MATRIX_UNCONFIGURED,
+        SACHIMA_ROLE_ROUTING_MATRIX_INVALID,
+        SACHIMA_ROLE_ROUTE_MISSING,
+        SACHIMA_ROLE_ROUTE_PAUSED,
         SACHIMA_DELEGATE_DISPATCH_FAILED,
         SACHIMA_DELEGATE_OBSERVATION_LOST,
         SACHIMA_DELEGATE_BLOCKED,
@@ -425,6 +448,22 @@ def _new_task_id() -> str:
     return "delegate_" + uuid.uuid4().hex[:12]
 
 
+def _supplied_role(value: Any) -> str | None:
+    """The role a caller actually supplied, or ``None`` for the AGENT-wide path.
+
+    Absent, empty, and whitespace all mean "no role": that is the existing
+    non-role admission, unchanged. Anything else — a token, a near miss, or a
+    value that is not even text — is a role the matrix must route, and it is
+    never quietly dropped to make the AGENT-wide preset fit.
+    """
+
+    if value is None:
+        return None
+    if type(value) is str and not value.strip():
+        return None
+    return value
+
+
 def _utc_status_time() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
@@ -523,6 +562,7 @@ class SachimaDelegateCoordinator:
         *,
         presets: AgentExecutionPresets | None = None,
         role_policy: AgentRolePolicy | None = None,
+        routing_matrix: RoleRoutingMatrixSource | None = None,
         state: DelegateStateStore | None = None,
         delivery_factory: Callable[[DelegateOrigin], DelegateDelivery | None] | None = None,
         observe_interval: float = _DEFAULT_OBSERVE_INTERVAL_SECONDS,
@@ -540,6 +580,11 @@ class SachimaDelegateCoordinator:
         self._role_policy = (
             role_policy if role_policy is not None else empty_agent_role_policy()
         )
+        # The one shared ``(AGENT, role)`` -> model/effort authority, re-read on
+        # every role-bearing admission. ``None`` is a host that routes nothing
+        # by role: a supplied role then refuses rather than borrowing the
+        # AGENT-wide preset.
+        self._routing_matrix = routing_matrix
         self._state = (
             state
             if state is not None
@@ -611,6 +656,10 @@ class SachimaDelegateCoordinator:
     @property
     def role_policy(self) -> AgentRolePolicy:
         return self._role_policy
+
+    @property
+    def routing_matrix(self) -> RoleRoutingMatrixSource | None:
+        return self._routing_matrix
 
     @property
     def ledger(self) -> Any:
@@ -942,6 +991,7 @@ class SachimaDelegateCoordinator:
         continuation_round_title: Any = None,
         continuation_stop_condition: Any = None,
         continuation_agent_id: Any = None,
+        continuation_role: Any = None,
     ) -> DelegateOutcome:
         """Register one delegated task and drive its first turn to a disposition.
 
@@ -960,6 +1010,13 @@ class SachimaDelegateCoordinator:
         passes ``None`` rather than a clipped prompt: the card says "not
         provided" and logs the round without a caption, which is true, instead
         of showing half an instruction as if it were a sentence.
+
+        ``admitted_role`` is optional. Supplied, it selects this AGENT's route
+        from the shared routing matrix and seals that route's exact model and
+        effort into the Turn; a role with no Available route refuses with the
+        matrix's own stable code before anything durable exists. Absent, the
+        AGENT-wide preset applies unchanged. ``continuation_role`` pins the
+        role of the one authorized next step the same way.
         """
 
         return await self._create(
@@ -978,6 +1035,7 @@ class SachimaDelegateCoordinator:
             continuation_round_title=continuation_round_title,
             continuation_stop_condition=continuation_stop_condition,
             continuation_agent_id=continuation_agent_id,
+            continuation_role=continuation_role,
         )
 
     async def _create(
@@ -998,6 +1056,7 @@ class SachimaDelegateCoordinator:
         continuation_round_title: Any = None,
         continuation_stop_condition: Any = None,
         continuation_agent_id: Any = None,
+        continuation_role: Any = None,
         operation_id: str | None = None,
     ) -> DelegateOutcome:
         """The body of :meth:`create`, for an entry that is already admitted.
@@ -1021,6 +1080,7 @@ class SachimaDelegateCoordinator:
             continuation_round_title,
             continuation_stop_condition,
             continuation_agent_id,
+            continuation_role,
         )
         continuation_requested = any(value is not None for value in continuation_values)
         continuation_round = sanitize_card_line(continuation_round_title)
@@ -1055,8 +1115,24 @@ class SachimaDelegateCoordinator:
                     continuation_agent_id is not None
                     and canonical_agent_id(continuation_agent_id) is None
                 )
+                or (
+                    continuation_role is not None
+                    and role_token(continuation_role) is None
+                )
             ):
                 raise ValueError(SACHIMA_DELEGATE_INVALID_TARGET)
+
+        # A supplied role selects this AGENT's route from the shared matrix —
+        # before any durable write, so a refusal leaves no payload, Session,
+        # task, turn, or card behind. It is never quietly dropped: running a
+        # role-bearing ask under the AGENT-wide preset is exactly the silent
+        # borrow the matrix exists to end.
+        role_id = _supplied_role(admitted_role)
+        routed = None
+        if role_id is not None:
+            routed = resolve_role_route(self._routing_matrix, preset.agent_id, role_id)
+            if not routed.resolved:
+                return DelegateOutcome(diagnostic=routed.refusal)
 
         from sachima_supervisor.runtime_spine.arsd_supervisor_backend import (
             derive_arsd_backend_handle,
@@ -1064,6 +1140,10 @@ class SachimaDelegateCoordinator:
         from sachima_supervisor.runtime_spine.launch_spec import build_launch_spec
 
         requested = requested_configuration(self._config, preset)
+        if routed is not None:
+            # Exactly two values move: the AGENT, workspace, limits, grant, and
+            # every launch ref stay the preset's.
+            requested = (requested[0], routed.route.model, routed.route.effort)
         payload_ref = self._state.put_payload(task_text)
         continuation_payload_ref = None
         task_id = _new_task_id()
@@ -1107,7 +1187,12 @@ class SachimaDelegateCoordinator:
                 # Sealed with the round it opens, never rewritten by a later
                 # one and never derived from the ask beside it.
                 round_title=sanitize_card_line(round_title),
-                admitted_role=self._sealed_role(preset.agent_id, admitted_role),
+                # The role is sealed only when the matrix routed it, together
+                # with the exact matrix version the pair came from.
+                admitted_role=role_id if routed is not None else None,
+                route_source_digest=(
+                    routed.source_digest if routed is not None else None
+                ),
                 operation_id=operation_id,
             )
         )
@@ -1147,6 +1232,9 @@ class SachimaDelegateCoordinator:
                 ),
                 continuation_agent_id=(
                     continuation_agent_id if continuation_requested else None
+                ),
+                continuation_role=(
+                    continuation_role if continuation_requested else None
                 ),
                 continuation_disposition=(
                     "authorized" if continuation_requested else "report_only"
@@ -1359,7 +1447,22 @@ class SachimaDelegateCoordinator:
                 return DelegateOutcome(
                     task_ref=binding.task_ref, diagnostic=SACHIMA_AGENT_NO_PRESET
                 )
+            # A genuinely new Run resolves its own route from the matrix as it
+            # is now — refused before any durable write, never borrowed from
+            # the AGENT-wide preset or carried over from the round before.
+            role_id = _supplied_role(admitted_role)
+            routed = None
+            if role_id is not None:
+                routed = resolve_role_route(
+                    self._routing_matrix, binding.agent_id, role_id
+                )
+                if not routed.resolved:
+                    return DelegateOutcome(
+                        task_ref=binding.task_ref, diagnostic=routed.refusal
+                    )
             requested = requested_configuration(self._config, preset)
+            if routed is not None:
+                requested = (requested[0], routed.route.model, routed.route.effort)
             payload_ref = self._state.put_payload(task_text)
             turn = self._state.put_turn(
                 DelegateTurnRecord(
@@ -1382,7 +1485,10 @@ class SachimaDelegateCoordinator:
                     # inferred later from opaque result text, carried over from
                     # the round before, or clipped out of the ask above.
                     round_title=sanitize_card_line(round_title),
-                    admitted_role=self._sealed_role(binding.agent_id, admitted_role),
+                    admitted_role=role_id if routed is not None else None,
+                    route_source_digest=(
+                        routed.source_digest if routed is not None else None
+                    ),
                     operation_id=operation_id,
                 )
             )
@@ -1536,11 +1642,32 @@ class SachimaDelegateCoordinator:
         wrapped.add_done_callback(lambda done: done.cancelled() or done.exception())
         return await asyncio.shield(wrapped)
 
+    def _seal_run_request(self, turn: DelegateTurnRecord) -> None:
+        """Hand this Turn's sealed literals to the backend for its exact dispatch.
+
+        The submit must carry what the Turn record says was requested — not
+        the card, and not the matrix as it is now. A role-routed Turn seals its
+        literal pair and matrix digest; a non-role Turn clears any seal, which
+        is the AGENT-wide path unchanged. Done immediately before a dispatch
+        and again before an explicit recovery, so a restart re-seals from the
+        durable record rather than from memory.
+        """
+
+        routed = turn.route_source_digest is not None
+        self._binding.backend.seal_run_request(
+            turn.task_id,
+            turn.dispatch_ref,
+            requested_model=turn.requested_model if routed else None,
+            requested_effort=turn.requested_effort if routed else None,
+            route_source_digest=turn.route_source_digest,
+        )
+
     def _dispatch_request(self, turn: DelegateTurnRecord) -> Any:
         from sachima_supervisor.runtime_spine.agent_run_supervisor_turn_dispatcher import (
             TurnDispatchRequest,
         )
 
+        self._seal_run_request(turn)
         return self._binding.dispatcher.dispatch(
             TurnDispatchRequest(
                 task_id=turn.task_id,
@@ -1555,6 +1682,7 @@ class SachimaDelegateCoordinator:
             TurnDispatchRequest,
         )
 
+        self._seal_run_request(turn)
         return self._binding.dispatcher.recover_dispatch(
             TurnDispatchRequest(
                 task_id=turn.task_id,
@@ -3089,6 +3217,14 @@ class SachimaDelegateCoordinator:
                 return {"refusal": SACHIMA_DELEGATE_UNKNOWN_PAYLOAD_REF}
 
             target_agent = binding.continuation_agent_id or binding.agent_id
+            # The authorization pins the (AGENT, role) combination: the role it
+            # named, or else the role the source Turn was sealed under. The
+            # model/effort for that combination come from the matrix as it is
+            # now, resolved by ``continue_task`` exactly like any new Run.
+            source_turn = self._state.read_turn(event.turn_key)
+            continuation_role = binding.continuation_role or (
+                source_turn.admitted_role if source_turn is not None else None
+            )
             admission = self.admit_agent(target_agent, task_text=task_text)
             if not admission.admitted:
                 self._state.update_result(
@@ -3119,6 +3255,7 @@ class SachimaDelegateCoordinator:
             task_text,
             preset=admission.preset,
             origin=origin,
+            admitted_role=continuation_role,
             continuity=continuity,
             round_title=binding.continuation_round_title,
             operation_id=operation_id,
@@ -3557,22 +3694,6 @@ class SachimaDelegateCoordinator:
         except (DelegateStateError, DelegateCardError):
             logger.warning(SACHIMA_DELEGATE_CARD_UNAVAILABLE)
             return None
-
-    def _sealed_role(self, agent_id: str, role: Any) -> str | None:
-        """The role this AGENT actually holds, or ``None`` — never a guess.
-
-        The card's ``角色`` line is the role sealed into the admitted execution
-        contract. A role the validated policy does not assign to this exact
-        AGENT is not narrowed, aliased, or accepted "close enough": it simply is
-        not sealed, and the card says so rather than inventing one.
-        """
-
-        if type(role) is not str or not role.strip():
-            return None
-        assignment = self._role_policy.for_agent(agent_id)
-        if assignment is None or not assignment.holds(role=role, division=None):
-            return None
-        return role
 
     async def _ensure_card(
         self,
@@ -4261,6 +4382,7 @@ def bind_delegate_coordinator(
     *,
     presets: AgentExecutionPresets | None = None,
     role_policy: AgentRolePolicy | None = None,
+    routing_matrix: RoleRoutingMatrixSource | None = None,
     delivery_factory: Callable[[DelegateOrigin], DelegateDelivery | None] | None = None,
     summary_provider: DelegateResultSummaryProvider | None = None,
     completion_wakeup_enabled: bool = False,
@@ -4283,6 +4405,7 @@ def bind_delegate_coordinator(
         config,
         presets=presets,
         role_policy=role_policy,
+        routing_matrix=routing_matrix,
         delivery_factory=(
             delivery_factory if delivery_factory is not None else _delivery_factory_hook
         ),
@@ -4313,6 +4436,10 @@ SACHIMA_DELEGATE_COMPOSE_ENV = "SACHIMA_DELEGATE_COMPOSE"
 SACHIMA_DELEGATE_CONFIG_FILE_ENV = "SACHIMA_DELEGATE_CONFIG_FILE"
 SACHIMA_DELEGATE_PRESETS_FILE_ENV = "SACHIMA_DELEGATE_PRESETS_FILE"
 SACHIMA_DELEGATE_ROLE_POLICY_FILE_ENV = "SACHIMA_DELEGATE_ROLE_POLICY_FILE"
+#: The fourth, optional, document is the shared role-routing matrix. Its env
+#: key is owned by ``gateway.sachima_agent_role_routing_matrix`` and re-exported
+#: here (``SACHIMA_ROLE_ROUTING_MATRIX_FILE_ENV``) so both composition roots
+#: read exactly one name.
 
 SACHIMA_DELEGATE_COMPOSITION_INVALID = "sachima_delegate_composition_invalid"
 
@@ -4413,6 +4540,10 @@ def compose_delegate_coordinator(
     try:
         presets = load_agent_execution_presets(presets_file, config)
         role_policy = load_agent_role_policy(policy_file)
+        # Optional: undeclared means nothing routes by role and every non-role
+        # admission is unchanged; declared-but-invalid fails the composition
+        # closed on the same terms as the two documents above.
+        routing_matrix = configured_routing_matrix_source(source)
     except Exception:
         raise _composition_invalid() from None
 
@@ -4433,5 +4564,6 @@ def compose_delegate_coordinator(
         config,
         presets=presets,
         role_policy=role_policy,
+        routing_matrix=routing_matrix,
         completion_wakeup_enabled=completion_wakeup_enabled,
     )

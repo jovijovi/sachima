@@ -3037,3 +3037,333 @@ def test_a_recovery_resends_the_identical_sealed_grant(tmp_path: Path) -> None:
     assert recovered.result.supervisor_status == "accepted"
     assert facade.submitted[0] == facade.submitted[1]
     assert facade.submitted[1][1]["request"]["grant_capabilities"] == ["read", "search"]
+
+
+# --------------------------------------------------------------------------- #
+# N. Sealed per-Run request literals (role routing): submit, ledger, recovery
+#
+# A role route's exact model/effort is sealed for ONE dispatch. The submit
+# carries the literals; the ledger carries only their digests; an explicit
+# recovery must be handed the same seal back and refuses any other — before
+# the resolver runs and before any socket call.
+# --------------------------------------------------------------------------- #
+ROUTED_MODEL = "routed-model-5[1m]"
+ROUTED_EFFORT = "xhigh"
+OTHER_ROUTED_MODEL = "routed-model-6[1m]"
+ROUTE_DIGEST = "sha256:" + "7" * 64
+OTHER_ROUTE_DIGEST = "sha256:" + "8" * 64
+SEAL_KEYS = ("requested_model_digest", "requested_effort_digest", "route_source_digest")
+
+
+def _literal_digest(text: str) -> str:
+    import hashlib
+
+    return "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _seal(
+    backend,
+    *,
+    task_id: str = TASK_ID,
+    dispatch_ref: str = DISPATCH_ONE,
+    model: str = ROUTED_MODEL,
+    effort: str = ROUTED_EFFORT,
+    digest: str = ROUTE_DIGEST,
+) -> None:
+    backend.seal_run_request(
+        task_id,
+        dispatch_ref,
+        requested_model=model,
+        requested_effort=effort,
+        route_source_digest=digest,
+    )
+
+
+def _clear_seal(backend, *, task_id: str = TASK_ID, dispatch_ref: str = DISPATCH_ONE) -> None:
+    backend.seal_run_request(
+        task_id,
+        dispatch_ref,
+        requested_model=None,
+        requested_effort=None,
+        route_source_digest=None,
+    )
+
+
+def _recover(backend):
+    return backend.recover_uncertain_submission(
+        TASK_ID, DISPATCH_ONE, session_ref=SESSION_REF, turn_kind="prompt"
+    )
+
+
+def test_a_sealed_run_request_submits_its_literals_and_records_only_digests(
+    tmp_path: Path,
+) -> None:
+    backend, facade, _ = _backend(tmp_path)
+    handle = _attach(backend)
+    _seal(backend)
+    dispatched = _dispatch(backend)
+
+    _, payload = facade.submitted[0]
+    assert payload["request"]["requested_model"] == ROUTED_MODEL
+    assert payload["request"]["requested_effort"] == ROUTED_EFFORT
+    # Exactly the two fields move: workspace, agent, grant, limits stay the
+    # AGENT-wide preset's.
+    assert payload["request"]["agent_id"] == "reader-agent"
+    assert payload["request"]["grant_ref"] == "grant_reader_v1"
+    assert payload["workspace_root"] == WORKSPACE_CANARY
+
+    binding = _ledger(tmp_path).resolve(TASK_ID, handle, DISPATCH_ONE)
+    assert binding is not None and binding.state == ARSD_BINDING_ACCEPTED
+    refs = dict(binding.resolver_refs)
+    assert refs["requested_model_digest"] == _literal_digest(ROUTED_MODEL)
+    assert refs["requested_effort_digest"] == _literal_digest(ROUTED_EFFORT)
+    assert refs["route_source_digest"] == ROUTE_DIGEST
+    # The AGENT-wide refs are still recorded: the route changed two literals,
+    # not the identity the task was admitted under.
+    assert refs["model_policy_ref"] == "policy_model_a"
+    assert refs["effort_policy_ref"] == "policy_effort_a"
+
+    # No literal reaches the ledger, the handoff, or the binding's projection.
+    ledger_text = json.dumps(_ledger_document(tmp_path))
+    surfaces = (
+        ledger_text,
+        repr(dispatched.result),
+        serialize_supervisor_turn_result(dispatched.result).decode("utf-8"),
+        json.dumps(binding.as_dict()),
+        repr(binding),
+    )
+    for surface in surfaces:
+        assert ROUTED_MODEL not in surface
+        assert ROUTED_EFFORT not in surface
+
+
+def test_an_unsealed_dispatch_is_byte_for_byte_the_map_resolution(tmp_path: Path) -> None:
+    """No seal, no change: the AGENT-wide path is exactly what it was."""
+
+    from sachima_supervisor.runtime_spine.arsd_socket_contract import (
+        build_arsd_submit_payload,
+    )
+
+    backend, facade, _ = _backend(tmp_path)
+    handle = _attach(backend)
+    _dispatch(backend)
+    _, payload = facade.submitted[0]
+    expected = build_arsd_submit_payload(
+        _config(tmp_path),
+        agent_policy_ref="policy_agent",
+        model_policy_ref="policy_model_a",
+        effort_policy_ref="policy_effort_a",
+        workspace_ref="ws_main",
+        run_limits_policy_ref="policy_limits",
+        prompt_text=PROMPT_CANARY,
+    )
+    assert payload == json.loads(json.dumps(expected))
+    assert payload["request"]["requested_model"] == MODEL_A
+    refs = dict(_ledger(tmp_path).resolve(TASK_ID, handle, DISPATCH_ONE).resolver_refs)
+    assert not any(key in refs for key in SEAL_KEYS)
+
+
+def test_a_seal_binds_one_dispatch_and_never_leaks_into_the_next(tmp_path: Path) -> None:
+    backend, facade, _ = _backend(tmp_path)
+    handle = _attach(backend)
+    _seal(backend)
+    _dispatch(backend)
+    assert facade.submitted[0][1]["request"]["requested_model"] == ROUTED_MODEL
+
+    # The next Run seals nothing, so it resolves from the maps — the previous
+    # Run's route is a property of that Run, never of the task.
+    _run_ended(facade)
+    _dispatch(backend, dispatch_ref=DISPATCH_TWO)
+    second = facade.submitted[1][1]["request"]
+    assert second["requested_model"] == MODEL_A
+    assert second["requested_effort"] == EFFORT_A
+    refs = dict(_ledger(tmp_path).resolve(TASK_ID, handle, DISPATCH_TWO).resolver_refs)
+    assert not any(key in refs for key in SEAL_KEYS)
+
+    # A seal for a dispatch that is not this one does not apply to this one.
+    _run_ended(facade)
+    _seal(backend, dispatch_ref="turn_3_other", model=OTHER_ROUTED_MODEL)
+    _dispatch(backend, dispatch_ref="turn_3_ab12cd34")
+    assert facade.submitted[2][1]["request"]["requested_model"] == MODEL_A
+
+
+@pytest.mark.parametrize(
+    "seal",
+    [
+        pytest.param(dict(model=""), id="model-empty"),
+        pytest.param(dict(model="a\nb"), id="model-control-char"),
+        pytest.param(dict(model="m" * 513), id="model-over-bound"),
+        pytest.param(dict(effort="very high"), id="effort-space"),
+        pytest.param(dict(effort="n/a"), id="effort-sentinel-case"),
+        pytest.param(dict(digest="sha256:short"), id="digest-malformed"),
+        pytest.param(dict(digest=ROUTED_MODEL), id="digest-not-a-digest"),
+        pytest.param(dict(model=None), id="partial-seal-no-model"),
+        pytest.param(dict(effort=None), id="partial-seal-no-effort"),
+        pytest.param(dict(digest=None), id="partial-seal-no-digest"),
+    ],
+)
+def test_seal_literals_are_validated_on_the_request_grammar(tmp_path: Path, seal) -> None:
+    backend, facade, _ = _backend(tmp_path)
+    _attach(backend)
+    with pytest.raises(SpineError) as excinfo:
+        _seal(backend, **seal)
+    assert excinfo.value.code == RUNTIME_ARSD_INVALID_REQUEST
+    assert excinfo.value.__cause__ is None
+    # A refused seal seals nothing: the dispatch resolves from the maps.
+    _dispatch(backend)
+    assert facade.submitted[0][1]["request"]["requested_model"] == MODEL_A
+
+
+def test_the_effort_sentinel_seals_exactly(tmp_path: Path) -> None:
+    backend, facade, _ = _backend(tmp_path)
+    _attach(backend)
+    _seal(backend, effort="N/A")
+    _dispatch(backend)
+    assert facade.submitted[0][1]["request"]["requested_effort"] == "N/A"
+
+
+def test_sealing_an_unknown_task_or_a_bad_ref_fails_closed(tmp_path: Path) -> None:
+    backend, _, _ = _backend(tmp_path)
+    with pytest.raises(SpineError) as excinfo:
+        _seal(backend, task_id="task_nobody_attached")
+    assert excinfo.value.code == RUNTIME_INVALID_SESSION
+    _attach(backend)
+    with pytest.raises(SpineError) as excinfo:
+        _seal(backend, dispatch_ref="not a ref")
+    assert excinfo.value.code == RUNTIME_ARSD_INVALID_REQUEST
+
+
+def test_recovery_of_a_sealed_intent_resends_the_identical_literals(tmp_path: Path) -> None:
+    """The route literals are part of the frozen request: the resend has them."""
+
+    backend, facade, _ = _backend(tmp_path)
+    handle = _attach(backend)
+    _seal(backend)
+    _lose_the_ack(backend, facade)
+    intent = _ledger(tmp_path).resolve_pending(TASK_ID, handle, DISPATCH_ONE)
+    assert intent is not None
+    assert dict(intent.resolver_refs)["route_source_digest"] == ROUTE_DIGEST
+
+    # The coordinator hands the same sealed values back for the recovery.
+    _seal(backend)
+    recovered = _recover(backend)
+    assert recovered.result.supervisor_status == "accepted"
+    assert facade.ops("submit") == 2
+    first_id, first = facade.submitted[0]
+    second_id, second = facade.submitted[1]
+    assert second_id == first_id == intent.request_id
+    assert second == first
+    assert second["request"]["requested_model"] == ROUTED_MODEL
+    assert arsd_submit_payload_digest(second) == intent.payload_digest
+
+
+def test_recovery_refuses_a_different_or_absent_seal_with_zero_socket_calls(
+    tmp_path: Path,
+) -> None:
+    backend, facade, _ = _backend(tmp_path)
+    handle = _attach(backend)
+    _seal(backend)
+    _lose_the_ack(backend, facade)
+
+    facade.hostile = True
+    calls_before = list(facade.calls)
+
+    # A different model literal is not a recovery of this dispatch.
+    _seal(backend, model=OTHER_ROUTED_MODEL)
+    with pytest.raises(SpineError) as excinfo:
+        _recover(backend)
+    assert excinfo.value.code == RUNTIME_ARSD_BINDING_CONFLICT
+    assert facade.calls == calls_before
+
+    # Nor is the same pair under another matrix version.
+    _seal(backend, digest=OTHER_ROUTE_DIGEST)
+    with pytest.raises(SpineError) as excinfo:
+        _recover(backend)
+    assert excinfo.value.code == RUNTIME_ARSD_BINDING_CONFLICT
+    assert facade.calls == calls_before
+
+    # Nor is "no seal": recovering under the AGENT-wide maps would silently
+    # change the request a person was told was submitted.
+    _clear_seal(backend)
+    with pytest.raises(SpineError) as excinfo:
+        _recover(backend)
+    assert excinfo.value.code == RUNTIME_ARSD_BINDING_CONFLICT
+    assert facade.calls == calls_before
+    for rendered in (repr(excinfo.value), str(excinfo.value)):
+        assert OTHER_ROUTED_MODEL not in rendered and ROUTED_MODEL not in rendered
+
+    # The intent is left exactly as written; the original seal still recovers.
+    intent = _ledger(tmp_path).resolve_pending(TASK_ID, handle, DISPATCH_ONE)
+    assert intent is not None and intent.state == ARSD_BINDING_PENDING
+    facade.hostile = False
+    _seal(backend)
+    assert _recover(backend).result.supervisor_status == "accepted"
+    assert facade.submitted[0] == facade.submitted[1]
+
+
+def test_recovery_refuses_a_seal_where_the_intent_recorded_none(tmp_path: Path) -> None:
+    backend, facade, _ = _backend(tmp_path)
+    _attach(backend)
+    _lose_the_ack(backend, facade)
+
+    facade.hostile = True
+    calls_before = list(facade.calls)
+    _seal(backend)
+    with pytest.raises(SpineError) as excinfo:
+        _recover(backend)
+    assert excinfo.value.code == RUNTIME_ARSD_BINDING_CONFLICT
+    assert facade.calls == calls_before
+
+    facade.hostile = False
+    _clear_seal(backend)
+    assert _recover(backend).result.supervisor_status == "accepted"
+    assert facade.submitted[0] == facade.submitted[1]
+    assert facade.submitted[1][1]["request"]["requested_model"] == MODEL_A
+
+
+def test_a_fresh_process_recovers_a_sealed_intent_from_the_seal_not_the_maps(
+    tmp_path: Path,
+) -> None:
+    """After a restart the maps may say anything; the sealed literal governs."""
+
+    backend, facade, _ = _backend(tmp_path)
+    _attach(backend)
+    _seal(backend)
+    _lose_the_ack(backend, facade)
+    _, first = facade.submitted[0]
+
+    # The AGENT-wide model changed while the process was down.
+    fresh, fresh_facade, _ = _backend(
+        tmp_path,
+        model_by_policy_ref={"policy_model_a": "some-other-agent-wide-model", "policy_model_b": MODEL_B},
+    )
+    fresh.rehydrate_pending_intent(TASK_ID, DISPATCH_ONE)
+    _seal(fresh)
+    recovered = _recover(fresh)
+    assert recovered.result.supervisor_status == "accepted"
+    assert fresh_facade.submitted[0][1] == first
+    assert fresh_facade.submitted[0][1]["request"]["requested_model"] == ROUTED_MODEL
+
+
+def test_an_accepted_sealed_run_reattaches_and_a_later_turn_seals_its_own(
+    tmp_path: Path,
+) -> None:
+    backend, facade, _ = _backend(tmp_path)
+    handle = _attach(backend)
+    _seal(backend)
+    _dispatch(backend)
+    record = _ledger(tmp_path).resolve(TASK_ID, handle, DISPATCH_ONE)
+
+    fresh, fresh_facade, _ = _backend(tmp_path)
+    fresh_facade.run_status_payload = {"result": _terminal_result("completed")}
+    assert fresh.attach_existing(TASK_ID, binding=record) == handle
+    assert fresh_facade.ops("submit") == 0
+
+    # A later Run seals its own pair from whatever the matrix says now.
+    _seal(fresh, dispatch_ref=DISPATCH_TWO, model=OTHER_ROUTED_MODEL, digest=OTHER_ROUTE_DIGEST)
+    _dispatch(fresh, dispatch_ref=DISPATCH_TWO)
+    second = fresh_facade.submitted[0][1]["request"]
+    assert second["requested_model"] == OTHER_ROUTED_MODEL
+    assert second["session_id"] == ARS_SESSION_CANARY
+    refs = dict(_ledger(tmp_path).resolve(TASK_ID, handle, DISPATCH_TWO).resolver_refs)
+    assert refs["route_source_digest"] == OTHER_ROUTE_DIGEST

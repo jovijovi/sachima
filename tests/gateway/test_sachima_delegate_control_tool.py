@@ -2073,3 +2073,211 @@ def test_package_c_one_processing_claim_cannot_both_report_and_continue(control)
     )["result"]
     assert refused["refusal"] == "sachima_delegate_processing_mismatch"
     assert control.facade.submit_count() == submits
+
+
+# --------------------------------------------------------------------------- #
+# Role routing through the tool: the shared matrix decides the Run's exact
+# model/effort; every refusal is a stable code and nothing runs AGENT-wide.
+# --------------------------------------------------------------------------- #
+ROUTED_REVIEW_MODEL = "routed-review-model[1m]"
+CONTROL_MATRIX_YAML = f"""\
+schema_version: 1
+default_agents: {{}}
+routes:
+  - agent_id: codex
+    role_id: code_review
+    availability: Available
+    model: "{ROUTED_REVIEW_MODEL}"
+    effort: high
+    fallback: null
+  - agent_id: codex
+    role_id: architecture_design
+    availability: Paused
+    model: "paused-architecture-model"
+    effort: max
+    fallback: null
+"""
+AUTHORIZED_FOLLOW_UP = {
+    "continuation_task": "perform the already-approved review follow-up",
+    "continuation_round_title": "执行已批准的评审后续轮次",
+    "continuation_summary": "User approved one review follow-up after result review.",
+}
+
+
+def _declare_matrix(control, tmp_path, text: str = CONTROL_MATRIX_YAML):
+    from gateway.sachima_agent_role_routing_matrix import RoleRoutingMatrixSource
+
+    path = tmp_path / "routing-matrix.yaml"
+    path.write_text(text, encoding="utf-8")
+    control.coordinator._routing_matrix = RoleRoutingMatrixSource(str(path))
+    return path
+
+
+def _create_with_role(role: str | None) -> dict[str, Any]:
+    args: dict[str, Any] = {
+        "action": "create",
+        "agent_id": "codex",
+        "task": TASK_TEXT_CANARY,
+        "task_title": TASK_TITLE_CANARY,
+    }
+    if role is not None:
+        args["role"] = role
+    return _call(**args)["result"]
+
+
+def test_a_role_on_create_submits_the_matrix_route_not_the_preset(control, tmp_path):
+    _declare_matrix(control, tmp_path)
+    answer = _create_with_role("code_review")
+    assert answer["lifecycle"] == "admitted"
+    request = control.facade.submitted[0]["request"]
+    assert request["requested_model"] == ROUTED_REVIEW_MODEL
+    assert request["requested_effort"] == "high"
+    turn = control.coordinator.state.read_turn(answer["turn_key"])
+    assert turn.admitted_role == "code_review"
+    assert turn.requested_model == ROUTED_REVIEW_MODEL
+    assert turn.route_source_digest is not None
+
+
+def test_a_role_without_a_composed_matrix_is_refused_and_nothing_runs(control):
+    answer = _create_with_role("code_review")
+    assert answer["diagnostic"] == "sachima_role_routing_matrix_unconfigured"
+    assert answer["task_ref"] is None and answer["turn_key"] is None
+    assert control.facade.submit_count() == 0
+    assert _durable_counts(control.coordinator) == (0, 0)
+    assert _payload_count(control.coordinator) == 0
+
+
+def test_a_missing_or_paused_route_is_refused_and_the_non_role_path_is_untouched(
+    control, tmp_path
+):
+    _declare_matrix(control, tmp_path)
+    missing = _create_with_role("implementation")
+    assert missing["diagnostic"] == "sachima_role_route_missing"
+    paused = _create_with_role("architecture_design")
+    assert paused["diagnostic"] == "sachima_role_route_paused"
+    assert control.facade.submit_count() == 0
+    assert _durable_counts(control.coordinator) == (0, 0)
+
+    # No role: the AGENT-wide preset's own pair, exactly as before.
+    plain = _create_with_role(None)
+    assert plain["lifecycle"] == "admitted"
+    request = control.facade.submitted[0]["request"]
+    assert request["requested_model"] == "claude-opus-5"
+    assert request["requested_effort"] == "xhigh"
+    turn = control.coordinator.state.read_turn(plain["turn_key"])
+    assert turn.admitted_role is None and turn.route_source_digest is None
+
+
+def test_continuation_role_is_recorded_and_the_authorized_step_uses_the_current_matrix(
+    control, tmp_path
+):
+    """The authorization pins (AGENT, role); the model is the matrix's now."""
+
+    path = _declare_matrix(control, tmp_path)
+    task_ref, turn_key, event = _create_and_complete(
+        control, role="code_review", continuation_role="code_review", **AUTHORIZED_FOLLOW_UP
+    )
+    assert control.coordinator.state.read_task(task_ref).continuation_role == "code_review"
+
+    # The matrix moves before the authorized step is submitted.
+    path.write_text(
+        CONTROL_MATRIX_YAML.replace(ROUTED_REVIEW_MODEL, "routed-review-model-next"),
+        encoding="utf-8",
+    )
+    claim = _provider_claim(control, event)
+    receipt = _call(
+        action="continue_authorized",
+        task_ref=task_ref,
+        turn_key=turn_key,
+        event_id=event.event_id,
+        processing_id=claim.processing_id,
+    )["result"]
+    assert receipt["operation_state"] == "accepted"
+    assert control.facade.submit_count() == 2
+    assert control.facade.submitted[1]["request"]["requested_model"] == (
+        "routed-review-model-next"
+    )
+    follow_up = control.coordinator.state.read_turn(receipt["turn_key"])
+    assert follow_up.admitted_role == "code_review"
+    assert follow_up.requested_model == "routed-review-model-next"
+    # The already-admitted first Run is untouched by the edit.
+    first = control.coordinator.state.read_turn(turn_key)
+    assert first.requested_model == ROUTED_REVIEW_MODEL
+    assert first.route_source_digest != follow_up.route_source_digest
+
+
+def test_an_authorized_step_inherits_the_source_rounds_role_when_none_was_named(
+    control, tmp_path
+):
+    _declare_matrix(control, tmp_path)
+    task_ref, turn_key, event = _create_and_complete(
+        control, role="code_review", **AUTHORIZED_FOLLOW_UP
+    )
+    assert control.coordinator.state.read_task(task_ref).continuation_role is None
+    claim = _provider_claim(control, event)
+    receipt = _call(
+        action="continue_authorized",
+        task_ref=task_ref,
+        turn_key=turn_key,
+        event_id=event.event_id,
+        processing_id=claim.processing_id,
+    )["result"]
+    assert receipt["operation_state"] == "accepted"
+    follow_up = control.coordinator.state.read_turn(receipt["turn_key"])
+    assert follow_up.admitted_role == "code_review"
+    assert control.facade.submitted[1]["request"]["requested_model"] == ROUTED_REVIEW_MODEL
+
+
+def test_an_authorized_step_whose_route_was_paused_is_blocked_not_borrowed(
+    control, tmp_path
+):
+    path = _declare_matrix(control, tmp_path)
+    task_ref, turn_key, event = _create_and_complete(
+        control, role="code_review", **AUTHORIZED_FOLLOW_UP
+    )
+    path.write_text(
+        CONTROL_MATRIX_YAML.replace(
+            "role_id: code_review\n    availability: Available",
+            "role_id: code_review\n    availability: Paused",
+        ),
+        encoding="utf-8",
+    )
+    claim = _provider_claim(control, event)
+    refused = _call(
+        action="continue_authorized",
+        task_ref=task_ref,
+        turn_key=turn_key,
+        event_id=event.event_id,
+        processing_id=claim.processing_id,
+    )["result"]
+    assert refused["refusal"] == "sachima_role_route_paused"
+    assert control.facade.submit_count() == 1
+    settled = control.coordinator.state.read_result(event.event_id)
+    assert settled.business_state == "blocked"
+    assert settled.business_diagnostic == "sachima_role_route_paused"
+
+
+def test_a_malformed_continuation_role_is_invalid_input(control, tmp_path):
+    _declare_matrix(control, tmp_path)
+    answer = json.loads(
+        control_mod._handle_delegate_control(
+            {
+                "action": "create",
+                "agent_id": "codex",
+                "task": TASK_TEXT_CANARY,
+                "task_title": TASK_TITLE_CANARY,
+                "round_title": ROUND_TITLE_CANARY,
+                "continuation_role": "",
+                **AUTHORIZED_FOLLOW_UP,
+            }
+        )
+    )
+    assert answer["error"] == control_mod.SACHIMA_DELEGATE_CONTROL_INVALID
+    assert control.facade.submit_count() == 0
+
+
+def test_the_schema_names_continuation_role_and_the_matrix_meaning_of_role():
+    properties = control_mod.DELEGATE_CONTROL_SCHEMA["parameters"]["properties"]
+    assert "continuation_role" in properties
+    assert "routing matrix" in properties["role"]["description"]
+    assert "routing matrix" in properties["continuation_role"]["description"]

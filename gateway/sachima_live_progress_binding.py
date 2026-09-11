@@ -425,6 +425,21 @@ def _agent_role_policy() -> Any:
     return empty_agent_role_policy()
 
 
+def _role_routing_matrix() -> Any:
+    """This composition's shared AGENT/role routing matrix source, or ``None``.
+
+    The same single env key the delegation composition root reads. Undeclared
+    means nothing routes by role; a declared file that does not validate fails
+    the binding closed, on the same terms as the presets and the role policy.
+    """
+
+    from gateway.sachima_agent_role_routing_matrix import (
+        configured_routing_matrix_source,
+    )
+
+    return configured_routing_matrix_source()
+
+
 def _load_binding_entries(bindings_file: str) -> list[dict[str, Any]]:
     """Read and shape-check the private bindings file; raise on any deviation.
 
@@ -625,6 +640,7 @@ def _bind_arsd_backend(
                 config,
                 presets=_agent_execution_presets(config),
                 role_policy=_agent_role_policy(),
+                routing_matrix=_role_routing_matrix(),
             )
         else:
             bundle = execution_binding
