@@ -69,6 +69,9 @@ class TurnContext:
     # latch it (``gateway.run._DelegateResultHandoff``); the settling caller
     # is the one that created it, never this context.
     delegate_handoff: Any = None
+    # The stable Session/continuity/adapter-event triple of this in-band turn chain
+    # (``gateway.run._DelegateClaimContext``); queued follow-ups claim fresh results against it.
+    delegate_claim_context: Any = None
     # This turn's own ``ProviderDispatchLease``, constructed by
     # ``_run_agent_inner`` beside the timeout machinery before the worker is
     # scheduled. ``TurnRunner`` hands exactly this object to

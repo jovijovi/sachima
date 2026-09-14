@@ -318,14 +318,16 @@ class GatewayNotificationsMixin:
         metadata: Optional[Dict[str, Any]] = None, event_message_id: Optional[str] = None,
         text_already_delivered: bool = False, deliver_media: bool = True, stream_consumer=None,
         session_key: Optional[str] = None, inbound_message_id: Optional[str] = None,
-    ) -> None:
-        """Deliver a queued response using the normal text+attachment split.
+    ) -> bool:
+        """Deliver a queued response using the normal text+attachment split; returns confirmed
+        text delivery (Sachima delegation settles the intermediate queued-turn receipt on it).
 
         ``session_key`` lets the text send record a delivery-ledger obligation like the normal final
         send does, keyed on ``inbound_message_id`` (the raw inbound id, distinct from the
         ``event_message_id`` reply anchor); see ``_send_queued_final_text``. Without a key the send
         stays unledgered."""
         from gateway.run import _strip_response_attachments_for_direct_send
+        text_delivered = bool(text_already_delivered)
         if not text_already_delivered:
             text_content = _strip_response_attachments_for_direct_send(response, adapter)
             if text_content:
@@ -344,6 +346,7 @@ class GatewayNotificationsMixin:
                         )
                         if getattr(_edit_res, "success", False):
                             _reconciled = True
+                            text_delivered = True
                             logger.info(
                                 "Queued-lane final reconciled by editing message %s in place (no duplicate send).",
                                 _sc_msg_id,
@@ -360,21 +363,23 @@ class GatewayNotificationsMixin:
                                     "connector's egress guard; not falling back "
                                     "to a send (the destination is not approved)."
                                 )
-                                return
+                                return False
                     except Exception as _qe:
                         logger.debug("Queued-lane reconcile edit failed (%s); falling back to send.", _qe)
                 if not _reconciled:
-                    await self._send_queued_final_text(
+                    send_result = await self._send_queued_final_text(
                         adapter, source, text_content, metadata, event_message_id, session_key,
                         inbound_message_id)
+                    text_delivered = bool(getattr(send_result, "success", False))
         # Failed turns deliver their (normalized failure) text but must not upload attachments as if
         # they succeeded — mirrors the ``not agent_result.get("failed")`` completed-turn guard.
         if not deliver_media:
-            return
+            return text_delivered
         await self._deliver_media_from_response(
             response, MessageEvent(text="", source=source, message_id=event_message_id), adapter,
             thread_metadata=metadata,
         )
+        return text_delivered
 
     async def _send_queued_final_text(
         self, adapter, source: SessionSource, text_content: str, metadata: Optional[Dict[str, Any]],
@@ -1068,9 +1073,23 @@ class GatewayNotificationsMixin:
             parent_session_id = str(evt.get("parent_session_id") or "").strip()
             if parent_session_id:
                 metadata["gateway_session_id"] = parent_session_id
+            # Sachima native delegation: exact result identities and the one-shot business receipt
+            # ride the synthetic event; the discarded text grants nothing by itself.
+            for key in (
+                "gateway_session_key", "gateway_session_strict", "sachima_delegate_claim_id",
+                "sachima_delegate_event_ids", "sachima_delegate_task_refs", "sachima_delegate_turn_keys",
+                "sachima_delegate_continuation_refs",
+            ):
+                if key in evt:
+                    metadata[key] = evt[key]
+            outcome_callback = evt.get("_gateway_processing_outcome_callback")
+            if callable(outcome_callback):
+                metadata["_gateway_processing_outcome_callback"] = outcome_callback
             synth_event = MessageEvent(
                 text=synth_text, message_type=MessageType.TEXT, source=source, internal=True,
                 message_id=str(evt.get("message_id") or "").strip() or None, metadata=metadata,
+                allow_gateway_control=bool(evt.get("allow_gateway_control", True)),
+                message_id_is_reply_anchor=(evt.get("message_id_is_reply_anchor", True) is True),
             )
             logger.info(
                 "Watch pattern notification — injecting for %s chat=%s thread=%s",
@@ -1175,6 +1194,61 @@ class GatewayNotificationsMixin:
         if tip is None or tip.get("ended_at"):
             return "retry"
         return "deliver"
+
+    def _complete_sachima_delegate_processing(self, event: MessageEvent, outcome: Any) -> None:
+        """Settle an explicit report against this synthetic turn's real send (Sachima delegation)."""
+
+        dispatcher = getattr(self, "_sachima_delegate_wakeup", None)
+        event_ids = (event.metadata or {}).get("sachima_delegate_event_ids", ())
+        if dispatcher is None or not isinstance(event_ids, (list, tuple)):
+            return
+        exact_ids = tuple(item for item in event_ids if isinstance(item, str) and item)
+        if not exact_ids:
+            return
+        dispatcher.complete_report_delivery(
+            exact_ids,
+            delivered=(
+                getattr(outcome, "value", outcome) == "success"
+                and event.metadata.get("_gateway_model_turn_completed") is True
+            ),
+        )
+
+    async def _deliver_sachima_delegate_wakeup(self, batch: Any) -> str:
+        """Inject one claimed native-delegation batch into its logical Session.
+
+        Session continuity and adapter ingress remain owned by the same
+        completion path used for other internal events. Adapter acceptance is
+        only a queue/delivery fact; the coordinator records provider arrival
+        and business settlement separately.
+        """
+
+        from gateway.sachima_delegate_wakeup import (
+            WAKEUP_DELIVERY_ACCEPTED,
+            WAKEUP_DELIVERY_BLOCKED,
+            WAKEUP_DELIVERY_RETRY,
+            WAKEUP_DELIVERY_SUPERSEDED,
+        )
+
+        evt = batch.as_gateway_event()
+        evt["sachima_delegate_claim_id"] = batch.claim_id
+        evt["sachima_delegate_event_ids"] = list(batch.event_ids)
+        evt["sachima_delegate_task_refs"] = list(batch.task_refs)
+        evt["sachima_delegate_turn_keys"] = list(batch.turn_keys)
+        evt["_gateway_processing_outcome_callback"] = self._complete_sachima_delegate_processing
+        parent_session_id = str(evt.get("parent_session_id") or "").strip()
+        if not parent_session_id:
+            return WAKEUP_DELIVERY_BLOCKED
+        verdict = await self._classify_completion_target(parent_session_id)
+        if verdict == "terminal":
+            return WAKEUP_DELIVERY_SUPERSEDED
+        if verdict == "retry":
+            return WAKEUP_DELIVERY_RETRY
+        injected = await self._inject_watch_notification(batch.message_text(), evt)
+        if injected is True:
+            return WAKEUP_DELIVERY_ACCEPTED
+        if injected is False:
+            return WAKEUP_DELIVERY_RETRY
+        return WAKEUP_DELIVERY_BLOCKED
 
     @staticmethod
     def _settle_durable_claim(kind: str, delegation_id: str, claim_id: str) -> None:

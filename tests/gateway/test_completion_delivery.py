@@ -170,7 +170,9 @@ def test_concurrent_claims_share_the_same_narrow_delivery_seam():
 def test_package_c_existing_completion_channel_gets_no_sachima_business_callback():
     """The new receipt is source-specific; old completion events stay unchanged."""
 
-    adapter = SimpleNamespace(handle_message=AsyncMock())
+    # Upstream admission (gateway.wake.admit_internal_event) requires the adapter's production
+    # receipt (``event._gateway_accepted``), which AdmittingHandler issues like a real transport.
+    adapter = SimpleNamespace(handle_message=AdmittingHandler())
     runner = _runner(adapter)
 
     delivered = asyncio.run(
