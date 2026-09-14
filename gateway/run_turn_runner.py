@@ -1177,8 +1177,10 @@ class TurnRunner:
         ctx = self._ctx
         runner = self._runner
         # TODO lifecycle identity is turn-scoped even though the generic tool/process task_id
-        # remains session-scoped for compatibility (Sachima TODO lifecycle).
-        agent._todo_transaction_id = ctx.task_transaction_id
+        # remains session-scoped for compatibility (Sachima TODO lifecycle). Both Sachima fields
+        # are always present on a real TurnContext; getattr keeps narrow upstream test doubles
+        # (plain namespaces without the Sachima fields) wiring exactly as before.
+        agent._todo_transaction_id = getattr(ctx, "task_transaction_id", None)
         # ALWAYS attached (never gated to None): its body gates each event class, and subagent-
         # failure notices must fire even with tool_progress/thinking off.
         agent.tool_progress_callback = ctx.progress_callback
@@ -1187,8 +1189,9 @@ class TurnRunner:
         # previous turn would let that turn's claim be confirmed by a turn that was never handed
         # it. Set here, at the one point the create and reuse branches have converged, so a fresh
         # and a reused agent carry exactly the same claim (Sachima delegation).
+        delegate_handoff = getattr(ctx, "delegate_handoff", None)
         agent.provider_attempt_callback = (
-            ctx.delegate_handoff.mark_provider_attempt if ctx.delegate_handoff is not None else None
+            delegate_handoff.mark_provider_attempt if delegate_handoff is not None else None
         )
         # Discord's one-time voice ack and Slack's task cards both ride the authoritative start
         # callback, so neither infers identity from tool names.

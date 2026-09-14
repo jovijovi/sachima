@@ -45,6 +45,9 @@ _HA_TOOLS = ["ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_se
 _FEISHU_TOOLS = [
     "feishu_doc_read", "feishu_drive_list_comments", "feishu_drive_list_comment_replies",
     "feishu_drive_reply_comment", "feishu_drive_add_comment",
+    # Sachima: the Feishu bundle carries the PR approval card so the `feishu_drive` toolset
+    # (which lists it) is still inferred as enabled from the `hermes-feishu` composite.
+    "github_pr_approval_card",
 ]
 _YUANBAO_TOOLS = ["yb_query_group_info", "yb_query_group_members", "yb_send_dm", "yb_search_sticker", "yb_send_sticker"]
 
@@ -161,7 +164,7 @@ TOOLSETS = {
     "feishu_doc": _ts("Read Feishu/Lark document content", ["feishu_doc_read"]),
     "feishu_drive": _ts(
         "Feishu/Lark document comment operations (list, reply, add)",
-        _FEISHU_TOOLS[1:] + ["github_pr_approval_card"],
+        _FEISHU_TOOLS[1:],
     ),
     "spotify": _ts(
         "Native Spotify playback, search, playlist, album, and library tools",
