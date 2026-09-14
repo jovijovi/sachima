@@ -23,6 +23,8 @@ class GeminiCLIACPClient(CopilotACPClient):
 
     product_name = "Gemini CLI ACP"
     default_model_name = "gemini-cli"
+    # The model rides the CLI argv (``--model``, see _process_args); no post-session selection.
+    _uses_session_model_selection = False
 
     def __init__(
         self,
