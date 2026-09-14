@@ -782,6 +782,16 @@ def _init_bedrock_client(agent, base_url):
         print(f"🤖 AI Agent initialized with model: {agent.model} (AWS Bedrock, {agent._bedrock_region}{_gr_label})")
 
 
+def _provider_declares_process_command(provider) -> bool:
+    """True when ``provider`` resolves to a profile that launches an external process (ACP)."""
+    try:
+        from providers import get_provider_profile
+        profile = get_provider_profile(str(provider or ""))
+    except Exception:
+        return False
+    return bool(profile is not None and getattr(profile, "process_command", ""))
+
+
 def _explicit_client_kwargs(agent, api_key, base_url, _provider_timeout) -> Dict[str, Any]:
     """OpenAI-client kwargs from explicit CLI/gateway credentials (auth already resolved)."""
     _parsed_url = urlparse(base_url)
@@ -792,8 +802,11 @@ def _explicit_client_kwargs(agent, api_key, base_url, _provider_timeout) -> Dict
     if _provider_timeout is not None:
         client_kwargs["timeout"] = _provider_timeout
     # Every ACP-backed external-process provider (copilot-acp, google-gemini-cli, out-of-tree
-    # profiles) launches a subprocess; key on the marker scheme, not one provider name.
-    if str(base_url or "").lower().startswith(("acp://", "acp+tcp://")):
+    # profiles) launches a subprocess and consumes the launch command through its profile's
+    # ``create_client()``. Key on the provider's declared ``process_command``, never on the
+    # ``acp://`` URL scheme alone: a plain provider pointed at an ``acp://`` URL still builds the
+    # ordinary OpenAI client, which rejects ``command``/``args``.
+    if agent.provider == "copilot-acp" or _provider_declares_process_command(agent.provider):
         client_kwargs["command"] = agent.acp_command
         client_kwargs["args"] = agent.acp_args
     # OpenCode Zen free tier is served ANONYMOUSLY and 401s any bearer (incl. our keyless
