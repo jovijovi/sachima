@@ -268,8 +268,10 @@ def test_model_picker_lists_available_official_cli(
             "provider": provider,
         },
     )
+    # Upstream 0.21.2 hosts the credential-pool probe in model_switch_providers (list_authenticated_providers
+    # moved there too; hermes_cli.model_switch re-exports it).
     monkeypatch.setattr(
-        "hermes_cli.model_switch._credential_pool_is_usable",
+        "hermes_cli.model_switch_providers._credential_pool_is_usable",
         lambda *_args, **_kwargs: False,
     )
     monkeypatch.setattr("hermes_cli.auth._load_auth_store", lambda: {})

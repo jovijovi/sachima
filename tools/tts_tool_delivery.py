@@ -49,6 +49,7 @@ PROVIDER_MAX_TEXT_LENGTH: Dict[str, int] = {
     "openai": 4096,       # https://platform.openai.com/docs/guides/text-to-speech
     "xai": 15000,         # https://docs.x.ai/developers/model-capabilities/audio/text-to-speech
     "minimax": 10000,     # https://platform.minimax.io/docs/api-reference/speech-t2a-http (sync)
+    "minimax-cn": 10000,  # legacy name mapped to the unified MiniMax region model
     "mistral": 4000,      # conservative; no published per-request cap
     "gemini": 32000,      # 32k-token context window; char cap is conservative
     "elevenlabs": 10000,  # fallback when model-aware lookup can't resolve (multilingual_v2)
