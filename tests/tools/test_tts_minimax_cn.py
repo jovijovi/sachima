@@ -13,9 +13,10 @@ from tools import tts_tool
 @pytest.fixture
 def minimax_env(monkeypatch):
     values: dict[str, str] = {}
+    # Production reads credentials/GroupId through hermes_cli.config.get_env_value (late import
+    # at the call site), so patch the defining module rather than a tts_tool re-export.
     monkeypatch.setattr(
-        tts_tool,
-        "get_env_value",
+        "hermes_cli.config.get_env_value",
         lambda name, default=None: values.get(name, default),
     )
     return values
