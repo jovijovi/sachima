@@ -63,8 +63,8 @@ from hermes_cli.commands import (
     gateway_help_lines,
     resolve_command,
     should_bypass_active_session,
-    telegram_bot_commands,
 )
+from hermes_cli.commands_platforms import telegram_bot_commands
 from sachima_supervisor.runtime_spine.agent_run_supervisor_execution_binding import (
     bind_arsd_execution,
 )
