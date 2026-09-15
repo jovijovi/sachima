@@ -98,8 +98,8 @@ class GatewayConfigLoadersMixin:
     @staticmethod
     def _load_progress_model_config_display() -> tuple[str | None, str | None]:
         """Load configured model suffixes displayed by the Sachima task workbench."""
-        from gateway.run import _load_gateway_runtime_config
-        cfg = _load_gateway_runtime_config()
+        from gateway.run import _load_gateway_config
+        cfg = _load_gateway_config()
         reasoning_effort = str(cfg_get(cfg, "agent", "reasoning_effort", default="") or "").strip()
         service_tier = str(cfg_get(cfg, "agent", "service_tier", default="") or "").strip()
         return reasoning_effort or None, service_tier or None
