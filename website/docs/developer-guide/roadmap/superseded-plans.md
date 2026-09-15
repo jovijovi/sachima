@@ -8,10 +8,10 @@ Superseded does **not** mean discarded. The old work is not wasted. Delivered co
 
 Use these documents for current planning authority:
 
-1. `docs/architecture/private-hermes-runtime-spine-design.md`
-2. `docs/architecture/private-hermes-runtime-spine-architecture.svg`
-3. `docs/plans/2026-07-03-sachima-private-hermes-runtime-spine-development-plan.md`
-4. `docs/roadmap/current-status.md`
+1. `website/docs/developer-guide/architecture/private-hermes-runtime-spine-design.md`
+2. `website/docs/developer-guide/architecture/private-hermes-runtime-spine-architecture.svg`
+3. `website/docs/developer-guide/plans/2026-07-03-sachima-private-hermes-runtime-spine-development-plan.md`
+4. `website/docs/developer-guide/roadmap/current-status.md`
 5. `docs/roadmap/boundary-register.md`
 
 Historical docs remain discoverable through `docs/roadmap/reference-index.md`, but they must not override the authority list above.

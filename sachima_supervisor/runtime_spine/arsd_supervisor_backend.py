@@ -1,7 +1,7 @@
 """P4 default-off ``arsd`` backend: submit, observe, cancel, terminal truth.
 
 This module is the ARS 0.7.6 Socket API v3 integration plan's P4 slice
-(``docs/plans/2026-08-17-ars-0.7.6-socket-api-v3-integration-plan.md`` §10): the
+(``website/docs/developer-guide/plans/2026-08-17-ars-0.7.6-socket-api-v3-integration-plan.md`` §10): the
 behavioral core that consumes P1's offline contract, P2's durable binding
 ledger, and P3's neutral turn seam. It submits once, observes honestly, cancels
 precisely, and never fabricates an outcome.

@@ -20,10 +20,10 @@
 
 Authority order for runtime-spine work:
 
-1. `docs/architecture/private-hermes-runtime-spine-design.md`
-2. `docs/architecture/private-hermes-runtime-spine-architecture.svg`
-3. This plan: `docs/plans/2026-07-03-sachima-private-hermes-runtime-spine-development-plan.md`
-4. `docs/roadmap/current-status.md`
+1. `website/docs/developer-guide/architecture/private-hermes-runtime-spine-design.md`
+2. `website/docs/developer-guide/architecture/private-hermes-runtime-spine-architecture.svg`
+3. This plan: `website/docs/developer-guide/plans/2026-07-03-sachima-private-hermes-runtime-spine-development-plan.md`
+4. `website/docs/developer-guide/roadmap/current-status.md`
 5. `docs/roadmap/boundary-register.md`
 
 If this plan and the architecture docs disagree, the architecture docs win and this plan must be corrected.
@@ -40,7 +40,7 @@ old delivered work    = retained support foundation
 new active roadmap    = Private Hermes Runtime Spine R0-R5
 ```
 
-See `docs/roadmap/superseded-plans.md` for the register.
+See `website/docs/developer-guide/roadmap/superseded-plans.md` for the register.
 
 ## 3. Phase map
 
@@ -62,8 +62,8 @@ Runtime-spine source implementation is **not started and not approved** by this 
 **Allowed scope:**
 
 - Create this plan.
-- Create `docs/roadmap/superseded-plans.md`.
-- Update `GOAL.md`, `docs/architecture/README.md`, `docs/roadmap/current-status.md`, `docs/roadmap/reference-index.md`, `docs/roadmap/boundary-register.md`, and `docs/roadmap/README.md`.
+- Create `website/docs/developer-guide/roadmap/superseded-plans.md`.
+- Update `GOAL.md`, `docs/architecture/README.md`, `website/docs/developer-guide/roadmap/current-status.md`, `docs/roadmap/reference-index.md`, `docs/roadmap/boundary-register.md`, and `docs/roadmap/README.md`.
 
 **Explicit non-approvals:**
 

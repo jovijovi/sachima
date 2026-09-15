@@ -1,7 +1,7 @@
 """ARS 0.7.6 P3 — neutral validated turn backend contract acceptance tests.
 
 Focused RED/GREEN tests for the P3 slice of the ARS 0.7.6 Socket API v3
-integration plan (``docs/plans/2026-08-17-ars-0.7.6-socket-api-v3-integration-plan.md``
+integration plan (``website/docs/developer-guide/plans/2026-08-17-ars-0.7.6-socket-api-v3-integration-plan.md``
 §9): one Sachima-owned neutral turn seam replaces both concrete-type couplings,
 and the library-private ``turn_dir`` leaves the tree provably (review closure
 R-3).

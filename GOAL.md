@@ -68,16 +68,16 @@ P0 = one task_id spine + static Capability Registry + typed LaunchSpec + Executi
 Deferred = B→D live promotion, agent-death respawn resume, heavy Admission/Delivery/FlowWeaver, and live/default-on behavior.
 ```
 
-The architecture guide and SVG live in `docs/architecture/private-hermes-runtime-spine-design.md` and `docs/architecture/private-hermes-runtime-spine-architecture.svg`. The active development roadmap is `docs/plans/2026-07-03-sachima-private-hermes-runtime-spine-development-plan.md`; old phase plans are superseded as active roadmap and retained as support foundation in `docs/roadmap/superseded-plans.md`. Implementation, real delivery, production config, Gateway lifecycle, Temporal Worker/service startup, and write-capable AGENT roles still require separate named approvals.
+The architecture guide and SVG live in `website/docs/developer-guide/architecture/private-hermes-runtime-spine-design.md` and `website/docs/developer-guide/architecture/private-hermes-runtime-spine-architecture.svg`. The active development roadmap is `website/docs/developer-guide/plans/2026-07-03-sachima-private-hermes-runtime-spine-development-plan.md`; old phase plans are superseded as active roadmap and retained as support foundation in `website/docs/developer-guide/roadmap/superseded-plans.md`. Implementation, real delivery, production config, Gateway lifecycle, Temporal Worker/service startup, and write-capable AGENT roles still require separate named approvals.
 
 ## Planning basis
 
 Use these documents as the canonical project compass:
 
 - `GOAL.md` — this project goal and boundary summary.
-- `docs/architecture/private-hermes-runtime-spine-design.md` — highest architecture guidance for the current private-Hermes runtime spine.
-- `docs/architecture/private-hermes-runtime-spine-architecture.svg` — architecture diagram for the same runtime-spine design.
-- `docs/plans/2026-07-03-sachima-private-hermes-runtime-spine-development-plan.md` — active R0-R5 development roadmap for the runtime spine.
-- `docs/roadmap/superseded-plans.md` — register of old plans superseded as active roadmap but retained as support foundation.
-- `docs/sachima-final-goal-gap-analysis.md` — detailed gap analysis and phase-planning basis.
-- `docs/sachima-channel.md` — current Sachima adapter/channel behavior.
+- `website/docs/developer-guide/architecture/private-hermes-runtime-spine-design.md` — highest architecture guidance for the current private-Hermes runtime spine.
+- `website/docs/developer-guide/architecture/private-hermes-runtime-spine-architecture.svg` — architecture diagram for the same runtime-spine design.
+- `website/docs/developer-guide/plans/2026-07-03-sachima-private-hermes-runtime-spine-development-plan.md` — active R0-R5 development roadmap for the runtime spine.
+- `website/docs/developer-guide/roadmap/superseded-plans.md` — register of old plans superseded as active roadmap but retained as support foundation.
+- `website/docs/developer-guide/sachima-final-goal-gap-analysis.md` — detailed gap analysis and phase-planning basis.
+- `website/docs/developer-guide/sachima-channel.md` — current Sachima adapter/channel behavior.

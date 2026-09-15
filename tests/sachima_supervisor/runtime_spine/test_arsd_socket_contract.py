@@ -1,7 +1,7 @@
 """P1 offline Socket API v3 contract tests for the arsd adapter boundary.
 
 Covers the ARS 0.7.6 Socket API v3 integration plan P1 slice
-(``docs/plans/2026-08-17-ars-0.7.6-socket-api-v3-integration-plan.md``): the
+(``website/docs/developer-guide/plans/2026-08-17-ars-0.7.6-socket-api-v3-integration-plan.md``): the
 default-off :class:`ArsdSupervisorConfig`, the injected
 :class:`ArsdClientFacade` boundary with its lazy short-lived production
 facade, stable request identity, exact request construction, the exact

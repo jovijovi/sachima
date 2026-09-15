@@ -1,7 +1,7 @@
 """P2 durable private Run/Session binding ledger tests.
 
 Covers the ARS 0.7.6 Socket API v3 integration plan P2 slice
-(``docs/plans/2026-08-17-ars-0.7.6-socket-api-v3-integration-plan.md`` §8):
+(``website/docs/developer-guide/plans/2026-08-17-ars-0.7.6-socket-api-v3-integration-plan.md`` §8):
 the two-state ``pending`` -> ``accepted`` binding record, its atomic
 fail-closed durable file, the full ``(task_id, session_id, dispatch_ref)``
 key contract, and the no-leak boundary over both record states.

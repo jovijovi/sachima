@@ -1,7 +1,7 @@
 """P2 durable private Run/Session binding ledger for the ``arsd`` adapter.
 
 This module is the ARS 0.7.6 Socket API v3 integration plan's P2 slice
-(``docs/plans/2026-08-17-ars-0.7.6-socket-api-v3-integration-plan.md`` §8):
+(``website/docs/developer-guide/plans/2026-08-17-ars-0.7.6-socket-api-v3-integration-plan.md`` §8):
 the restart-safe ``(task_id, session_id, dispatch_ref)`` ->
 ``(run_id, ars_session_id)`` binding a submit backend will later (P4) depend
 on. It stores identity and nothing else. It opens no socket, imports no
