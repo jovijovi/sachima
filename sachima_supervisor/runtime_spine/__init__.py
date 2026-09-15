@@ -10,7 +10,7 @@ subprocess, socket, Docker, daemon, Temporal service/Worker/client, Gateway,
 Feishu, or network call, launches no OS process or agent (acpx/npx), and wires no
 supervisor execution port (that is R2). Forbidden terms appear only as no-leak
 denylist canaries, never as behavior. See
-``docs/architecture/private-hermes-runtime-spine-design.md``.
+``website/docs/developer-guide/architecture/private-hermes-runtime-spine-design.md``.
 """
 
 from __future__ import annotations

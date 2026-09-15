@@ -2,7 +2,7 @@
 
 Focused RED/GREEN acceptance tests for the P4 slice of the ARS 0.7.6 Socket
 API v3 integration plan
-(``docs/plans/2026-08-17-ars-0.7.6-socket-api-v3-integration-plan.md`` §10).
+(``website/docs/developer-guide/plans/2026-08-17-ars-0.7.6-socket-api-v3-integration-plan.md`` §10).
 
 What is proven here:
 

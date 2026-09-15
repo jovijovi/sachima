@@ -1,7 +1,7 @@
 """P3 neutral, validated supervisor turn backend contract.
 
 This module is the ARS 0.7.6 Socket API v3 integration plan's P3 slice
-(``docs/plans/2026-08-17-ars-0.7.6-socket-api-v3-integration-plan.md`` §9): one
+(``website/docs/developer-guide/plans/2026-08-17-ars-0.7.6-socket-api-v3-integration-plan.md`` §9): one
 Sachima-owned turn contract that replaces both concrete-backend couplings — the
 turn dispatcher's and the execution binding's — and that structurally cannot
 carry a library- or daemon-private turn directory.

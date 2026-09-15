@@ -111,7 +111,7 @@ class _Recorder:
         self.ensured: list[str] = []
         self.setup_calls: list[object] = []
 
-    def stamp_install_method(self, method, project_root=None):
+    def stamp_install_method(self, method):
         self.stamped.append(method)
 
     def ensure_dependency(self, dep, interactive=True):
@@ -128,7 +128,7 @@ class _Recorder:
 def _run(recorder, args=None):
     """Run the handler with every external effect replaced by ``recorder``."""
     args = args if args is not None else argparse.Namespace(command="postinstall")
-    with patch("hermes_cli.config.stamp_install_method", recorder.stamp_install_method), \
+    with patch("hermes_cli.postinstall_cmd._stamp_install_method", recorder.stamp_install_method), \
          patch("hermes_cli.dep_ensure.ensure_dependency", recorder.ensure_dependency), \
          patch("hermes_cli.main._has_any_provider_configured", recorder.has_any_provider_configured), \
          patch("hermes_cli.main.cmd_setup", recorder.cmd_setup):
@@ -146,6 +146,27 @@ class TestPostinstallBehaviour:
         capsys.readouterr()
 
         assert recorder.stamped == ["pip"]
+
+    def test_stamp_writer_records_the_method_in_the_install_tree(self, tmp_path):
+        """The real writer lands the marker where ``detect_install_method`` looks."""
+        from hermes_cli.postinstall_cmd import _stamp_install_method
+
+        install_tree = tmp_path / "install-tree"
+        with patch("hermes_cli.config.get_project_root", lambda: install_tree):
+            _stamp_install_method("pip")
+
+        assert (install_tree / ".install_method").read_text(encoding="utf-8") == "pip\n"
+
+    def test_stamp_writer_tolerates_a_read_only_install_tree(self, tmp_path):
+        """An immutable image must not turn the bootstrap into a crash."""
+        from hermes_cli.postinstall_cmd import _stamp_install_method
+
+        blocked = tmp_path / "not-a-directory"
+        blocked.write_text("file, not a tree", encoding="utf-8")
+        with patch("hermes_cli.config.get_project_root", lambda: blocked):
+            _stamp_install_method("pip")  # OSError swallowed: no exception, no marker
+
+        assert blocked.read_text(encoding="utf-8") == "file, not a tree"
 
     def test_ensures_every_non_python_dependency_in_order(self, capsys):
         recorder = _Recorder(provider_configured=True)

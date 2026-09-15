@@ -1136,7 +1136,7 @@ def test_package_c_config_yaml_is_authoritative_and_default_remains_false(
 ):
     from gateway.config import load_gateway_config
     from hermes_cli.config_defaults import DEFAULT_CONFIG
-    from hermes_cli.web_server import CONFIG_SCHEMA
+    from hermes_cli.web_server_config import CONFIG_SCHEMA
 
     assert (
         DEFAULT_CONFIG["sachima"]["delegation"]["completion_wakeup"]["enabled"] is False

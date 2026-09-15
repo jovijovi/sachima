@@ -2,7 +2,7 @@
 
 Focused RED/GREEN acceptance tests for the P5 slice of the ARS 0.7.6 Socket
 API v3 integration plan
-(``docs/plans/2026-08-17-ars-0.7.6-socket-api-v3-integration-plan.md`` §11).
+(``website/docs/developer-guide/plans/2026-08-17-ars-0.7.6-socket-api-v3-integration-plan.md`` §11).
 This file is the former ``library``-mode binding suite, re-anchored on the
 retirement: the seam it used to prove is gone, and what it proves now is that
 selecting it fails closed.

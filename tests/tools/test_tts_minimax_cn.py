@@ -8,14 +8,16 @@ from unittest.mock import MagicMock
 import pytest
 
 from tools import tts_tool
+from tools.tts_tool_providers import DEFAULT_MINIMAX_CN_BASE_URL
 
 
 @pytest.fixture
 def minimax_env(monkeypatch):
     values: dict[str, str] = {}
+    # Production reads credentials/GroupId through hermes_cli.config.get_env_value (late import
+    # at the call site), so patch the defining module rather than a tts_tool re-export.
     monkeypatch.setattr(
-        tts_tool,
-        "get_env_value",
+        "hermes_cli.config.get_env_value",
         lambda name, default=None: values.get(name, default),
     )
     return values
@@ -34,7 +36,7 @@ def test_legacy_provider_selects_cn_region_and_key(minimax_env):
     )
 
     assert runtime.region == "cn"
-    assert runtime.endpoint == tts_tool.DEFAULT_MINIMAX_CN_BASE_URL
+    assert runtime.endpoint == DEFAULT_MINIMAX_CN_BASE_URL
     assert runtime.credential_source == "MINIMAX_CN_API_KEY"
     assert runtime.api_key == "cn-key"
 
@@ -98,7 +100,7 @@ def test_legacy_config_drives_request_and_uses_only_cn_group_id(
     )
 
     assert output.read_bytes() == b"audio"
-    assert str(captured["url"]).startswith(tts_tool.DEFAULT_MINIMAX_CN_BASE_URL)
+    assert str(captured["url"]).startswith(DEFAULT_MINIMAX_CN_BASE_URL)
     assert "GroupId=cn-group" in str(captured["url"])
     assert "global-group" not in str(captured["url"])
     assert captured["headers"]["Authorization"] == "Bearer cn-key"

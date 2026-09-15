@@ -1,7 +1,7 @@
 """P1 offline Socket API v3 contract boundary for the external ``arsd`` daemon.
 
 This module is the ARS 0.7.6 Socket API v3 integration plan's P1 slice
-(``docs/plans/2026-08-17-ars-0.7.6-socket-api-v3-integration-plan.md``): the
+(``website/docs/developer-guide/plans/2026-08-17-ars-0.7.6-socket-api-v3-integration-plan.md``): the
 pure, offline contract foundation Sachima will later (P2+) compose into a
 Runtime Spine backend. It contains the default-off
 :class:`ArsdSupervisorConfig`, the injected :class:`ArsdClientFacade` boundary
