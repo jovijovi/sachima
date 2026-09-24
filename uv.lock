@@ -133,11 +133,11 @@ wheels = [
 
 [[package]]
 name = "agent-run-supervisor"
-version = "0.7.8"
+version = "0.7.9"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/fc/76/f4500f8e92f297fdb7f93a8a1838a3041cd6e245c63dcc6b734119964036/agent_run_supervisor-0.7.8.tar.gz", hash = "sha256:6099c28cd7edd30d24da4113dd179d5bd9e1f9725eccaf6ef808a752f0c136d9", size = 288728, upload-time = "2026-08-22T05:41:10.316Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/b3/42/f4e39ab543f8b742a9c57a8e55ff527d8226b0b69e394c23dcbf9c6502cc/agent_run_supervisor-0.7.9.tar.gz", hash = "sha256:bf34a65ef97211b6539053b290158a80482fc6933dd74cdf980ac555eec055b0", size = 293160, upload-time = "2026-09-24T09:08:34.729Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/42/ac/a1da12d7a0a7770ef2f0601cedf15bb05f41b02ec98370f5fd88fc8ffcfa/agent_run_supervisor-0.7.8-py3-none-any.whl", hash = "sha256:5b02460acfb78f0ac359ed90f20d827946a7c5ae475010e6e1ffce239e1caf2e", size = 242571, upload-time = "2026-08-22T05:41:08.873Z" },
+    { url = "https://files.pythonhosted.org/packages/d5/c3/2e5d55f15165e71c0d724482eb1c7484eb18522570bd67e1465a21feacf0/agent_run_supervisor-0.7.9-py3-none-any.whl", hash = "sha256:e3179b07b69de1965a4e8d495c837423cbb3a4b9ed739aa1ad1b31b6de36be49", size = 246678, upload-time = "2026-09-24T09:08:33.11Z" },
 ]
 
 [[package]]
@@ -1998,8 +1998,8 @@ youtube = [
 [package.metadata]
 requires-dist = [
     { name = "agent-client-protocol", marker = "extra == 'acp'", specifier = "==0.9.0" },
-    { name = "agent-run-supervisor", marker = "extra == 'agent-run-supervisor'", specifier = "==0.7.8" },
-    { name = "agent-run-supervisor", marker = "extra == 'dev'", specifier = "==0.7.8" },
+    { name = "agent-run-supervisor", marker = "extra == 'agent-run-supervisor'", specifier = "==0.7.9" },
+    { name = "agent-run-supervisor", marker = "extra == 'dev'", specifier = "==0.7.9" },
     { name = "ai-edge-litert", marker = "sys_platform == 'darwin' and extra == 'wake'", specifier = "==2.1.6" },
     { name = "aiohttp", marker = "extra == 'homeassistant'", specifier = "==3.14.3" },
     { name = "aiohttp", marker = "extra == 'matrix'", specifier = "==3.14.3" },

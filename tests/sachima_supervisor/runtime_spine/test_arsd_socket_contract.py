@@ -1522,7 +1522,7 @@ V2_LIMITS = {key: value for key, value in V3_LIMITS.items()
 
 def _server_info_payload(**overrides):
     payload = {
-        "version": "0.7.8",
+        "version": "0.7.9",
         "api_version": 3,
         "supported_api_versions": [3],
         "operations": list(V3_OPERATIONS),
@@ -1548,9 +1548,9 @@ def _limits_override(**changes):
     return {"limits": limits}
 
 
-def test_server_info_negotiation_accepts_the_exact_078_v3_shape() -> None:
+def test_server_info_negotiation_accepts_the_exact_079_v3_shape() -> None:
     info = _validate_server_info(_server_info_payload())
-    assert info.version == "0.7.8"
+    assert info.version == "0.7.9"
     assert info.api_version == 3
     assert info.supported_api_versions == (3,)
     assert info.operations == tuple(V3_OPERATIONS)
@@ -1701,6 +1701,7 @@ def test_server_info_out_of_range_event_budget_is_a_mismatch(bad_budget) -> None
         {"version": "0.6.3"},
         {"version": "0.7.5"},
         {"version": "0.7.7"},
+        {"version": "0.7.8"},
         {"api_version": 2},
         {"api_version": 4},
         {"supported_api_versions": [2, 3]},
@@ -3409,7 +3410,7 @@ def test_v3_negotiation_roundtrip_over_the_wire(fake_arsd_server) -> None:
     info = _validate_server_info(
         facade.server_info(), config=_make_config(enabled=True)
     )
-    assert info.version == "0.7.8"
+    assert info.version == "0.7.9"
     assert server.received[0]["op"] == "server_info"
     assert server.received[0]["api_version"] == 3
     assert server.received[0]["payload"] == {}
