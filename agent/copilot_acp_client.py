@@ -422,9 +422,9 @@ class CopilotACPClient:
     ) -> Iterator[tuple[dict[str, Any], Callable[..., Any]]]:
         """Start one ACP process and yield its ``session/new`` result plus request callable.
 
-        ``model`` reaches ``_spawn`` for subclasses whose CLI takes the model on argv (Gemini CLI
-        ``--model``); Copilot's own ``_process_args`` ignores it and selects the model after session/new."""
-        proc = self._spawn(model)
+        ``model`` reaches ``_spawn`` only for subclasses whose CLI takes the model on argv (Gemini CLI
+        ``--model``); Copilot selects the model after session/new, so its spawn takes no model."""
+        proc = self._spawn() if self._uses_session_model_selection else self._spawn(model)
         inbox: queue.Queue[dict[str, Any]] = queue.Queue()
         stderr_tail: deque[str] = deque(maxlen=40)
 
