@@ -1,9 +1,9 @@
 # Sachima Project Goal
 
-## Hermes v2026.8.31 source-baseline reconciliation
+## Hermes v2026.9.24 source-baseline reconciliation
 
 This tree is the upstream-structure-first merge candidate based on Hermes
-Agent `v2026.8.31`. It preserves the private Runtime Spine and native semantic
+Agent `v2026.9.24` (0.21.5). It preserves the private Runtime Spine and native semantic
 delegation while adapting product capability at upstream extension seams:
 platform plugins, provider plugins, the existing tool registry, and the
 dashboard API. The candidate does not itself imply a deployment, runtime

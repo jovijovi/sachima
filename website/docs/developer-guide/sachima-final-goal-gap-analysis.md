@@ -2,8 +2,8 @@
 
 > **Historical measurement note (2026-09-06):** The percentages and phase-gap
 > estimates below are retained as the planning snapshot that informed the
-> Runtime Spine. They are not a measurement of the Hermes Agent `v2026.8.31`
-> merge candidate. Use `website/docs/developer-guide/roadmap/current-status.md` for current source and
+> Runtime Spine. They are not a measurement of the Hermes Agent `v2026.9.24`
+> (0.21.5) merge candidate. Use `website/docs/developer-guide/roadmap/current-status.md` for current source and
 > approval boundaries.
 
 ## Purpose
