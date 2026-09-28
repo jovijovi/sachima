@@ -4648,6 +4648,29 @@ class GatewayRunner(
             return None
         return getattr(adapter, name)
 
+    def _delegate_origin_adapter(self, origin, platform):
+        """The bot that answers a durable delegate origin.
+
+        The origin's persisted Session names its receiving bot: it is restored through
+        ``_restored_source`` and answered by ``_delivery_adapter_for``, exactly like any other
+        revived Session (fails closed to ``None`` when that bot is offline). An origin whose
+        Session is not in this host's store resolves by its key namespace — never by platform
+        alone, which under multiplexing is only the default profile's bot.
+        """
+
+        session_key = str(getattr(origin, "session_key", "") or "")
+        store = getattr(self, "session_store", None)
+        if session_key and store is not None:
+            try:
+                store._ensure_loaded()
+                entry = store._entries.get(session_key)
+            except Exception:
+                entry = None
+            if entry is not None and getattr(entry, "origin", None) is not None:
+                return self._delivery_adapter_for(self._restored_source(entry))
+        profile = (_parse_session_key(session_key) or {}).get("profile")
+        return self._adapters_for_profile(profile).get(platform)
+
     def _delegate_delivery_from_origin(self, origin):
         """Rebuild a delegate delivery capability from a durable origin.
 
@@ -4661,7 +4684,7 @@ class GatewayRunner(
             from gateway.sachima_delegate import DelegateDelivery
 
             platform = Platform(origin.platform)
-            adapter = self.adapters.get(platform)
+            adapter = self._delegate_origin_adapter(origin, platform)
             if adapter is None:
                 return None
             metadata = {}

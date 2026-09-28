@@ -443,7 +443,7 @@ async def _normalize_feishu_message(message_id: str):
     adapter.config = PlatformConfig()
     adapter.platform = Platform.FEISHU
     adapter._extract_message_content = AsyncMock(
-        return_value=("authorize delegated work", MessageType.TEXT, [], [], [])
+        return_value=("authorize delegated work", MessageType.TEXT, [], [], [], [])
     )
     adapter.get_chat_info = AsyncMock(
         return_value={"name": "Authorization Test", "chat_type": "p2p"}
