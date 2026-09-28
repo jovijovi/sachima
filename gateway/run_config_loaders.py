@@ -98,6 +98,15 @@ class GatewayConfigLoadersMixin:
             return prompt
         return resolve_ephemeral_system_prompt_from_config(_load_gateway_config())
 
+    @staticmethod
+    def _load_progress_model_config_display() -> tuple[str | None, str | None]:
+        """Load configured model suffixes displayed by the Sachima task workbench."""
+        from gateway.run import _load_gateway_config
+        cfg = _load_gateway_config()
+        reasoning_effort = str(cfg_get(cfg, "agent", "reasoning_effort", default="") or "").strip()
+        service_tier = str(cfg_get(cfg, "agent", "service_tier", default="") or "").strip()
+        return reasoning_effort or None, service_tier or None
+
     def _channel_override(self, platform: Platform, chat_id: str, thread_id, parent_id):
         """``channel_overrides`` entry for this channel/thread, or None (also when no config is bound)."""
         from gateway.run import _get_channel_override

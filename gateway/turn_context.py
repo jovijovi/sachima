@@ -27,6 +27,13 @@ class TurnContext:
     tool_progress_enabled: bool = False
     progress_queue: Any = None
     log_queue: Any = None
+    # Optional task-workbench projection. The transaction/runtime are shared
+    # across recursive queued-follow-up frames so one logical task keeps one
+    # card identity and one terminal flush owner.
+    task_workbench: Any = None
+    progress_transaction: Optional[dict] = None
+    progress_transaction_owner: bool = True
+    task_transaction_id: Optional[str] = None
     # mutable single-element containers (shared with the outer body)
     last_progress_msg: list = field(default_factory=lambda: [None])
     last_tool: list = field(default_factory=lambda: [None])
@@ -60,6 +67,20 @@ class TurnContext:
     # "internal_notification" for async-delegation/background notifications (#82888).
     persist_user_display_kind: Optional[str] = None
     persist_user_display_metadata: Optional[dict] = None
+    # This turn's claim over the delegate results folded into its message, or
+    # None. Carried down to the agent binding so the provider boundary can
+    # latch it (``gateway.run._DelegateResultHandoff``); the settling caller
+    # is the one that created it, never this context.
+    delegate_handoff: Any = None
+    # The stable Session/continuity/adapter-event triple of this in-band turn chain
+    # (``gateway.run._DelegateClaimContext``); queued follow-ups claim fresh results against it.
+    delegate_claim_context: Any = None
+    # This turn's own ``ProviderDispatchLease``, constructed by
+    # ``_run_agent_inner`` beside the timeout machinery before the worker is
+    # scheduled. ``TurnRunner`` hands exactly this object to
+    # ``run_conversation`` and both reaper paths fence exactly this object;
+    # nothing reads a lease off the cached agent.
+    dispatch_lease: Any = None
     user_config: Any = None
     mute_notification_reply: bool = False
     enabled_toolsets: Any = None

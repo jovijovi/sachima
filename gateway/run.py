@@ -2209,7 +2209,7 @@ from gateway.platforms.base import (
     _reply_anchor_for_event,
     _terminal_sentinel_start,
 )
-from gateway.platforms.event import MessageEvent, MessageType
+from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.restart import (
     DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT,
     DEFAULT_GATEWAY_RESTART_AFTER_TURN_TIMEOUT,
@@ -2703,12 +2703,27 @@ def _dump_wedged_turn_stacks(task_id: str) -> None:
 
 def _abandon_timed_out_gateway_turn(
     *, agent_holder, task_id: str, process_baseline, worker_done: threading.Event,
-    timeout_fired: threading.Event, cleanup_lock: threading.Lock,
+    timeout_fired: threading.Event, cleanup_lock: threading.Lock, dispatch_lease=None,
     is_still_current: Optional[Callable[[], bool]] = None) -> bool:
-    """Interrupt one timed-out turn and reap only processes it created."""
+    """Interrupt one timed-out turn and reap only processes it created.
+
+    ``dispatch_lease`` is the turn's own ``ProviderDispatchLease``, constructed by
+    ``_run_agent_inner`` before the worker was scheduled and handed here explicitly. It is the
+    only lease this reaper ever fences: the shared cached agent may already carry a successor
+    turn's lease, and reading one off the agent would cancel a live turn instead of the
+    abandoned one. The fence closes *before* the timeout is published (inside ``cleanup_lock``,
+    ahead of the flag) — publication is what releases settlement and lets the next turn rebind
+    the cached agent, so a worker that has not yet bound this lease binds it already dead."""
     with cleanup_lock:
         if worker_done.is_set() or timeout_fired.is_set():
             return False
+        if dispatch_lease is not None:
+            # A worker parked just short of its provider call has not observed the interrupt yet;
+            # without this it could still wake and confirm a claim for a turn already settled.
+            try:
+                dispatch_lease.cancel()
+            except Exception:
+                logger.debug("Timed-out turn dispatch lease cancel failed", exc_info=True)
         timeout_fired.set()
 
     # BEFORE interrupting: the interrupt frees the blocked frame, destroying the only evidence.
@@ -2733,8 +2748,8 @@ def _abandon_timed_out_gateway_turn(
 
 def _watch_gateway_turn_inactivity(
     *, agent_holder, task_id: str, process_baseline, timeout: float, worker_done: threading.Event,
-    timeout_fired: threading.Event, cleanup_lock: threading.Lock, poll_interval: float = 5.0,
-    is_still_current: Optional[Callable[[], bool]] = None) -> None:
+    timeout_fired: threading.Event, cleanup_lock: threading.Lock, dispatch_lease=None,
+    poll_interval: float = 5.0, is_still_current: Optional[Callable[[], bool]] = None) -> None:
     """Thread watchdog that remains runnable when gateway asyncio is starved.
 
     Until an agent publishes a usable activity snapshot, elapsed worker time is the
@@ -2761,7 +2776,7 @@ def _watch_gateway_turn_inactivity(
         _abandon_timed_out_gateway_turn(
             agent_holder=agent_holder, task_id=task_id, process_baseline=process_baseline,
             worker_done=worker_done, timeout_fired=timeout_fired, cleanup_lock=cleanup_lock,
-            is_still_current=is_still_current)
+            dispatch_lease=dispatch_lease, is_still_current=is_still_current)
         return
 
 
@@ -3311,6 +3326,106 @@ def _reconnect_needs_attention(info: dict, now: float) -> bool:
 _SESSION_DB_UNPINNED = object()
 
 
+def _copy_agent_todo_progress(progress_tracker: Any, agent_obj: Any) -> None:
+    """Project structured TodoStore state into a progress snapshot (Sachima Task Workbench)."""
+
+    from gateway.progress.runtime import copy_agent_todo_progress
+
+    copy_agent_todo_progress(progress_tracker, agent_obj)
+
+
+@dataclasses.dataclass(frozen=True)
+class _DelegateClaimContext:
+    """Stable Session and adapter event shared by one in-band turn chain (Sachima delegation)."""
+
+    session_id: str
+    continuity: Any
+    processing_event: MessageEvent
+
+
+class _DelegateResultHandoff:
+    """One turn's claim over the delegate results it was handed (Sachima delegation).
+
+    The gateway takes a finished delegate result out of ``pending`` before the
+    turn runs, which leaves exactly one question to answer afterwards: did this
+    turn actually get the result in front of a model, or must it go back so the
+    next turn can have it?
+
+    The result shape cannot answer it. ``agent/conversation_loop.py`` increments
+    ``api_calls`` before the iteration budget is admitted, so a turn that never
+    spoke to a provider still reports ``api_calls == 1``; and an attempt that
+    *did* reach the provider and was then interrupted returns a zero-call
+    follow-up. Only a signal raised at the provider boundary itself can tell
+    those apart, so that is the signal this carries — monotonically, because a
+    turn that once reached the model cannot later un-reach it.
+
+    Both edges are one-way and both are safe to race. ``mark_provider_attempt``
+    is fired from agent worker threads, possibly several at once on a retry;
+    ``take_for_settlement`` is what makes exactly one caller responsible for
+    settling, so a claim is never settled twice.
+
+    ``session_id`` is the Session the claim was made against, captured at claim
+    time: compression can rotate the live entry's id mid-turn, and settling
+    against the rotated one would strand the consumed result ``in_flight``.
+    """
+
+    __slots__ = (
+        "session_id",
+        "processing_id",
+        "event_ids",
+        "_on_provider_attempt",
+        "_consumed",
+        "_settled",
+        "_lock",
+    )
+
+    def __init__(
+        self,
+        session_id: str,
+        *,
+        processing_id: str | None = None,
+        event_ids: tuple[str, ...] = (),
+        on_provider_attempt: Optional[Any] = None,
+    ) -> None:
+        self.session_id = session_id
+        self.processing_id = processing_id
+        self.event_ids = event_ids
+        self._on_provider_attempt = on_provider_attempt
+        self._consumed = False
+        self._settled = False
+        self._lock = threading.Lock()
+
+    @property
+    def consumed(self) -> bool:
+        """Has an attempt carrying this claim reached the provider boundary?"""
+        with self._lock:
+            return self._consumed
+
+    def mark_provider_attempt(self) -> None:
+        """Latch "this turn reached a model". Idempotent, thread-safe."""
+        first = False
+        with self._lock:
+            if not self._consumed:
+                self._consumed = True
+                first = True
+        if first and self._on_provider_attempt is not None:
+            try:
+                self._on_provider_attempt()
+            except Exception:
+                logger.debug(
+                    "delegate provider-boundary persistence failed",
+                    exc_info=True,
+                )
+
+    def take_for_settlement(self) -> bool:
+        """True for the one caller that owns settling this claim."""
+        with self._lock:
+            if self._settled:
+                return False
+            self._settled = True
+            return True
+
+
 # Only explicit suspension can replace a routed conversation.
 _AUTO_RESET_CONTEXT_NOTES = {
     "suspended": "[System note: The user's previous session was stopped and suspended. This is a fresh conversation with no prior context.]",
@@ -3774,6 +3889,195 @@ class GatewayRunner(
         self._scale_to_zero_cooldown_until: float = 0.0
         self._scale_to_zero_no_suspend_logged: bool = False
         self._scale_to_zero_direct_platform_logged: bool = False
+
+        # Sachima delegate host bindings (default-off in effect: with no
+        # coordinator bound and the control tool's env gate unset, both of
+        # these are inert).  Register the adapter-backed delivery factory here,
+        # BEFORE anything composes, so a coordinator restored at startup can
+        # settle the sends its durable records still owe — composition reads
+        # env only, while delivery needs the adapter registry, which is why the
+        # two are separate.  The control tool resolves a caller's Session from
+        # trusted gateway context, and its key->id fallback needs this host's
+        # own store.  Guarded so an import failure cannot touch startup.
+        self._sachima_delegate_wakeup = None
+        try:
+            from gateway.sachima_delegate import set_delegate_delivery_factory
+            from tools.sachima_delegate_control_tool import (
+                bind_delegate_control_session_store,
+            )
+
+            set_delegate_delivery_factory(self._delegate_delivery_from_origin)
+            bind_delegate_control_session_store(self.session_store)
+        except Exception:
+            logger.debug("sachima delegate host binding skipped", exc_info=True)
+
+    async def _close_sachima_delegate_wakeup(self) -> None:
+        dispatcher = getattr(self, "_sachima_delegate_wakeup", None)
+        self._sachima_delegate_wakeup = None
+        if dispatcher is None:
+            return
+        try:
+            await dispatcher.close()
+        except Exception:
+            logger.debug("Sachima delegate wake bridge close skipped", exc_info=True)
+
+    async def _start_sachima_delegate_host(self) -> None:
+        """Compose/restore the Sachima delegate coordinator on this long-lived Gateway loop.
+
+        Called from ``start()`` (gateway/run_startup.py) once adapters are wired. Delegate
+        restoration is a real startup barrier, not lazy work left for the first unrelated slash
+        command or model tool. Bind the coordinator to this loop before restoring so every observer
+        armed by restoration or a later sync tool remains runnable. Default off: a host that did not
+        declare it composes nothing, and an optional composition failure can never crash Gateway
+        startup — but a graph that did not finish restoration must admit no new work.
+        """
+        _delegate_coordinator = None
+        try:
+            from gateway.sachima_delegate import (
+                bound_delegate_coordinator,
+                compose_delegate_coordinator,
+            )
+            from gateway.sachima_live_progress_binding import (
+                bind_live_progress_display_from_env,
+                gateway_live_progress_source_bindings,
+            )
+
+            # A fresh runner has nothing bound yet, so restoring alone would leave resident delegation
+            # permanently unavailable in production. Compose first — default off, a no-op for every host
+            # that did not declare it — then restore whatever is now bound. Only what this runner composed
+            # is remembered as its own; a coordinator bound from outside is borrowed, and shutdown must
+            # leave it exactly as it found it.
+            borrowed_before = bound_delegate_coordinator()
+            self._owned_delegate_coordinator = compose_delegate_coordinator(
+                bindings=gateway_live_progress_source_bindings()
+            )
+
+            _delegate_coordinator = bound_delegate_coordinator()
+            bind_live_progress_display_from_env(
+                execution_binding=(
+                    _delegate_coordinator.binding if _delegate_coordinator is not None else None
+                )
+            )
+            rebound_coordinator = bound_delegate_coordinator()
+            if (
+                self._owned_delegate_coordinator is None
+                and borrowed_before is None
+                and rebound_coordinator is not None
+            ):
+                # Live-progress-only ARSD composition created the resident graph. This runner owns it
+                # just as surely as one created by the delegation composition root.
+                self._owned_delegate_coordinator = rebound_coordinator
+            _delegate_coordinator = rebound_coordinator
+            if _delegate_coordinator is not None:
+                from gateway.sachima_delegate_wakeup import SachimaDelegateWakeupDispatcher
+
+                _delegate_coordinator._configure_completion_wakeup(
+                    self.config.sachima_completion_wakeup_enabled
+                )
+                self._sachima_delegate_wakeup = SachimaDelegateWakeupDispatcher(
+                    _delegate_coordinator,
+                    deliver=self._deliver_sachima_delegate_wakeup,
+                    enabled=self.config.sachima_completion_wakeup_enabled,
+                )
+                _delegate_coordinator._set_completion_wakeup_notifier(
+                    self._sachima_delegate_wakeup.notify
+                )
+                _delegate_coordinator.bind_lifecycle_loop(asyncio.get_running_loop())
+                await _delegate_coordinator.restore()
+                await self._sachima_delegate_wakeup.recover()
+        except Exception:
+            # Restoration arms owned work as it goes, so a failure partway through can leave observers
+            # and owner tasks already running. Retire what this runner composed (close fences admission,
+            # then cancels and awaits its owned work) and clear the host bindings it registered; a
+            # borrowed graph is only unbound so a half-restored one admits no new work.
+            logger.warning("Sachima delegate startup restoration failed")
+            try:
+                await self._close_sachima_delegate_wakeup()
+                if getattr(self, "_owned_delegate_coordinator", None) is not None:
+                    await self._retire_owned_delegate_coordinator()
+                else:
+                    from gateway.sachima_delegate import unbind_delegate_coordinator
+
+                    try:
+                        from gateway.sachima_live_progress_binding import (
+                            release_live_progress_execution_binding,
+                        )
+
+                        if _delegate_coordinator is not None:
+                            release_live_progress_execution_binding(_delegate_coordinator.binding)
+                    except Exception:
+                        logger.debug("Sachima live-progress startup cleanup skipped", exc_info=True)
+
+                    unbind_delegate_coordinator()
+            except Exception:
+                logger.debug("Sachima delegate startup cleanup incomplete", exc_info=True)
+
+    async def _retire_owned_delegate_coordinator(self) -> bool:
+        """Retire the coordinator this runner composed, if it still owns one.
+
+        Returns True when something was retired. Shutdown must be able to run
+        twice and on a runner that never composed anything, so every branch
+        here is a no-op rather than an error.
+
+        Ownership is the whole condition. A coordinator bound from outside
+        this runner — an embedding application, a test that composed its own
+        graph — is borrowed: retiring it would tear down a bundle whose
+        lifetime this runner does not control. Even a coordinator this runner
+        *did* compose is left alone once something else has rebound the
+        global, because unbinding then would drop the newer owner's graph.
+        """
+
+        owned = getattr(self, "_owned_delegate_coordinator", None)
+        if owned is None:
+            return False
+        self._owned_delegate_coordinator = None
+        try:
+            from gateway.sachima_delegate import (
+                bound_delegate_coordinator,
+                set_delegate_delivery_factory,
+                unbind_delegate_coordinator,
+            )
+
+            # Retire the graph first: its observers must stop polling before
+            # the transport and delivery they poll through are taken away.
+            await owned.close()
+
+            try:
+                from gateway.sachima_live_progress_binding import (
+                    release_live_progress_execution_binding,
+                )
+
+                release_live_progress_execution_binding(owned.binding)
+            except Exception:
+                logger.debug(
+                    "Sachima live-progress execution unbind skipped", exc_info=True
+                )
+
+            if bound_delegate_coordinator() is not owned:
+                # Someone rebound the global after we composed. Ours is
+                # retired; theirs is not ours to unbind.
+                return True
+
+            unbind_delegate_coordinator()
+            # Drop the host hooks this runner registered, so a later start in
+            # the same process cannot deliver through a dead runner's adapters
+            # or resolve sessions from its closed store.
+            set_delegate_delivery_factory(None)
+            try:
+                from tools.sachima_delegate_control_tool import (
+                    bind_delegate_control_session_store,
+                )
+
+                bind_delegate_control_session_store(None)
+            except Exception:
+                logger.debug(
+                    "delegate control session store unbind skipped", exc_info=True
+                )
+        except Exception:
+            logger.warning(
+                "Sachima delegate coordinator retirement failed", exc_info=True
+            )
+        return True
 
     def _open_session_db_for_active_scope(self, raise_on_error: bool = False) -> Any:
         """AsyncSessionDB for the active profile scope, resolved per access (not in ``__init__``) since
@@ -4285,9 +4589,13 @@ class GatewayRunner(
             scope_id=str(getattr(context.source, "scope_id", "") or ""),
             parent_chat_id=str(getattr(context.source, "parent_chat_id", "") or ""),
             session_key=context.session_key,
+            # Both halves of the caller's Session identity, not just the key: a key outlives ``/new``,
+            # reset and a compression split, so it cannot name the Session this turn is actually on.
+            session_id=context.session_id,
             message_id=str(context.source.message_id) if context.source.message_id else "",
             profile=getattr(context.source, "profile", "") or "",
             async_delivery=_async_delivery,
+            input_internal=getattr(context, "input_internal", False),
             cron_session="")
 
     def _clear_session_env(self, tokens: list) -> None:
@@ -4305,6 +4613,381 @@ class GatewayRunner(
             yield
         finally:
             self._clear_session_env(tokens)
+
+    # ------------------------------------------------------------------
+    # Sachima native delegation: delivery capability, result claim/settle
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _is_telegram_private_chat_id(chat_id: Optional[str]) -> bool:
+        """Return True for a Telegram private chat's durable numeric chat id.
+
+        Telegram private chats carry a positive user id; groups, supergroups
+        and channels are negative.  Mirrors the adapter's own test so a durable
+        origin can be classified without persisting a chat type.
+        """
+        try:
+            return int(str(chat_id)) > 0
+        except (TypeError, ValueError):
+            return False
+
+    @staticmethod
+    def _overridden_adapter_capability(adapter, name: str):
+        """The adapter's own bound ``name``, or ``None`` if it only inherits it.
+
+        ``BasePlatformAdapter`` declares its optional surfaces as refusals
+        rather than omitting them, so ``hasattr`` answers "the method exists",
+        not "this platform supports it".  Resolving on the adapter's class and
+        rejecting the base declaration turns that back into a capability
+        question, without asking any adapter to declare a new flag.
+        """
+        own = getattr(type(adapter), name, None)
+        if not callable(own):
+            return None
+        if own is getattr(BasePlatformAdapter, name, None):
+            return None
+        return getattr(adapter, name)
+
+    def _delegate_delivery_from_origin(self, origin):
+        """Rebuild a delegate delivery capability from a durable origin.
+
+        Used by restoration and by the observer's terminal delivery, where the
+        original event is long gone: only the origin survived. Returns ``None``
+        when the platform has no live adapter, and the coordinator records the
+        delivery as failed rather than claiming it happened.
+        """
+
+        try:
+            from gateway.sachima_delegate import DelegateDelivery
+
+            platform = Platform(origin.platform)
+            adapter = self.adapters.get(platform)
+            if adapter is None:
+                return None
+            metadata = {}
+            if origin.thread_id:
+                metadata["thread_id"] = origin.thread_id
+            if origin.reply_anchor:
+                metadata["reply_to_message_id"] = origin.reply_anchor
+
+            # A Telegram private chat reads the anchor in shapes of its own,
+            # and the generic key is not one of them: an ordinary DM needs the
+            # explicit ``reply_to`` argument, and a durable private topic needs
+            # DM-topic metadata — without a recognized anchor that path refuses
+            # to send at all rather than land the result outside the topic it
+            # was asked for.  A positive numeric chat id is what makes a
+            # Telegram chat private, so nothing new is persisted for this.
+            # Every other platform keeps the generic metadata it already had
+            # and gains no new argument.
+            reply_to = None
+            if platform == Platform.TELEGRAM and self._is_telegram_private_chat_id(
+                origin.chat_id
+            ):
+                reply_to = origin.reply_anchor
+                if origin.thread_id:
+                    topic_metadata = self._thread_metadata_for_target(
+                        platform,
+                        origin.chat_id,
+                        origin.thread_id,
+                        chat_type="dm",
+                        reply_to_message_id=origin.reply_anchor,
+                    )
+                    if topic_metadata:
+                        metadata.update(topic_metadata)
+            anchor_kwargs = {"reply_to": reply_to} if reply_to else {}
+
+            async def _send_text(text: str):
+                return await adapter.send(
+                    origin.chat_id, text, metadata=metadata, **anchor_kwargs
+                )
+
+            async def _send_once(text: str):
+                return await adapter.send_plain_text_once(
+                    origin.chat_id, text, metadata=metadata, **anchor_kwargs
+                )
+
+            # The delegation status card is offered only where the adapter can
+            # both send an interactive card and patch that same message in
+            # place.  Half the pair would turn one Task's card into a new
+            # message per transition, which is the behavior it exists to
+            # retire, so a partial capability declines rather than degrades —
+            # and every other platform keeps the plain lifecycle unchanged.
+            #
+            # ``BasePlatformAdapter`` declares both seams as refusals
+            # (``success=False, error="Not supported"``), so *presence* no
+            # longer distinguishes a card platform from one without a card
+            # surface — every adapter has the attribute.  The capability is the
+            # override, so both are resolved on the adapter's own class and
+            # compared against the base declaration.  A test double or plugin
+            # that never inherits from the base simply has no attribute and
+            # stays on the plain path.
+            send_card_fn = self._overridden_adapter_capability(
+                adapter, "send_interactive_card"
+            )
+            patch_card_fn = self._overridden_adapter_capability(
+                adapter, "patch_interactive_card"
+            )
+            send_card = None
+            patch_card = None
+            if send_card_fn is not None and patch_card_fn is not None:
+
+                async def send_card(card):  # noqa: F811 - capability, not a redefinition
+                    return await send_card_fn(
+                        origin.chat_id, card, metadata=metadata, **anchor_kwargs
+                    )
+
+                async def patch_card(message_id, card):  # noqa: F811
+                    return await patch_card_fn(origin.chat_id, message_id, card)
+
+            return DelegateDelivery(
+                send_text=_send_text,
+                send_plain_text_once=_send_once,
+                limit=adapter.single_message_text_limit(),
+                measure=adapter.measure_text,
+                send_card=send_card,
+                patch_card=patch_card,
+            )
+        except Exception:
+            logger.debug("delegate delivery unavailable", exc_info=True)
+            return None
+
+    def _delegate_result_continuity(self, session_entry) -> Any:
+        """This turn's proven claim over its own conversation, or ``None``.
+
+        A delegated task can finish while the user is away, and the
+        conversation can be compressed before their next message arrives —
+        which forks a new physical ``session_id`` and would strand a result
+        bound to the previous one. The Session/Gateway authority resolves that
+        once, here, from the persisted Session lineage; the coordinator is
+        handed the answer rather than a second copy of the rule.
+        """
+
+        try:
+            from gateway.session_context import resolve_trusted_session
+
+            return resolve_trusted_session(
+                self.session_store,
+                session_id=getattr(session_entry, "session_id", "") or "",
+                session_key=getattr(session_entry, "session_key", "") or "",
+            )
+        except Exception:
+            logger.debug("delegate result continuity unavailable", exc_info=True)
+            return None
+
+    def _consume_delegate_result_context(
+        self,
+        session_id: str,
+        *,
+        continuity: Any = None,
+        include_claim: bool = False,
+    ) -> Any:
+        """External AGENT results owed to this Session's **next** ordinary turn.
+
+        Returns the bounded projection text (or ``""``), marking each result's
+        Hermes sink ``in_flight``. It never mutates a running turn, never
+        injects a synthetic user message, and never touches the long-lived
+        system-prompt prefix — the caller folds this into the user turn that is
+        about to be sent, exactly like history backfill context.
+        """
+
+        try:
+            from gateway.sachima_delegate import bound_delegate_coordinator
+
+            coordinator = bound_delegate_coordinator()
+            if coordinator is None or not session_id:
+                return ("", None) if include_claim else ""
+            claim = coordinator.claim_hermes_context(
+                session_id, continuity=continuity
+            )
+            text = claim.text if claim is not None else ""
+            return (text, claim) if include_claim else text
+        except Exception:
+            logger.debug("delegate result context skipped", exc_info=True)
+            return ("", None) if include_claim else ""
+
+    def _settle_delegate_result_context(
+        self,
+        session_id: str,
+        *,
+        consumed: bool,
+        continuity: Any = None,
+        processing_id: str | None = None,
+        event_ids: tuple[str, ...] | None = None,
+    ) -> None:
+        """Confirm a consumed handoff, or return an interrupted one to pending.
+
+        Settlement carries the *same* continuity the claim was made with, so a
+        handoff the compression continuation took is one it can also settle.
+        """
+
+        try:
+            from gateway.sachima_delegate import bound_delegate_coordinator
+
+            coordinator = bound_delegate_coordinator()
+            if coordinator is None or not session_id:
+                return
+            if consumed:
+                coordinator.confirm_hermes_context(
+                    session_id,
+                    continuity=continuity,
+                    processing_id=processing_id,
+                    event_ids=event_ids,
+                )
+            else:
+                coordinator.release_hermes_context(
+                    session_id,
+                    continuity=continuity,
+                    processing_id=processing_id,
+                    event_ids=event_ids,
+                )
+        except Exception:
+            logger.debug("delegate result context settlement skipped", exc_info=True)
+
+    def _claim_delegate_results_for_turn(
+        self,
+        message: str,
+        claim_context: _DelegateClaimContext,
+    ) -> tuple[str, Optional[_DelegateResultHandoff]]:
+        """Claim results available for one logical turn and bind its receipt."""
+
+        result_text, claim = self._consume_delegate_result_context(
+            claim_context.session_id,
+            continuity=claim_context.continuity,
+            include_claim=True,
+        )
+        if not result_text or claim is None:
+            return message, None
+
+        handoff = _DelegateResultHandoff(
+            claim_context.session_id,
+            processing_id=claim.processing_id,
+            event_ids=claim.event_ids,
+            on_provider_attempt=lambda: self._settle_delegate_result_context(
+                claim_context.session_id,
+                consumed=True,
+                continuity=claim_context.continuity,
+                processing_id=claim.processing_id,
+                event_ids=claim.event_ids,
+            ),
+        )
+        self._bind_delegate_processing_receipt(
+            claim_context.processing_event,
+            claim.event_ids,
+        )
+        return f"{result_text}\n\n[New message] {message}", handoff
+
+    def _bind_delegate_processing_receipt(
+        self,
+        event: MessageEvent,
+        event_ids: tuple[str, ...],
+    ) -> None:
+        """Bind one logical turn's exact result IDs to its eventual send."""
+
+        if not isinstance(event.metadata, dict):
+            event.metadata = {}
+        exact_ids = list(dict.fromkeys(
+            item for item in event_ids if isinstance(item, str) and item
+        ))
+        event.metadata["sachima_delegate_event_ids"] = exact_ids
+        event.metadata["_gateway_processing_outcome_callback"] = (
+            self._complete_sachima_delegate_processing
+        )
+
+    async def _complete_queued_delegate_delivery(
+        self,
+        claim_context: Optional[_DelegateClaimContext],
+        adapter: Any,
+        *,
+        delivered: bool,
+        model_turn_completed: bool,
+    ) -> None:
+        """Settle the claim bound to an intermediate queued-turn response."""
+
+        if claim_context is None:
+            return
+        event = claim_context.processing_event
+        metadata = getattr(event, "metadata", None)
+        if not isinstance(metadata, dict):
+            return
+        callback = metadata.get("_gateway_processing_outcome_callback")
+        if not callable(callback):
+            return
+        metadata["_gateway_model_turn_completed"] = bool(model_turn_completed)
+        callback_runner = getattr(
+            adapter,
+            "_run_internal_processing_outcome_callback",
+            None,
+        )
+        if callable(callback_runner):
+            await callback_runner(
+                event,
+                ProcessingOutcome.SUCCESS if delivered else ProcessingOutcome.FAILURE,
+            )
+            return
+
+        # All production adapters inherit BasePlatformAdapter. Keep the private
+        # queue boundary usable for narrow duck-typed adapters as well.
+        metadata.pop("_gateway_processing_outcome_callback", None)
+        result = callback(
+            event,
+            ProcessingOutcome.SUCCESS if delivered else ProcessingOutcome.FAILURE,
+        )
+        if inspect.isawaitable(result):
+            await result
+
+    def _discard_claimed_delegate_wakeups(
+        self,
+        session_key: str,
+        adapter: Any,
+        event_ids: tuple[str, ...],
+    ) -> int:
+        """Drop queued native wakes fully owned by the current fresh claim."""
+
+        claimed = {item for item in event_ids if isinstance(item, str) and item}
+        if not claimed or adapter is None:
+            return 0
+
+        def _is_redundant(event: Any) -> bool:
+            if (
+                event is None
+                or getattr(event, "internal", False) is not True
+                or getattr(event, "allow_gateway_control", True) is not False
+            ):
+                return False
+            ids = (getattr(event, "metadata", None) or {}).get(
+                "sachima_delegate_event_ids"
+            )
+            exact = {
+                item for item in ids or () if isinstance(item, str) and item
+            } if isinstance(ids, (list, tuple)) else set()
+            return bool(exact) and exact.issubset(claimed)
+
+        removed = 0
+        pending_slot = getattr(adapter, "_pending_messages", None)
+        head_removed = False
+        if isinstance(pending_slot, dict) and _is_redundant(
+            pending_slot.get(session_key)
+        ):
+            pending_slot.pop(session_key, None)
+            head_removed = True
+            removed += 1
+
+        queue_state = self._peek_session_state(session_key)
+        overflow = (
+            queue_state.conversation.queued_events if queue_state is not None else []
+        )
+        if overflow:
+            kept = []
+            for queued_event in overflow:
+                if _is_redundant(queued_event):
+                    removed += 1
+                else:
+                    kept.append(queued_event)
+            queue_state.conversation.queued_events = kept
+
+        if head_removed and overflow and queue_state.conversation.queued_events:
+            pending_slot[session_key] = queue_state.conversation.queued_events.pop(0)
+        return removed
 
     async def _run_in_executor_with_context(self, func, *args):
         """Run blocking work in the thread pool while preserving session contextvars."""
@@ -4432,6 +5115,18 @@ class GatewayRunner(
             # See #44327.
             if hasattr(agent, "_last_flushed_db_idx"):
                 agent._last_flushed_db_idx = 0
+            # A fresh external turn is exactly the moment the previous turn's ownership ends. Revoke
+            # its dispatch lease here, while rebinding the cached instance — an executor the gateway
+            # abandoned is still a live daemon thread inside this same object, and without this it
+            # would wake up and dispatch under the new turn's identity (interrupt-recursive turns
+            # keep theirs: same turn, same claim).
+            _lease = getattr(agent, "_provider_dispatch_lease", None)
+            if _lease is not None:
+                try:
+                    _lease.revoke()
+                except Exception:
+                    logger.debug("provider dispatch lease revoke failed", exc_info=True)
+            agent._provider_attempts = 0
         agent._api_call_count = 0
 
     def _profile_name_for_source(
@@ -4543,6 +5238,10 @@ class GatewayRunner(
         _native_slack_task_cards: Any = None
         needs_progress_queue: Any = None
         _generic_status_phrase: Any = None
+        # Sachima Task Workbench (display.task_tracker): opt-in structured progress projection.
+        task_tracker_enabled: Any = False
+        task_tracker_mode: Any = "text"
+        task_tracker_config: Any = None
 
     @dataclasses.dataclass
     class _RunAgentWorker:
@@ -4556,6 +5255,8 @@ class GatewayRunner(
         timeout_fired: Any = None
         cleanup_lock: Any = None
         is_current: Any = None
+        # The turn's own ProviderDispatchLease (Sachima delegation): fenced by both reaper paths.
+        dispatch_lease: Any = None
 
 
 def _run_planned_stop_watcher(

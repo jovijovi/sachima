@@ -271,12 +271,23 @@ _FS_HANDLERS = {"fs/read_text_file": _fs_read_text_file, "fs/write_text_file": _
 
 
 class CopilotACPClient:
-    """Minimal OpenAI-client-compatible facade for Copilot ACP."""
+    """Minimal OpenAI-client-compatible facade for Copilot ACP.
+
+    Subclasses for other ACP CLIs (``agent.gemini_acp_client``) override the ``product_name``/
+    ``default_model_name`` labels and the ``_process_args``/``_build_process_env``/``_*_error`` hooks;
+    the JSON-RPC bridge itself is shared.
+    """
 
     # Declared for agent/auxiliary_client.py: this shim drives an ACP subprocess over stdio, so it is
     # already a complete client (never re-dispatch through a wire adapter) and async-safe as-is.
     HERMES_SKIP_TRANSPORT_WRAP = True
     HERMES_SKIP_ASYNC_WRAP = True
+
+    product_name = "Copilot ACP"
+    default_model_name = "copilot-acp"
+    # Copilot applies the model after session/new (see _run_prompt); a CLI that takes the model on
+    # argv (Gemini CLI ``--model``) opts out so no spurious session selection is attempted.
+    _uses_session_model_selection = True
 
     def __init__(
         self, *, api_key: str | None = None, base_url: str | None = None, default_headers: dict[str, str] | None = None,
@@ -286,7 +297,9 @@ class CopilotACPClient:
         self.api_key, self.base_url = api_key or "copilot-acp", base_url or ACP_MARKER_BASE_URL
         self._default_headers = dict(default_headers or {})
         self._acp_command = acp_command or command or _resolve_command()
-        self._acp_args = list(acp_args or args or _resolve_args())
+        # An explicitly empty argv is a real choice (not a fallback trigger).
+        resolved_args = acp_args if acp_args is not None else args
+        self._acp_args = list(resolved_args if resolved_args is not None else _resolve_args())
         self._acp_cwd = str(Path(acp_cwd or os.getcwd()).resolve())
         self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create_chat_completion))
         self.is_closed = False
@@ -337,37 +350,67 @@ class CopilotACPClient:
         completion = SimpleNamespace(
             choices=[SimpleNamespace(message=message, finish_reason="tool_calls" if tool_calls else "stop")],
             usage=SimpleNamespace(prompt_tokens=0, completion_tokens=0, total_tokens=0, prompt_tokens_details=SimpleNamespace(cached_tokens=0)),
-            model=model or "copilot-acp",
+            model=model or self.default_model_name,
         )
         return _completion_to_stream_chunks(completion) if stream else completion
 
-    def _spawn(self) -> subprocess.Popen[str]:
+    # ── subclass hooks (product labels, argv, env, error remediation) ─────────────────────────
+
+    def _process_args(self, model: str | None = None) -> list[str]:
+        """Subprocess arguments for one request. Subclasses may use the requested model to select a
+        documented CLI flag; Copilot keeps its established static argument list."""
+        del model
+        return list(self._acp_args)
+
+    def _build_process_env(self) -> dict[str, str]:
+        """Sanitized environment for the ACP child process."""
+        return _build_subprocess_env()
+
+    def _unsupported_transport_error(self, args: list[str]) -> str:
+        preview = " ".join(args[:3]) if args else "(none)"
+        return (
+            f"ACP transport not supported by '{self._acp_command}': `{preview}` is rejected as an unknown option. This "
+            "usually means the CLI is an older release (e.g. Claude Code v2.x) or a different tool than expected. Either "
+            "install a CLI that ships with --acp support (e.g. `@github/copilot` late 2025+), or set "
+            "HERMES_COPILOT_ACP_COMMAND / HERMES_COPILOT_ACP_ARGS to a working pair."
+        )
+
+    def _missing_command_error(self) -> str:
+        return (f"Could not start Copilot ACP command '{self._acp_command}'. Install GitHub Copilot CLI or set "
+                "HERMES_COPILOT_ACP_COMMAND/COPILOT_CLI_PATH.")
+
+    def _format_request_error(self, method: str, message: Any) -> str:
+        return f"{self.product_name} {method} failed: {message}"
+
+    def _deprecated_cli_error(self, stderr_text: str) -> str | None:
+        if not _is_gh_copilot_deprecation_message(stderr_text):
+            return None
+        return _DEPRECATED_CLI_ERROR + stderr_text
+
+    def _process_exit_error(self, stderr_text: str) -> str:
+        return f"{self.product_name} process exited early: {stderr_text}"
+
+    def _spawn(self, model: str | None = None) -> subprocess.Popen[str]:
         # Fast-fail when the CLI rejects --acp (else the parent waits the full child timeout for stdout that
         # never arrives). ``None`` falls through to the spawn's established start error.
-        if _acp_supported(self._acp_command, self._acp_args) is False:
-            preview = " ".join(self._acp_args[:3]) if self._acp_args else "(none)"
-            raise RuntimeError(
-                f"ACP transport not supported by '{self._acp_command}': `{preview}` is rejected as an unknown option. This "
-                "usually means the CLI is an older release (e.g. Claude Code v2.x) or a different tool than expected. Either "
-                "install a CLI that ships with --acp support (e.g. `@github/copilot` late 2025+), or set "
-                "HERMES_COPILOT_ACP_COMMAND / HERMES_COPILOT_ACP_ARGS to a working pair."
-            )
+        process_args = self._process_args(model)
+        if _acp_supported(self._acp_command, process_args) is False:
+            raise RuntimeError(self._unsupported_transport_error(process_args))
         try:
             from hermes_cli._subprocess_compat import windows_hide_flags  # hide the Windows console flash (#56747); pipes intact for the ACP wire
 
             # Hide the console the CLI child would otherwise flash on Windows (#56747). Hide-only — stdio
             # pipes stay intact for the ACP wire.
             proc = subprocess.Popen(
-                [self._acp_command] + self._acp_args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                text=True, encoding='utf-8', errors='replace', bufsize=1, cwd=self._acp_cwd, env=_build_subprocess_env(),
+                [self._acp_command] + process_args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True, encoding='utf-8', errors='replace', bufsize=1, cwd=self._acp_cwd, env=self._build_process_env(),
                 creationflags=windows_hide_flags(),
             )
         except FileNotFoundError as exc:
-            raise RuntimeError(f"Could not start Copilot ACP command '{self._acp_command}'. Install GitHub Copilot CLI or set "
-                               "HERMES_COPILOT_ACP_COMMAND/COPILOT_CLI_PATH.") from exc
+            raise RuntimeError(self._missing_command_error()) from exc
         if proc.stdin is None or proc.stdout is None:
             proc.kill()
-            raise RuntimeError("Copilot ACP process did not expose stdin/stdout pipes.")
+            raise RuntimeError(f"{self.product_name} process did not expose stdin/stdout pipes.")
         with self._active_process_lock:
             self._active_processes.add(proc)
             self.is_closed = False
@@ -375,10 +418,13 @@ class CopilotACPClient:
 
     @contextlib.contextmanager
     def _session(
-        self, timeout_seconds: float, *, allow_file_requests: bool = True
+        self, timeout_seconds: float, *, allow_file_requests: bool = True, model: str | None = None,
     ) -> Iterator[tuple[dict[str, Any], Callable[..., Any]]]:
-        """Start one ACP process and yield its ``session/new`` result plus request callable."""
-        proc = self._spawn()
+        """Start one ACP process and yield its ``session/new`` result plus request callable.
+
+        ``model`` reaches ``_spawn`` for subclasses whose CLI takes the model on argv (Gemini CLI
+        ``--model``); Copilot's own ``_process_args`` ignores it and selects the model after session/new."""
+        proc = self._spawn(model)
         inbox: queue.Queue[dict[str, Any]] = queue.Queue()
         stderr_tail: deque[str] = deque(maxlen=40)
 
@@ -417,20 +463,21 @@ class CopilotACPClient:
                     continue
                 if "error" in msg:
                     err = msg.get("error") or {}
-                    raise RuntimeError(f"Copilot ACP {method} failed: {err.get('message') or err}")
+                    raise RuntimeError(self._format_request_error(method, err.get("message") or err))
                 return msg.get("result")
             stderr_text = "\n".join(stderr_tail).strip()
             if proc.poll() is not None and stderr_text:
-                if _is_gh_copilot_deprecation_message(stderr_text):
-                    raise RuntimeError(_DEPRECATED_CLI_ERROR + stderr_text)
-                raise RuntimeError(f"Copilot ACP process exited early: {stderr_text}")
-            raise TimeoutError(f"Timed out waiting for Copilot ACP response to {method}.")
+                deprecation_error = self._deprecated_cli_error(stderr_text)
+                if deprecation_error:
+                    raise RuntimeError(deprecation_error)
+                raise RuntimeError(self._process_exit_error(stderr_text))
+            raise TimeoutError(f"Timed out waiting for {self.product_name} response to {method}.")
 
         try:
             _request("initialize", _INITIALIZE_PARAMS)
             session = _request("session/new", {"cwd": self._acp_cwd, "mcpServers": []}) or {}
             if not str(session.get("sessionId") or "").strip():
-                raise RuntimeError("Copilot ACP did not return a sessionId.")
+                raise RuntimeError(f"{self.product_name} did not return a sessionId.")
             yield session, _request
         finally:
             self._release_process(proc)
@@ -441,12 +488,13 @@ class CopilotACPClient:
             return _session_model_ids(session)
 
     def _run_prompt(self, prompt_text: str, *, timeout_seconds: float, model: str | None = None) -> tuple[str, str]:
-        # The CLI's `--model` spawn flag is deliberately NOT used: `copilot --acp` validates it (unknown id
-        # aborts the spawn) but ignores it for the session; the model is applied after session/new instead.
+        # Copilot: the CLI's `--model` spawn flag is deliberately NOT used: `copilot --acp` validates it (unknown
+        # id aborts the spawn) but ignores it for the session; the model is applied after session/new instead.
+        # Subclasses whose CLI takes the model on argv consume it in ``_process_args`` instead.
         requested_model = str(model or "").strip()
-        with self._session(timeout_seconds) as (session, _request):
+        with self._session(timeout_seconds, model=model) as (session, _request):
             session_id = str(session.get("sessionId") or "").strip()
-            if requested_model and requested_model != "copilot-acp":
+            if self._uses_session_model_selection and requested_model and requested_model != self.default_model_name:
                 try:
                     if (selection := _model_selection_request(session, requested_model)) is not None:
                         _request(*selection)

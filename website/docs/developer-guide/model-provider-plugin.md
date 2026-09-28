@@ -371,7 +371,7 @@ Every `api_mode` gate (`determine_api_mode`, runtime resolution, agent construct
 | `oauth_external` | User signs in elsewhere, tokens land in `auth.json` | Anthropic OAuth, MiniMax OAuth, Qwen Portal, Nous Portal |
 | `copilot` | GitHub Copilot token refresh cycle | `copilot` plugin only |
 | `aws_sdk` | AWS SDK credential chain (IAM role, profile, env) | `bedrock` plugin only |
-| `external_process` | Auth handled by a subprocess the agent spawns (see [External-process providers](#external-process-acp-providers)) | `copilot-acp` plugin, out-of-tree ACP plugins |
+| `external_process` | Auth handled by a supported subprocess the agent spawns (see [External-process providers](#external-process-acp-providers)) | `copilot-acp`, `google-gemini-cli` plugins, out-of-tree ACP plugins |
 
 Every profile is mirrored into Hermes' auth registry under the `auth_type` it declares (two exclusions: an `api_key` profile with empty `env_vars`, and the aggregator/user-supplied slugs `openrouter`/`custom` plus the bespoke-refresh built-ins `copilot`/`kimi-coding`/`zai`), so `hermes auth`,
 `--provider <name>` and runtime resolution accept it whatever its shape. What differs is who performs the

@@ -659,12 +659,25 @@ def _stage_turn_user_message(
     return user_msg, pending_cli_message
 
 
-def _hydrate_from_history(agent: Any, conversation_history: Optional[List[Any]]) -> None:
+def _hydrate_from_history(
+    agent: Any, conversation_history: Optional[List[Any]], user_message: str = "",
+) -> None:
     """Hydrate process-local state from persisted history on the first resumed turn."""
     if not conversation_history:
         return
-    if not agent._todo_store.has_items():
-        agent._hydrate_todo_store(conversation_history)
+    # Hydrate todo store from conversation history. This must run even when a
+    # cached agent already has items, because lifecycle hydration is also the
+    # fail-closed boundary that clears prior-transaction TODOs for unrelated
+    # new turns (Sachima TODO lifecycle; see AIAgent._hydrate_todo_store).
+    owner_scope_ref = None
+    owner_scope_fn = getattr(agent, "_todo_owner_scope_ref", None)
+    if callable(owner_scope_fn):
+        owner_scope_ref = owner_scope_fn()
+    agent._hydrate_todo_store(
+        conversation_history,
+        current_user_message=user_message,
+        owner_scope_ref=owner_scope_ref,
+    )
     # A live native checkpoint arms this latch while its response is captured.  A
     # restarted agent must recover the same one-response deferral before turn-start
     # compression can rewrite the restored opaque checkpoint.  Reuse the adapter's
@@ -1057,7 +1070,7 @@ def build_turn_context(
         agent, user_message, persist_user_message, persist_user_timestamp,
         persist_user_platform_id, persist_user_display_kind, persist_user_display_metadata,
     )
-    _hydrate_from_history(agent, conversation_history)
+    _hydrate_from_history(agent, conversation_history, user_message)
     # Every estimator this turn prices images at the cost learned from this model's real usage.
     bind_image_token_cost(agent)
     # Append the user message now that close persistence is safe.

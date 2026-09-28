@@ -28,8 +28,29 @@ class TurnFacadeMixin:
         persist_user_platform_id: Optional[str]=None, moa_config: Optional[dict[str, Any]]=None,
         turn_author: Optional[Dict[str, Any]] = None,
         relay_metadata: Optional[Dict[str, Any]] = None,
+        _provider_dispatch_lease: Optional[Any] = None,
     ) -> Dict[str, Any]:
-        """Forwarder — see ``agent.conversation_loop.run_conversation``."""
+        """Forwarder — see ``agent.conversation_loop.run_conversation``.
+
+        ``_provider_dispatch_lease`` is private to the Gateway's cached-agent
+        reuse seam: it names the turn this executor belongs to, so a worker the
+        Gateway has abandoned dispatches nothing when it finally wakes. Leading
+        underscore and keyword-only in practice — callers that are not the
+        Gateway (CLI, TUI, subagents, evals) omit it and are unaffected. See
+        ``agent.chat_completion_helpers.ProviderDispatchLease``.
+        """
+        # Bound before any provider work is scheduled: after the executor is
+        # running it is too late to decide whose turn a request belongs to.
+        activate_dispatch_lease = getattr(self, "_activate_provider_dispatch_lease", None)
+        if activate_dispatch_lease is None:
+            # Some narrow integration tests and legacy adapters call the unbound forwarder with an
+            # AIAgent-shaped object. Preserve that supported seam without bypassing per-instance
+            # test/adaptor overrides on real AIAgent instances.
+            from run_agent import AIAgent as _AIAgent
+
+            _AIAgent._activate_provider_dispatch_lease(self, _provider_dispatch_lease)
+        else:
+            activate_dispatch_lease(_provider_dispatch_lease)
         # A review shares this session_id for cache parity: fence review startup or interrupt
         # an admitted request and await its exit before opening live-turn instrumentation.
         # Foreground priority is retained if the review does not acknowledge within the bounded deadline

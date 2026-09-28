@@ -358,10 +358,30 @@ _MINIMAX_OFFICIAL_HOSTS = {
     "cn": frozenset({"api.minimaxi.com"})}
 
 
+def _get_minimax_config(tts_config: Dict[str, Any]) -> Dict[str, Any]:
+    """Return MiniMax settings, translating the legacy CN provider shape.
+
+    ``provider: minimax-cn`` and ``tts.minimax-cn`` predate the unified ``tts.minimax.region`` model.
+    Keep that user configuration working while routing it through the single current MiniMax
+    implementation."""
+    canonical = _section(tts_config, "minimax")
+    provider = str(tts_config.get("provider") or "").strip().lower()
+    if provider != "minimax-cn":
+        return dict(canonical)
+    configured_region = str(canonical.get("region") or "").strip().lower()
+    if configured_region and configured_region != "cn":
+        raise ValueError(
+            f"tts.provider 'minimax-cn' conflicts with tts.minimax.region {configured_region!r}; use region 'cn'")
+    merged = dict(canonical)
+    merged.update(_section(tts_config, "minimax-cn"))
+    merged["region"] = "cn"
+    return merged
+
+
 def _resolve_minimax_tts_runtime(tts_config: Dict[str, Any]) -> _MiniMaxTTSRuntime:
     """Select MiniMax region, endpoint and credential atomically: explicit ``tts.minimax.region`` wins,
     else the legacy global credential; ``cn`` only when it is the sole configured credential."""
-    mm_config = _section(tts_config, "minimax")
+    mm_config = _get_minimax_config(tts_config)
     resolve_key = _origin()._resolve_provider_key
     credentials = {
         region: (env_var, str(resolve_key(env_var, "minimax") or "").strip())
@@ -394,15 +414,16 @@ def _generate_minimax_tts(text: str, output_path: str, tts_config: Dict[str, Any
     """Generate audio via MiniMax: ``t2a_v2`` (nested payload, JSON reply with hex audio) or the legacy
     ``text_to_speech`` endpoint (flat payload, raw ``audio/*`` body), detected from the URL."""
     runtime = _resolve_minimax_tts_runtime(tts_config)
-    mm_config = _section(tts_config, "minimax")
+    mm_config = _get_minimax_config(tts_config)
     model = mm_config.get("model", DEFAULT_MINIMAX_MODEL)
     voice_id = mm_config.get("voice_id", DEFAULT_MINIMAX_VOICE_ID)
     base_url = runtime.endpoint
-    # MiniMax scopes TTS requests by GroupId (``?GroupId=<id>`` on the t2a_v2 URL): config or
-    # MINIMAX_GROUP_ID, attached only when absent from the URL.
+    # MiniMax scopes TTS requests by GroupId (``?GroupId=<id>`` on the t2a_v2 URL): config or the
+    # region-matching env var, attached only when absent from the URL. Never borrow a GroupId across regions.
     from hermes_cli.config import get_env_value
+    group_id_env = "MINIMAX_CN_GROUP_ID" if runtime.region == "cn" else "MINIMAX_GROUP_ID"
     group_id = (str(mm_config.get("group_id") or "").strip()
-                or (get_env_value("MINIMAX_GROUP_ID") or "").strip())
+                or (get_env_value(group_id_env) or "").strip())
     if group_id and "GroupId=" not in base_url:
         base_url = f"{base_url}{'&' if '?' in base_url else '?'}GroupId={group_id}"
     is_t2a_v2 = "t2a_v2" in base_url

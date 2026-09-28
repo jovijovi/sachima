@@ -124,6 +124,16 @@ class TurnRunner:
     def progress_callback(self, event_type: str, tool_name: str = None, preview: str = None, args: dict = None, **kwargs):
         """Callback invoked by agent on tool lifecycle events."""
         ctx = self._ctx
+        # Sachima Task Workbench: every lifecycle event is projected into the structured
+        # transaction record first; the visible rendering below is replaced by its coalesced signals.
+        if getattr(ctx, "task_workbench", None) is not None and ctx._run_still_current():
+            try:
+                agent_obj = ctx.agent_holder[0] if ctx.agent_holder else None
+                ctx.task_workbench.record_callback_event(
+                    agent_obj, event_type, tool_name=tool_name, preview=preview, args=args, **kwargs,
+                )
+            except Exception:
+                logger.debug("Task Workbench progress callback failed", exc_info=True)
         # Failed subagent → one clean user-facing notice, handled FIRST, before every progress-queue
         # gate: platforms with tool_progress off must still hear about a dead delegation.
         if event_type == "subagent.complete":
@@ -136,6 +146,11 @@ class TurnRunner:
             ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             preview_str = f' "{preview}"' if preview else ""
             ctx.log_queue.put(f"{ts}  {tool_name}:{preview_str}".rstrip())
+        # The opt-in Workbench is the progress projection for this turn. Its coalesced render
+        # signals replace raw per-tool chat lines, while the live-status and log rails above remain
+        # independent.
+        if getattr(ctx, "task_workbench", None) is not None:
+            return
         if not ctx.progress_queue or not ctx._run_still_current():
             return
         if event_type == "tool.completed" and not ctx.long_tool_hint_fired[0]:
@@ -707,6 +722,17 @@ class TurnRunner:
         adapter = self._runner._delivery_adapter_for(ctx.source) if ctx.progress_queue else None
         if not adapter:
             return
+        if getattr(ctx, "task_workbench", None) is not None:
+            # Sachima Task Workbench owns the visible progress projection for this turn.
+            await ctx.task_workbench.send_progress_messages(
+                adapter=adapter,
+                chat_id=ctx.source.chat_id,
+                reply_to=ctx._progress_reply_to,
+                metadata=ctx._progress_metadata,
+                cleanup_message_ids=ctx._cleanup_msg_ids,
+                is_current=ctx._run_still_current,
+            )
+            return
         if ctx._native_slack_task_cards and hasattr(adapter, "send_native_task_card_progress"):
             await self._send_native_task_card_progress(adapter)
             return
@@ -1248,9 +1274,23 @@ class TurnRunner:
         runner = self._runner
         agent._notification_config = ctx.user_config
         agent._notification_platform = ctx.source.platform
+        # TODO lifecycle identity is turn-scoped even though the generic tool/process task_id
+        # remains session-scoped for compatibility (Sachima TODO lifecycle). Both Sachima fields
+        # are always present on a real TurnContext; getattr keeps narrow upstream test doubles
+        # (plain namespaces without the Sachima fields) wiring exactly as before.
+        agent._todo_transaction_id = getattr(ctx, "task_transaction_id", None)
         # ALWAYS attached (never gated to None): its body gates each event class, and subagent-
         # failure notices must fire even with tool_progress/thinking off.
         agent.tool_progress_callback = ctx.progress_callback
+        # This turn's delegate claim, rebound with the other per-message state. Always assigned,
+        # including to None: the agent is cached per session and a binding left over from a
+        # previous turn would let that turn's claim be confirmed by a turn that was never handed
+        # it. Set here, at the one point the create and reuse branches have converged, so a fresh
+        # and a reused agent carry exactly the same claim (Sachima delegation).
+        delegate_handoff = getattr(ctx, "delegate_handoff", None)
+        agent.provider_attempt_callback = (
+            delegate_handoff.mark_provider_attempt if delegate_handoff is not None else None
+        )
         # Discord's one-time voice ack and Slack's task cards both ride the authoritative start
         # callback, so neither infers identity from tool names.
         agent.tool_start_callback = (
@@ -1721,6 +1761,16 @@ class TurnRunner:
             # turn so a restart-interrupted turn is recorded WITH its id for drain-window dedup.
             if ctx.inbound_message_id is not None:
                 kwargs["persist_user_platform_id"] = str(ctx.inbound_message_id)
+            if ctx.dispatch_lease is not None:
+                # Hand this turn its private right to dispatch: the one lease ``_run_agent_inner``
+                # constructed before this worker was scheduled, and the same object its reaper
+                # holds. Nothing here reads a lease off the agent — by now the cached agent may
+                # have been rebound to a later turn, and the question this answers is whose turn
+                # the request belongs to. Passed through the signature probe so old shims and
+                # suite doubles, which never declared the private argument, still take the
+                # request and nothing else (Sachima delegation).
+                from agent.chat_completion_helpers import provider_dispatch_lease_kwargs
+                kwargs.update(provider_dispatch_lease_kwargs(agent.run_conversation, ctx.dispatch_lease))
             from agent.notification_presentation import notification_turn
             with notification_turn(agent, muted=ctx.mute_notification_reply, session_id=ctx.session_id or ""):
                 return agent.run_conversation(api_message, **kwargs)

@@ -1759,6 +1759,17 @@ class GatewayShutdownMixin:
         self._clear_plugin_message_injector()
         self._draining = True
         self._mark_api_runs_shutdown_requested()
+        # Retire the Sachima delegate graph early, while delivery and adapters are still up: its
+        # observers settle through them, and stopping them first would strand a Run mid-observation.
+        try:
+            close_wakeup = getattr(self, "_close_sachima_delegate_wakeup", None)
+            retire = getattr(self, "_retire_owned_delegate_coordinator", None)
+            if callable(close_wakeup):
+                await close_wakeup()
+            if callable(retire):
+                await retire()
+        except Exception:
+            logger.debug("Sachima delegate coordinator retirement skipped", exc_info=True)
         # getattr-guards: shutdown-path test doubles may lack the room worker / systemd watchdog.
         stop_room_worker = getattr(self, "_stop_hosted_room_worker", None)
         if callable(stop_room_worker):

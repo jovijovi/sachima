@@ -362,6 +362,8 @@ from hermes_cli.subcommands.gateway import build_gateway_parser
 from hermes_cli.subcommands.profile import build_profile_parser
 from hermes_cli.subcommands.model import build_model_parser
 from hermes_cli.subcommands.setup import build_setup_parser
+from hermes_cli.subcommands.postinstall import build_postinstall_parser
+from hermes_cli.postinstall_cmd import cmd_postinstall
 
 from hermes_cli.subcommands.whatsapp import build_whatsapp_parser, build_whatsapp_cloud_parser
 from hermes_cli.subcommands.slack import build_slack_parser
@@ -762,6 +764,7 @@ from hermes_cli.model_setup_flows import (
     _model_flow_named_custom,
     _model_flow_copilot,
     _model_flow_copilot_acp,
+    _model_flow_google_gemini_cli,
     _model_flow_kimi,
     _model_flow_stepfun,
     _model_flow_bedrock,
@@ -1975,6 +1978,7 @@ _PROVIDER_MODEL_FLOWS = {
     "qwen-oauth": lambda c, m, a: _model_flow_qwen_oauth(c, m),
     "minimax-oauth": lambda c, m, a: _model_flow_minimax_oauth(c, m, args=a),
     "copilot-acp": lambda c, m, a: _model_flow_copilot_acp(c, m),
+    "google-gemini-cli": lambda c, m, a: _model_flow_google_gemini_cli(c, m),
     "copilot": lambda c, m, a: _model_flow_copilot(c, m),
     "custom": lambda c, m, a: _model_flow_custom(c),
     "anthropic": lambda c, m, a: _model_flow_anthropic(c, m),
@@ -2806,7 +2810,8 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "dump", "egress", "fallback", "gateway", "hooks", "import", "import-agent", "insights",
         "gui", "desktop", "kanban", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate", "moa",
         "journey", "memory-graph", "learning",
-        "model", "monitoring", "pairing", "pause", "peer", "pets", "plugins", "portal", "profile",
+        "model", "monitoring", "pairing", "pause", "peer", "pets", "plugins", "portal",
+        "postinstall", "profile",
         "project", "proxy",
         "prompt-size",
         "resume",
@@ -3397,6 +3402,9 @@ def _build_cli_parser():
         logger.debug("LSP CLI registration failed: %s", _lsp_err)
 
     build_setup_parser(subparsers, cmd_setup=cmd_setup)
+    # postinstall (parser: hermes_cli/subcommands/postinstall.py; handler: hermes_cli/postinstall_cmd.py).
+    # Registered next to setup because it hands over to it when the install has no provider yet.
+    build_postinstall_parser(subparsers, cmd_postinstall=cmd_postinstall)
     build_whatsapp_parser(subparsers, cmd_whatsapp=cmd_whatsapp)
     build_whatsapp_cloud_parser(subparsers, cmd_whatsapp_cloud=cmd_whatsapp_cloud)
     build_slack_parser(subparsers, cmd_slack=cmd_slack)

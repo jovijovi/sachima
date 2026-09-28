@@ -1,0 +1,19 @@
+name: sachima-platform
+label: Sachima
+kind: platform
+version: 1.0.0
+description: >
+  Default-off Sachima Envelope v1 webhook adapter. Maps direct messages,
+  groups, threads, replies, and image attachments into Hermes sessions and
+  delivers text responses through a configured callback URL.
+author: jovijovi
+requires_env: []
+optional_env:
+  - name: SACHIMA_WEBHOOK_SECRET
+    description: "HMAC secret used to authenticate ingress and sign callback delivery"
+    prompt: "Sachima webhook secret"
+    password: true
+  - name: SACHIMA_API_KEY
+    description: "Optional bearer credential for the callback delivery endpoint"
+    prompt: "Sachima delivery API key"
+    password: true

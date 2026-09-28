@@ -28,6 +28,9 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     # Delete tool-progress / "⏳ Working" bubbles after a SUCCESSFUL final response where deletion is
     # supported (Telegram); failed runs keep them as breadcrumbs.
     "cleanup_progress": False,
+    # Rich weather delivery is production behaviour, so it remains off until
+    # the user explicitly selects text/card/auto rendering.
+    "rich_result_weather": "off",  # off | auto | text | card
     # Working-state text on text-rendering indicators (Slack assistant status): "full"/true = verb +
     # argument preview, "verb" = verb only (keeps paths out of shared channels), "off"/false = static.
     "live_status": "full",
@@ -182,6 +185,16 @@ def _norm_int(value: Any) -> int:
         return 0
 
 
+def _norm_rich_result_weather(value: Any) -> str:
+    """off | auto | text | card; bare booleans map to off/auto, anything unknown is off."""
+    if value is False:
+        return "off"
+    if value is True:
+        return "auto"
+    normalized = str(value).strip().lower()
+    return normalized if normalized in {"off", "auto", "text", "card"} else "off"
+
+
 _NORMALISERS: dict[str, Any] = {
     "tool_progress": _norm_tristate("all", "off", {"off", "new", "all", "verbose", "log"}),
     "show_reasoning": _norm_bool,
@@ -197,6 +210,7 @@ _NORMALISERS: dict[str, Any] = {
     "tool_progress_grouping": _norm_choice(("accumulate", "separate")),
     "reasoning_style": _norm_choice(("code", "blockquote", "subtext")),
     "tool_preview_length": _norm_int,
+    "rich_result_weather": _norm_rich_result_weather,
 }
 
 

@@ -271,8 +271,13 @@ def test_room_grant_fails_closed_for_tamper_expiry_and_permission():
             permission="status",
             now=100 + 30 * 24 * 60 * 60,
         )
+    # Flip a full 6-bit character of the signature: the trailing base64 character only carries
+    # four significant bits, so replacing it can leave the decoded MAC unchanged and the token
+    # valid (its value depends on the execution-policy digest, i.e. the enabled toolsets).
+    encoded_payload, signature = token.split(".")
+    flipped = "A" if signature[0] != "A" else "B"
     with pytest.raises(HostedRoomGrantError, match="signature"):
-        verify_room_grant(SECRET, token[:-1] + "A", dispatch, now=105)
+        verify_room_grant(SECRET, f"{encoded_payload}.{flipped}{signature[1:]}", dispatch, now=105)
 
 
 def test_local_catalog_is_honest_for_app_managed_process(monkeypatch):

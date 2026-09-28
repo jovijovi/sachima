@@ -231,12 +231,34 @@ def _setup_mcp_shim(agent, args: dict, ctx: InlineToolContext) -> Any:
     }, ctx)
 
 
+_todo_list_call = _tool(
+    "tools.todo_tool", "todo_tool", ("todos", "todos"), ("merge", "merge", False),
+    store=lambda agent, ctx: agent._todo_store,
+)
+
+
+def _todo_list(agent, args: dict, ctx: InlineToolContext) -> Any:
+    """Bind the store to this turn's logical task before the write/read (Sachima TODO lifecycle).
+
+    The gateway mints a turn-scoped ``_todo_transaction_id`` (falling back to the session-scoped
+    task id) and a privacy-safe owner scope; a store without lifecycle support is left untouched.
+    """
+    bind_transaction = getattr(agent._todo_store, "bind_transaction", None)
+    if callable(bind_transaction):
+        owner_scope_ref = None
+        owner_scope_fn = getattr(agent, "_todo_owner_scope_ref", None)
+        if callable(owner_scope_fn):
+            owner_scope_ref = owner_scope_fn()
+        bind_transaction(
+            getattr(agent, "_todo_transaction_id", None) or ctx.effective_task_id,
+            owner_scope_ref=owner_scope_ref,
+        )
+    return _todo_list_call(agent, args, ctx)
+
+
 # Order is the historical if/elif order of ``execute_tool_calls_sequential``.
 INLINE_TOOL_EXECUTORS: Dict[str, InlineToolExecutor] = {
-    "todo_list": _tool(
-        "tools.todo_tool", "todo_tool", ("todos", "todos"), ("merge", "merge", False),
-        store=lambda agent, ctx: agent._todo_store,
-    ),
+    "todo_list": _todo_list,
     # Bot Mode teammate DM is injected, not registered: only a canonical Bot
     # Chat session carries the schema, and the tool re-gates on the title.
     "message_agent": _tool(

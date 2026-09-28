@@ -1598,6 +1598,7 @@ class GatewayStartupMixin:
             return True
         self.delivery_router.adapters = self.adapters
         self._wire_teams_pipeline_runtime()
+        await self._start_sachima_delegate_host()
         self._running = True
         self._install_plugin_message_injector()
         # A boot that could not start every configured platform is not a normal run: stamp ``degraded``

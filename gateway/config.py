@@ -581,6 +581,9 @@ class GatewayConfig:
     platforms: Dict[Platform, PlatformConfig] = field(default_factory=dict)
     reset_triggers: List[str] = field(default_factory=lambda: ["/new", "/reset"])
     quick_commands: Dict[str, Any] = field(default_factory=dict)  # slash commands that bypass the agent loop
+    # Native Sachima delegation terminal wake. Source support ships default
+    # off; enabling it is an operator action in config.yaml, never an env gate.
+    sachima_completion_wakeup_enabled: bool = False
     sessions_dir: Path = field(default_factory=lambda: get_hermes_home() / "sessions")
     # Legacy sessions.json mirror of the routing index (primary: state.db) for external tooling / downgrades.
     # The primary copy lives in state.db (gateway_routing table, #9006). Default True for backward
@@ -695,6 +698,13 @@ class GatewayConfig:
             "platforms": {p.value: c.to_dict() for p, c in self.platforms.items()},
             "reset_triggers": self.reset_triggers,
             "quick_commands": self.quick_commands,
+            "sachima": {
+                "delegation": {
+                    "completion_wakeup": {
+                        "enabled": self.sachima_completion_wakeup_enabled,
+                    },
+                },
+            },
             "sessions_dir": str(self.sessions_dir),
             **{name: getattr(self, name) for name in self._SCALAR_DICT_FIELDS},
             "streaming": self.streaming.to_dict(),
@@ -761,6 +771,21 @@ class GatewayConfig:
         max_concurrent_sessions = _coerce_optional_positive_int(
             pick("max_concurrent_sessions"), key_label("max_concurrent_sessions")
         )
+        # Native Sachima delegation terminal wake: flat key, else
+        # ``sachima.delegation.completion_wakeup.enabled`` (top-level or nested under gateway).
+        if "sachima_completion_wakeup_enabled" in data:
+            sachima_completion_wakeup_raw = data.get("sachima_completion_wakeup_enabled")
+        else:
+            sachima_data = data.get("sachima")
+            if not isinstance(sachima_data, dict):
+                sachima_data = nested_gateway.get("sachima")
+            delegation_data = sachima_data.get("delegation") if isinstance(sachima_data, dict) else None
+            completion_wakeup_data = (
+                delegation_data.get("completion_wakeup") if isinstance(delegation_data, dict) else None
+            )
+            sachima_completion_wakeup_raw = (
+                completion_wakeup_data.get("enabled") if isinstance(completion_wakeup_data, dict) else None
+            )
 
         try:
             session_store_max_age_days = max(int(data.get("session_store_max_age_days", 90)), 0)
@@ -790,6 +815,7 @@ class GatewayConfig:
             streaming=StreamingConfig.from_dict(data.get("streaming", {})),
             session_store_max_age_days=session_store_max_age_days,
             profile_routes=parse_profile_routes(data.get("profile_routes") or []),
+            sachima_completion_wakeup_enabled=_coerce_bool(sachima_completion_wakeup_raw, False),
         )
 
     def _extra_choice(self, platform: Optional[Platform], key: str, choices: set, default: str) -> Optional[str]:

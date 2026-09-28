@@ -2065,6 +2065,18 @@ DEFAULT_CONFIG = {
         # secret values); values are read from the environment at export time.
         "export": {"otlp": {"enabled": False, "endpoint": "", "headers_env": {}}},
     },
+
+    # Native Sachima delegation continuation. Source support is present but
+    # automatic terminal wake remains opt-in; enabling it is a separate
+    # operator/runtime action.
+    "sachima": {
+        "delegation": {
+            "completion_wakeup": {
+                "enabled": False,
+            },
+        },
+    },
+
     "gateway": {  # Gateway settings (messaging platforms: Telegram, Discord, Slack, ...).
         # Seconds to let a SIGTERM-interrupted gateway agent unwind before adapter/database
         # teardown. Keep short so service-manager shutdowns don't exhaust their stop budget.

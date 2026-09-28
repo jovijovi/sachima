@@ -184,6 +184,9 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
 # (models_dev, onboarding, mcp, computer_use, telemetry, plugins, doctor, runtime, session,
 # nous, telegram) currently surface a single schema field each.
 _CATEGORY_MERGE: Dict[str, str] = {
+    # The single Sachima terminal-wakeup toggle belongs beside the existing delegation
+    # controls instead of opening a one-field dashboard tab.
+    "sachima": "delegation",
     "privacy": "security",
     "context": "agent",
     "skills": "agent",

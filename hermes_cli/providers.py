@@ -41,6 +41,10 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
                               base_url_env_var="LM_BASE_URL"),
     "copilot-acp": HermesOverlay(transport="codex_responses", auth_type="external_process",
                                  base_url_override="acp://copilot", base_url_env_var="COPILOT_ACP_BASE_URL"),
+    # Sachima: official Gemini CLI over ACP (plugins/model-providers/google-gemini-cli). The overlay is
+    # what lists it in `hermes model` / /model with the external-process credential probe.
+    "google-gemini-cli": HermesOverlay(transport="openai_chat", auth_type="external_process",
+                                       base_url_override="acp://gemini"),
     "github-copilot": HermesOverlay(extra_env_vars=("COPILOT_GITHUB_TOKEN", "GH_TOKEN")),
     "anthropic": HermesOverlay(transport="anthropic_messages", extra_env_vars=("ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN")),
     "zai": HermesOverlay(extra_env_vars=("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY"), base_url_env_var="GLM_BASE_URL"),
@@ -121,6 +125,8 @@ _ALIAS_GROUPS: Dict[str, Tuple[str, ...]] = {
     "anthropic": ("claude", "claude-code"), "github-copilot": ("copilot", "github"),
     "copilot-acp": ("github-copilot-acp",), "openai-codex": ("chatgpt", "chatgpt-codex"),
     "vercel": ("ai-gateway", "aigateway", "vercel-ai-gateway"),
+    # official Gemini CLI ACP (legacy direct-OAuth aliases retained)
+    "google-gemini-cli": ("gemini-cli", "gemini-oauth"),
     "opencode": ("opencode-zen", "zen"), "opencode-go": ("go", "opencode-go-sub"), "kilo": ("kilocode", "kilo-code", "kilo-gateway"),
     "deepseek": ("deep-seek",), "alibaba": ("dashscope", "aliyun", "qwen", "alibaba-cloud"),
     "alibaba-coding-plan": ("alibaba_coding", "alibaba-coding", "alibaba_coding_plan"),
@@ -141,7 +147,8 @@ ALIASES: Dict[str, str] = {alias: canon for canon, aliases in _ALIAS_GROUPS.item
 
 _LABEL_OVERRIDES: Dict[str, str] = {
     "moa": "Mixture of Agents", "nous": "Nous Portal", "openai-codex": "ChatGPT or Codex Subscription",
-    "copilot-acp": "GitHub Copilot ACP", "stepfun": "StepFun Step Plan", "xiaomi": "Xiaomi MiMo", "gmi": "GMI Cloud",
+    "copilot-acp": "GitHub Copilot ACP", "google-gemini-cli": "Google Gemini CLI",
+    "stepfun": "StepFun Step Plan", "xiaomi": "Xiaomi MiMo", "gmi": "GMI Cloud",
     "upstage": "Upstage Solar", "actual": "Actual Computer", "tencent-tokenhub": "Tencent TokenHub",
     "nebius-token-factory": "Nebius Token Factory", "tencent-tokenplan": "Tencent TokenPlan", "lmstudio": "LM Studio",
     "local": "Local endpoint", "bedrock": "AWS Bedrock", "vertex": "Google Vertex AI", "ollama-cloud": "Ollama Cloud",

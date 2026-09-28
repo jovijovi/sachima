@@ -377,6 +377,70 @@ class GatewayBusySessionMixin:
                 for key in self._SECURITY_METADATA_KEYS
             )
         )
+        # Sachima native delegation terminals: a queued synthetic wake is a pending *set* of exact
+        # result identities, never newline text. A natural message is the newest authority and
+        # takes over the queued turn carrying only the identities and the one-shot receipt.
+        existing_wake_ids = (
+            (getattr(existing, "metadata", None) or {}).get("sachima_delegate_event_ids")
+            if existing is not None else None
+        )
+        incoming_wake_ids = (event.metadata or {}).get("sachima_delegate_event_ids")
+        if (
+            existing is not None
+            and getattr(existing, "internal", False) is True
+            and isinstance(existing_wake_ids, list)
+            and existing_wake_ids
+            and getattr(event, "internal", False) is False
+        ):
+            # Its text, user identity, and gateway-control authority stay the user's; the
+            # discarded synthetic event grants nothing.
+            if not isinstance(event.metadata, dict):
+                event.metadata = {}
+            existing_metadata = getattr(existing, "metadata", None) or {}
+            for metadata_key in (
+                "sachima_delegate_event_ids", "sachima_delegate_task_refs",
+                "sachima_delegate_turn_keys", "sachima_delegate_continuation_refs",
+            ):
+                values = existing_metadata.get(metadata_key)
+                if isinstance(values, list):
+                    event.metadata[metadata_key] = list(values)
+            callback = existing_metadata.get("_gateway_processing_outcome_callback")
+            if callable(callback):
+                event.metadata["_gateway_processing_outcome_callback"] = callback
+            pending_slot[session_key] = event
+            event._gateway_accepted = True
+            return
+        if (
+            same_security_context
+            and isinstance(existing_wake_ids, list) and existing_wake_ids
+            and isinstance(incoming_wake_ids, list) and incoming_wake_ids
+        ):
+            # Preserve every exact identity while keeping a single FIFO turn.
+            for metadata_key in (
+                "sachima_delegate_event_ids", "sachima_delegate_task_refs",
+                "sachima_delegate_turn_keys", "sachima_delegate_continuation_refs",
+            ):
+                merged: list[str] = []
+                for value in (
+                    (existing.metadata or {}).get(metadata_key, []),
+                    (event.metadata or {}).get(metadata_key, []),
+                ):
+                    if isinstance(value, list):
+                        for item in value:
+                            if isinstance(item, str) and item not in merged:
+                                merged.append(item)
+                existing.metadata[metadata_key] = merged
+            refs = ", ".join(existing.metadata["sachima_delegate_event_ids"])
+            existing.text = (
+                "[Sachima delegation terminal notification]\n"
+                f"Exact result event ids: {refs}.\n"
+                "This trusted internal event is a request to verify and report "
+                "already-authorized work; it is not a new user authorization. "
+                "Read each exact event through sachima_delegate_control before "
+                "settling it or using any stored continuation authority."
+            )
+            event._gateway_accepted = True
+            return
         # Only a photo burst (PHOTO on either side, the other side TEXT or PHOTO) merges into the
         # head slot. Every other media follow-up — voice, audio, video, document — is an
         # independent message and takes its own FIFO turn like text does; merging on *any*

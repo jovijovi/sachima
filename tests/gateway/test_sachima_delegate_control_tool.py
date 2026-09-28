@@ -1,0 +1,2283 @@
+"""The one control surface: ``sachima_delegate_control`` over a real coordinator.
+
+This is where Hermes's semantic choice meets Sachima's deterministic one. The
+tool takes a canonical ``agent_id`` — the id Hermes already resolved, clarified
+or refused to guess at — and admits it only against ``live roster ∩ execution
+preset``. Everything proven here is at the actual tool boundary, over the real
+composed ``arsd`` bundle with an injected facade double, so a refusal is proven
+by the *absence* of durable state and of a submit rather than by a return value.
+
+What is proven:
+
+* an exact id present in both halves creates exactly one task and one submit;
+* an unknown id, a roster-only id, a preset-only id, a malformed id, and a
+  daemon whose roster cannot be read each refuse **before** any durable task,
+  payload, turn record, or submit exists;
+* a selection resolves case-insensitively but otherwise exactly against the
+  live roster, and the canonical roster spelling is what gets stored;
+* nothing else falls back: no trimming, no nearest match, no default AGENT,
+  and no inherited configuration;
+* continuation keeps the AGENT by default, switches AGENT into a *linked* task
+  without ever rewriting the old binding, and re-proves eligibility every time
+  it would submit;
+* ``status`` / ``cancel`` / ``recover`` / ``result`` still answer for a task
+  whose AGENT is no longer eligible — an old task stays readable even when it
+  can no longer run.
+
+Everything is hermetic and offline: no socket, no daemon, no IM adapter, no
+provider, and no AGENT. Forbidden terms in this prose are no-leak boundary
+canaries only, never behavior.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import time
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
+from unittest.mock import AsyncMock
+
+import pytest
+
+import gateway.session_context as session_context
+import gateway.sachima_delegate as delegate_mod
+import tools.sachima_delegate_control_tool as control_mod
+from gateway.config import GatewayConfig, Platform, PlatformConfig
+from gateway.platforms.base import MessageType
+from gateway.run import GatewayRunner
+from gateway.sachima_agent_execution_presets import (
+    AGENT_EXECUTION_PRESETS_TYPE,
+    ENGINEERING_BASELINE_PERMISSIONS,
+    IMPLEMENTATION_PERMISSIONS,
+    SACHIMA_AGENT_INVALID_ID,
+    SACHIMA_AGENT_NO_PRESET,
+    SACHIMA_AGENT_NOT_REGISTERED,
+    SACHIMA_AGENT_ROSTER_UNAVAILABLE,
+    build_agent_execution_presets,
+)
+from gateway.sachima_agent_role_policy import (
+    AGENT_ROLE_POLICY_TYPE,
+    SACHIMA_AGENT_ROLE_AMBIGUOUS,
+    SACHIMA_AGENT_ROLE_NO_CANDIDATE,
+    build_agent_role_policy,
+)
+from gateway.sachima_delegate import SachimaDelegateCoordinator
+from gateway.sachima_delegate_state import DelegateStateStore, delegate_state_root
+from gateway.session import SessionStore, build_session_context
+from plugins.platforms.feishu.adapter import FeishuAdapter
+from sachima_supervisor.runtime_spine.agent_run_supervisor_execution_binding import (
+    bind_arsd_execution,
+)
+from sachima_supervisor.runtime_spine.arsd_run_binding_ledger import (
+    ArsdRunBindingLedger,
+)
+from sachima_supervisor.runtime_spine.arsd_socket_contract import (
+    ARSD_SUPERVISOR_CONFIG_TYPE,
+    EXPECTED_AGENT_RUN_SUPERVISOR_VERSION,
+    ArsdSupervisorConfig,
+)
+from tools.registry import registry
+
+TASK_TEXT_CANARY = "audit the sachima delegation canary payload body"
+#: The short TODO-style line the card shows; the AGENT still receives the full
+#: task text above, which is what makes "shown" and "executed" provably distinct.
+TASK_TITLE_CANARY = "核对委派卡展示标题"
+#: The short line one *round* is displayed under in the card's execution log.
+#: It is supplied per create/continue, so it is neither the Task's headline
+#: above nor the full task text the AGENT actually executes.
+ROUND_TITLE_CANARY = "核对第一轮的执行说明"
+LIVE_ROSTER = ("claude", "codex", "cursor", "oh-my-pi", "opencode")
+
+V3_OPERATIONS = [
+    "agent_list",
+    "run_cancel",
+    "run_events",
+    "run_status",
+    "server_info",
+    "session_list",
+    "session_status",
+    "submit",
+]
+
+_REAL_GET_SESSION_ENV = session_context.get_session_env
+
+FEISHU_AUTHORIZED_TASK = (
+    "Inspect the current authorization handoff.\n"
+    "Keep this complete second line in the external AGENT task body."
+)
+FEISHU_AUTHORIZED_FOLLOW_UP = (
+    "After verifying the exact terminal result, perform the one authorized follow-up.\n"
+    "Keep this complete second line in the private continuation payload."
+)
+
+
+class _Facade:
+    """One in-memory arsd daemon: roster, submits, and terminals."""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+        self.submitted: list[dict[str, Any]] = []
+        self.run_ids: list[str] = []
+        self.terminals: dict[str, dict[str, Any]] = {}
+        self.registered_agent_ids: tuple[str, ...] = LIVE_ROSTER
+        self.agent_list_error: BaseException | None = None
+        self._seq = 0
+
+    # -- operations ------------------------------------------------------- #
+    def server_info(self) -> dict[str, Any]:
+        self.calls.append("server_info")
+        return {
+            "version": EXPECTED_AGENT_RUN_SUPERVISOR_VERSION,
+            "api_version": 3,
+            "supported_api_versions": [3],
+            "operations": list(V3_OPERATIONS),
+            "limits": {
+                "max_concurrent_runs": 4,
+                "max_frame_bytes": 1_048_576,
+                "max_prompt_bytes": 262_144,
+                "events_page_limit": 256,
+                "event_follow_queue_size": 1024,
+                "max_run_event_budget_bytes": 2_147_483_648,
+            },
+        }
+
+    def agent_list(self) -> dict[str, Any]:
+        self.calls.append("agent_list")
+        if self.agent_list_error is not None:
+            raise self.agent_list_error
+        return {"agent_ids": list(self.registered_agent_ids)}
+
+    def submit(self, *, request_id: str, payload: Any) -> dict[str, Any]:
+        self.calls.append("submit")
+        self._seq += 1
+        run_id = f"RUN-control-{self._seq}"
+        self.submitted.append(json.loads(json.dumps(dict(payload))))
+        self.run_ids.append(run_id)
+        requested = dict(payload).get("request", {}).get("session_id")
+        return {
+            "run_id": run_id,
+            "session_id": requested or f"ARSSESSIONCONTROL{self._seq}",
+            "accepted_at": f"2026-08-23T04:05:{self._seq:02d}+00:00",
+        }
+
+    def run_status(self, run_id: str) -> dict[str, Any]:
+        self.calls.append("run_status")
+        body: dict[str, Any] = {"run_id": run_id, "session_id": "ARSSESSIONCONTROL1"}
+        terminal = self.terminals.get(run_id)
+        if terminal is not None:
+            body["result"] = dict(terminal)
+        return body
+
+    def run_events(self, run_id: str, *, from_seq: int, limit: int | None = None):
+        self.calls.append("run_events")
+        return {
+            "run_id": run_id,
+            "events": [],
+            "next_from_seq": from_seq,
+            "exhausted": True,
+        }
+
+    def run_cancel(self, run_id: str) -> dict[str, Any]:
+        self.calls.append("run_cancel")
+        return {"run_id": run_id}
+
+    def session_status(self, session_id: str) -> dict[str, Any]:
+        self.calls.append("session_status")
+        return {
+            "session_id": session_id,
+            "owner": "sachima_host",
+            "namespace": "sachima_tasks",
+            "agent_id": "codex",
+            "profile_id": None,
+            "created_at": "2026-08-23T04:05:06+00:00",
+            "updated_at": "2026-08-23T04:05:06+00:00",
+            "last_effective_model": None,
+            "last_effective_effort": None,
+            "quarantine": None,
+        }
+
+    def session_list(self) -> dict[str, Any]:
+        self.calls.append("session_list")
+        return {"sessions": []}
+
+    # -- helpers ---------------------------------------------------------- #
+    def terminalize(self, index: int, *, status: str = "completed") -> None:
+        self.terminals[self.run_ids[index]] = {
+            "run_id": self.run_ids[index],
+            "status": status,
+            "final_message": "the delegated agent finished and reported this",
+            "truncated": False,
+            "truncate_reason": None,
+        }
+
+    def submit_count(self) -> int:
+        return len(self.submitted)
+
+
+def _config(tmp_path: Path) -> ArsdSupervisorConfig:
+    private = tmp_path / "private"
+    private.mkdir(parents=True, exist_ok=True)
+    return ArsdSupervisorConfig(
+        type=ARSD_SUPERVISOR_CONFIG_TYPE,
+        approval_ref="approval_delegate_offline",
+        owner="sachima_host",
+        namespace="sachima_tasks",
+        socket_path=str(private / "arsd.sock"),
+        binding_ledger_path=str(private / "arsd-run-bindings.json"),
+        agent_by_policy_ref={"policy_codex": "codex", "policy_cursor": "cursor"},
+        model_by_policy_ref={"policy_model": "claude-opus-5"},
+        effort_by_policy_ref={"policy_effort": "xhigh"},
+        workspace_by_ref={"ws_delegate": str(private / "workspace")},
+        run_limits_by_policy_ref={
+            "policy_limits": {
+                "startup_timeout_seconds": 60.0,
+                "turn_timeout_seconds": 600.0,
+                "cancel_grace_seconds": 10.0,
+                "max_stderr_bytes": 262_144,
+                "max_event_bytes": 65_536,
+                "max_events": 10_000,
+            }
+        },
+        grant_ref="grant_engineering_v1",
+        grant_hash="sha256:" + "a" * 64,
+        grant_role_hash="sha256:" + "b" * 64,
+        grant_capabilities=("execute", "read", "search", "write"),
+        grant_by_policy_ref={
+            "policy_codex": list(ENGINEERING_BASELINE_PERMISSIONS),
+            "policy_cursor": list(IMPLEMENTATION_PERMISSIONS),
+        },
+        mcp_snapshot_hashes=("sha256:" + "c" * 64,),
+        credential_refs=("cred_engineering",),
+        evidence_policy_hash="sha256:" + "d" * 64,
+        recovery_policy_hash="sha256:" + "e" * 64,
+        enabled=True,
+    )
+
+
+#: ``codex`` reviews and ``cursor`` implements, so the two presets in this
+#: harness declare different capability sets and must therefore submit under
+#: different sealed grants.
+PRESET_PERMISSIONS_BY_AGENT = {
+    "codex": ENGINEERING_BASELINE_PERMISSIONS,
+    "cursor": IMPLEMENTATION_PERMISSIONS,
+}
+
+
+def _preset_entry(agent_id: str) -> dict[str, Any]:
+    return {
+        "agent_id": agent_id,
+        "workspace_ref": "ws_delegate",
+        "agent_policy_ref": f"policy_{agent_id}",
+        "model_policy_ref": "policy_model",
+        "effort_policy_ref": "policy_effort",
+        "run_limits_policy_ref": "policy_limits",
+        "permissions": list(PRESET_PERMISSIONS_BY_AGENT[agent_id]),
+    }
+
+
+SESSION_ID = "20260823_000000_abcd1234"
+SESSION_KEY = "feishu:oc_chat"
+
+
+class _SessionEntry:
+    session_id = SESSION_ID
+    session_key = SESSION_KEY
+    origin = SimpleNamespace(
+        platform=SimpleNamespace(value="feishu"), chat_id="oc_chat", thread_id=None
+    )
+
+
+class _SessionStore:
+    def lookup_by_session_id(self, session_id):
+        return _SessionEntry() if session_id == SESSION_ID else None
+
+    def lookup_by_session_key(self, session_key):
+        return _SessionEntry() if session_key == SESSION_KEY else None
+
+
+@pytest.fixture
+def control(tmp_path, monkeypatch):
+    """The tool, its env gate, a bound coordinator, and a running loop."""
+
+    import asyncio
+    import threading
+
+    monkeypatch.setenv(control_mod.SACHIMA_LIVE_PROGRESS_SURFACE_ENV, "hermes_internal")
+    monkeypatch.setattr(
+        "gateway.session_context.get_session_env",
+        lambda name, default="": {
+            "HERMES_SESSION_ID": SESSION_ID,
+            "HERMES_SESSION_KEY": SESSION_KEY,
+            "HERMES_SESSION_MESSAGE_ID": "om_anchor",
+        }.get(name, default),
+    )
+    control_mod.bind_delegate_control_session_store(_SessionStore())
+
+    facade = _Facade()
+    config = _config(tmp_path)
+    bundle = bind_arsd_execution(
+        config,
+        facade=facade,
+        ledger=ArsdRunBindingLedger(config.binding_ledger_path),
+        payload_resolver=delegate_mod.delegate_payload_resolver(),
+    )
+    presets = build_agent_execution_presets(
+        {
+            "type": AGENT_EXECUTION_PRESETS_TYPE,
+            "presets": [_preset_entry("codex"), _preset_entry("cursor")],
+        },
+        config,
+    )
+    role_policy = build_agent_role_policy(
+        {
+            "type": AGENT_ROLE_POLICY_TYPE,
+            "assignments": [
+                {
+                    "agent_id": "codex",
+                    "division": "engineering",
+                    "roles": ["architecture_design", "code_review"],
+                },
+                {
+                    "agent_id": "cursor",
+                    "division": "engineering",
+                    "roles": ["code_review", "implementation"],
+                },
+            ],
+        }
+    )
+    coordinator = SachimaDelegateCoordinator(
+        bundle,
+        config,
+        presets=presets,
+        role_policy=role_policy,
+        state=DelegateStateStore(delegate_state_root(config.binding_ledger_path)),
+        observe_interval=0.01,
+    )
+    delegate_mod._coordinator = coordinator
+
+    loop = asyncio.new_event_loop()
+    thread = threading.Thread(target=loop.run_forever, daemon=True)
+    thread.start()
+    coordinator.bind_lifecycle_loop(loop)
+    try:
+        yield SimpleNamespace(
+            coordinator=coordinator, facade=facade, config=config, presets=presets
+        )
+    finally:
+        # Retire the coordinator's own lifecycle tasks before the loop goes,
+        # so a still-polling observer is cancelled rather than orphaned.
+        async def _drain():
+            pending = [
+                task
+                for task in asyncio.all_tasks(loop)
+                if task is not asyncio.current_task()
+            ]
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+
+        asyncio.run_coroutine_threadsafe(_drain(), loop).result(timeout=5)
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join(timeout=5)
+        loop.close()
+        delegate_mod.unbind_delegate_coordinator()
+        control_mod.bind_delegate_control_session_store(None)
+
+
+def _call(**args) -> dict[str, Any]:
+    """One *well-formed* control call, as Hermes is required to make it.
+
+    ``create`` and ``continue`` both name the round they are opening, so this
+    helper supplies that line whenever a test is not itself about the argument.
+    A test that proves the argument is required calls the handler directly.
+    """
+
+    if args.get("action") in {"create", "continue"}:
+        args.setdefault("round_title", ROUND_TITLE_CANARY)
+    return json.loads(control_mod._handle_delegate_control(dict(args)))
+
+
+def _durable_records(coordinator, folder: str) -> int:
+    """Records committed under one state folder, counted the store's own way.
+
+    Every write in ``DelegateStateStore`` is ``temp sibling → os.replace``, so a
+    ``<key>.tmp`` is visible for as long as one write is in flight — and the
+    lifecycle observer keeps rewriting a turn on its own loop thread after that
+    turn reads terminal. Counting raw directory entries therefore counts a
+    record twice whenever the observer happens to be mid-write, which is a fact
+    about timing rather than about what was committed. ``_list`` skips those
+    siblings for exactly this reason; a test that proves a refusal by absence
+    has to read the ledger by the same rule the ledger uses.
+    """
+
+    directory = Path(coordinator.state.root) / folder
+    if not directory.exists():
+        return 0
+    return len(
+        [
+            path
+            for path in directory.iterdir()
+            if path.is_file() and not path.name.endswith((".tmp", ".json"))
+        ]
+    )
+
+
+def _durable_counts(coordinator) -> tuple[int, int]:
+    """(tasks, turns) actually on disk — a refusal is proven by absence."""
+
+    return _durable_records(coordinator, "tasks"), _durable_records(coordinator, "turns")
+
+
+def _payload_count(coordinator) -> int:
+    """Task bytes actually on disk — the first durable effect a create has."""
+
+    return _durable_records(coordinator, "payloads")
+
+
+async def _normalize_feishu_message(message_id: str):
+    """Run one ordinary Feishu message through its real source builder."""
+
+    adapter = FeishuAdapter.__new__(FeishuAdapter)
+    adapter.config = PlatformConfig()
+    adapter.platform = Platform.FEISHU
+    adapter._extract_message_content = AsyncMock(
+        return_value=("authorize delegated work", MessageType.TEXT, [], [], [])
+    )
+    adapter.get_chat_info = AsyncMock(
+        return_value={"name": "Authorization Test", "chat_type": "p2p"}
+    )
+    adapter._resolve_sender_profile = AsyncMock(
+        return_value={
+            "user_id": "user_authorizer",
+            "user_name": "Authorizer",
+            "user_id_alt": None,
+        }
+    )
+    adapter._dispatch_inbound_event = AsyncMock()
+    message = SimpleNamespace(
+        chat_id="oc_chat",
+        thread_id=None,
+        root_id=None,
+        parent_id=None,
+        upper_message_id=None,
+    )
+
+    await adapter._process_inbound_message(
+        data=message,
+        message=message,
+        sender_id=SimpleNamespace(open_id="user_authorizer"),
+        chat_type="p2p",
+        message_id=message_id,
+    )
+
+    adapter._dispatch_inbound_event.assert_awaited_once()
+    return adapter._dispatch_inbound_event.await_args.args[0]
+
+
+@pytest.fixture
+def feishu_control(control, tmp_path, monkeypatch):
+    """Bind native control to a real isolated SessionStore and ContextVars."""
+
+    hermes_home = tmp_path / "hermes-home"
+    hermes_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    for name in (
+        "HERMES_SESSION_ID",
+        "HERMES_SESSION_KEY",
+        "HERMES_SESSION_MESSAGE_ID",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(session_context, "get_session_env", _REAL_GET_SESSION_ENV)
+
+    config = GatewayConfig()
+    store = SessionStore(tmp_path / "sessions", config)
+    control_mod.bind_delegate_control_session_store(store)
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner.adapters = {}
+    active_tokens: list[Any] = []
+
+    def bind(event):
+        if active_tokens:
+            runner._clear_session_env(active_tokens)
+            active_tokens.clear()
+        entry = store.get_or_create_session(event.source)
+        context = build_session_context(event.source, config, entry)
+        context.input_internal = event.internal is True
+        active_tokens.extend(runner._set_session_env(context))
+        return entry
+
+    try:
+        yield SimpleNamespace(control=control, bind=bind, store=store)
+    finally:
+        if active_tokens:
+            runner._clear_session_env(active_tokens)
+        store.close_all_db_handles()
+
+
+def _create_with_authorized_follow_up() -> dict[str, Any]:
+    return _call(
+        action="create",
+        agent_id="codex",
+        task=FEISHU_AUTHORIZED_TASK,
+        task_title="核对当前消息授权锚点",
+        round_title="执行已授权的第一轮",
+        continuation_task=FEISHU_AUTHORIZED_FOLLOW_UP,
+        continuation_round_title="执行已授权的后续轮次",
+        continuation_summary="The current user message authorized exactly one follow-up.",
+        continuation_stop_condition="Stop after that follow-up and report its result.",
+        continuation_agent_id="codex",
+    )
+
+
+def test_feishu_current_message_id_authorizes_and_seals_follow_up(
+    feishu_control,
+) -> None:
+    message_id = "om_current_authorization"
+    event = asyncio.run(_normalize_feishu_message(message_id))
+
+    assert event.message_id == message_id
+    assert event.source.message_id == message_id
+    feishu_control.bind(event)
+    assert _REAL_GET_SESSION_ENV("HERMES_SESSION_MESSAGE_ID") == message_id
+
+    answer = _create_with_authorized_follow_up()
+    binding = feishu_control.control.coordinator.state.read_task(
+        answer["result"]["task_ref"]
+    )
+    turn = feishu_control.control.coordinator.state.read_turn(
+        binding.current_turn_key
+    )
+
+    assert answer["result"]["lifecycle"] == "admitted"
+    assert binding.authorization_ref == message_id
+    assert binding.continuation_disposition == "authorized"
+    assert (
+        feishu_control.control.coordinator.state.read_payload(turn.payload_ref)
+        == FEISHU_AUTHORIZED_TASK
+    )
+    assert (
+        feishu_control.control.coordinator.state.read_payload(
+            binding.continuation_payload_ref
+        )
+        == FEISHU_AUTHORIZED_FOLLOW_UP
+    )
+    assert (
+        feishu_control.control.facade.submitted[0]["prompt_text"]
+        == FEISHU_AUTHORIZED_TASK
+    )
+
+
+def test_feishu_missing_message_anchor_refuses_before_durable_effects(
+    feishu_control,
+) -> None:
+    event = asyncio.run(_normalize_feishu_message(""))
+
+    assert event.source.message_id is None
+    feishu_control.bind(event)
+    answer = _create_with_authorized_follow_up()
+
+    assert answer == {"error": "sachima_delegate_control_invalid"}
+    assert feishu_control.control.facade.submit_count() == 0
+    assert _durable_counts(feishu_control.control.coordinator) == (0, 0)
+    assert _payload_count(feishu_control.control.coordinator) == 0
+
+
+def test_feishu_successive_messages_bind_their_own_ids(feishu_control) -> None:
+    authorization_refs = []
+
+    for message_id in ("om_first_authorization", "om_second_authorization"):
+        event = asyncio.run(_normalize_feishu_message(message_id))
+        assert event.source.message_id == message_id
+        feishu_control.bind(event)
+        assert _REAL_GET_SESSION_ENV("HERMES_SESSION_MESSAGE_ID") == message_id
+        answer = _create_with_authorized_follow_up()
+        binding = feishu_control.control.coordinator.state.read_task(
+            answer["result"]["task_ref"]
+        )
+        authorization_refs.append(binding.authorization_ref)
+
+    assert authorization_refs == [
+        "om_first_authorization",
+        "om_second_authorization",
+    ]
+    assert feishu_control.control.facade.submit_count() == 2
+
+
+# --------------------------------------------------------------------------- #
+# A. The tool's argument surface
+# --------------------------------------------------------------------------- #
+def test_the_schema_takes_a_canonical_agent_id_and_no_profile_argument() -> None:
+    properties = control_mod.DELEGATE_CONTROL_SCHEMA["parameters"]["properties"]
+    assert "agent_id" in properties
+    assert "requested_profile_id" not in properties
+    serialized = json.dumps(control_mod.DELEGATE_CONTROL_SCHEMA)
+    assert "requested_profile_id" not in serialized
+    assert "profile" not in serialized
+
+
+def test_the_schema_separates_the_displayed_title_from_the_executed_task() -> None:
+    """Two arguments, two jobs: one is shown, the other is executed.
+
+    The card's ``任务`` row is a TODO-style line a person reads; the AGENT still
+    receives the whole ``task``. A surface with only one field forces the card
+    to either show an execution prompt or truncate one, and both were the
+    problem this argument exists to remove.
+    """
+
+    properties = control_mod.DELEGATE_CONTROL_SCHEMA["parameters"]["properties"]
+    assert properties["task_title"]["type"] == "string"
+    title_description = properties["task_title"]["description"]
+    assert "create" in title_description
+    # The two descriptions must not read alike, or a model will fill them alike.
+    assert title_description != properties["task"]["description"]
+
+
+def test_the_schema_asks_for_a_round_line_on_both_create_and_continue() -> None:
+    """Three arguments, three jobs: the Task's name, this round's, the work.
+
+    The execution log needs one short sentence per round, and the only honest
+    source for it is the caller that opened the round. Deriving it from ``task``
+    would put a clipped execution prompt in the log — the same defect the
+    Task-level title already exists to remove — so it is asked for explicitly,
+    under one name, on both actions that open a round.
+    """
+
+    properties = control_mod.DELEGATE_CONTROL_SCHEMA["parameters"]["properties"]
+    assert properties["round_title"]["type"] == "string"
+    description = properties["round_title"]["description"]
+    assert "create" in description and "continue" in description
+    # Three arguments a model must not fill alike.
+    assert description != properties["task"]["description"]
+    assert description != properties["task_title"]["description"]
+
+
+def test_the_registered_tool_is_still_the_one_default_off_control_surface() -> None:
+    assert registry.get_entry(control_mod.TOOL_NAME) is not None
+    assert control_mod.TOOLSET_NAME == "sachima_delegate_control"
+    assert set(control_mod._ACTIONS) == {
+        "agents",
+        "create",
+        "status",
+        "cancel",
+        "continue",
+        "recover",
+        "result",
+        "settle",
+        "continue_authorized",
+        "pause_continuation",
+        "resume_continuation",
+    }
+    # Discovery is read-only and needs no task of its own; everything that
+    # touches an existing task still proves the task is this conversation's.
+    assert control_mod._TASKLESS_ACTIONS == {"agents", "create"}
+    assert control_mod._INTERNAL_INPUT_ACTIONS == {
+        "agents",
+        "status",
+        "result",
+        "settle",
+        "continue_authorized",
+        "pause_continuation",
+    }
+
+
+# --------------------------------------------------------------------------- #
+# B. Create — the exact intersection admits, everything else refuses
+# --------------------------------------------------------------------------- #
+def test_an_exact_id_in_both_halves_creates_one_task_and_one_submit(control) -> None:
+    answer = _call(
+        action="create",
+        agent_id="codex",
+        task=TASK_TEXT_CANARY,
+        task_title=TASK_TITLE_CANARY,
+    )
+
+    assert answer["type"] == control_mod.DELEGATE_CONTROL_ENVELOPE_TYPE
+    assert answer["action"] == "create"
+    result = answer["result"]
+    assert result["task_ref"].startswith("dtask_")
+    assert result["lifecycle"] in {"in_flight", "admitted", "terminal"}
+    assert control.facade.submit_count() == 1
+    assert _durable_counts(control.coordinator) == (1, 1)
+
+    binding = control.coordinator.state.read_task(result["task_ref"])
+    assert binding.agent_id == "codex"
+    # The submitted Run names the same AGENT the preset was keyed on.
+    assert control.facade.submitted[0]["request"]["agent_id"] == "codex"
+
+
+@pytest.mark.parametrize(
+    ("agent_id", "refusal"),
+    [
+        ("oh-my-pi", SACHIMA_AGENT_NO_PRESET),
+        ("OH-MY-PI", SACHIMA_AGENT_NO_PRESET),
+        ("claude", SACHIMA_AGENT_NO_PRESET),
+        ("tom", SACHIMA_AGENT_NOT_REGISTERED),
+        ("Tom", SACHIMA_AGENT_NOT_REGISTERED),
+        ("codex ", SACHIMA_AGENT_INVALID_ID),
+        (" codex", SACHIMA_AGENT_INVALID_ID),
+        ("cod", SACHIMA_AGENT_NOT_REGISTERED),
+        ("codexx", SACHIMA_AGENT_NOT_REGISTERED),
+        ("../codex", SACHIMA_AGENT_INVALID_ID),
+    ],
+)
+def test_an_ineligible_id_refuses_before_anything_durable_exists(
+    control, agent_id, refusal
+) -> None:
+    answer = _call(
+        action="create",
+        agent_id=agent_id,
+        task=TASK_TEXT_CANARY,
+        task_title=TASK_TITLE_CANARY,
+    )
+
+    assert answer["result"]["refusal"] == refusal
+    assert control.facade.submit_count() == 0
+    assert _durable_counts(control.coordinator) == (0, 0)
+
+
+def test_a_registered_agent_without_a_preset_is_reported_as_registered(
+    control,
+) -> None:
+    """Registered-and-unavailable is a different answer from "no such AGENT",
+    and Hermes needs the difference to say something true."""
+
+    absent = _call(
+        action="create",
+        agent_id="oh-my-pi",
+        task=TASK_TEXT_CANARY,
+        task_title=TASK_TITLE_CANARY,
+    )
+    unknown = _call(
+        action="create",
+        agent_id="tom",
+        task=TASK_TEXT_CANARY,
+        task_title=TASK_TITLE_CANARY,
+    )
+
+    assert absent["result"] == {
+        "refusal": SACHIMA_AGENT_NO_PRESET,
+        "agent_id": "oh-my-pi",
+        "registered": True,
+    }
+    assert unknown["result"] == {
+        "refusal": SACHIMA_AGENT_NOT_REGISTERED,
+        "agent_id": "tom",
+        "registered": False,
+    }
+
+
+def test_a_preset_whose_agent_left_the_roster_stops_submitting(control) -> None:
+    control.facade.registered_agent_ids = ("claude", "cursor")
+    answer = _call(
+        action="create",
+        agent_id="codex",
+        task=TASK_TEXT_CANARY,
+        task_title=TASK_TITLE_CANARY,
+    )
+
+    assert answer["result"]["refusal"] == SACHIMA_AGENT_NOT_REGISTERED
+    assert control.facade.submit_count() == 0
+    assert _durable_counts(control.coordinator) == (0, 0)
+
+
+def test_an_unreadable_roster_refuses_rather_than_assuming_anything(control) -> None:
+    control.facade.agent_list_error = ConnectionError("socket gone")
+    answer = _call(
+        action="create",
+        agent_id="codex",
+        task=TASK_TEXT_CANARY,
+        task_title=TASK_TITLE_CANARY,
+    )
+
+    assert answer["result"]["refusal"] == SACHIMA_AGENT_ROSTER_UNAVAILABLE
+    assert control.facade.submit_count() == 0
+    assert _durable_counts(control.coordinator) == (0, 0)
+
+
+def test_create_without_an_agent_id_never_picks_one(control) -> None:
+    """There is no default AGENT to fall back to, so an omitted id is invalid
+    input rather than an invitation to route."""
+
+    answer = control_mod._handle_delegate_control(
+        {
+            "action": "create",
+            "task": TASK_TEXT_CANARY,
+            "task_title": TASK_TITLE_CANARY,
+        }
+    )
+    assert json.loads(answer)["error"] == control_mod.SACHIMA_DELEGATE_CONTROL_INVALID
+    assert control.facade.submit_count() == 0
+    assert _durable_counts(control.coordinator) == (0, 0)
+
+
+def test_an_empty_task_creates_nothing_even_for_an_eligible_agent(control) -> None:
+    answer = control_mod._handle_delegate_control(
+        {
+            "action": "create",
+            "agent_id": "codex",
+            "task": "   ",
+            "task_title": TASK_TITLE_CANARY,
+        }
+    )
+    assert json.loads(answer)["error"] == control_mod.SACHIMA_DELEGATE_CONTROL_INVALID
+    assert _durable_counts(control.coordinator) == (0, 0)
+
+
+@pytest.mark.parametrize(
+    "title",
+    [None, "", "   ", 7, ["核对委派卡展示标题"]],
+)
+def test_create_without_a_usable_title_creates_nothing(control, title) -> None:
+    """The displayed line is required input, never derived from the prompt.
+
+    Falling back to a clipped ``task`` is exactly the behaviour this argument
+    replaces: a truncated execution prompt reads as a sentence the user never
+    wrote. With no title there is nothing honest to show, so nothing is created.
+    """
+
+    args = {"action": "create", "agent_id": "codex", "task": TASK_TEXT_CANARY}
+    if title is not None:
+        args["task_title"] = title
+    answer = control_mod._handle_delegate_control(args)
+
+    assert json.loads(answer)["error"] == control_mod.SACHIMA_DELEGATE_CONTROL_INVALID
+    assert control.facade.submit_count() == 0
+    assert _durable_counts(control.coordinator) == (0, 0)
+
+
+@pytest.mark.parametrize("title", ["\x00\x07", "\x1b\x1b", "\x7f", "\x00 \x1b\t"])
+def test_a_title_that_survives_nothing_visible_creates_nothing(control, title) -> None:
+    """"Non-empty string" is not the contract — "renders a line" is.
+
+    A title made only of control characters passes a raw emptiness check and
+    then sanitizes away to nothing, which would submit a Run and leave the card
+    saying ``未提供`` about a task the user did name. The refusal has to be
+    decided on the cleaned line, and it has to land before admission: nothing
+    is asked of the roster, nothing durable is written, and nothing is
+    submitted.
+    """
+
+    answer = control_mod._handle_delegate_control(
+        {
+            "action": "create",
+            "agent_id": "codex",
+            "task": TASK_TEXT_CANARY,
+            "task_title": title,
+        }
+    )
+
+    assert json.loads(answer)["error"] == control_mod.SACHIMA_DELEGATE_CONTROL_INVALID
+    assert control.facade.calls.count("agent_list") == 0
+    assert control.facade.submit_count() == 0
+    assert _durable_counts(control.coordinator) == (0, 0)
+    assert control.coordinator.state.list_tasks() == ()
+
+
+@pytest.mark.parametrize(
+    "round_title",
+    [None, "", "   ", 7, ["核对第一轮的执行说明"], "\x00\x07", "\x1b\x1b", "\x7f"],
+)
+def test_create_without_a_usable_round_line_creates_nothing(control, round_title) -> None:
+    """The log line is required input, decided on the line it would render.
+
+    A missing one, a wrongly typed one, and one that sanitizes away to nothing
+    are the same fact: there is no sentence to put in the execution log. The
+    refusal therefore lands before admission — nothing is asked of the roster,
+    no payload, Session, turn, task, or card is written, and nothing submits.
+    """
+
+    args = {
+        "action": "create",
+        "agent_id": "codex",
+        "task": TASK_TEXT_CANARY,
+        "task_title": TASK_TITLE_CANARY,
+    }
+    if round_title is not None:
+        args["round_title"] = round_title
+    answer = control_mod._handle_delegate_control(args)
+
+    assert json.loads(answer)["error"] == control_mod.SACHIMA_DELEGATE_CONTROL_INVALID
+    assert control.facade.calls.count("agent_list") == 0
+    assert control.facade.submit_count() == 0
+    assert _durable_counts(control.coordinator) == (0, 0)
+    assert control.coordinator.state.list_tasks() == ()
+    assert _payload_count(control.coordinator) == 0
+
+
+def test_a_title_that_still_renders_after_cleaning_is_created_from_that_line(
+    control,
+) -> None:
+    """The stored line is the sanitized one: single line, bounded, redacted."""
+
+    from gateway.sachima_delegate_card import (
+        CARD_TEXT_BUDGET_CHARS,
+        sanitize_card_line,
+    )
+
+    raw = "核对 dtask_0f3c9a11b2c34d5e6f70 的\n多行\x07标题 " + "长" * 300
+    task_ref = _call(
+        action="create", agent_id="codex", task=TASK_TEXT_CANARY, task_title=raw
+    )["result"]["task_ref"]
+
+    stored = control.coordinator.state.read_task(task_ref).task_title
+    # The tool applies the card layer's own rule rather than a second one.
+    assert stored == sanitize_card_line(raw)
+    assert len(stored) == CARD_TEXT_BUDGET_CHARS
+    assert "\n" not in stored and "\x07" not in stored
+    assert "dtask_0f3c9a11b2c34d5e6f70" not in stored
+    assert control.facade.submit_count() == 1
+
+
+def test_the_agent_receives_the_whole_task_while_the_task_keeps_the_title(
+    control,
+) -> None:
+    """One create, two durable facts: the executed prompt and the shown line."""
+
+    answer = _call(
+        action="create",
+        agent_id="codex",
+        task=TASK_TEXT_CANARY,
+        task_title=TASK_TITLE_CANARY,
+    )
+    task_ref = answer["result"]["task_ref"]
+
+    binding = control.coordinator.state.read_task(task_ref)
+    assert binding.task_title == TASK_TITLE_CANARY
+    # The AGENT's instruction is untouched by the display decision.
+    assert control.facade.submitted[0]["prompt_text"] == TASK_TEXT_CANARY
+    # And the Turn still carries the full ask as its execution/summary context.
+    turn = control.coordinator.state.read_turn(binding.current_turn_key)
+    assert turn.task_description == TASK_TEXT_CANARY
+    assert turn.task_description != binding.task_title
+
+
+def test_a_surrounding_whitespace_title_is_stored_as_the_line_it_renders(
+    control,
+) -> None:
+    task_ref = _call(
+        action="create",
+        agent_id="codex",
+        task=TASK_TEXT_CANARY,
+        task_title="  核对委派卡展示标题  ",
+    )["result"]["task_ref"]
+
+    assert control.coordinator.state.read_task(task_ref).task_title == (
+        "核对委派卡展示标题"
+    )
+
+
+def test_the_roster_is_read_live_for_every_create(control) -> None:
+    _call(
+        action="create",
+        agent_id="codex",
+        task=TASK_TEXT_CANARY,
+        task_title=TASK_TITLE_CANARY,
+    )
+    first = control.facade.calls.count("agent_list")
+    _call(
+        action="create",
+        agent_id="codex",
+        task=TASK_TEXT_CANARY,
+        task_title=TASK_TITLE_CANARY,
+    )
+    assert control.facade.calls.count("agent_list") == first + 1
+
+
+# --------------------------------------------------------------------------- #
+# C. Continuation — keep, switch, and re-prove
+# --------------------------------------------------------------------------- #
+def _completed_task(control) -> str:
+    """One task driven to its terminal, so a continuation is legal.
+
+    The wait is a wall-clock deadline rather than an iteration count: the
+    observer runs on its own loop, so a loaded machine must be allowed to be
+    slow without turning that into a failure about continuation.
+    """
+
+    task_ref = _call(
+        action="create",
+        agent_id="codex",
+        task=TASK_TEXT_CANARY,
+        task_title=TASK_TITLE_CANARY,
+    )[
+        "result"
+    ]["task_ref"]
+    control.facade.terminalize(0)
+    deadline = time.monotonic() + 30.0
+    while time.monotonic() < deadline:
+        status = _call(action="status", task_ref=task_ref)["result"]
+        if status["lifecycle"] == "terminal":
+            return task_ref
+        time.sleep(0.02)
+    raise AssertionError("the first Run never reached a terminal")
+
+
+def test_continuation_keeps_the_same_task_session_and_agent(control) -> None:
+    task_ref = _completed_task(control)
+    answer = _call(action="continue", task_ref=task_ref, task="and now the second half")
+
+    assert answer["result"]["task_ref"] == task_ref
+    binding = control.coordinator.state.read_task(task_ref)
+    assert binding.agent_id == "codex"
+    assert len(binding.turn_keys) == 2
+    assert control.facade.submit_count() == 2
+
+
+def test_continuation_restates_the_same_agent_without_forking_the_task(
+    control,
+) -> None:
+    task_ref = _completed_task(control)
+    answer = _call(
+        action="continue",
+        task_ref=task_ref,
+        agent_id="codex",
+        task="and now the second half",
+    )
+    assert answer["result"]["task_ref"] == task_ref
+    assert len(control.coordinator.state.read_task(task_ref).turn_keys) == 2
+
+
+@pytest.mark.parametrize(
+    "round_title",
+    [None, "", "   ", 7, ["继续这个任务的第二段"], "\x00\x07", "\x7f"],
+)
+def test_continuation_without_a_usable_round_line_runs_nothing(
+    control, round_title
+) -> None:
+    """A continuation opens a round too, so it names one or it does not run.
+
+    The refusal lands before eligibility is re-proven and before the new turn
+    exists: the task keeps exactly the turns it already had, and no second Run
+    is submitted.
+    """
+
+    task_ref = _completed_task(control)
+    before = control.coordinator.state.read_task(task_ref)
+    submits = control.facade.submit_count()
+    turns = _durable_counts(control.coordinator)
+    payloads = _payload_count(control.coordinator)
+    roster_reads = control.facade.calls.count("agent_list")
+
+    args = {"action": "continue", "task_ref": task_ref, "task": "第二段的完整执行指令"}
+    if round_title is not None:
+        args["round_title"] = round_title
+    answer = control_mod._handle_delegate_control(args)
+
+    assert json.loads(answer)["error"] == control_mod.SACHIMA_DELEGATE_CONTROL_INVALID
+    assert control.facade.calls.count("agent_list") == roster_reads
+    assert control.facade.submit_count() == submits
+    assert _durable_counts(control.coordinator) == turns
+    assert _payload_count(control.coordinator) == payloads
+    assert control.coordinator.state.read_task(task_ref) == before
+
+
+def test_each_round_is_logged_under_the_line_that_opened_it(control) -> None:
+    """One round, one sealed sentence — never the prompt, never the last one.
+
+    The Turn keeps the complete instruction for the AGENT and the summariser;
+    what the card's execution log reads is the short line supplied with that
+    same call. The two are separately owned, and a later round supplies its own.
+    """
+
+    task_ref = _completed_task(control)
+    first_key = control.coordinator.state.read_task(task_ref).current_turn_key
+    _call(
+        action="continue",
+        task_ref=task_ref,
+        task="第二段的完整执行指令",
+        round_title="核对第二轮的执行说明",
+    )
+    second_key = control.coordinator.state.read_task(task_ref).current_turn_key
+
+    first = control.coordinator.state.read_turn(first_key)
+    second = control.coordinator.state.read_turn(second_key)
+    assert first.round_title == ROUND_TITLE_CANARY
+    assert second.round_title == "核对第二轮的执行说明"
+    # Each half stays what it is: the executed prompt, the Task's headline, and
+    # this round's own line are three different durable facts.
+    assert second.task_description == "第二段的完整执行指令"
+    assert second.round_title != second.task_description
+    assert second.round_title != control.coordinator.state.read_task(task_ref).task_title
+
+
+def test_a_continuation_never_rewrites_the_title_at_the_top_of_the_card(
+    control,
+) -> None:
+    """One Task, one title. A later round adds a row; it never retitles.
+
+    The header line names the Task, and the Task is the same one the user
+    started. Letting a continuation move it would rewrite history in place:
+    the rounds already on the card would suddenly answer a different question.
+    """
+
+    task_ref = _completed_task(control)
+    _call(
+        action="continue",
+        task_ref=task_ref,
+        task="and now the second half",
+        task_title="第二段的新标题",
+    )
+
+    assert control.coordinator.state.read_task(task_ref).task_title == (
+        TASK_TITLE_CANARY
+    )
+
+
+def test_switching_agent_carries_the_title_into_the_linked_task(control) -> None:
+    """A switch is the same work under another AGENT, so it keeps the title.
+
+    The linked Task inherits the source Task's persisted title verbatim — the
+    one explicit rule here. It is neither re-derived from the continuation's
+    prompt nor left blank, because both would make the two cards of one piece
+    of work disagree about what that work is.
+    """
+
+    task_ref = _completed_task(control)
+    linked_ref = _call(
+        action="continue",
+        task_ref=task_ref,
+        agent_id="cursor",
+        task="take it from here",
+        task_title="调用方另给的标题",
+    )["result"]["task_ref"]
+
+    assert linked_ref != task_ref
+    linked = control.coordinator.state.read_task(linked_ref)
+    assert linked.task_title == TASK_TITLE_CANARY
+    assert control.coordinator.state.read_task(task_ref).task_title == (
+        TASK_TITLE_CANARY
+    )
+
+
+def test_switching_agent_creates_a_linked_task_and_leaves_the_old_one_alone(
+    control,
+) -> None:
+    task_ref = _completed_task(control)
+    before = control.coordinator.state.read_task(task_ref)
+
+    answer = _call(
+        action="continue",
+        task_ref=task_ref,
+        agent_id="cursor",
+        task="take it from here",
+    )
+    linked_ref = answer["result"]["task_ref"]
+
+    assert linked_ref != task_ref
+    linked = control.coordinator.state.read_task(linked_ref)
+    assert linked.agent_id == "cursor"
+    assert linked.linked_from is not None
+    # The old binding is untouched: same AGENT, same turns, same Session.
+    after = control.coordinator.state.read_task(task_ref)
+    assert after.agent_id == before.agent_id == "codex"
+    assert after.turn_keys == before.turn_keys
+    assert after.spine_session_id == before.spine_session_id
+
+
+@pytest.mark.parametrize(
+    ("agent_id", "refusal"),
+    [
+        ("oh-my-pi", SACHIMA_AGENT_NO_PRESET),
+        ("tom", SACHIMA_AGENT_NOT_REGISTERED),
+        ("cur sor", SACHIMA_AGENT_INVALID_ID),
+    ],
+)
+def test_switching_to_an_ineligible_agent_submits_nothing(
+    control, agent_id, refusal
+) -> None:
+    task_ref = _completed_task(control)
+    submits = control.facade.submit_count()
+    tasks, turns = _durable_counts(control.coordinator)
+
+    answer = _call(
+        action="continue", task_ref=task_ref, agent_id=agent_id, task="take it from here"
+    )
+
+    assert answer["result"]["refusal"] == refusal
+    assert control.facade.submit_count() == submits
+    assert _durable_counts(control.coordinator) == (tasks, turns)
+
+
+def test_a_continuation_re_proves_eligibility_even_when_the_agent_is_unchanged(
+    control,
+) -> None:
+    """An AGENT that left the roster stops receiving Runs on an existing task
+    too — eligibility is a fact about now, not about when the task started."""
+
+    task_ref = _completed_task(control)
+    control.facade.registered_agent_ids = ("claude", "cursor")
+    submits = control.facade.submit_count()
+
+    answer = _call(action="continue", task_ref=task_ref, task="one more thing")
+
+    assert answer["result"]["refusal"] == SACHIMA_AGENT_NOT_REGISTERED
+    assert control.facade.submit_count() == submits
+
+
+def test_a_task_whose_agent_became_ineligible_is_still_readable(control) -> None:
+    """Old tasks keep answering: only *new* Runs need current eligibility."""
+
+    task_ref = _completed_task(control)
+    control.facade.registered_agent_ids = ("claude",)
+
+    status = _call(action="status", task_ref=task_ref)["result"]
+    assert status["task_ref"] == task_ref
+    assert status["lifecycle"] == "terminal"
+
+    result = _call(action="result", task_ref=task_ref)["result"]
+    assert result["terminal"] == "completed"
+
+    cancelled = _call(action="cancel", task_ref=task_ref)["result"]
+    assert cancelled["task_ref"] == task_ref
+
+
+def test_a_read_only_action_never_reads_the_roster(control) -> None:
+    task_ref = _completed_task(control)
+    before = control.facade.calls.count("agent_list")
+
+    _call(action="status", task_ref=task_ref)
+    _call(action="result", task_ref=task_ref)
+
+    assert control.facade.calls.count("agent_list") == before
+
+
+def test_another_conversations_task_is_never_reachable(control) -> None:
+    task_ref = _completed_task(control)
+    binding = control.coordinator.state.read_task(task_ref)
+    control.coordinator.state.put_task(
+        type(binding)(
+            **{
+                **{
+                    field: getattr(binding, field)
+                    for field in (
+                        "task_ref",
+                        "task_id",
+                        "backend_handle",
+                        "spine_session_id",
+                        "agent_id",
+                        "turn_keys",
+                        "current_turn_key",
+                        "terminal",
+                        "linked_from",
+                    )
+                },
+                "origin": type(binding.origin)(
+                    platform="feishu",
+                    chat_id="oc_other",
+                    thread_id=None,
+                    session_key="feishu:oc_other",
+                    session_id="20260823_000000_ffff9999",
+                ),
+            }
+        )
+    )
+    answer = json.loads(control_mod._handle_delegate_control(
+        {"action": "status", "task_ref": task_ref}
+    ))
+    assert answer["error"] == control_mod.SACHIMA_DELEGATE_CONTROL_FORBIDDEN
+
+
+# --------------------------------------------------------------------------- #
+# D. A person writes ``Codex``
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize("spelling", ["codex", "Codex", "CODEX", "CoDeX"])
+def test_a_cased_selection_creates_under_the_canonical_roster_id(
+    control, spelling
+) -> None:
+    answer = _call(
+        action="create",
+        agent_id=spelling,
+        task=TASK_TEXT_CANARY,
+        task_title=TASK_TITLE_CANARY,
+    )
+    task_ref = answer["result"]["task_ref"]
+
+    assert control.coordinator.state.read_task(task_ref).agent_id == "codex"
+    assert control.facade.submitted[0]["request"]["agent_id"] == "codex"
+
+
+def test_a_cased_switch_targets_the_canonical_roster_id(control) -> None:
+    task_ref = _completed_task(control)
+    answer = _call(
+        action="continue",
+        task_ref=task_ref,
+        agent_id="CURSOR",
+        task="take it from here",
+    )
+    linked = control.coordinator.state.read_task(answer["result"]["task_ref"])
+    assert linked.agent_id == "cursor"
+
+
+def test_restating_the_same_agent_in_another_case_does_not_fork_the_task(
+    control,
+) -> None:
+    """``Codex`` and ``codex`` are the same AGENT, so this is a continuation."""
+
+    task_ref = _completed_task(control)
+    answer = _call(
+        action="continue",
+        task_ref=task_ref,
+        agent_id="Codex",
+        task="and now the second half",
+    )
+    assert answer["result"]["task_ref"] == task_ref
+    assert len(control.coordinator.state.read_task(task_ref).turn_keys) == 2
+
+
+# --------------------------------------------------------------------------- #
+# E. The grant a Run actually executes under
+#
+# ``grant_capabilities`` is not documentation: the daemon's permission bridge
+# freezes exactly that set for the Run and gates the write-family tools off
+# it. A review preset whose Run still carried the config-wide ``write`` would
+# be a review AGENT with authorship, no matter what its document said.
+# --------------------------------------------------------------------------- #
+def _submitted_grant(control, index: int = 0) -> dict[str, Any]:
+    request = control.facade.submitted[index]["request"]
+    return {
+        key: request[key]
+        for key in ("grant_ref", "grant_hash", "grant_role_hash", "grant_capabilities")
+    }
+
+
+def test_a_review_preset_submits_without_write(control) -> None:
+    _call(
+        action="create",
+        agent_id="codex",
+        task=TASK_TEXT_CANARY,
+        task_title=TASK_TITLE_CANARY,
+    )
+
+    grant = _submitted_grant(control)
+    assert grant["grant_capabilities"] == list(ENGINEERING_BASELINE_PERMISSIONS)
+    assert "write" not in grant["grant_capabilities"]
+
+
+def test_an_implementation_preset_submits_with_write(control) -> None:
+    _call(
+        action="create",
+        agent_id="cursor",
+        task=TASK_TEXT_CANARY,
+        task_title=TASK_TITLE_CANARY,
+    )
+
+    grant = _submitted_grant(control)
+    assert grant["grant_capabilities"] == list(IMPLEMENTATION_PERMISSIONS)
+
+
+def test_the_two_presets_never_share_a_sealed_grant_identity(control) -> None:
+    """Two Runs with different authority must be distinguishable afterwards."""
+
+    _call(
+        action="create",
+        agent_id="codex",
+        task=TASK_TEXT_CANARY,
+        task_title=TASK_TITLE_CANARY,
+    )
+    _call(
+        action="create",
+        agent_id="cursor",
+        task=TASK_TEXT_CANARY,
+        task_title=TASK_TITLE_CANARY,
+    )
+
+    review = _submitted_grant(control, 0)
+    author = _submitted_grant(control, 1)
+
+    assert review["grant_capabilities"] != author["grant_capabilities"]
+    assert review["grant_ref"] != author["grant_ref"]
+    assert review["grant_hash"] != author["grant_hash"]
+    assert review["grant_role_hash"] != author["grant_role_hash"]
+    # The narrowed one does not travel under the operator's wide identity.
+    assert review["grant_ref"] != control.config.grant_ref
+    assert author["grant_ref"] == control.config.grant_ref
+
+
+def test_every_continuation_resubmits_under_the_same_sealed_grant(control) -> None:
+    task_ref = _completed_task(control)
+    _call(action="continue", task_ref=task_ref, task="and now the second half")
+
+    assert _submitted_grant(control, 0) == _submitted_grant(control, 1)
+    assert "write" not in _submitted_grant(control, 1)["grant_capabilities"]
+
+
+def test_a_switch_carries_the_new_agents_grant_not_the_old_ones(control) -> None:
+    task_ref = _completed_task(control)
+    _call(
+        action="continue",
+        task_ref=task_ref,
+        agent_id="cursor",
+        task="take it from here",
+    )
+
+    assert _submitted_grant(control, 0)["grant_capabilities"] == list(
+        ENGINEERING_BASELINE_PERMISSIONS
+    )
+    assert _submitted_grant(control, 1)["grant_capabilities"] == list(
+        IMPLEMENTATION_PERMISSIONS
+    )
+
+
+def test_the_sealed_grant_is_reproducible_from_the_config_alone(control) -> None:
+    """An auditor recomputes the identity rather than trusting it."""
+
+    from sachima_supervisor.runtime_spine.arsd_socket_contract import (
+        derive_arsd_sealed_grant,
+    )
+
+    _call(
+        action="create",
+        agent_id="codex",
+        task=TASK_TEXT_CANARY,
+        task_title=TASK_TITLE_CANARY,
+    )
+    grant = _submitted_grant(control)
+    expected = derive_arsd_sealed_grant(
+        control.config, ENGINEERING_BASELINE_PERMISSIONS
+    )
+
+    assert grant["grant_ref"] == expected.grant_ref
+    assert grant["grant_hash"] == expected.grant_hash
+    assert grant["grant_role_hash"] == expected.grant_role_hash
+    assert grant["grant_capabilities"] == list(expected.capabilities)
+
+
+# --------------------------------------------------------------------------- #
+# F. Discovery: the one read-only action that closes automatic role routing
+#
+# "Find an AGENT suited to architecture design" needs three facts Hermes
+# cannot otherwise see: who is registered right now, who this host may run,
+# and who holds which role. This action returns exactly those, and — when
+# asked with an exact role — the single candidate or the question to ask.
+# It writes nothing, so a zero-or-several answer costs no task and no Run.
+# --------------------------------------------------------------------------- #
+def test_the_agents_action_reports_every_registered_agent(control) -> None:
+    answer = _call(action="agents")
+
+    assert answer["action"] == "agents"
+    agents = answer["result"]["agents"]
+    assert [entry["agent_id"] for entry in agents] == list(LIVE_ROSTER)
+    assert answer["result"]["selection"] is None
+
+
+def test_the_agents_action_separates_registration_from_executability(control) -> None:
+    view = {entry["agent_id"]: entry for entry in _call(action="agents")["result"]["agents"]}
+
+    assert view["codex"] == {
+        "agent_id": "codex",
+        "registered": True,
+        "executable": True,
+        "division": "engineering",
+        "roles": ["architecture_design", "code_review"],
+        "role_routable": True,
+    }
+    # Registered, no preset and no role: visible, and unavailable both ways.
+    assert view["oh-my-pi"]["registered"] is True
+    assert view["oh-my-pi"]["executable"] is False
+    assert view["oh-my-pi"]["role_routable"] is False
+    assert view["oh-my-pi"]["roles"] == []
+    assert view["oh-my-pi"]["division"] is None
+
+
+def test_one_exact_role_candidate_comes_back_selectable(control) -> None:
+    answer = _call(action="agents", role="architecture_design")
+
+    assert answer["result"]["selection"] == {
+        "agent_id": "codex",
+        "refusal": None,
+        "candidates": ["codex"],
+    }
+    # Discovery is read-only: naming the AGENT is still a separate, explicit,
+    # auditable create.
+    assert control.facade.submit_count() == 0
+    assert _durable_counts(control.coordinator) == (0, 0)
+
+
+def test_a_role_nobody_holds_is_a_clarification_not_a_guess(control) -> None:
+    answer = _call(action="agents", role="release_management")
+
+    selection = answer["result"]["selection"]
+    assert selection["agent_id"] is None
+    assert selection["refusal"] == SACHIMA_AGENT_ROLE_NO_CANDIDATE
+    assert selection["candidates"] == []
+    assert _durable_counts(control.coordinator) == (0, 0)
+
+
+def test_a_role_several_agents_hold_asks_which(control) -> None:
+    answer = _call(action="agents", role="code_review")
+
+    selection = answer["result"]["selection"]
+    assert selection["agent_id"] is None
+    assert selection["refusal"] == SACHIMA_AGENT_ROLE_AMBIGUOUS
+    assert selection["candidates"] == ["codex", "cursor"]
+    assert control.facade.submit_count() == 0
+    assert _durable_counts(control.coordinator) == (0, 0)
+
+
+def test_the_discovered_agent_is_then_created_by_its_canonical_name(control) -> None:
+    """The whole product path, end to end, with the semantic step in Hermes."""
+
+    selection = _call(action="agents", role="architecture_design")["result"]["selection"]
+    assert selection["agent_id"] == "codex"
+
+    created = _call(
+        action="create",
+        agent_id=selection["agent_id"],
+        task=TASK_TEXT_CANARY,
+        task_title=TASK_TITLE_CANARY,
+    )
+    task_ref = created["result"]["task_ref"]
+    assert control.coordinator.state.read_task(task_ref).agent_id == "codex"
+    assert control.facade.submit_count() == 1
+
+
+def test_an_agent_off_the_roster_disappears_from_the_view(control) -> None:
+    control.facade.registered_agent_ids = ("claude", "cursor")
+    agents = _call(action="agents")["result"]["agents"]
+
+    assert [entry["agent_id"] for entry in agents] == ["claude", "cursor"]
+    assert _call(action="agents", role="architecture_design")["result"]["selection"][
+        "refusal"
+    ] == SACHIMA_AGENT_ROLE_NO_CANDIDATE
+
+
+def test_an_unreadable_roster_reports_no_agents_rather_than_none_registered(
+    control,
+) -> None:
+    control.facade.agent_list_error = ConnectionError("socket gone")
+    answer = _call(action="agents")
+    assert answer["result"] == {"refusal": SACHIMA_AGENT_ROSTER_UNAVAILABLE}
+
+
+def test_the_agents_action_reads_the_roster_live_every_time(control) -> None:
+    _call(action="agents")
+    first = control.facade.calls.count("agent_list")
+    _call(action="agents")
+    assert control.facade.calls.count("agent_list") == first + 1
+
+
+@pytest.mark.parametrize(
+    "filters",
+    [
+        {"role": "Architecture_Design"},
+        {"role": "architecture"},
+        {"role": "design"},
+        {"role": ""},
+        {"division": "Engineering"},
+        {"division": "eng"},
+        {"role": "architecture_design", "division": "research"},
+    ],
+)
+def test_role_and_division_filters_never_resemble(control, filters) -> None:
+    selection = _call(action="agents", **filters)["result"]["selection"]
+    assert selection["agent_id"] is None
+    assert selection["refusal"] == SACHIMA_AGENT_ROLE_NO_CANDIDATE
+
+
+def test_discovery_never_returns_refs_permissions_or_task_text(control) -> None:
+    """The view is flags and closed tokens: nothing about how a Run is built."""
+
+    raw = control_mod._handle_delegate_control({"action": "agents"})
+    for private in ("ws_", "policy_", "grant_", "permissions", "sha256:", "socket"):
+        assert private not in raw
+
+
+# --------------------------------------------------------------------------- #
+# Package B — exact result, host-bound continuation, explicit settlement
+# --------------------------------------------------------------------------- #
+def _create_and_complete(
+    control,
+    *,
+    final_message="package B exact result",
+    status="completed",
+    truncated=False,
+    **create_args,
+):
+    args = {
+        "action": "create",
+        "agent_id": "codex",
+        "task": TASK_TEXT_CANARY,
+        "task_title": TASK_TITLE_CANARY,
+        **create_args,
+    }
+    task_ref = _call(**args)["result"]["task_ref"]
+    index = control.facade.submit_count() - 1
+    run_id = control.facade.run_ids[index]
+    control.facade.terminals[run_id] = {
+        "run_id": run_id,
+        "status": status,
+        "final_message": final_message,
+        "truncated": truncated,
+        "truncate_reason": "limit" if truncated else None,
+    }
+    deadline = time.monotonic() + 30.0
+    while time.monotonic() < deadline:
+        binding = control.coordinator.state.read_task(task_ref)
+        event = control.coordinator.state.result_for_turn(binding.current_turn_key)
+        summary = (
+            control.coordinator.state.summary_for_event(event.event_id)
+            if event is not None
+            else None
+        )
+        if event is not None and summary is not None and summary.settled:
+            return task_ref, binding.current_turn_key, event
+        time.sleep(0.02)
+    raise AssertionError("the Package B Run never reached a terminal")
+
+
+def _provider_claim(control, event):
+    claim = control.coordinator.claim_hermes_context(SESSION_ID)
+    assert claim is not None
+    assert event.event_id in claim.event_ids
+    assert control.coordinator.confirm_hermes_context(
+        SESSION_ID,
+        processing_id=claim.processing_id,
+        event_ids=claim.event_ids,
+    ) == len(claim.event_ids)
+    return claim
+
+
+def test_package_b_schema_has_no_model_authorized_boolean_and_names_exact_actions():
+    properties = control_mod.DELEGATE_CONTROL_SCHEMA["parameters"]["properties"]
+    actions = properties["action"]["enum"]
+
+    assert "authorized" not in properties
+    assert "event_id" in properties
+    assert "processing_id" in properties
+    assert "settle" in actions
+    assert "continue_authorized" in actions
+
+
+def test_package_b_exact_event_read_cannot_drift_to_a_newer_turn(control) -> None:
+    task_ref, first_turn, first_event = _create_and_complete(
+        control, final_message="old exact answer"
+    )
+    _call(
+        action="continue",
+        task_ref=task_ref,
+        task="run a newer manual round",
+        round_title="运行较新的手动轮次",
+    )
+    newer_run_id = control.facade.run_ids[1]
+    control.facade.terminals[newer_run_id] = {
+        "run_id": newer_run_id,
+        "status": "completed",
+        "final_message": "new exact answer",
+        "truncated": False,
+        "truncate_reason": None,
+    }
+    deadline = time.monotonic() + 30.0
+    while time.monotonic() < deadline:
+        current_key = control.coordinator.state.read_task(task_ref).current_turn_key
+        current_event = control.coordinator.state.result_for_turn(current_key)
+        if current_event is not None:
+            break
+        time.sleep(0.02)
+    else:
+        raise AssertionError("the newer Run never reached terminal")
+
+    exact = _call(
+        action="result",
+        task_ref=task_ref,
+        turn_key=first_turn,
+        event_id=first_event.event_id,
+    )["result"]
+    latest = _call(action="result", task_ref=task_ref)["result"]
+
+    assert exact["event_id"] == first_event.event_id
+    assert exact["turn_key"] == first_turn
+    assert exact["full_result"] == "old exact answer"
+    assert latest["event_id"] == current_event.event_id
+    assert latest["full_result"] == "new exact answer"
+
+
+def test_package_b_no_summary_still_returns_complete_exact_result(control) -> None:
+    task_ref, turn_key, event = _create_and_complete(
+        control, final_message="whole answer with no summary provider"
+    )
+
+    result = _call(
+        action="result",
+        task_ref=task_ref,
+        turn_key=turn_key,
+        event_id=event.event_id,
+    )["result"]
+
+    assert result["terminal"] == "completed"
+    assert result["full_result"] == "whole answer with no summary provider"
+    assert result["truncated"] is False
+    assert result["summary_status"] == "unavailable"
+
+
+def test_package_b_read_provider_and_model_finish_do_not_business_settle(control) -> None:
+    task_ref, turn_key, event = _create_and_complete(control)
+    claim = _provider_claim(control, event)
+
+    _call(
+        action="result",
+        task_ref=task_ref,
+        turn_key=turn_key,
+        event_id=event.event_id,
+    )
+    after_read = control.coordinator.state.read_result(event.event_id)
+    assert after_read.hermes_sink == "confirmed"
+    assert after_read.business_state == "pending"
+
+    staged = _call(
+        action="settle",
+        task_ref=task_ref,
+        turn_key=turn_key,
+        event_id=event.event_id,
+        processing_id=claim.processing_id,
+        conclusion="reported",
+        evidence_ref=event.full_result_ref,
+    )["result"]
+    assert staged["business_state"] == "report_pending"
+    assert control.coordinator.state.read_result(event.event_id).business_state == (
+        "report_pending"
+    )
+
+    # Only the real response delivery boundary completes the explicit report.
+    assert control.coordinator.complete_report_delivery(
+        claim.event_ids, delivered=True
+    ) == 1
+    settled = control.coordinator.state.read_result(event.event_id)
+    assert settled.business_state == "reported"
+    assert settled.wakeup_state == "settled"
+
+
+def test_package_b_single_delegation_is_report_only_without_new_run(control) -> None:
+    task_ref, turn_key, event = _create_and_complete(control)
+    claim = _provider_claim(control, event)
+    submits = control.facade.submit_count()
+
+    answer = _call(
+        action="continue_authorized",
+        task_ref=task_ref,
+        turn_key=turn_key,
+        event_id=event.event_id,
+        processing_id=claim.processing_id,
+    )["result"]
+
+    assert answer["refusal"] == "sachima_delegate_no_continuation_authority"
+    assert control.facade.submit_count() == submits
+    assert control.coordinator.state.read_result(event.event_id).business_state == (
+        "pending"
+    )
+
+
+def test_package_b_host_authorization_ref_drives_one_receipted_next_step(control) -> None:
+    task_ref, turn_key, event = _create_and_complete(
+        control,
+        continuation_task="perform the already-approved verification round",
+        continuation_round_title="执行已批准的核验轮次",
+        continuation_summary="User approved one verification round after result review.",
+        continuation_plan_ref="plan-v1",
+        continuation_stop_condition="Stop after reporting the verification result.",
+    )
+    binding = control.coordinator.state.read_task(task_ref)
+    assert binding.authorization_ref == "om_anchor"
+    assert binding.continuation_disposition == "authorized"
+    claim = _provider_claim(control, event)
+
+    receipt = _call(
+        action="continue_authorized",
+        task_ref=task_ref,
+        turn_key=turn_key,
+        event_id=event.event_id,
+        processing_id=claim.processing_id,
+    )["result"]
+
+    assert receipt["operation_id"].startswith("dop_")
+    assert receipt["task_ref"] == task_ref
+    assert receipt["turn_key"] != turn_key
+    assert receipt["operation_state"] == "accepted"
+    assert control.facade.submit_count() == 2
+    settled = control.coordinator.state.read_result(event.event_id)
+    assert settled.business_state == "continued"
+    assert settled.operation_id == receipt["operation_id"]
+    assert settled.operation_turn_key == receipt["turn_key"]
+    assert control.coordinator.state.read_task(task_ref).continuation_disposition == (
+        "consumed"
+    )
+
+
+@pytest.mark.parametrize(
+    ("status", "truncated"),
+    [("failed", False), ("cancelled", False), ("completed", True)],
+)
+def test_package_b_nonacceptable_terminal_never_auto_continues(
+    control, status, truncated
+) -> None:
+    task_ref, turn_key, event = _create_and_complete(
+        control,
+        status=status,
+        truncated=truncated,
+        continuation_task="retry or repair it",
+        continuation_round_title="重试或修复",
+        continuation_summary="Only continue after an acceptable completed result.",
+    )
+    claim = _provider_claim(control, event)
+    submits = control.facade.submit_count()
+
+    answer = _call(
+        action="continue_authorized",
+        task_ref=task_ref,
+        turn_key=turn_key,
+        event_id=event.event_id,
+        processing_id=claim.processing_id,
+    )["result"]
+
+    assert answer["refusal"] == "sachima_delegate_result_not_acceptable"
+    assert control.facade.submit_count() == submits
+    assert control.coordinator.state.read_result(event.event_id).business_state == (
+        "pending"
+    )
+
+
+def test_package_b_empty_completed_result_never_auto_continues(control) -> None:
+    task_ref, turn_key, event = _create_and_complete(
+        control,
+        final_message="  \n\t",
+        continuation_task="perform the approved follow-up",
+        continuation_round_title="执行已批准的后续",
+        continuation_summary="Continue only after a complete non-empty result.",
+    )
+    claim = _provider_claim(control, event)
+    submits = control.facade.submit_count()
+
+    answer = _call(
+        action="continue_authorized",
+        task_ref=task_ref,
+        turn_key=turn_key,
+        event_id=event.event_id,
+        processing_id=claim.processing_id,
+    )["result"]
+
+    assert answer["refusal"] == "sachima_delegate_result_not_acceptable"
+    assert control.facade.submit_count() == submits
+    assert control.coordinator.state.read_result(event.event_id).business_state == (
+        "pending"
+    )
+
+
+def test_package_b_lost_continuation_receipt_reconciles_operation_without_replay(
+    control, monkeypatch
+) -> None:
+    task_ref, turn_key, event = _create_and_complete(
+        control,
+        continuation_task="perform exactly one approved follow-up",
+        continuation_round_title="执行一次已批准的后续",
+        continuation_summary="One follow-up Run is authorized.",
+    )
+    claim = _provider_claim(control, event)
+    original_update = control.coordinator.state.update_result
+    lost_once = False
+
+    def _lose_receipt(event_id, **fields):
+        nonlocal lost_once
+        if fields.get("operation_state") == "accepted" and not lost_once:
+            lost_once = True
+            raise RuntimeError("simulated crash after accepted Run")
+        return original_update(event_id, **fields)
+
+    monkeypatch.setattr(control.coordinator.state, "update_result", _lose_receipt)
+    args = dict(
+        action="continue_authorized",
+        task_ref=task_ref,
+        turn_key=turn_key,
+        event_id=event.event_id,
+        processing_id=claim.processing_id,
+    )
+    first = _call(**args)
+    assert first["error"] == control_mod.SACHIMA_DELEGATE_CONTROL_INVALID
+    assert control.facade.submit_count() == 2
+
+    second = _call(**args)["result"]
+    assert second["operation_state"] == "accepted"
+    assert control.facade.submit_count() == 2
+    assert control.coordinator.state.read_result(event.event_id).business_state == (
+        "continued"
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Package C — durable stop/resume and newer-intent precedence
+# --------------------------------------------------------------------------- #
+def test_package_c_schema_names_explicit_continuation_pause_and_resume() -> None:
+    actions = control_mod.DELEGATE_CONTROL_SCHEMA["parameters"]["properties"][
+        "action"
+    ]["enum"]
+    assert "pause_continuation" in actions
+    assert "resume_continuation" in actions
+
+
+def test_package_c_pause_changes_disposition_before_any_next_side_effect(control) -> None:
+    task_ref, turn_key, event = _create_and_complete(
+        control,
+        continuation_task="perform the one approved post-check",
+        continuation_round_title="执行已批准的后续核验",
+        continuation_summary="One post-check is approved after exact review.",
+    )
+    claim = _provider_claim(control, event)
+    submits = control.facade.submit_count()
+
+    paused = _call(action="pause_continuation", task_ref=task_ref)["result"]
+    assert paused["continuation_disposition"] == "paused"
+    assert paused["disposition_ref"] == "om_anchor"
+
+    refused = _call(
+        action="continue_authorized",
+        task_ref=task_ref,
+        turn_key=turn_key,
+        event_id=event.event_id,
+        processing_id=claim.processing_id,
+    )["result"]
+    assert refused["refusal"] == "sachima_delegate_continuation_paused"
+    assert control.facade.submit_count() == submits
+
+    resumed = _call(action="resume_continuation", task_ref=task_ref)["result"]
+    assert resumed["continuation_disposition"] == "authorized"
+    receipt = _call(
+        action="continue_authorized",
+        task_ref=task_ref,
+        turn_key=turn_key,
+        event_id=event.event_id,
+        processing_id=claim.processing_id,
+    )["result"]
+    assert receipt["operation_state"] == "accepted"
+    assert control.facade.submit_count() == submits + 1
+
+
+def test_package_c_internal_wake_cannot_resume_paused_authority(
+    control,
+    monkeypatch,
+) -> None:
+    task_ref, _turn_key, _event = _create_and_complete(
+        control,
+        continuation_task="perform the one approved post-check",
+        continuation_round_title="执行已批准的后续核验",
+        continuation_summary="One post-check is approved after exact review.",
+    )
+    _call(action="pause_continuation", task_ref=task_ref)
+    import gateway.session_context as session_context
+
+    monkeypatch.setattr(
+        session_context,
+        "session_input_is_internal",
+        lambda: True,
+        raising=False,
+    )
+
+    refused = _call(action="resume_continuation", task_ref=task_ref)
+    assert refused["error"] == control_mod.SACHIMA_DELEGATE_CONTROL_FORBIDDEN
+    assert control.coordinator.state.read_task(task_ref).continuation_disposition == (
+        "paused"
+    )
+
+
+@pytest.mark.parametrize("action", ["create", "continue", "cancel", "recover"])
+def test_package_c_internal_wake_cannot_invent_manual_control_authority(
+    control,
+    monkeypatch,
+    action,
+) -> None:
+    task_ref, _turn_key, _event = _create_and_complete(control)
+    import gateway.session_context as session_context
+
+    monkeypatch.setattr(
+        session_context,
+        "session_input_is_internal",
+        lambda: True,
+    )
+    submits = control.facade.submit_count()
+    args = {"action": action, "task_ref": task_ref}
+    if action == "create":
+        args.update(
+            task=TASK_TEXT_CANARY,
+            task_title=TASK_TITLE_CANARY,
+            round_title=ROUND_TITLE_CANARY,
+            agent_id="codex",
+        )
+        args.pop("task_ref")
+    elif action == "continue":
+        args.update(task="an unauthorized synthetic follow-up")
+
+    refused = _call(**args)
+    assert refused["error"] == control_mod.SACHIMA_DELEGATE_CONTROL_FORBIDDEN
+    assert control.facade.submit_count() == submits
+
+
+def test_package_c_manual_newer_round_supersedes_delayed_auto_continuation(
+    control,
+) -> None:
+    task_ref, turn_key, event = _create_and_complete(
+        control,
+        continuation_task="perform the stale pre-authorized follow-up",
+        continuation_round_title="执行旧的已授权后续",
+        continuation_summary="This step is valid only while its source is current.",
+    )
+    claim = _provider_claim(control, event)
+    _call(
+        action="continue",
+        task_ref=task_ref,
+        task="the user supplied a newer corrected round",
+        round_title="执行用户更新后的轮次",
+    )
+    submits = control.facade.submit_count()
+
+    refused = _call(
+        action="continue_authorized",
+        task_ref=task_ref,
+        turn_key=turn_key,
+        event_id=event.event_id,
+        processing_id=claim.processing_id,
+    )["result"]
+
+    assert refused["refusal"] == "sachima_delegate_continuation_superseded"
+    assert control.facade.submit_count() == submits
+    assert control.coordinator.state.read_task(task_ref).continuation_disposition == (
+        "superseded"
+    )
+
+
+def test_package_c_one_processing_claim_cannot_both_report_and_continue(control) -> None:
+    task_ref, turn_key, event = _create_and_complete(
+        control,
+        continuation_task="perform one authorized follow-up",
+        continuation_round_title="执行一次已授权后续",
+        continuation_summary="The exact follow-up was authorized in advance.",
+    )
+    claim = _provider_claim(control, event)
+    submits = control.facade.submit_count()
+
+    staged = _call(
+        action="settle",
+        task_ref=task_ref,
+        turn_key=turn_key,
+        event_id=event.event_id,
+        processing_id=claim.processing_id,
+        conclusion="reported",
+        evidence_ref=event.full_result_ref,
+    )["result"]
+    assert staged["business_state"] == "report_pending"
+
+    refused = _call(
+        action="continue_authorized",
+        task_ref=task_ref,
+        turn_key=turn_key,
+        event_id=event.event_id,
+        processing_id=claim.processing_id,
+    )["result"]
+    assert refused["refusal"] == "sachima_delegate_processing_mismatch"
+    assert control.facade.submit_count() == submits
+
+
+# --------------------------------------------------------------------------- #
+# Role routing through the tool: the shared matrix decides the Run's exact
+# model/effort; every refusal is a stable code and nothing runs AGENT-wide.
+# --------------------------------------------------------------------------- #
+ROUTED_REVIEW_MODEL = "routed-review-model[1m]"
+CONTROL_MATRIX_YAML = f"""\
+schema_version: 1
+default_agents: {{}}
+routes:
+  - agent_id: codex
+    role_id: code_review
+    availability: Available
+    model: "{ROUTED_REVIEW_MODEL}"
+    effort: high
+    fallback: null
+  - agent_id: codex
+    role_id: architecture_design
+    availability: Paused
+    model: "paused-architecture-model"
+    effort: max
+    fallback: null
+"""
+AUTHORIZED_FOLLOW_UP = {
+    "continuation_task": "perform the already-approved review follow-up",
+    "continuation_round_title": "执行已批准的评审后续轮次",
+    "continuation_summary": "User approved one review follow-up after result review.",
+}
+
+
+def _declare_matrix(control, tmp_path, text: str = CONTROL_MATRIX_YAML):
+    from gateway.sachima_agent_role_routing_matrix import RoleRoutingMatrixSource
+
+    path = tmp_path / "routing-matrix.yaml"
+    path.write_text(text, encoding="utf-8")
+    control.coordinator._routing_matrix = RoleRoutingMatrixSource(str(path))
+    return path
+
+
+def _create_with_role(role: str | None) -> dict[str, Any]:
+    args: dict[str, Any] = {
+        "action": "create",
+        "agent_id": "codex",
+        "task": TASK_TEXT_CANARY,
+        "task_title": TASK_TITLE_CANARY,
+    }
+    if role is not None:
+        args["role"] = role
+    return _call(**args)["result"]
+
+
+def test_a_role_on_create_submits_the_matrix_route_not_the_preset(control, tmp_path):
+    _declare_matrix(control, tmp_path)
+    answer = _create_with_role("code_review")
+    assert answer["lifecycle"] == "admitted"
+    request = control.facade.submitted[0]["request"]
+    assert request["requested_model"] == ROUTED_REVIEW_MODEL
+    assert request["requested_effort"] == "high"
+    turn = control.coordinator.state.read_turn(answer["turn_key"])
+    assert turn.admitted_role == "code_review"
+    assert turn.requested_model == ROUTED_REVIEW_MODEL
+    assert turn.route_source_digest is not None
+
+
+def test_a_role_without_a_composed_matrix_is_refused_and_nothing_runs(control):
+    answer = _create_with_role("code_review")
+    assert answer["diagnostic"] == "sachima_role_routing_matrix_unconfigured"
+    assert answer["task_ref"] is None and answer["turn_key"] is None
+    assert control.facade.submit_count() == 0
+    assert _durable_counts(control.coordinator) == (0, 0)
+    assert _payload_count(control.coordinator) == 0
+
+
+def test_a_missing_or_paused_route_is_refused_and_the_non_role_path_is_untouched(
+    control, tmp_path
+):
+    _declare_matrix(control, tmp_path)
+    missing = _create_with_role("implementation")
+    assert missing["diagnostic"] == "sachima_role_route_missing"
+    paused = _create_with_role("architecture_design")
+    assert paused["diagnostic"] == "sachima_role_route_paused"
+    assert control.facade.submit_count() == 0
+    assert _durable_counts(control.coordinator) == (0, 0)
+
+    # No role: the AGENT-wide preset's own pair, exactly as before.
+    plain = _create_with_role(None)
+    assert plain["lifecycle"] == "admitted"
+    request = control.facade.submitted[0]["request"]
+    assert request["requested_model"] == "claude-opus-5"
+    assert request["requested_effort"] == "xhigh"
+    turn = control.coordinator.state.read_turn(plain["turn_key"])
+    assert turn.admitted_role is None and turn.route_source_digest is None
+
+
+def test_continuation_role_is_recorded_and_the_authorized_step_uses_the_current_matrix(
+    control, tmp_path
+):
+    """The authorization pins (AGENT, role); the model is the matrix's now."""
+
+    path = _declare_matrix(control, tmp_path)
+    task_ref, turn_key, event = _create_and_complete(
+        control, role="code_review", continuation_role="code_review", **AUTHORIZED_FOLLOW_UP
+    )
+    assert control.coordinator.state.read_task(task_ref).continuation_role == "code_review"
+
+    # The matrix moves before the authorized step is submitted.
+    path.write_text(
+        CONTROL_MATRIX_YAML.replace(ROUTED_REVIEW_MODEL, "routed-review-model-next"),
+        encoding="utf-8",
+    )
+    claim = _provider_claim(control, event)
+    receipt = _call(
+        action="continue_authorized",
+        task_ref=task_ref,
+        turn_key=turn_key,
+        event_id=event.event_id,
+        processing_id=claim.processing_id,
+    )["result"]
+    assert receipt["operation_state"] == "accepted"
+    assert control.facade.submit_count() == 2
+    assert control.facade.submitted[1]["request"]["requested_model"] == (
+        "routed-review-model-next"
+    )
+    follow_up = control.coordinator.state.read_turn(receipt["turn_key"])
+    assert follow_up.admitted_role == "code_review"
+    assert follow_up.requested_model == "routed-review-model-next"
+    # The already-admitted first Run is untouched by the edit.
+    first = control.coordinator.state.read_turn(turn_key)
+    assert first.requested_model == ROUTED_REVIEW_MODEL
+    assert first.route_source_digest != follow_up.route_source_digest
+
+
+def test_an_authorized_step_inherits_the_source_rounds_role_when_none_was_named(
+    control, tmp_path
+):
+    _declare_matrix(control, tmp_path)
+    task_ref, turn_key, event = _create_and_complete(
+        control, role="code_review", **AUTHORIZED_FOLLOW_UP
+    )
+    assert control.coordinator.state.read_task(task_ref).continuation_role is None
+    claim = _provider_claim(control, event)
+    receipt = _call(
+        action="continue_authorized",
+        task_ref=task_ref,
+        turn_key=turn_key,
+        event_id=event.event_id,
+        processing_id=claim.processing_id,
+    )["result"]
+    assert receipt["operation_state"] == "accepted"
+    follow_up = control.coordinator.state.read_turn(receipt["turn_key"])
+    assert follow_up.admitted_role == "code_review"
+    assert control.facade.submitted[1]["request"]["requested_model"] == ROUTED_REVIEW_MODEL
+
+
+def test_an_authorized_step_whose_route_was_paused_is_blocked_not_borrowed(
+    control, tmp_path
+):
+    path = _declare_matrix(control, tmp_path)
+    task_ref, turn_key, event = _create_and_complete(
+        control, role="code_review", **AUTHORIZED_FOLLOW_UP
+    )
+    path.write_text(
+        CONTROL_MATRIX_YAML.replace(
+            "role_id: code_review\n    availability: Available",
+            "role_id: code_review\n    availability: Paused",
+        ),
+        encoding="utf-8",
+    )
+    claim = _provider_claim(control, event)
+    refused = _call(
+        action="continue_authorized",
+        task_ref=task_ref,
+        turn_key=turn_key,
+        event_id=event.event_id,
+        processing_id=claim.processing_id,
+    )["result"]
+    assert refused["refusal"] == "sachima_role_route_paused"
+    assert control.facade.submit_count() == 1
+    settled = control.coordinator.state.read_result(event.event_id)
+    assert settled.business_state == "blocked"
+    assert settled.business_diagnostic == "sachima_role_route_paused"
+
+
+def test_a_malformed_continuation_role_is_invalid_input(control, tmp_path):
+    _declare_matrix(control, tmp_path)
+    answer = json.loads(
+        control_mod._handle_delegate_control(
+            {
+                "action": "create",
+                "agent_id": "codex",
+                "task": TASK_TEXT_CANARY,
+                "task_title": TASK_TITLE_CANARY,
+                "round_title": ROUND_TITLE_CANARY,
+                "continuation_role": "",
+                **AUTHORIZED_FOLLOW_UP,
+            }
+        )
+    )
+    assert answer["error"] == control_mod.SACHIMA_DELEGATE_CONTROL_INVALID
+    assert control.facade.submit_count() == 0
+
+
+def test_the_schema_names_continuation_role_and_the_matrix_meaning_of_role():
+    properties = control_mod.DELEGATE_CONTROL_SCHEMA["parameters"]["properties"]
+    assert "continuation_role" in properties
+    assert "routing matrix" in properties["role"]["description"]
+    assert "routing matrix" in properties["continuation_role"]["description"]

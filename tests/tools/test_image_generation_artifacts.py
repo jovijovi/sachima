@@ -147,3 +147,53 @@ def test_handle_image_generate_postprocesses_plugin_result(monkeypatch, tmp_path
 
     assert seen_task_ids == ["plugin-task"]
     assert result["agent_visible_image"] == "/home/remote/.hermes/cache/images/plugin.png"
+
+
+def test_handle_image_generate_records_unified_edit_without_secrets(monkeypatch, tmp_path):
+    from tools import image_generation_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_PROFILE", "image-profile")
+    monkeypatch.setattr(
+        image_generation_tool,
+        "_active_image_capabilities",
+        lambda: {
+            "modalities": ["text", "image"],
+            "provider": "xai",
+            "model": "grok-imagine-image-quality",
+        },
+    )
+    monkeypatch.setattr(
+        image_generation_tool,
+        "_dispatch_to_plugin_provider",
+        lambda *a, **k: json.dumps(
+            {
+                "success": True,
+                "image": "https://cdn.example.test/out.png?signature=secret",
+                "provider": "xai",
+                "model": "grok-imagine-image-quality",
+            }
+        ),
+    )
+
+    result = json.loads(
+        image_generation_tool._handle_image_generate(
+            {
+                "prompt": "make it blue",
+                "image_url": "https://cdn.example.test/in.png?token=secret",
+                "content_summary": "blue variant",
+            }
+        )
+    )
+
+    assert result["success"] is True
+    manifest = tmp_path / "workspace" / "image-generation" / "manifest.jsonl"
+    record = json.loads(manifest.read_text(encoding="utf-8"))
+    assert record["tool"] == "image_generate"
+    assert record["operation"] == "edit"
+    assert record["backend"]["provider"] == "xai"
+    assert record["backend"]["model"] == "grok-imagine-image-quality"
+    assert record["request"]["content_summary"] == "blue variant"
+    assert record["input_images"][0]["url"] == "https://cdn.example.test/in.png"
+    assert record["result"]["outputs"][0]["ref"] == "https://cdn.example.test/out.png"
+    assert "secret" not in manifest.read_text(encoding="utf-8")

@@ -995,6 +995,87 @@ app.include_router(_chat_ws_routes.router)
 app.include_router(_chat_workspaces_routes.router)
 app.include_router(_dashboard_ui_routes.router)
 
+
+# ── Sachima Task Workbench progress (persisted JSONL event store, read-only) ─────────────────
+
+def _configured_progress_events_path() -> Tuple[bool, Optional[Path]]:
+    """Resolve the optional JSONL task-workbench store for the active profile."""
+    from utils import is_truthy_value
+
+    config = load_config()
+    display = config.get("display") if isinstance(config, dict) else None
+    tracker = display.get("task_tracker") if isinstance(display, dict) else None
+    if not isinstance(tracker, dict):
+        return False, None
+    if not is_truthy_value(tracker.get("persist_events"), default=False):
+        return False, None
+    store_type = str(tracker.get("event_store", "jsonl") or "jsonl").strip().lower()
+    if store_type != "jsonl":
+        return False, None
+    configured_path = tracker.get("event_store_path")
+    if configured_path:
+        return True, Path(str(configured_path)).expanduser()
+
+    from gateway.progress.store import default_progress_events_path
+
+    return True, default_progress_events_path()
+
+
+@app.get("/api/progress/transactions")
+async def get_progress_transactions(
+    limit: int = 50,
+    status: str = "all",
+    profile: Optional[str] = None,
+):
+    """Return persisted task-workbench summaries for the selected profile."""
+    from hermes_cli.web_server_profiles import _profile_scope
+
+    def _read() -> Dict[str, Any]:
+        with _profile_scope(profile):
+            enabled, event_path = _configured_progress_events_path()
+            if not enabled:
+                return {"enabled": False, "transactions": [], "skipped_lines": 0}
+            from gateway.progress.reader import list_progress_transactions
+
+            payload = list_progress_transactions(event_path, limit=limit, status=status)
+            return {"enabled": True, **payload}
+
+    try:
+        return await asyncio.to_thread(_read)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _log.exception("GET /api/progress/transactions failed")
+        raise HTTPException(status_code=500, detail="Failed to read progress transactions") from exc
+
+
+@app.get("/api/progress/transactions/{transaction_id}/events")
+async def get_progress_transaction_events_endpoint(
+    transaction_id: str,
+    limit: int = 200,
+    profile: Optional[str] = None,
+):
+    """Return a bounded timeline for one persisted workbench transaction."""
+    from hermes_cli.web_server_profiles import _profile_scope
+
+    def _read() -> Dict[str, Any]:
+        with _profile_scope(profile):
+            enabled, event_path = _configured_progress_events_path()
+            if not enabled:
+                return {"enabled": False, "transaction": None, "events": [], "skipped_lines": 0}
+            from gateway.progress.reader import get_progress_transaction_events
+
+            payload = get_progress_transaction_events(event_path, transaction_id, limit=limit)
+            return {"enabled": True, **payload}
+
+    try:
+        return await asyncio.to_thread(_read)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _log.exception("GET /api/progress/transactions/%s/events failed", transaction_id)
+        raise HTTPException(status_code=500, detail="Failed to read progress transaction events") from exc
+
 # Plugin API routes and the dashboard auth routes (/login, /auth/*, /api/auth/*)
 # mount before the SPA catch-all so /{full_path:path} doesn't swallow them. Auth
 # routes are always mounted — the gate middleware decides enforcement.

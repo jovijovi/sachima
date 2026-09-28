@@ -161,6 +161,11 @@ def _reply_anchor_for_event(event) -> str | None:
     platform = _platform_name(getattr(source, "platform", None))
     thread_id = getattr(source, "thread_id", None)
     raw_message = getattr(event, "raw_message", None)
+    # Internal producers may carry a correlation id in ``message_id`` that is NOT a platform
+    # message; ``message_id_is_reply_anchor=False`` keeps it out of native reply APIs.
+    message_id = getattr(event, "message_id", None)
+    if getattr(event, "message_id_is_reply_anchor", True) is not True:
+        message_id = None
     if (platform == "slack" and isinstance(raw_message, dict)
             and raw_message.get("_hermes_no_thread_response")):
         # Slack reaction handoff = new top-level message; a message_id anchor would make
@@ -171,10 +176,10 @@ def _reply_anchor_for_event(event) -> str | None:
         # message — replying to the topic seed/anchor can render outside the active lane.
         if getattr(source, "chat_type", None) != "dm":
             return None
-        return getattr(event, "message_id", None) or getattr(event, "reply_to_message_id", None)
+        return message_id or getattr(event, "reply_to_message_id", None)
     if platform == "feishu" and thread_id and getattr(event, "reply_to_message_id", None):
         return getattr(event, "reply_to_message_id", None)
-    return getattr(event, "message_id", None)
+    return message_id
 
 
 def _media_failure_text(kind: str, file_name: "str | None" = None) -> str:
@@ -2683,6 +2688,96 @@ class BasePlatformAdapter(ABC):
         when content is unchanged."""
         return SendResult(success=False, error="Not supported")
 
+    async def send_interactive_card(
+        self,
+        chat_id: str,
+        card: Dict[str, Any],
+        *,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """
+        Post a platform-native interactive card as its own message.
+        Optional — platforms without a card surface return success=False and
+        callers fall back to ``send_plain_text_once``.
+
+        ``card`` is the platform's own card document.  It is delivered as
+        given: this method never runs it through the text formatting,
+        markdown promotion, or chunking that ``send`` applies, because a
+        card is a single indivisible payload.
+        """
+        return SendResult(success=False, error="Not supported")
+
+    async def patch_interactive_card(
+        self,
+        chat_id: str,
+        message_id: str,
+        card: Dict[str, Any],
+        *,
+        finalize: bool = False,
+    ) -> SendResult:
+        """
+        Revise a card already on screen, in place, so a long-running
+        activity keeps one card instead of posting a new one per update.
+        Optional — platforms without a card surface return success=False.
+
+        This is deliberately separate from ``edit_message``: several
+        platforms (Feishu among them) reject a card revision sent through
+        the ordinary message-update API and require their card-patch API
+        instead.  ``finalize`` carries the same meaning as it does on
+        ``edit_message`` — this is the last revision in the sequence.
+
+        On success ``message_id`` is echoed back, so the caller keeps
+        addressing the same card.  A transient refusal (rate limit,
+        temporary server error) that outlives the adapter's own retries
+        comes back with ``retryable=True`` rather than as a hard failure.
+        """
+        return SendResult(success=False, error="Not supported")
+
+    def single_message_text_limit(self) -> int:
+        """The platform's own one-message text bound, in ``measure_text`` units.
+
+        Companion to :meth:`send_plain_text_once`, which never splits: a caller
+        that owes the user exactly one message has to bound the body itself,
+        and this is the number to bound it by. Derived from the adapter's own
+        ``MAX_MESSAGE_LENGTH``, so no adapter has to declare it twice.
+        """
+        try:
+            return int(getattr(self, "MAX_MESSAGE_LENGTH", 4096) or 4096)
+        except (TypeError, ValueError):
+            return 4096
+
+    def measure_text(self, text: str) -> int:
+        """The platform's own length metric for a text body.
+
+        Separate from ``len`` so an adapter whose bound is counted in bytes,
+        code points, or some platform-specific unit can say so, and the caller
+        can bound the body by what the platform actually enforces. Reads the
+        same ``message_len_fn`` the adapter already splits by, so the unit a
+        caller bounds in is the unit the platform counts (Telegram: UTF-16
+        code units, where one emoji costs two).
+        """
+        return self.message_len_fn(text or "")
+
+    async def send_plain_text_once(
+        self,
+        chat_id: str,
+        text: str,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """
+        Deliver one already-bounded plain-text body as a single message —
+        the fallback when a card cannot be sent or the platform has none.
+
+        The default is an ordinary ``send()``, which is correct for adapters
+        whose send is already one plain-text message and whose formatting is
+        a no-op for plain bodies.  Adapters with a chunking or rich-format
+        path override this to bypass it.  Callers must bound ``text`` to the
+        platform's own limit first: this method never splits.
+        """
+        return await self.send(chat_id, text, reply_to=reply_to, metadata=metadata)
+
     async def delete_message(self, chat_id: str, message_id: str) -> bool:
         """Delete a sent message; True on success (platforms without a deletion API return False and
         callers leave it). Used by the stream consumer's fresh-final cleanup to remove stale
@@ -3469,12 +3564,45 @@ class BasePlatformAdapter(ABC):
     async def _run_processing_hook(self, hook_name: str, *args: Any, **kwargs: Any) -> None:
         """Run a lifecycle hook without letting failures break message flow."""
         hook = getattr(self, hook_name, None)
-        if not callable(hook):
+        if callable(hook):
+            try:
+                await hook(*args, **kwargs)
+            except Exception as e:
+                logger.warning("[%s] %s hook failed: %s", self.name, hook_name, e)
+
+        if hook_name != "on_processing_complete" or len(args) < 2:
+            return
+        await self._run_internal_processing_outcome_callback(args[0], args[1])
+
+    async def _run_internal_processing_outcome_callback(
+        self,
+        event: MessageEvent,
+        outcome: Any,
+    ) -> None:
+        """Settle one business receipt at this adapter delivery boundary."""
+
+        # A trusted synthetic turn may stage a business receipt that is true
+        # only after this adapter has actually delivered the final response.
+        # Keep that one-shot callback on the event already owned by this turn;
+        # platform hooks retain their historical behavior and failures remain
+        # isolated from message processing. Gateway's in-band queue drain uses
+        # this same boundary for the intermediate response it sends directly.
+        metadata = getattr(event, "metadata", None)
+        if not isinstance(metadata, dict):
+            return
+        callback = metadata.pop("_gateway_processing_outcome_callback", None)
+        if not callable(callback):
             return
         try:
-            await hook(*args, **kwargs)
+            result = callback(event, outcome)
+            if inspect.isawaitable(result):
+                await result
         except Exception as e:
-            logger.warning("[%s] %s hook failed: %s", self.name, hook_name, e)
+            logger.warning(
+                "[%s] internal processing outcome callback failed: %s",
+                self.name,
+                e,
+            )
 
     @staticmethod
     def _is_retryable_error(error: Optional[str]) -> bool:

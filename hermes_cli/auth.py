@@ -2176,7 +2176,19 @@ def resolve_external_process_provider_credentials(provider_id: str) -> Dict[str,
             provider=provider_id, code="invalid_provider")
 
     command, args, base_url, resolved_command, command_env_vars = _external_process_spec(pconfig)
+    # The provider's own profile may describe its remediation and placeholder (an out-of-tree or
+    # plugin ACP provider such as google-gemini-cli points users at the CLI's official login).
+    try:
+        from providers import get_provider_profile as _get_provider_profile
+        _profile = _get_provider_profile(pconfig.id)
+    except Exception:
+        _profile = None
     if not resolved_command and not base_url.startswith("acp+tcp://"):
+        _custom_message = str(getattr(_profile, "process_missing_cli_message", "") or "")
+        _custom_code = str(getattr(_profile, "process_missing_cli_code", "") or "")
+        if _custom_message:
+            raise AuthError(
+                _custom_message, provider=provider_id, code=_custom_code or "missing_external_process_cli")
         _hint = " or set " + "/".join(command_env_vars) if command_env_vars else ""
         raise AuthError(
             f"Could not find the '{provider_id}' CLI command "
@@ -2184,9 +2196,10 @@ def resolve_external_process_provider_credentials(provider_id: str) -> Dict[str,
             provider=provider_id,
             code="missing_external_process_cli")
     # api_key is a placeholder: the subprocess owns real auth. Keyed on the provider id so each
-    # external-process provider gets a distinct value.
+    # external-process provider gets a distinct value (a profile may name its own placeholder).
+    _placeholder = str(getattr(_profile, "process_api_key_placeholder", "") or "") or pconfig.id or provider_id
     return {
-        "provider": provider_id, "api_key": pconfig.id or provider_id,
+        "provider": provider_id, "api_key": _placeholder,
         "base_url": base_url.rstrip("/"), "command": resolved_command or command, "args": args,
         "source": "process"}
 
