@@ -142,7 +142,7 @@ class _FacadeDouble:
         if self.server_info_gate is not None:
             self.server_info_gate.wait(timeout=10)
         return {
-            "version": "0.7.8",
+            "version": "0.7.9",
             "api_version": 3,
             "supported_api_versions": [3],
             "operations": list(V3_OPERATIONS),

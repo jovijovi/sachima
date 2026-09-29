@@ -226,7 +226,7 @@ def _arsd_backend(tmp_path):
     class _Facade:
         def server_info(self):
             return {
-                "version": "0.7.8",
+                "version": "0.7.9",
                 "api_version": 3,
                 "supported_api_versions": [3],
                 "operations": [

@@ -1825,6 +1825,49 @@ async def test_delegate_origin_keeps_slack_and_feishu_call_shapes(platform, chat
         }
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("persisted", [True, False], ids=["restored-identity", "key-namespace"])
+async def test_multiplexed_secondary_origin_answers_through_its_own_bot(persisted):
+    """A durable origin is delivered by the bot its Session's identity names.
+
+    Under ``gateway.multiplex_profiles`` ``runner.adapters`` is only the default
+    profile's map; a secondary profile's result sent through it would leave from
+    the wrong bot. The persisted Session (``_restored_source`` →
+    ``_delivery_adapter_for``) decides, and an origin whose Session is not in the
+    store still resolves by its key namespace — never by platform alone.
+    """
+
+    from gateway.config import Platform
+    from gateway.run import GatewayRunner
+    from gateway.session import SessionSource
+
+    default_bot, satine_bot = _OriginAdapter(), _OriginAdapter()
+    session_key = "agent:satine:feishu:dm:oc_chat"
+    runner = object.__new__(GatewayRunner)
+    runner.adapters = {Platform.FEISHU: default_bot}
+    runner._profile_adapters = {"satine": {Platform.FEISHU: satine_bot}}
+    runner.config = SimpleNamespace(multiplex_profiles=True, profile_routes=[])
+    runner._primary_profile_name = "default"
+    entries = {}
+    if persisted:
+        entries[session_key] = SimpleNamespace(
+            session_key=session_key,
+            transport_profile="satine",
+            origin=SessionSource(
+                platform=Platform.FEISHU, chat_id="oc_chat", chat_type="dm", profile="satine",
+            ),
+        )
+    runner.session_store = SimpleNamespace(_ensure_loaded=lambda: None, _entries=entries)
+
+    origin = _feishu_origin()
+    origin = type(origin)(**{**origin.as_dict(), "session_key": session_key})
+    delivery = runner._delegate_delivery_from_origin(origin)
+    await delivery.send_text("receipt")
+
+    assert [call["kind"] for call in satine_bot.calls] == ["send"]
+    assert default_bot.calls == []
+
+
 # --------------------------------------------------------------------------- #
 # J. Turn ownership across cached-agent reuse (H2 continued)
 # --------------------------------------------------------------------------- #

@@ -48,7 +48,6 @@ google-auth-httplib2 = false
 google-auth-oauthlib = false
 google-cloud-pubsub = false
 h2 = false
-hindsight-client = false
 honcho-ai = false
 httplib2 = false
 httpx = false
@@ -133,11 +132,11 @@ wheels = [
 
 [[package]]
 name = "agent-run-supervisor"
-version = "0.7.8"
+version = "0.7.9"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/fc/76/f4500f8e92f297fdb7f93a8a1838a3041cd6e245c63dcc6b734119964036/agent_run_supervisor-0.7.8.tar.gz", hash = "sha256:6099c28cd7edd30d24da4113dd179d5bd9e1f9725eccaf6ef808a752f0c136d9", size = 288728, upload-time = "2026-08-22T05:41:10.316Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/b3/42/f4e39ab543f8b742a9c57a8e55ff527d8226b0b69e394c23dcbf9c6502cc/agent_run_supervisor-0.7.9.tar.gz", hash = "sha256:bf34a65ef97211b6539053b290158a80482fc6933dd74cdf980ac555eec055b0", size = 293160, upload-time = "2026-09-24T09:08:34.729Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/42/ac/a1da12d7a0a7770ef2f0601cedf15bb05f41b02ec98370f5fd88fc8ffcfa/agent_run_supervisor-0.7.8-py3-none-any.whl", hash = "sha256:5b02460acfb78f0ac359ed90f20d827946a7c5ae475010e6e1ffce239e1caf2e", size = 242571, upload-time = "2026-08-22T05:41:08.873Z" },
+    { url = "https://files.pythonhosted.org/packages/d5/c3/2e5d55f15165e71c0d724482eb1c7484eb18522570bd67e1465a21feacf0/agent_run_supervisor-0.7.9-py3-none-any.whl", hash = "sha256:e3179b07b69de1965a4e8d495c837423cbb3a4b9ed739aa1ad1b31b6de36be49", size = 246678, upload-time = "2026-09-24T09:08:33.11Z" },
 ]
 
 [[package]]
@@ -1740,7 +1739,7 @@ wheels = [
 
 [[package]]
 name = "hermes-agent"
-version = "0.21.3"
+version = "0.21.5"
 source = { editable = "." }
 dependencies = [
     { name = "certifi" },
@@ -1750,6 +1749,7 @@ dependencies = [
     { name = "fastapi" },
     { name = "fire" },
     { name = "firecrawl-anydoc" },
+    { name = "httptools" },
     { name = "httpx", extra = ["socks"] },
     { name = "jinja2" },
     { name = "markdown" },
@@ -1776,7 +1776,8 @@ dependencies = [
     { name = "tenacity" },
     { name = "tzdata", marker = "sys_platform == 'win32'" },
     { name = "urllib3" },
-    { name = "uvicorn", extra = ["standard"] },
+    { name = "uvicorn" },
+    { name = "watchfiles" },
     { name = "websockets" },
 ]
 
@@ -1801,7 +1802,8 @@ all = [
     { name = "pyasn1" },
     { name = "python-multipart" },
     { name = "starlette" },
-    { name = "uvicorn", extra = ["standard"] },
+    { name = "uvicorn" },
+    { name = "uvloop", marker = "platform_python_implementation != 'PyPy' and sys_platform != 'android' and sys_platform != 'cygwin' and sys_platform != 'win32'" },
     { name = "youtube-transcript-api" },
 ]
 anthropic = [
@@ -1870,9 +1872,6 @@ google-chat = [
     { name = "google-cloud-pubsub" },
     { name = "httplib2" },
     { name = "pyasn1" },
-]
-hindsight = [
-    { name = "hindsight-client" },
 ]
 homeassistant = [
     { name = "aiohttp" },
@@ -1956,10 +1955,13 @@ termux-all = [
     { name = "python-multipart" },
     { name = "python-telegram-bot", extra = ["webhooks"] },
     { name = "starlette" },
-    { name = "uvicorn", extra = ["standard"] },
+    { name = "uvicorn" },
 ]
 tts-premium = [
     { name = "elevenlabs" },
+]
+uvloop = [
+    { name = "uvloop", marker = "platform_python_implementation != 'PyPy' and sys_platform != 'android' and sys_platform != 'cygwin' and sys_platform != 'win32'" },
 ]
 vercel = [
     { name = "vercel" },
@@ -1986,7 +1988,7 @@ web = [
     { name = "fastapi" },
     { name = "python-multipart" },
     { name = "starlette" },
-    { name = "uvicorn", extra = ["standard"] },
+    { name = "uvicorn" },
 ]
 wecom = [
     { name = "defusedxml" },
@@ -1998,8 +2000,8 @@ youtube = [
 [package.metadata]
 requires-dist = [
     { name = "agent-client-protocol", marker = "extra == 'acp'", specifier = "==0.9.0" },
-    { name = "agent-run-supervisor", marker = "extra == 'agent-run-supervisor'", specifier = "==0.7.8" },
-    { name = "agent-run-supervisor", marker = "extra == 'dev'", specifier = "==0.7.8" },
+    { name = "agent-run-supervisor", marker = "extra == 'agent-run-supervisor'", specifier = "==0.7.9" },
+    { name = "agent-run-supervisor", marker = "extra == 'dev'", specifier = "==0.7.9" },
     { name = "ai-edge-litert", marker = "sys_platform == 'darwin' and extra == 'wake'", specifier = "==2.1.6" },
     { name = "aiohttp", marker = "extra == 'homeassistant'", specifier = "==3.14.3" },
     { name = "aiohttp", marker = "extra == 'matrix'", specifier = "==3.14.3" },
@@ -2060,13 +2062,14 @@ requires-dist = [
     { name = "hermes-agent", extras = ["sms"], marker = "extra == 'all'" },
     { name = "hermes-agent", extras = ["sms"], marker = "extra == 'termux-all'" },
     { name = "hermes-agent", extras = ["termux"], marker = "extra == 'termux-all'" },
+    { name = "hermes-agent", extras = ["uvloop"], marker = "extra == 'all'" },
     { name = "hermes-agent", extras = ["web"], marker = "extra == 'all'" },
     { name = "hermes-agent", extras = ["web"], marker = "extra == 'termux-all'" },
     { name = "hermes-agent", extras = ["youtube"], marker = "extra == 'all'" },
-    { name = "hindsight-client", marker = "extra == 'hindsight'", specifier = "==0.6.1" },
     { name = "honcho-ai", marker = "extra == 'honcho'", specifier = "==2.2.0" },
     { name = "httplib2", marker = "extra == 'google'", specifier = "==0.32.0" },
     { name = "httplib2", marker = "extra == 'google-chat'", specifier = "==0.32.0" },
+    { name = "httptools", specifier = ">=0.6.3,<0.9" },
     { name = "httpx", extras = ["socks"], specifier = "==0.28.1" },
     { name = "httpx2", marker = "extra == 'computer-use'", specifier = "==2.7.0" },
     { name = "httpx2", marker = "extra == 'dev'", specifier = "==2.7.0" },
@@ -2139,13 +2142,15 @@ requires-dist = [
     { name = "ty", marker = "extra == 'dev'", specifier = "==0.0.21" },
     { name = "tzdata", marker = "sys_platform == 'win32'", specifier = "==2025.3" },
     { name = "urllib3", specifier = ">=2.7.0,<3" },
-    { name = "uvicorn", extras = ["standard"], specifier = ">=0.31.0,<1" },
-    { name = "uvicorn", extras = ["standard"], marker = "extra == 'web'", specifier = "==0.41.0" },
+    { name = "uvicorn", specifier = ">=0.31.0,<1" },
+    { name = "uvicorn", marker = "extra == 'web'", specifier = "==0.41.0" },
+    { name = "uvloop", marker = "platform_python_implementation != 'PyPy' and sys_platform != 'android' and sys_platform != 'cygwin' and sys_platform != 'win32' and extra == 'uvloop'", specifier = ">=0.15.1,<0.24" },
     { name = "vercel", marker = "extra == 'vercel'", specifier = "==0.7.2" },
+    { name = "watchfiles", specifier = ">=0.20,<2" },
     { name = "websockets", specifier = "==15.0.1" },
     { name = "youtube-transcript-api", marker = "extra == 'youtube'", specifier = "==1.2.4" },
 ]
-provides-extras = ["anthropic", "exa", "firecrawl", "parallel-web", "fal", "edge-tts", "modal", "daytona", "vercel", "hindsight", "agent-run-supervisor", "dev", "messaging", "cron", "slack", "matrix", "wecom", "tts-premium", "voice", "wake", "honcho", "supermemory", "mem0", "vision", "pty", "mcp", "nemo-relay", "homeassistant", "sms", "teams", "computer-use", "acp", "mistral", "otlp", "bedrock", "vertex", "azure-identity", "termux", "termux-all", "dingtalk", "feishu", "google", "google-chat", "youtube", "web", "all"]
+provides-extras = ["uvloop", "anthropic", "exa", "firecrawl", "parallel-web", "fal", "edge-tts", "modal", "daytona", "vercel", "agent-run-supervisor", "dev", "messaging", "cron", "slack", "matrix", "wecom", "tts-premium", "voice", "wake", "honcho", "supermemory", "mem0", "vision", "pty", "mcp", "nemo-relay", "homeassistant", "sms", "teams", "computer-use", "acp", "mistral", "otlp", "bedrock", "vertex", "azure-identity", "termux", "termux-all", "dingtalk", "feishu", "google", "google-chat", "youtube", "web", "all"]
 
 [[package]]
 name = "hf-xet"
@@ -2161,23 +2166,6 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/07/a9/c050bc2743a2bcd68928bfee157b08681667a164a24ec95fbfcfcd717e08/hf_xet-1.5.2-cp38-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:cde8cd167126bb6109b2ceb19b844433a4988643e8f3e01dd9dd0e4a34535097", size = 4636716, upload-time = "2026-07-16T17:29:51.62Z" },
     { url = "https://files.pythonhosted.org/packages/e9/f8/68b01c5c2edb56ac9a67b3d076ffddcb90867abaee923923eb34e7a14e76/hf_xet-1.5.2-cp38-abi3-win_amd64.whl", hash = "sha256:ecf63d1cb69a9a7319910f8f83fcf9b46e7a32dfcf4b8f8eeddb55f647306e65", size = 3988373, upload-time = "2026-07-16T17:29:53.395Z" },
     { url = "https://files.pythonhosted.org/packages/39/c6/988383e9dc17294d536fcbcd6fd16eed882e411ad16c954984a53e47b09c/hf_xet-1.5.2-cp38-abi3-win_arm64.whl", hash = "sha256:1da28519496eb7c8094c11e4d25509b4a468457a0302d58136099db2fd9a671d", size = 3816957, upload-time = "2026-07-16T17:29:54.991Z" },
-]
-
-[[package]]
-name = "hindsight-client"
-version = "0.6.1"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "aiohttp" },
-    { name = "aiohttp-retry" },
-    { name = "pydantic" },
-    { name = "python-dateutil" },
-    { name = "typing-extensions" },
-    { name = "urllib3" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/33/26/8b8efa4be21fc3ba12ade3b1353d87f9837ec0d3ec2607e8adbf85bc9c63/hindsight_client-0.6.1.tar.gz", hash = "sha256:314d0bb9e13622e15586ba1586a799726d405b27bc20d78872474b5d6d96cd51", size = 99833, upload-time = "2026-05-08T13:01:23.537Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/24/4f/a1d0bc33ef933ecc52e76dc1514163594d25836a5d303c256a61bb61445d/hindsight_client-0.6.1-py3-none-any.whl", hash = "sha256:9fdda176ab50f7cec8d7339c6608c148f0cd9ad7e65d9d76192f2db730bc330a", size = 249379, upload-time = "2026-05-08T13:01:22.035Z" },
 ]
 
 [[package]]
@@ -4877,17 +4865,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/32/ce/eeb58ae4ac36fe09e3842eb02e0eb676bf2c53ae062b98f1b2531673efdd/uvicorn-0.41.0.tar.gz", hash = "sha256:09d11cf7008da33113824ee5a1c6422d89fbc2ff476540d69a34c87fab8b571a", size = 82633, upload-time = "2026-02-16T23:07:24.1Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/83/e4/d04a086285c20886c0daad0e026f250869201013d18f81d9ff5eada73a88/uvicorn-0.41.0-py3-none-any.whl", hash = "sha256:29e35b1d2c36a04b9e180d4007ede3bcb32a85fbdfd6c6aeb3f26839de088187", size = 68783, upload-time = "2026-02-16T23:07:22.357Z" },
-]
-
-[package.optional-dependencies]
-standard = [
-    { name = "colorama", marker = "sys_platform == 'win32'" },
-    { name = "httptools" },
-    { name = "python-dotenv" },
-    { name = "pyyaml" },
-    { name = "uvloop", marker = "platform_python_implementation != 'PyPy' and sys_platform != 'cygwin' and sys_platform != 'win32'" },
-    { name = "watchfiles" },
-    { name = "websockets" },
 ]
 
 [[package]]

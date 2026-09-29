@@ -26,6 +26,6 @@ one of them moves alone.
 #: is calibrated against.  The distribution is the only sanctioned way to
 #: reach that subsystem — never a source checkout, ``sys.path`` shim, or
 #: ``PYTHONPATH`` entry.
-EXPECTED_AGENT_RUN_SUPERVISOR_VERSION = "0.7.8"
+EXPECTED_AGENT_RUN_SUPERVISOR_VERSION = "0.7.9"
 
 __all__ = ["EXPECTED_AGENT_RUN_SUPERVISOR_VERSION"]

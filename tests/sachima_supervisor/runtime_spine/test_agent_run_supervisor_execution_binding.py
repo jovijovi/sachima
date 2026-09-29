@@ -147,7 +147,7 @@ class _FacadeDouble:
     def server_info(self) -> dict[str, Any]:
         self._log("server_info")
         return {
-            "version": "0.7.8",
+            "version": "0.7.9",
             "api_version": 3,
             "supported_api_versions": [3],
             "operations": list(V3_OPERATIONS),

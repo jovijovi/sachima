@@ -114,7 +114,7 @@ FORBIDDEN_MARKERS: tuple[str, ...] = (
     "-----begin",
     "/home/",
     "/users/",
-    "/tmp/",
+    "/tmp/",  # no-tmp: ok — forbidden-content marker: event text naming a /tmp/ path is refused, not written
     "/var/",
     "chat_id",
     "user_id",
