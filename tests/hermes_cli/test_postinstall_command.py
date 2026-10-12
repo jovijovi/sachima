@@ -67,8 +67,8 @@ class TestRegistration:
 
     def test_main_registers_the_real_handler_not_a_stub(self):
         """``main`` must inject the module handler, not shadow it locally."""
-        import hermes_cli.main as main
-        import hermes_cli.postinstall_cmd as postinstall_cmd
+        from hermes_cli import main
+        from hermes_cli import postinstall_cmd
 
         assert main.cmd_postinstall is postinstall_cmd.cmd_postinstall
         assert main.build_postinstall_parser is build_postinstall_parser

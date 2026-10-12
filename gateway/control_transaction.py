@@ -229,7 +229,7 @@ def _store_path() -> Path:
     return get_hermes_home() / "control_transactions.json"
 
 
-def _load_store_unlocked() -> Dict[str, Any]:
+def _load_store_unlocked() -> dict[str, Any]:
     path = _store_path()
     if not path.exists():
         return {"version": _STORE_VERSION, "transactions": {}}
@@ -244,7 +244,7 @@ def _load_store_unlocked() -> Dict[str, Any]:
     return data
 
 
-def _save_store_unlocked(store: Dict[str, Any]) -> None:
+def _save_store_unlocked(store: dict[str, Any]) -> None:
     transactions = store.get("transactions", {})
     if len(transactions) > _MAX_STORED_TRANSACTIONS:
         by_age = sorted(
@@ -270,8 +270,8 @@ def _save_store_unlocked(store: Dict[str, Any]) -> None:
 
 
 def _mutate_transaction(
-    transaction_id: str, mutator: Callable[[Dict[str, Any]], None]
-) -> Optional[Dict[str, Any]]:
+    transaction_id: str, mutator: Callable[[dict[str, Any]], None]
+) -> Optional[dict[str, Any]]:
     """Load-modify-save one transaction under the store lock; returns a copy."""
     with _STORE_LOCK:
         store = _load_store_unlocked()
@@ -284,7 +284,7 @@ def _mutate_transaction(
         return dict(txn)
 
 
-def get_control_transaction(transaction_id: Any) -> Optional[Dict[str, Any]]:
+def get_control_transaction(transaction_id: Any) -> Optional[dict[str, Any]]:
     """Return a copy of the persisted transaction, or None.  Never raises."""
     transaction_id = _normalize_transaction_id(transaction_id)
     if not transaction_id:
@@ -369,7 +369,7 @@ def _ensure_transaction(
     change_id: Any = "",
     bound_revision: str = "",
     actor: str = "",
-) -> Optional[Dict[str, Any]]:
+) -> Optional[dict[str, Any]]:
     """Fetch a transaction, lazily creating it from fallback identity fields.
 
     Lazy creation keeps old in-flight payloads (issued before the transaction
@@ -437,7 +437,7 @@ def record_card_action(
                 )
             return True
 
-        def _set(record: Dict[str, Any]) -> None:
+        def _set(record: dict[str, Any]) -> None:
             record["card_action"] = action
             if actor:
                 record["actor"] = compact_text(actor, 80)
@@ -533,7 +533,7 @@ def _receipt_transaction_id(content: str) -> str:
     if not content.startswith(EXECUTION_RESULT_PREFIX):
         return ""
     header = content.split(EXECUTION_DETAILS_OPEN, 1)[0]
-    match = re.search(r"^transaction_id=(\S+)$", header, re.M)
+    match = re.search(r"^transaction_id=(\S+)$", header, re.MULTILINE)
     return match.group(1) if match else ""
 
 
@@ -719,7 +719,7 @@ def record_execution_result(
         finally:
             db.close()
 
-        def _mark(record: Dict[str, Any]) -> None:
+        def _mark(record: dict[str, Any]) -> None:
             record["result"] = result
             record["operation"] = operation
             record["next_action"] = next_action
@@ -761,7 +761,7 @@ _RECEIPT_HEADER_FIELDS = (
 )
 
 
-def parse_control_record(content: Any) -> Optional[Dict[str, str]]:
+def parse_control_record(content: Any) -> Optional[dict[str, str]]:
     """Parse a persisted control record (execution receipt or legacy marker).
 
     Returns the validated HEADER fields only — the details body is never
@@ -773,7 +773,7 @@ def parse_control_record(content: Any) -> Optional[Dict[str, str]]:
         if EXECUTION_RESULT_PREFIX in text:
             _prefix, _sep, rest = text.partition(EXECUTION_RESULT_PREFIX)
             header = rest.split(EXECUTION_DETAILS_OPEN, 1)[0]
-            fields: Dict[str, str] = {}
+            fields: dict[str, str] = {}
             for line in header.split("\n"):
                 match = _HEADER_LINE_RE.match(line.strip())
                 if match:

@@ -101,7 +101,7 @@ class RolePolicyError(ValueError):
     """A policy failure whose message IS the stable code — never the material."""
 
 
-def _invalid() -> "RolePolicyError":
+def _invalid() -> RolePolicyError:
     return RolePolicyError(SACHIMA_AGENT_ROLE_INVALID_POLICY)
 
 

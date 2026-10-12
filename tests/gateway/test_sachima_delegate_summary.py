@@ -559,7 +559,7 @@ def _in_a_watched_thread(coro_factory, *, guard: float = 5.0):
     def _run() -> None:
         try:
             box["value"] = asyncio.run(coro_factory())
-        except BaseException as exc:  # noqa: BLE001 - reported, not swallowed
+        except BaseException as exc:  # reported, not swallowed
             box["error"] = exc
 
     thread = threading.Thread(target=_run, daemon=True)

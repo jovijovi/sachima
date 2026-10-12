@@ -31,7 +31,7 @@ def check_image_edit_requirements() -> bool:
         return False
 
 
-def _unsupported_result(info: Dict[str, Any]) -> str:
+def _unsupported_result(info: dict[str, Any]) -> str:
     provider = info.get("provider") or "active image provider"
     return json.dumps(
         {
@@ -48,7 +48,7 @@ def _unsupported_result(info: Dict[str, Any]) -> str:
     )
 
 
-def _handle_image_edit(args: Dict[str, Any], **kw: Any) -> str:
+def _handle_image_edit(args: dict[str, Any], **kw: Any) -> str:
     started_at = time.perf_counter()
     prompt = args.get("prompt", "")
     image = args.get("image", "")
@@ -61,7 +61,7 @@ def _handle_image_edit(args: Dict[str, Any], **kw: Any) -> str:
     elif "image" not in info.get("modalities", []):
         result = _unsupported_result(info)
     else:
-        generate_args: Dict[str, Any] = {
+        generate_args: dict[str, Any] = {
             "prompt": prompt,
             "image_url": image,
             "aspect_ratio": args.get("aspect_ratio", DEFAULT_ASPECT_RATIO),
@@ -134,7 +134,7 @@ IMAGE_EDIT_SCHEMA = {
 }
 
 
-def _build_dynamic_image_edit_schema() -> Dict[str, Any]:
+def _build_dynamic_image_edit_schema() -> dict[str, Any]:
     schema = {
         "description": IMAGE_EDIT_SCHEMA["description"],
         "parameters": {

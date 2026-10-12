@@ -2329,7 +2329,7 @@ async def test_feishu_task_workbench_keeps_one_card_identity(monkeypatch, tmp_pa
 @pytest.mark.asyncio
 async def test_task_workbench_persists_real_gateway_transaction(monkeypatch, tmp_path):
     event_path = tmp_path / "progress" / "events.jsonl"
-    adapter, result = await _run_with_agent(
+    _adapter, result = await _run_with_agent(
         monkeypatch,
         tmp_path,
         TaskWorkbenchGatewayAgent,

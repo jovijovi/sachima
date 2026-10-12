@@ -700,7 +700,7 @@ async def test_a_lost_ack_leaves_a_pending_intent_that_holds_its_permit(tmp_path
 @pytest.mark.asyncio
 async def test_an_unreadable_ledger_blocks_and_keeps_everything(tmp_path):
     delivery = _Delivery()
-    coordinator, facade = _coordinator(tmp_path, delivery=delivery)
+    coordinator, _facade = _coordinator(tmp_path, delivery=delivery)
     ledger_path = Path(coordinator.ledger.path)
 
     damaged = b'{"type": "sachima.runtime_spine.arsd_run_binding_ledger.v1", "bind'
@@ -1172,7 +1172,7 @@ async def test_restart_finishes_a_result_event_left_before_turn_terminalization(
     """A crash between event write and turn update reuses one event identity."""
 
     delivery = _Delivery()
-    coordinator, facade = _coordinator(tmp_path, delivery=delivery)
+    coordinator, _facade = _coordinator(tmp_path, delivery=delivery)
     outcome = await _await_composed(
         coordinator.create(
             task_text=TASK_TEXT_CANARY,
@@ -1324,7 +1324,7 @@ async def test_a_restart_turns_an_in_flight_receipt_into_uncertain_without_resen
     tmp_path,
 ):
     delivery = _Delivery()
-    coordinator, facade = _coordinator(tmp_path, delivery=delivery)
+    coordinator, _facade = _coordinator(tmp_path, delivery=delivery)
     outcome = await coordinator.create(
         task_text=TASK_TEXT_CANARY,
         preset=_preset(coordinator),
@@ -1375,7 +1375,7 @@ async def test_a_restart_restores_a_pending_intent_and_reserves_its_permit(tmp_p
 @pytest.mark.asyncio
 async def test_a_restart_restores_a_crashed_cancel_as_uncertain(tmp_path):
     delivery = _Delivery()
-    coordinator, facade = _coordinator(tmp_path, delivery=delivery)
+    coordinator, _facade = _coordinator(tmp_path, delivery=delivery)
     outcome = await coordinator.create(
         task_text=TASK_TEXT_CANARY,
         preset=_preset(coordinator),
@@ -1569,7 +1569,7 @@ async def test_capacity_bounds_admissions_and_says_so_only_when_it_waits(tmp_pat
     facade = _Facade(max_concurrent_runs=1)
     delivery = _Delivery()
     coordinator, _ = _coordinator(tmp_path, facade=facade, delivery=delivery)
-    first = await coordinator.create(
+    await coordinator.create(
         task_text="first task",
         preset=_preset(coordinator),
         origin=_origin(),
@@ -3021,7 +3021,7 @@ async def test_a_restart_claims_a_never_attempted_pending_summary_exactly_once(
 ):
     delivery = _Delivery()
     first = _SummaryProvider()
-    coordinator, facade = _coordinator(
+    coordinator, _facade = _coordinator(
         tmp_path, delivery=delivery, summary_provider=first
     )
     outcome = await coordinator.create(
@@ -3080,7 +3080,7 @@ async def test_a_recovered_in_flight_summary_settles_unavailable_without_replay(
 ):
     delivery = _Delivery()
     first = _SummaryProvider()
-    coordinator, facade = _coordinator(
+    coordinator, _facade = _coordinator(
         tmp_path, delivery=delivery, summary_provider=first
     )
     outcome = await coordinator.create(
@@ -3260,7 +3260,7 @@ async def test_a_conclusion_at_the_end_is_not_lost_to_a_fixed_head(tmp_path):
 async def test_a_source_that_drifted_under_a_pending_summary_fails_closed(tmp_path):
     delivery = _Delivery()
     first = _SummaryProvider()
-    coordinator, facade = _coordinator(
+    coordinator, _facade = _coordinator(
         tmp_path, delivery=delivery, summary_provider=first
     )
     outcome = await coordinator.create(
@@ -3318,7 +3318,7 @@ async def test_a_source_that_drifted_under_a_pending_summary_fails_closed(tmp_pa
 async def test_a_ready_summary_is_rechecked_before_the_im_sink_after_restart(tmp_path):
     delivery = _Delivery()
     first = _SummaryProvider()
-    coordinator, facade = _coordinator(
+    coordinator, _facade = _coordinator(
         tmp_path, delivery=delivery, summary_provider=first
     )
     outcome = await coordinator.create(
@@ -3405,7 +3405,7 @@ async def test_a_restart_between_the_summary_and_the_im_sink_reuses_that_summary
 ):
     delivery = _Delivery()
     first = _SummaryProvider()
-    coordinator, facade = _coordinator(
+    coordinator, _facade = _coordinator(
         tmp_path, delivery=delivery, summary_provider=first
     )
     outcome = await coordinator.create(

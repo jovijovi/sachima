@@ -1454,7 +1454,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         chat_id: str,
         text: str,
         reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
         """Send one already-bounded body as exactly one plain ``sendMessage``.
 

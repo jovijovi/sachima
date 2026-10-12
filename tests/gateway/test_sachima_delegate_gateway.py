@@ -1458,9 +1458,9 @@ async def test_the_handoff_rides_into_the_interrupt_followup_that_reaches_the_mo
     monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
     monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "off")
     monkeypatch.setenv("HERMES_AGENT_TIMEOUT", "0")
-    monkeypatch.setattr("gateway.run._load_gateway_config", lambda: {})
+    monkeypatch.setattr("gateway.run._load_gateway_config", dict)
 
-    import hermes_cli.tools_config as tools_config
+    from hermes_cli import tools_config
 
     monkeypatch.setattr(
         tools_config, "_get_platform_tools", lambda *_args, **_kwargs: {"core"}
@@ -2441,7 +2441,7 @@ def test_a_stale_worker_cannot_dispatch_through_the_rebound_cached_agent(
     worker wakes it must dispatch nothing and consume neither claim.
     """
 
-    import hermes_cli.middleware as middleware
+    from hermes_cli import middleware
 
     from agent.chat_completion_helpers import ProviderDispatchLease
     from gateway.run import GatewayRunner, _DelegateResultHandoff
@@ -2503,7 +2503,7 @@ def test_a_stale_worker_never_commits_the_successor_turns_lease(monkeypatch):
     The worker must answer with its own turn's lease, which is revoked.
     """
 
-    import hermes_cli.middleware as middleware
+    from hermes_cli import middleware
 
     from agent.chat_completion_helpers import ProviderDispatchLease
     from gateway.run import GatewayRunner, _DelegateResultHandoff
@@ -2562,7 +2562,7 @@ def test_a_rebind_with_no_lease_leaves_the_stale_worker_refusing(monkeypatch):
     "no lease, dispatch freely" — and the abandoned worker takes it.
     """
 
-    import hermes_cli.middleware as middleware
+    from hermes_cli import middleware
 
     from agent.chat_completion_helpers import ProviderDispatchLease
     from gateway.run import _DelegateResultHandoff
@@ -2870,8 +2870,6 @@ def test_a_failed_then_retried_dispatch_consumes_exactly_once():
     agent = _provider_agent()
     agent.api_mode = "chat_completions"
     agent.provider = "openrouter"
-    claim = _DelegateResultHandoff("session-1")
-    lease = ProviderDispatchLease(claim.mark_provider_attempt)
     marks = []
     lease_with_counter = ProviderDispatchLease(lambda: marks.append(1))
 
@@ -2972,7 +2970,7 @@ def test_an_abandoned_turn_cannot_open_an_anthropic_stream(monkeypatch):
         bind_provider_dispatch_lease(lease)
         try:
             interruptible_streaming_api_call(agent, {"model": "claude-opus-5"})
-        except BaseException as exc:  # noqa: BLE001 - recorded, then asserted
+        except BaseException as exc:  # recorded, then asserted
             outcome["error"] = exc
 
     worker = threading.Thread(target=_turn, daemon=True)
@@ -2997,7 +2995,7 @@ def test_a_live_anthropic_stream_establishment_consumes_exactly_once(monkeypatch
     )
     from gateway.run import _DelegateResultHandoff
 
-    agent, client, opened = _anthropic_streaming_agent(monkeypatch)
+    agent, _client, opened = _anthropic_streaming_agent(monkeypatch)
     claim = _DelegateResultHandoff("session-1")
     marks: list[int] = []
     lease = ProviderDispatchLease(lambda: (marks.append(1), claim.mark_provider_attempt())[0])
@@ -3006,7 +3004,7 @@ def test_a_live_anthropic_stream_establishment_consumes_exactly_once(monkeypatch
         bind_provider_dispatch_lease(lease)
         try:
             interruptible_streaming_api_call(agent, {"model": "claude-opus-5"})
-        except BaseException:  # noqa: BLE001 - establishment is what is asserted
+        except BaseException:  # establishment is what is asserted
             pass
 
     worker = threading.Thread(target=_turn, daemon=True)
@@ -3030,7 +3028,7 @@ def test_an_anthropic_stream_that_fails_to_open_does_not_consume(monkeypatch):
     )
     from gateway.run import _DelegateResultHandoff
 
-    agent, client, opened = _anthropic_streaming_agent(
+    agent, _client, opened = _anthropic_streaming_agent(
         monkeypatch, stream_error=ConnectionError("refused")
     )
     claim = _DelegateResultHandoff("session-1")
@@ -3040,7 +3038,7 @@ def test_an_anthropic_stream_that_fails_to_open_does_not_consume(monkeypatch):
         bind_provider_dispatch_lease(lease)
         try:
             interruptible_streaming_api_call(agent, {"model": "claude-opus-5"})
-        except BaseException:  # noqa: BLE001 - the refusal is expected
+        except BaseException:  # the refusal is expected
             pass
 
     worker = threading.Thread(target=_turn, daemon=True)
@@ -3115,7 +3113,7 @@ def test_abandoning_a_timed_out_turn_retires_its_lease_immediately(monkeypatch):
 def _bedrock_streaming_agent(monkeypatch, *, stream_error, converse_result=None):
     """A production-shaped Bedrock streaming turn with an injected client."""
 
-    import agent.bedrock_adapter as bedrock_adapter
+    from agent import bedrock_adapter
 
     agent = _provider_agent()
     agent.api_mode = "bedrock_converse"
@@ -3180,7 +3178,7 @@ def test_a_revoked_turn_cannot_dispatch_through_the_bedrock_iam_fallback(
             interruptible_streaming_api_call(
                 agent, {"model": "anthropic.claude", "__bedrock_region__": "us-east-1"}
             )
-        except BaseException:  # noqa: BLE001 - the refusal is the assertion
+        except BaseException:  # the refusal is the assertion
             pass
 
     worker = threading.Thread(target=_turn, daemon=True)
@@ -3208,7 +3206,7 @@ def test_a_bedrock_iam_fallback_that_establishes_consumes_exactly_once(monkeypat
     )
     from gateway.run import _DelegateResultHandoff
 
-    agent, client, calls = _bedrock_streaming_agent(
+    agent, _client, calls = _bedrock_streaming_agent(
         monkeypatch,
         stream_error=PermissionError("AccessDeniedException"),
         converse_result={"output": {"message": {"content": []}}},
@@ -3225,7 +3223,7 @@ def test_a_bedrock_iam_fallback_that_establishes_consumes_exactly_once(monkeypat
             interruptible_streaming_api_call(
                 agent, {"model": "anthropic.claude", "__bedrock_region__": "us-east-1"}
             )
-        except BaseException:  # noqa: BLE001 - establishment is the assertion
+        except BaseException:  # establishment is the assertion
             pass
 
     worker = threading.Thread(target=_turn, daemon=True)
@@ -3497,9 +3495,9 @@ async def test_the_turns_lease_is_built_before_scheduling_and_shared_with_the_re
     monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
     monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "off")
     monkeypatch.setenv("HERMES_AGENT_TIMEOUT", "1800")
-    monkeypatch.setattr("gateway.run._load_gateway_config", lambda: {})
+    monkeypatch.setattr("gateway.run._load_gateway_config", dict)
 
-    import hermes_cli.tools_config as tools_config
+    from hermes_cli import tools_config
 
     monkeypatch.setattr(
         tools_config, "_get_platform_tools", lambda *_args, **_kwargs: {"core"}
@@ -3603,7 +3601,7 @@ async def test_a_closed_coordinator_refuses_a_captured_thread_caller(
 
         try:
             coordinator.run_on_lifecycle_loop(_factory)
-        except BaseException as exc:  # noqa: BLE001 - recorded, then asserted
+        except BaseException as exc:  # recorded, then asserted
             outcome["error"] = exc
 
     worker = threading.Thread(target=_captured_caller, daemon=True)

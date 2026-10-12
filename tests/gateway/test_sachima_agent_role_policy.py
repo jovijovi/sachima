@@ -533,7 +533,7 @@ def test_no_presets_at_all_selects_nothing() -> None:
 
 
 def test_every_refusal_is_one_of_the_declared_stable_codes() -> None:
-    presets, policy = _world()
+    presets, _ = _world()
     contested = _policy(
         _assignment("codex", "engineering", "code_review"),
         _assignment("cursor", "engineering", "code_review"),

@@ -1744,10 +1744,10 @@ class FeishuAdapter(GitHubPrApprovalMixin, BasePlatformAdapter):
     async def send_interactive_card(
         self,
         chat_id: str,
-        card: Dict[str, Any],
+        card: dict[str, Any],
         *,
         reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
         """Send a Feishu interactive card without routing through text formatting.
 
@@ -1779,7 +1779,7 @@ class FeishuAdapter(GitHubPrApprovalMixin, BasePlatformAdapter):
         self,
         chat_id: str,
         message_id: str,
-        card: Dict[str, Any],
+        card: dict[str, Any],
         *,
         finalize: bool = False,
     ) -> SendResult:
@@ -1853,7 +1853,7 @@ class FeishuAdapter(GitHubPrApprovalMixin, BasePlatformAdapter):
         chat_id: str,
         text: str,
         reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
         """Send one already-bounded body as exactly one ``msg_type="text"``.
 

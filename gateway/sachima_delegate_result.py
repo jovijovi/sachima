@@ -44,7 +44,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from typing import Any, Awaitable, Callable
 
 from gateway.sachima_delegate_summary import (
@@ -60,13 +60,13 @@ from gateway.sachima_delegate_summary import (
 )
 
 __all__ = [
-    "UNCERTAIN_SETTLEMENT",
     "DELEGATE_RESULT_ENVELOPE_TYPE",
     "DELEGATE_RESULT_ENVELOPE_VERSION",
-    "SEND_SETTLEMENT_STATES",
     "SACHIMA_DELEGATE_SEND_FAILED",
     "SACHIMA_DELEGATE_SEND_INVALID_RESULT",
     "SACHIMA_DELEGATE_SEND_UNCERTAIN",
+    "SEND_SETTLEMENT_STATES",
+    "UNCERTAIN_SETTLEMENT",
     "DelegateAcceptedReceipt",
     "DelegateResultEnvelope",
     "SendSettlement",
@@ -142,12 +142,12 @@ def _formatted_status_time(value: Any) -> str | None:
     if type(value) is not str or not value:
         return None
     try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(value)
     except ValueError:
         return None
-    if parsed.tzinfo is None or parsed.utcoffset() != timezone.utc.utcoffset(parsed):
+    if parsed.tzinfo is None or parsed.utcoffset() != UTC.utcoffset(parsed):
         return None
-    return parsed.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    return parsed.astimezone(UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
 
 
 def _execution_summary(agent: Any, model: Any, effort: Any) -> str | None:

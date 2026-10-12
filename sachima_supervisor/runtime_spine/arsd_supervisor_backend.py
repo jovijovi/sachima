@@ -799,7 +799,7 @@ class ArsdSupervisorBackend:
             _binding_conflict()
         return self._accepted_handoff(record)
 
-    def cancel_run(self, handle: str) -> "ArsdRunCancelOutcome":
+    def cancel_run(self, handle: str) -> ArsdRunCancelOutcome:
         """Cancel **this Run** — and nothing wider.
 
         The narrow user-facing cancel seam. It reuses the same ``run_cancel``
@@ -871,7 +871,7 @@ class ArsdSupervisorBackend:
         run_id: str,
         neutral: str,
         result_body: Any,
-    ) -> "ArsdRunCancelOutcome":
+    ) -> ArsdRunCancelOutcome:
         """Record the terminal a cancel proved, without ending the task."""
 
         projected = project_arsd_terminal_result(result_body, status=neutral)

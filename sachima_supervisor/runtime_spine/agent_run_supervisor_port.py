@@ -888,7 +888,7 @@ class AgentRunSupervisorPort(ExecutionPort):
     def _backend_create_or_attach(self, safe_task: str, refs: tuple[str, ...]) -> str:
         try:
             handle = self._backend.create_or_attach(safe_task, tuple(refs))
-        except BaseException:  # noqa: BLE001 - injected backend no-leak boundary
+        except BaseException:  # injected backend no-leak boundary
             raise SpineError(RUNTIME_SUPERVISOR_BACKEND_FAILURE) from None
         return _safe_id(handle, code=RUNTIME_SUPERVISOR_BACKEND_FAILURE)
 
@@ -898,7 +898,7 @@ class AgentRunSupervisorPort(ExecutionPort):
             safe_reason = _safe_ref(reason_ref)
             self._backend.kill(safe_handle, safe_reason)
         except BaseException:
-            return None
+            return
 
     def _backend_state(self, handle: str, *, op: str) -> str:
         try:
@@ -953,13 +953,13 @@ class AgentRunSupervisorPort(ExecutionPort):
 
 
 __all__ = [
+    "LIFECYCLE_SNAPSHOT_TYPE",
     "RUNTIME_SUPERVISOR_BACKEND_FAILURE",
     "RUNTIME_SUPERVISOR_POLICY_DENIED",
     "SUPERVISOR_PORT_STABLE_CODES",
-    "LIFECYCLE_SNAPSHOT_TYPE",
     "AgentRunSupervisorBackend",
-    "DefaultAgentRunSupervisorBackend",
     "AgentRunSupervisorPort",
+    "DefaultAgentRunSupervisorBackend",
     "LifecycleSnapshot",
     "validate_lifecycle_snapshot",
 ]

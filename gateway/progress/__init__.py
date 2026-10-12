@@ -20,8 +20,8 @@ from gateway.progress.todo_executor import MAX_TODO_EXECUTOR_CHARS, normalize_to
 from gateway.progress.tracker import ProgressTracker
 
 __all__ = [
-    "JsonlProgressEventStore",
     "MAX_TODO_EXECUTOR_CHARS",
+    "JsonlProgressEventStore",
     "ProgressEventStore",
     "ProgressOperation",
     "ProgressTracker",

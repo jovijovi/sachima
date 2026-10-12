@@ -1063,7 +1063,7 @@ app.include_router(_shared_metrics_routes.router)
 
 # ── Sachima Task Workbench progress (persisted JSONL event store, read-only) ─────────────────
 
-def _configured_progress_events_path() -> Tuple[bool, Optional[Path]]:
+def _configured_progress_events_path() -> tuple[bool, Optional[Path]]:
     """Resolve the optional JSONL task-workbench store for the active profile."""
     from utils import is_truthy_value
 
@@ -1095,7 +1095,7 @@ async def get_progress_transactions(
     """Return persisted task-workbench summaries for the selected profile."""
     from hermes_cli.web_server_profiles import _profile_scope
 
-    def _read() -> Dict[str, Any]:
+    def _read() -> dict[str, Any]:
         with _profile_scope(profile):
             enabled, event_path = _configured_progress_events_path()
             if not enabled:
@@ -1123,7 +1123,7 @@ async def get_progress_transaction_events_endpoint(
     """Return a bounded timeline for one persisted workbench transaction."""
     from hermes_cli.web_server_profiles import _profile_scope
 
-    def _read() -> Dict[str, Any]:
+    def _read() -> dict[str, Any]:
         with _profile_scope(profile):
             enabled, event_path = _configured_progress_events_path()
             if not enabled:

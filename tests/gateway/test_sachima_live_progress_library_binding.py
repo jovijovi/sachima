@@ -538,6 +538,7 @@ def test_fake_is_the_default_and_needs_no_agent_run_supervisor_import(tmp_path):
         capture_output=True,
         text=True,
         timeout=120,
+        check=False,
     )
     assert completed.returncode == 0, completed.stderr
     observed = json.loads(completed.stdout.strip().splitlines()[-1])

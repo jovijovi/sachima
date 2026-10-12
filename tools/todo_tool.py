@@ -32,7 +32,7 @@ class TodoStore:
         self._revision = 0
         # Sachima TODO lifecycle: one logical task (transaction) with a privacy-safe owner scope.
         self._transaction_id: Optional[str] = None
-        self._owner_scope_ref: Optional[Dict[str, str]] = None
+        self._owner_scope_ref: Optional[dict[str, str]] = None
         self._lifecycle_state: Optional[str] = None
         self._suspension_reason: Optional[str] = None
         self._next_action: Optional[str] = None
@@ -114,7 +114,7 @@ class TodoStore:
     def bind_transaction(
         self,
         transaction_id: Optional[str],
-        owner_scope_ref: Optional[Dict[str, Any]] = None,
+        owner_scope_ref: Optional[dict[str, Any]] = None,
     ) -> None:
         """Bind this plan to one task and a privacy-safe owner scope."""
         from gateway.progress.todo_lifecycle import normalize_owner_scope_ref
@@ -180,7 +180,7 @@ class TodoStore:
         self._next_action = None
         self._revision += 1
 
-    def read_lifecycle(self) -> Optional[Dict[str, Any]]:
+    def read_lifecycle(self) -> Optional[dict[str, Any]]:
         """Return the lifecycle envelope carried in persisted tool results."""
         if not any(
             (
@@ -200,7 +200,7 @@ class TodoStore:
             state = "cancelled"
         else:
             state = "completed"
-        lifecycle: Dict[str, Any] = {
+        lifecycle: dict[str, Any] = {
             "state": state,
             "completed_count": summary["completed"],
             "remaining_count": summary["pending"] + summary["in_progress"],
@@ -215,10 +215,10 @@ class TodoStore:
             lifecycle["owner_scope_ref"] = self._owner_scope_ref.copy()
         return lifecycle
 
-    def read_snapshot(self, *, include_revision: bool = True) -> Dict[str, Any]:
+    def read_snapshot(self, *, include_revision: bool = True) -> dict[str, Any]:
         """Return TODOs, revision, summary, and optional lifecycle atomically."""
         items = self.read()
-        result: Dict[str, Any] = {
+        result: dict[str, Any] = {
             "todos": items,
             "summary": self._summary_counts(items),
         }

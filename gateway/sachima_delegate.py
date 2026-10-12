@@ -69,7 +69,7 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass, field, replace
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from typing import Any, Awaitable, Callable, Mapping
 
 from gateway.sachima_agent_role_policy import (
@@ -177,24 +177,24 @@ __all__ = [
     "SACHIMA_DELEGATE_COMPOSE_ENV",
     "SACHIMA_DELEGATE_COMPOSITION_INVALID",
     "SACHIMA_DELEGATE_CONFIG_FILE_ENV",
-    "SACHIMA_DELEGATE_PRESETS_FILE_ENV",
-    "SACHIMA_DELEGATE_ROLE_POLICY_FILE_ENV",
+    "SACHIMA_DELEGATE_CONTINUATION_PAUSED",
+    "SACHIMA_DELEGATE_CONTINUATION_SUPERSEDED",
     "SACHIMA_DELEGATE_DISPATCH_FAILED",
     "SACHIMA_DELEGATE_INVALID_TARGET",
     "SACHIMA_DELEGATE_INVALID_TASK_TEXT",
-    "SACHIMA_DELEGATE_NO_DELIVERY",
-    "SACHIMA_DELEGATE_NO_CONTINUATION_AUTHORITY",
     "SACHIMA_DELEGATE_NOT_CONTINUABLE",
+    "SACHIMA_DELEGATE_NO_CONTINUATION_AUTHORITY",
+    "SACHIMA_DELEGATE_NO_DELIVERY",
     "SACHIMA_DELEGATE_OBSERVATION_LOST",
+    "SACHIMA_DELEGATE_OPERATION_UNCERTAIN",
+    "SACHIMA_DELEGATE_PRESETS_FILE_ENV",
+    "SACHIMA_DELEGATE_PROCESSING_MISMATCH",
     "SACHIMA_DELEGATE_RECOVERY_REQUIRED",
     "SACHIMA_DELEGATE_REPORT_DELIVERY_FAILED",
     "SACHIMA_DELEGATE_REPORT_DELIVERY_UNKNOWN",
     "SACHIMA_DELEGATE_RESULT_IDENTITY_MISMATCH",
     "SACHIMA_DELEGATE_RESULT_NOT_ACCEPTABLE",
-    "SACHIMA_DELEGATE_PROCESSING_MISMATCH",
-    "SACHIMA_DELEGATE_CONTINUATION_PAUSED",
-    "SACHIMA_DELEGATE_CONTINUATION_SUPERSEDED",
-    "SACHIMA_DELEGATE_OPERATION_UNCERTAIN",
+    "SACHIMA_DELEGATE_ROLE_POLICY_FILE_ENV",
     "SACHIMA_DELEGATE_STABLE_CODES",
     "SACHIMA_DELEGATE_SUMMARY_UNAVAILABLE",
     "SACHIMA_DELEGATE_UNBOUND",
@@ -465,7 +465,7 @@ def _supplied_role(value: Any) -> str | None:
 
 
 def _utc_status_time() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return datetime.now(UTC).isoformat(timespec="seconds")
 
 
 def _claimed_by(recorded: Any, continuity: Any) -> bool:
@@ -4448,7 +4448,7 @@ class DelegateCompositionError(ValueError):
     """A declared composition that cannot be honoured. Never echoes material."""
 
 
-def _composition_invalid() -> "DelegateCompositionError":
+def _composition_invalid() -> DelegateCompositionError:
     return DelegateCompositionError(SACHIMA_DELEGATE_COMPOSITION_INVALID)
 
 

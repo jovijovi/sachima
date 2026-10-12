@@ -3820,7 +3820,7 @@ class GatewayTurnMixin:
 
     async def _run_agent_deliver_first_response(
         self, turn_ctx: TurnContext, adapter: Any, response: Any, result: Any, stream_task: Any,
-    ) -> Tuple[bool, bool]:
+    ) -> tuple[bool, bool]:
         """Deliver the first response before a queued follow-up runs, unless streaming already did.
 
         Returns ``(text_delivery_confirmed, model_turn_completed)`` so the Sachima delegation

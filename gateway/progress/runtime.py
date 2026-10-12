@@ -98,7 +98,7 @@ class TaskWorkbenchRuntime:
         platform: Any,
         message: Any,
         history: list[Any] | None,
-    ) -> "TaskWorkbenchRuntime":
+    ) -> TaskWorkbenchRuntime:
         """Return the runtime already shared by a queued-follow-up chain."""
 
         existing = transaction.get("task_workbench")
@@ -294,7 +294,7 @@ class TaskWorkbenchRuntime:
         self.progress_queue.put(_FINAL_SIGNAL)
         try:
             await asyncio.wait_for(self._final_flushed.wait(), timeout=max(0.1, timeout))
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.warning(
                 "Timed out waiting for final Task Workbench flush: %s",
                 self.transaction_id,

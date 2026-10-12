@@ -85,7 +85,7 @@ class _FrozenCounterDict(dict):
     def update(self, *args: Any, **kwargs: Any) -> None:
         self._readonly(*args, **kwargs)
 
-    def __ior__(self, other: Any) -> "_FrozenCounterDict":
+    def __ior__(self, other: Any) -> _FrozenCounterDict:
         self._readonly(other)
 
 

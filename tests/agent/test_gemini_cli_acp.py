@@ -260,7 +260,7 @@ def test_model_picker_lists_available_official_cli(
 ) -> None:
     from hermes_cli.model_switch import list_authenticated_providers
 
-    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", dict)
     monkeypatch.setattr(
         "hermes_cli.auth.get_external_process_provider_status",
         lambda provider: {
@@ -274,7 +274,7 @@ def test_model_picker_lists_available_official_cli(
         "hermes_cli.model_switch_providers._credential_pool_is_usable",
         lambda *_args, **_kwargs: False,
     )
-    monkeypatch.setattr("hermes_cli.auth._load_auth_store", lambda: {})
+    monkeypatch.setattr("hermes_cli.auth._load_auth_store", dict)
 
     rows = list_authenticated_providers(
         current_provider="google-gemini-cli",

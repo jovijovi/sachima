@@ -315,7 +315,7 @@ def _two_page_reader():
 
 def test_display_resume_after_seq_shows_only_new_records():
     mod = _mod()
-    reg, backend, port, ref = _running_port()
+    reg, _backend, port, ref = _running_port()
     bindings = _bindings_with(ref)
     reader = _two_page_reader()
 
@@ -467,7 +467,7 @@ def test_render_rejects_forged_or_non_view_input():
 # --------------------------------------------------------------------------- #
 def test_display_query_disabled_by_default_fails_closed_reader_untouched():
     mod = _mod()
-    reg, backend, port, ref = _running_port()
+    reg, _backend, port, ref = _running_port()
     bindings = _bindings_with(ref, last_seen_cursor=7)
     reader = _running_reader()
     before_seq = reg.log.last_seq("task_alpha")

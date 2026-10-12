@@ -2761,10 +2761,10 @@ class BasePlatformAdapter(ABC):
     async def send_interactive_card(
         self,
         chat_id: str,
-        card: Dict[str, Any],
+        card: dict[str, Any],
         *,
         reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
         """
         Post a platform-native interactive card as its own message.
@@ -2782,7 +2782,7 @@ class BasePlatformAdapter(ABC):
         self,
         chat_id: str,
         message_id: str,
-        card: Dict[str, Any],
+        card: dict[str, Any],
         *,
         finalize: bool = False,
     ) -> SendResult:
@@ -2834,7 +2834,7 @@ class BasePlatformAdapter(ABC):
         chat_id: str,
         text: str,
         reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
         """
         Deliver one already-bounded plain-text body as a single message —

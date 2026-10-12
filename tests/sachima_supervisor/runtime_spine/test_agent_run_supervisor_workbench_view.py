@@ -178,7 +178,7 @@ def test_workbench_symbols_available_from_runtime_spine_package() -> None:
 # --------------------------------------------------------------------------- #
 def test_workbench_view_composes_view_model_and_lifecycle_for_running_task() -> None:
     mod = _workbench_mod()
-    reg, backend, port, ref = _running_port()
+    reg, _backend, port, ref = _running_port()
 
     view = mod.build_agent_run_supervisor_workbench_view(reg, port, ref)
     assert type(view) is mod.AgentRunSupervisorWorkbenchView
@@ -214,7 +214,7 @@ def test_workbench_view_composes_view_model_and_lifecycle_for_running_task() -> 
 
 def test_workbench_view_terminal_task_is_terminal_and_not_alive() -> None:
     mod = _workbench_mod()
-    reg, backend, port, ref = _running_port()
+    reg, _backend, port, ref = _running_port()
     port.kill(ref)  # drive to a terminal (cancelled) state through the public API
 
     view = mod.build_agent_run_supervisor_workbench_view(reg, port, ref)
@@ -293,7 +293,7 @@ def test_workbench_view_after_close_and_reattach_is_consistent_without_new_event
 # --------------------------------------------------------------------------- #
 def test_workbench_view_forged_session_ref_fails_closed() -> None:
     mod = _workbench_mod()
-    reg, backend, port, _ref = _running_port()
+    reg, _backend, port, _ref = _running_port()
     with pytest.raises(SpineError) as exc:
         mod.build_agent_run_supervisor_workbench_view(
             reg, port, SessionRef(task_id="task_alpha", session_id="sess_forged")
@@ -303,7 +303,7 @@ def test_workbench_view_forged_session_ref_fails_closed() -> None:
 
 def test_workbench_view_untracked_task_fails_closed() -> None:
     mod = _workbench_mod()
-    reg, backend, port, _ref = _running_port()
+    reg, _backend, port, _ref = _running_port()
     with pytest.raises(SpineError) as exc:
         mod.build_agent_run_supervisor_workbench_view(reg, port, "task_missing")
     assert exc.value.code == RUNTIME_INVALID_SESSION
@@ -311,7 +311,7 @@ def test_workbench_view_untracked_task_fails_closed() -> None:
 
 def test_workbench_view_forbidden_ref_string_does_not_echo_bad_material() -> None:
     mod = _workbench_mod()
-    reg, backend, port, _ref = _running_port()
+    reg, _backend, port, _ref = _running_port()
     with pytest.raises(SpineError) as exc:
         mod.build_agent_run_supervisor_workbench_view(reg, port, "chat_id_leak")
     assert "chat_id" not in str(exc.value)
@@ -409,7 +409,7 @@ def test_validate_workbench_view_rejects_forged_object_new() -> None:
 
 def test_workbench_view_cannot_be_mutated_to_echo_raw_material() -> None:
     mod = _workbench_mod()
-    reg, backend, port, ref = _running_port()
+    reg, _backend, port, ref = _running_port()
     view = mod.build_agent_run_supervisor_workbench_view(reg, port, ref)
     with pytest.raises((AttributeError, TypeError, SpineError)):
         view.refs.append("raw_prompt_dump")
@@ -495,7 +495,7 @@ def test_workbench_view_default_build_omits_reapable() -> None:
 
 def test_workbench_view_rejects_mismatched_liveness() -> None:
     mod = _workbench_mod()
-    reg, backend, port, ref = _running_port()
+    reg, _backend, port, ref = _running_port()
     mismatched = LivenessState(
         task_id="task_alpha",
         session_id="sess_999",

@@ -506,13 +506,13 @@ class LiveProgressDisplayService:
 
 
 __all__ = [
-    "RUNTIME_INVALID_LIVE_PROGRESS_DISPLAY",
     "LIVE_PROGRESS_DISPLAY_STABLE_CODES",
     "LIVE_PROGRESS_DISPLAY_TYPE",
+    "RUNTIME_INVALID_LIVE_PROGRESS_DISPLAY",
     "LiveProgressDisplay",
     "LiveProgressDisplayService",
-    "render_live_progress_display",
     "display_task_live_progress",
-    "validate_live_progress_display",
+    "render_live_progress_display",
     "serialize_live_progress_display",
+    "validate_live_progress_display",
 ]

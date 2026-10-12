@@ -318,7 +318,7 @@ class TestWebServerEndpoints:
     def test_get_progress_transactions_reads_configured_jsonl_store(
         self, monkeypatch, tmp_path
     ):
-        import hermes_cli.web_server as web_server
+        from hermes_cli import web_server
 
         event_path = tmp_path / "progress" / "events.jsonl"
         self._write_progress_record(event_path, self._progress_record("tx-web"))
@@ -387,7 +387,7 @@ class TestWebServerEndpoints:
     def test_get_progress_transaction_events_returns_bounded_timeline(
         self, monkeypatch, tmp_path
     ):
-        import hermes_cli.web_server as web_server
+        from hermes_cli import web_server
 
         event_path = tmp_path / "progress" / "events.jsonl"
         for written_at in range(1, 4):
@@ -424,7 +424,7 @@ class TestWebServerEndpoints:
     def test_progress_transactions_return_empty_when_persistence_disabled(
         self, monkeypatch
     ):
-        import hermes_cli.web_server as web_server
+        from hermes_cli import web_server
 
         monkeypatch.setattr(
             web_server,

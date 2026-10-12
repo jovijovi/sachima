@@ -457,7 +457,7 @@ class DelegateResultSummary:
         }
 
     @classmethod
-    def from_dict(cls, document: Any) -> "DelegateResultSummary":
+    def from_dict(cls, document: Any) -> DelegateResultSummary:
         """Read one strictly closed document, or fail closed with no echo.
 
         The key set must match exactly. A record that grew a field — a raw

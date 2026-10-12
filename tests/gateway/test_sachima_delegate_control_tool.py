@@ -41,7 +41,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-import gateway.session_context as session_context
+from gateway import session_context
 import gateway.sachima_delegate as delegate_mod
 import tools.sachima_delegate_control_tool as control_mod
 from gateway.config import GatewayConfig, Platform, PlatformConfig
@@ -1962,7 +1962,7 @@ def test_package_c_internal_wake_cannot_resume_paused_authority(
         continuation_summary="One post-check is approved after exact review.",
     )
     _call(action="pause_continuation", task_ref=task_ref)
-    import gateway.session_context as session_context
+    from gateway import session_context
 
     monkeypatch.setattr(
         session_context,
@@ -1985,7 +1985,7 @@ def test_package_c_internal_wake_cannot_invent_manual_control_authority(
     action,
 ) -> None:
     task_ref, _turn_key, _event = _create_and_complete(control)
-    import gateway.session_context as session_context
+    from gateway import session_context
 
     monkeypatch.setattr(
         session_context,

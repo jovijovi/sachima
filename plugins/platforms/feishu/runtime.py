@@ -9,7 +9,7 @@ from typing import Any, Optional
 from hermes_constants import hermes_home_key
 
 
-_ACTIVE_ADAPTERS: "weakref.WeakValueDictionary[str, Any]" = weakref.WeakValueDictionary()
+_ACTIVE_ADAPTERS: weakref.WeakValueDictionary[str, Any] = weakref.WeakValueDictionary()
 _ACTIVE_ADAPTERS_LOCK = threading.RLock()
 
 

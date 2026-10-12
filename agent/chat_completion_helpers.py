@@ -129,7 +129,7 @@ class ProviderDispatchLease:
     take the commit back: the request really did go out.
     """
 
-    __slots__ = ("_callback", "_cancelled", "_revoked", "_committed", "_lock")
+    __slots__ = ("_callback", "_cancelled", "_committed", "_lock", "_revoked")
 
     def __init__(self, callback: Optional[Callable[[], None]]) -> None:
         self._callback = callback
@@ -165,7 +165,7 @@ class ProviderDispatchLease:
         with self._lock:
             self._revoked = True
 
-    def gate(self, agent: Any) -> "_ProviderDispatchGate":
+    def gate(self, agent: Any) -> _ProviderDispatchGate:
         """The dispatch gate this lease admits requests through."""
         return _ProviderDispatchGate(self, agent)
 
@@ -211,7 +211,7 @@ class ProviderDispatchLease:
 class _ProviderDispatchGate:
     """Admission control around one provider call, bound to one lease."""
 
-    __slots__ = ("_lease", "_agent")
+    __slots__ = ("_agent", "_lease")
 
     def __init__(self, lease: ProviderDispatchLease, agent: Any) -> None:
         self._lease = lease
@@ -237,7 +237,7 @@ class _ProviderDispatchGate:
 
 def provider_dispatch_lease_kwargs(
     run_conversation: Any, lease: Optional[ProviderDispatchLease]
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """The lease kwarg for ``run_conversation``, or nothing at all.
 
     The lease is private to the real agent's signature. Old shims, plugin
@@ -277,7 +277,7 @@ _NO_LEASE_ARGUMENT = object()
 #: worker inherits a *copy* taken when it is spawned
 #: (``_context_thread_target``), so a later ``set`` by a newer turn is
 #: invisible to a worker that is already running.
-_ACTIVE_PROVIDER_DISPATCH_LEASE: "contextvars.ContextVar[Optional[ProviderDispatchLease]]" = (
+_ACTIVE_PROVIDER_DISPATCH_LEASE: contextvars.ContextVar[Optional[ProviderDispatchLease]] = (
     contextvars.ContextVar("hermes_provider_dispatch_lease", default=None)
 )
 

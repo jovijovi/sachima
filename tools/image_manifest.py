@@ -261,9 +261,9 @@ def _payload_success(payload: Mapping[str, Any]) -> bool:
     return bool(payload.get("success") is True)
 
 
-def _coerce_duration_ms(duration_ms: int | float | None) -> int:
+def _coerce_duration_ms(duration_ms: float | None) -> int:
     try:
-        return max(0, int(round(float(duration_ms or 0))))
+        return max(0, round(float(duration_ms or 0)))
     except (TypeError, ValueError):
         return 0
 
@@ -303,7 +303,7 @@ def _outputs_from_payload(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
     return outputs
 
 
-def _result_from_payload(payload: Mapping[str, Any], duration_ms: int | float | None) -> dict[str, Any]:
+def _result_from_payload(payload: Mapping[str, Any], duration_ms: float | None) -> dict[str, Any]:
     return {
         "success": _payload_success(payload),
         "duration_ms": _coerce_duration_ms(duration_ms),
@@ -398,7 +398,7 @@ def build_image_manifest_record(
     input_images: Iterable[Any] | None = None,
     response_text: str | None = None,
     result_payload: Mapping[str, Any] | None = None,
-    duration_ms: int | float | None = None,
+    duration_ms: float | None = None,
     sequence: int | None = None,
 ) -> dict[str, Any]:
     """Build a sanitized v1 manifest record for an image tool call."""
@@ -477,7 +477,7 @@ def append_image_manifest_record(
     input_images: Iterable[Any] | None = None,
     response_text: str | None = None,
     result_payload: Mapping[str, Any] | None = None,
-    duration_ms: int | float | None = None,
+    duration_ms: float | None = None,
     manifest_path: Path | None = None,
 ) -> None:
     """Append one sanitized image manifest record, best-effort."""

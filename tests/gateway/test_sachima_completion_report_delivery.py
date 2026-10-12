@@ -162,7 +162,7 @@ async def _run_native_wakeup(
     thread_id: str | None = None,
     create_succeeds: bool = True,
 ):
-    import gateway.delivery_ledger as delivery_ledger
+    from gateway import delivery_ledger
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setattr(delivery_ledger, "ledger_enabled", lambda: False)
@@ -318,7 +318,7 @@ async def test_external_feishu_events_keep_native_reply_anchors(
     expected_anchor,
     reply_in_thread,
 ):
-    import gateway.delivery_ledger as delivery_ledger
+    from gateway import delivery_ledger
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setattr(delivery_ledger, "ledger_enabled", lambda: False)

@@ -536,7 +536,7 @@ def _signed_sachima_request(
     body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
     timestamp_text = str(int(time.time()) if timestamp is None else timestamp)
     signature = hmac.new(
-        secret.encode("utf-8"), f"{timestamp_text}.".encode("utf-8") + body, hashlib.sha256
+        secret.encode("utf-8"), f"{timestamp_text}.".encode() + body, hashlib.sha256
     ).hexdigest()
     return body, {
         "Content-Type": "application/json",
@@ -686,7 +686,7 @@ async def test_send_with_delivery_url_posts_v1_callback_with_hmac_signature(unus
         raw_body = await request.read()
         timestamp = request.headers["X-Sachima-Timestamp"]
         expected = hmac.new(
-            secret.encode("utf-8"), f"{timestamp}.".encode("utf-8") + raw_body, hashlib.sha256
+            secret.encode("utf-8"), f"{timestamp}.".encode() + raw_body, hashlib.sha256
         ).hexdigest()
         assert request.headers["X-Sachima-Signature"] == expected
         received.append(json.loads(raw_body.decode("utf-8")))
@@ -752,7 +752,7 @@ async def test_webhook_listener_rejects_v1_hmac_replay_and_body_mismatch(unused_
     cases.append((signed_body.replace(b"hello", b"tampered"), signed_headers))
     pretty_body = json.dumps(payload, indent=2).encode("utf-8")
     pretty_signature = hmac.new(
-        secret.encode("utf-8"), f"{now}.".encode("utf-8") + pretty_body, hashlib.sha256
+        secret.encode("utf-8"), f"{now}.".encode() + pretty_body, hashlib.sha256
     ).hexdigest()
     compact_body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
     cases.append(
@@ -904,7 +904,7 @@ async def test_webhook_listener_deduplicates_message_ids(unused_tcp_port):
 @pytest.mark.asyncio
 async def test_send_with_send_url_posts_json_to_external_endpoint(unused_tcp_port):
     """Configured send_url should receive Hermes outbound messages as JSON."""
-    aiohttp = pytest.importorskip("aiohttp")
+    pytest.importorskip("aiohttp")
     web = pytest.importorskip("aiohttp.web")
     received = []
 

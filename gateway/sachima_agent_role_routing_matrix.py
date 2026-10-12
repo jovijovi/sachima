@@ -152,7 +152,7 @@ class RoutingMatrixError(ValueError):
     """A matrix failure whose message IS the stable code — never the material."""
 
 
-def _invalid() -> "RoutingMatrixError":
+def _invalid() -> RoutingMatrixError:
     return RoutingMatrixError(SACHIMA_ROLE_ROUTING_MATRIX_INVALID)
 
 

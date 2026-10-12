@@ -56,6 +56,7 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import threading
+from types import TracebackType
 from typing import Any, Callable, Coroutine
 
 __all__ = [
@@ -101,14 +102,14 @@ class _Admission:
     what lets a later closer retire it once that loop has terminated.
     """
 
-    __slots__ = ("_lifecycle", "_owner", "_held")
+    __slots__ = ("_held", "_lifecycle", "_owner")
 
-    def __init__(self, lifecycle: "GraphLifecycle") -> None:
+    def __init__(self, lifecycle: GraphLifecycle) -> None:
         self._lifecycle = lifecycle
         self._owner: asyncio.AbstractEventLoop | None = None
         self._held = False
 
-    def __enter__(self) -> "_Admission":
+    def __enter__(self) -> _Admission:
         try:
             owner: asyncio.AbstractEventLoop | None = asyncio.get_running_loop()
         except RuntimeError:
@@ -118,7 +119,12 @@ class _Admission:
         self._held = True
         return self
 
-    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> bool:
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> bool:
         if self._held:
             self._held = False
             self._lifecycle._release(self)
@@ -136,14 +142,19 @@ class _Restoration:
 
     __slots__ = ("_lifecycle",)
 
-    def __init__(self, lifecycle: "GraphLifecycle") -> None:
+    def __init__(self, lifecycle: GraphLifecycle) -> None:
         self._lifecycle = lifecycle
 
-    def __enter__(self) -> "_Restoration":
+    def __enter__(self) -> _Restoration:
         self._lifecycle._begin_restore()
         return self
 
-    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> bool:
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> bool:
         self._lifecycle._end_restore(succeeded=exc_type is None)
         return False
 

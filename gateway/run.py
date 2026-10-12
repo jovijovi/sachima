@@ -3332,13 +3332,13 @@ class _DelegateResultHandoff:
     """
 
     __slots__ = (
-        "session_id",
-        "processing_id",
-        "event_ids",
-        "_on_provider_attempt",
         "_consumed",
-        "_settled",
         "_lock",
+        "_on_provider_attempt",
+        "_settled",
+        "event_ids",
+        "processing_id",
+        "session_id",
     )
 
     def __init__(
@@ -4691,12 +4691,12 @@ class GatewayRunner(
             patch_card = None
             if send_card_fn is not None and patch_card_fn is not None:
 
-                async def send_card(card):  # noqa: F811 - capability, not a redefinition
+                async def send_card(card):  # capability, not a redefinition
                     return await send_card_fn(
                         origin.chat_id, card, metadata=metadata, **anchor_kwargs
                     )
 
-                async def patch_card(message_id, card):  # noqa: F811
+                async def patch_card(message_id, card):
                     return await patch_card_fn(origin.chat_id, message_id, card)
 
             return DelegateDelivery(

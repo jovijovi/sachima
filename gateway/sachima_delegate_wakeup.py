@@ -377,14 +377,14 @@ class SachimaDelegateWakeupDispatcher:
 
 
 __all__ = [
-    "DelegateWakeupBatch",
     "MAX_WAKEUP_ATTEMPTS",
     "SACHIMA_WAKEUP_RETRYABLE",
     "SACHIMA_WAKEUP_SUPERSEDED",
     "SACHIMA_WAKEUP_UNROUTABLE",
-    "SachimaDelegateWakeupDispatcher",
     "WAKEUP_DELIVERY_ACCEPTED",
     "WAKEUP_DELIVERY_BLOCKED",
     "WAKEUP_DELIVERY_RETRY",
     "WAKEUP_DELIVERY_SUPERSEDED",
+    "DelegateWakeupBatch",
+    "SachimaDelegateWakeupDispatcher",
 ]

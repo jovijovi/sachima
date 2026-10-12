@@ -448,6 +448,6 @@ __all__ = [
     "WORKBENCH_VIEW_TYPE",
     "AgentRunSupervisorWorkbenchView",
     "build_agent_run_supervisor_workbench_view",
-    "validate_agent_run_supervisor_workbench_view",
     "serialize_agent_run_supervisor_workbench_view",
+    "validate_agent_run_supervisor_workbench_view",
 ]

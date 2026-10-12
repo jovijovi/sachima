@@ -303,7 +303,7 @@ def calendar_lookup(date: str = "", region: str = "all", timezone: str = "Asia/S
 
 def _http_json(url: str, timeout: float = 10.0) -> dict[str, Any]:
     req = urllib.request.Request(url, headers={"User-Agent": "Hermes-Companion-Life/1.0"})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 - fixed weather/geocoding endpoints only
+    with urllib.request.urlopen(req, timeout=timeout) as resp:  # fixed weather/geocoding endpoints only
         raw = resp.read(1_000_000)
     data = json.loads(raw.decode("utf-8"))
     if not isinstance(data, dict):
