@@ -87,7 +87,9 @@ async def test_interrupt_then_steer_preserves_channel_inputs(monkeypatch):
     runner = _make_runner(monkeypatch)
     calls = []
     _capture(runner, calls)
-    runner._run_agent_deliver_first_response = AsyncMock()
+    # Returns (text_delivery_confirmed, model_turn_completed) for the Sachima delegation
+    # receipt; this double delivers nothing.
+    runner._run_agent_deliver_first_response = AsyncMock(return_value=(False, False))
     runner._refresh_agent_cache_message_count = AsyncMock()
     runner._prepare_profile_scoped_inbound_message_text = AsyncMock(
         return_value="correction"
