@@ -35,7 +35,7 @@ def test_runtime_uses_official_cli_and_replaces_legacy_cloudcode_marker(
 ) -> None:
     monkeypatch.setattr(
         "hermes_cli.auth.shutil.which",
-        lambda command: "/opt/google/bin/gemini" if command == "gemini" else None,
+        lambda command, path=None: "/opt/google/bin/gemini" if command == "gemini" else None,
     )
     monkeypatch.setattr(
         "hermes_cli.runtime_provider._get_model_config",
@@ -65,7 +65,7 @@ def test_runtime_uses_official_cli_and_replaces_legacy_cloudcode_marker(
 def test_runtime_missing_cli_has_supported_login_remediation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr("hermes_cli.auth.shutil.which", lambda _command: None)
+    monkeypatch.setattr("hermes_cli.auth.shutil.which", lambda _command, path=None: None)
 
     from hermes_cli.auth import AuthError
     from hermes_cli.runtime_provider import resolve_runtime_provider
@@ -306,7 +306,7 @@ def test_setup_flow_replaces_retired_direct_oauth_marker(
     save_config(config)
 
     monkeypatch.setattr(
-        "hermes_cli.auth.shutil.which", lambda command: f"/bin/{command}"
+        "hermes_cli.auth.shutil.which", lambda command, path=None: f"/bin/{command}"
     )
     monkeypatch.setattr(
         "hermes_cli.auth._prompt_model_selection",

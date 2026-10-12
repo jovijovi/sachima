@@ -197,3 +197,52 @@ def test_handle_image_generate_records_unified_edit_without_secrets(monkeypatch,
     assert record["input_images"][0]["url"] == "https://cdn.example.test/in.png"
     assert record["result"]["outputs"][0]["ref"] == "https://cdn.example.test/out.png"
     assert "secret" not in manifest.read_text(encoding="utf-8")
+
+
+def test_handle_image_generate_records_the_fal_rerun_after_a_managed_krea_refusal(
+    monkeypatch, tmp_path
+):
+    """History names the backend that made the image, not the managed selection that refused."""
+    from tools import image_generation_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(
+        image_generation_tool,
+        "_active_image_capabilities",
+        lambda: {"modalities": ["text"], "provider": "Krea", "model": "krea-1"},
+    )
+    monkeypatch.setattr(image_generation_tool, "_dispatch_to_plugin_provider", lambda *a, **k: None)
+    monkeypatch.setattr(
+        image_generation_tool,
+        "_maybe_route_managed_model",
+        lambda *a, **k: json.dumps(
+            {
+                "success": False,
+                "image": None,
+                "error": "Krea connection error",
+                "error_type": "connection_error",
+                "fallback_eligible": True,
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        image_generation_tool,
+        "image_generate_tool",
+        lambda prompt, aspect_ratio, **kw: json.dumps(
+            {"success": True, "image": "https://cdn.example.test/fal.png", "upscaled": False}
+        ),
+    )
+    monkeypatch.setattr("plugins.image_gen.krea.fallback_to_fal_enabled", lambda: True)
+
+    result = json.loads(
+        image_generation_tool._handle_image_generate({"prompt": "draw cat", "aspect_ratio": "square"})
+    )
+
+    assert result["success"] is True
+    assert result["fallback_from"] == "krea"
+    manifest = tmp_path / "workspace" / "image-generation" / "manifest.jsonl"
+    record = json.loads(manifest.read_text(encoding="utf-8"))
+    assert record["operation"] == "generate"
+    assert record["backend"]["provider"] == "fal"
+    assert record["backend"]["model"] == image_generation_tool.DEFAULT_MODEL
+    assert record["result"]["outputs"][0]["ref"] == "https://cdn.example.test/fal.png"

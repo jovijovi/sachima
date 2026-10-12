@@ -24,6 +24,7 @@ from gateway.sachima_delegate_wakeup import (
     DelegateWakeupBatch,
 )
 from gateway.session import SessionSource, build_session_key
+from gateway.session_identity import replace_source
 from plugins.platforms.feishu.adapter import FeishuAdapter
 
 
@@ -255,7 +256,10 @@ async def test_native_wakeup_report_creates_in_original_feishu_chat_and_settles(
 
     assert event.internal is True
     assert event.message_id.startswith(SYNTHETIC_ID_PREFIX)
-    assert event.source is source
+    # The injected wake carries a copy of the origin without its stale trigger
+    # message_id (#52694); every routing field is the original's.
+    assert event.source == replace_source(source, message_id=None)
+    assert event.source.message_id is None
     assert _reply_anchor_for_event(event) is None
     assert calls == [
         {
@@ -282,7 +286,8 @@ async def test_native_wakeup_report_preserves_original_feishu_thread_routing(
         thread_id="omt_original",
     )
 
-    assert event.source is source
+    assert event.source == replace_source(source, message_id=None)
+    assert event.source.message_id is None
     assert _reply_anchor_for_event(event) is None
     assert calls == [
         {
@@ -355,7 +360,8 @@ async def test_native_wakeup_report_transport_failure_blocks_settlement(
         create_succeeds=False,
     )
 
-    assert event.source is source
+    assert event.source == replace_source(source, message_id=None)
+    assert event.source.message_id is None
     assert _reply_anchor_for_event(event) is None
     assert [call["method"] for call in calls] == ["create", "create"]
     assert all(call["receive_id"] == "oc_original" for call in calls)

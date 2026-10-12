@@ -2,9 +2,9 @@
 
 > Lean project dashboard for AGENT-facing project state. This file aligns the active product goal, stage, task progress, blockers, non-approvals, and next allowed work. It is not a repository-process ledger, results database, or historical diary.
 
-## Hermes v2026.9.24 merge-candidate status
+## Hermes v0.21.7 merge-candidate status
 
-The current source candidate uses Hermes Agent `v2026.9.24` (0.21.5) as its structural
+The current source candidate uses Hermes Agent `v0.21.7` as its structural
 baseline. Runtime Spine and native semantic delegation remain Sachima-owned;
 new platform/provider functionality is attached through upstream plugin and
 tool seams instead of restoring the old core tree. This is source state only:
@@ -36,8 +36,8 @@ Machine-owned dynamic status is intentionally absent from this lean dashboard. T
 
 | Field | Current truth |
 |---|---|
-| Source baseline | Upstream-structure-first Hermes Agent `v2026.9.24` (0.21.5) merge candidate. This row describes repository content, not a running deployment. |
-| Merge-candidate boundary | The v2026.9.24 integration merge, its semantic adaptations, and current-authority documentation are represented in the candidate. Independent fresh-session review, commit/push/PR/CI/head-guarded merge, and any later runtime switch remain controller/operator work and must be evidenced separately. |
+| Source baseline | Upstream-structure-first Hermes Agent `v0.21.7` merge candidate. This row describes repository content, not a running deployment. |
+| Merge-candidate boundary | The v0.21.7 integration merge, its semantic adaptations, and current-authority documentation are represented in the candidate. Independent fresh-session review, commit/push/PR/CI/head-guarded merge, and any later runtime switch remain controller/operator work and must be evidenced separately. |
 | Product goal | Production-grade AI workbench inside a custom IM channel, guided by the private-Hermes runtime spine: one per-user Hermes Agent, one `task_id` spine, supervised external local AGENT event streams, optional Temporal durability, and controlled delivery surfaces. |
 | Active mainlines | (1) Preserve the Private Hermes Runtime Spine as the highest architecture guidance for Hermes, Claude Code, Codex CLI, and engineers. (2) Keep the R0-R5 runtime-spine foundation done as local/offline/default-off slices under `website/docs/developer-guide/plans/2026-07-03-sachima-private-hermes-runtime-spine-development-plan.md`. (3) Treat the already-completed ARS Socket foundation as support for the live-stream consumption mainline: adapter, persistent lifecycle, workbench view, production-shaped E2E, and safe live-progress projection. (4) Keep the completed LS1-LS4 source chain default-off: workbench composition, private source binding, Sachima-owned artifact/Socket readers, and an internal Gateway query toolset bound to the same Gateway-owned execution graph. A user-facing Feishu query/presentation or live/default-on activation remains a separate decision. (5) Keep P7 downstream real-send canary execution paused as delivery-safety support, not the mainline. |
 | Current stage | R0 planning reset, R1 runtime-spine core, R2 supervisor execution port, R3 Temporal attach-only durable bridge, R4 workspace + permission + projection integration, and R5 controlled canary / product hardening are done as local/offline/default-off foundation. The runtime-spine architecture is saved under `docs/architecture/`, the active R0-R5 development roadmap is saved under `docs/plans/`, and old phase plans are registered as superseded active roadmap / retained support foundation. The live-progress projection is wired through the combined task workbench, private source binding, query/display services, a named non-default toolset, and the Gateway host composition seam. The Gateway reuses one execution graph for delegation and progress, and composition itself submits no Run. Separately, the approved semantic-delegation control/lifecycle/result/status-card path and Feishu task-workbench presentation are active in the resident Gateway. S4 controlled cancellation remains absent; live-progress stays default-off and has no new Feishu presentation or live activation. |

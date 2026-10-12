@@ -108,7 +108,8 @@ class TodoStore:
 
     def snapshot(self) -> dict[str, Any]:
         """Full state clients can reconcile atomically."""
-        return self.read_snapshot()
+        # Sachima TODO lifecycle: summary and todo_lifecycle live in read_snapshot().
+        return {"todos": self.read(), "revision": self._revision}
 
     def bind_transaction(
         self,

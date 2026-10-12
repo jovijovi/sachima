@@ -13,6 +13,7 @@ except ModuleNotFoundError as exc:  # a partial ``hermes update`` can leave the 
 import asyncio
 import concurrent.futures
 import dataclasses
+import inspect
 import json
 import logging
 import os

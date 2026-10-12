@@ -815,13 +815,21 @@ def _handle_image_generate(args, **kw):
 
     result = _execute_image_generate(args, **kw)
     info = _active_image_capabilities()
+    backend = info.get("provider")
     manifest_args = dict(args)
-    if info.get("model") and not manifest_args.get("model"):
+    try:
+        payload = json.loads(result)
+    except (TypeError, ValueError):
+        payload = None
+    if isinstance(payload, dict) and payload.get("fallback_from"):
+        # _fall_back_to_fal re-ran a refused managed request: record the backend that made the image.
+        backend = payload.get("provider") or backend
+    elif info.get("model") and not manifest_args.get("model"):
         manifest_args["model"] = info["model"]
     append_image_manifest_record(
         tool="image_generate",
         operation="edit" if source_images else "generate",
-        backend=info.get("provider"),
+        backend=backend,
         args=manifest_args,
         input_images=source_images,
         response_text=result,

@@ -20,6 +20,7 @@ from unittest.mock import patch
 
 import pytest
 
+import pm
 from hermes_cli.postinstall_cmd import POSTINSTALL_DEPENDENCIES, cmd_postinstall
 from hermes_cli.subcommands.postinstall import build_postinstall_parser
 
@@ -61,7 +62,7 @@ class TestRegistration:
             if a.dest == "postinstall"
         )
 
-        for dep in ("node", "browser", "ripgrep", "ffmpeg"):
+        for dep in POSTINSTALL_DEPENDENCIES:
             assert dep in action.help
 
     def test_main_registers_the_real_handler_not_a_stub(self):
@@ -104,19 +105,31 @@ class TestRegistration:
 class _Recorder:
     """Captures the calls the handler makes, without performing any of them."""
 
-    def __init__(self, *, provider_configured: bool, ensure_result: bool = True):
+    def __init__(
+        self,
+        *,
+        provider_configured: bool,
+        ensure_result: bool = True,
+        sealed: bool = False,
+        lazy_installs_allowed: bool = True,
+    ):
         self.provider_configured = provider_configured
         self.ensure_result = ensure_result
+        self.sealed = sealed
+        self.lazy_installs_allowed = lazy_installs_allowed
         self.stamped: list[str] = []
         self.ensured: list[str] = []
+        self.ensure_kwargs: list[dict] = []
         self.setup_calls: list[object] = []
 
     def stamp_install_method(self, method):
         self.stamped.append(method)
 
-    def ensure_dependency(self, dep, interactive=True):
-        self.ensured.append(dep)
-        return self.ensure_result
+    def ensure(self, name, **kwargs):
+        self.ensured.append(name)
+        self.ensure_kwargs.append(kwargs)
+        if not self.ensure_result:
+            raise pm.InstallError(name, "no installable artifact for this host")
 
     def has_any_provider_configured(self):
         return self.provider_configured
@@ -129,7 +142,9 @@ def _run(recorder, args=None):
     """Run the handler with every external effect replaced by ``recorder``."""
     args = args if args is not None else argparse.Namespace(command="postinstall")
     with patch("hermes_cli.postinstall_cmd._stamp_install_method", recorder.stamp_install_method), \
-         patch("hermes_cli.dep_ensure.ensure_dependency", recorder.ensure_dependency), \
+         patch("pm.ensure", recorder.ensure), \
+         patch("pm.install.sealed", lambda: recorder.sealed), \
+         patch("pm.install.lazy_installs_allowed", lambda: recorder.lazy_installs_allowed), \
          patch("hermes_cli.main._has_any_provider_configured", recorder.has_any_provider_configured), \
          patch("hermes_cli.main.cmd_setup", recorder.cmd_setup):
         cmd_postinstall(args)
@@ -174,8 +189,10 @@ class TestPostinstallBehaviour:
         _run(recorder)
         capsys.readouterr()
 
-        assert recorder.ensured == ["node", "browser", "ripgrep", "ffmpeg"]
+        assert recorder.ensured == ["node", "agent-browser", "ripgrep", "ffmpeg"]
         assert recorder.ensured == list(POSTINSTALL_DEPENDENCIES)
+        # The user ran the command, so each install is an explicit PM request.
+        assert recorder.ensure_kwargs == [{"explicit": True}] * len(POSTINSTALL_DEPENDENCIES)
 
     def test_unconfigured_install_hands_over_to_setup(self, capsys):
         """The whole point: pip user reaches a working agent in one command."""
@@ -209,6 +226,26 @@ class TestPostinstallBehaviour:
         assert recorder.ensured == list(POSTINSTALL_DEPENDENCIES)
         assert recorder.setup_calls == [args]
 
+    @pytest.mark.parametrize(
+        ("sealed", "lazy_installs_allowed"),
+        [(True, True), (False, False)],
+        ids=["sealed-payload", "lazy-installs-disabled"],
+    )
+    def test_a_disabled_install_policy_fetches_nothing_and_still_hands_over(
+        self, capsys, sealed, lazy_installs_allowed
+    ):
+        """PM's own policy wins: a sealed payload or a no-fetch policy installs nothing."""
+        recorder = _Recorder(
+            provider_configured=False, sealed=sealed, lazy_installs_allowed=lazy_installs_allowed
+        )
+
+        args = _run(recorder)
+        out = capsys.readouterr().out
+
+        assert recorder.ensured == []
+        assert "hermes pm install" in out
+        assert recorder.setup_calls == [args]
+
     def test_announces_itself_before_doing_any_work(self, capsys):
         recorder = _Recorder(provider_configured=True)
 
@@ -222,17 +259,16 @@ class TestPostinstallBehaviour:
 # Attachment point — the dependency names must stay real
 # ===========================================================================
 
-def test_every_bootstrapped_dependency_is_a_known_dep_ensure_target():
-    """``ensure_dependency`` silently no-ops on an unknown name.
+def test_every_bootstrapped_dependency_is_a_pinned_pm_package():
+    """``pm.ensure`` only knows the packages pinned in ``pm/lock.json``.
 
-    An upstream rename would therefore turn this command into a no-op with no
-    error at all, so the names are pinned against the checks table itself.
+    An upstream rename would therefore break this command at the first
+    unknown name, so the names are pinned against the lockfile itself.
     """
-    from hermes_cli.dep_ensure import _DEP_CHECKS
+    from pm.lock import Lockfile
+    from pm.paths import lockfile_path
 
-    unknown = [dep for dep in POSTINSTALL_DEPENDENCIES if dep not in _DEP_CHECKS]
+    pinned = Lockfile(lockfile_path()).names()
+    unknown = [dep for dep in POSTINSTALL_DEPENDENCIES if dep not in pinned]
 
-    assert not unknown, (
-        f"{unknown} are no longer known to hermes_cli.dep_ensure._DEP_CHECKS; "
-        "ensure_dependency would silently skip them"
-    )
+    assert not unknown, f"{unknown} are no longer pinned in pm/lock.json; pm.ensure cannot install them"

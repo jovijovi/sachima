@@ -5912,9 +5912,9 @@ def test_aiagent_uses_copilot_acp_client():
 
 def test_aiagent_uses_gemini_cli_acp_client():
     with (
-        patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
-        patch("run_agent.check_toolset_requirements", return_value={}),
-        patch("run_agent.OpenAI") as mock_openai,
+        patch("model_tools.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("agent.process_bootstrap.OpenAI") as mock_openai,
         patch("agent.gemini_acp_client.GeminiCLIACPClient") as mock_acp_client,
     ):
         acp_client = MagicMock()

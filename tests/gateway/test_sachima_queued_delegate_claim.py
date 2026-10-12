@@ -398,3 +398,36 @@ async def test_queued_b_claims_and_settles_on_its_own_actual_send(
             return_exceptions=True,
         )
         delegate_mod.unbind_delegate_coordinator()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("delivered", [True, False], ids=["delivered", "send-failed"])
+async def test_a_duck_typed_adapter_still_settles_the_queued_claim_once(delivered):
+    """Without the base-class outcome runner, the claim callback is awaited directly."""
+
+    from gateway.platforms.event import ProcessingOutcome
+    from gateway.run import _DelegateClaimContext
+
+    outcomes = []
+
+    async def _settle(event, outcome):
+        outcomes.append((event, outcome))
+
+    event = MessageEvent(
+        text="queued",
+        source=_source(),
+        metadata={"_gateway_processing_outcome_callback": _settle},
+    )
+    runner = object.__new__(GatewayRunner)
+
+    await runner._complete_queued_delegate_delivery(
+        _DelegateClaimContext(session_id="session-1", continuity=None, processing_event=event),
+        SimpleNamespace(),
+        delivered=delivered,
+        model_turn_completed=True,
+    )
+
+    expected = ProcessingOutcome.SUCCESS if delivered else ProcessingOutcome.FAILURE
+    assert outcomes == [(event, expected)]
+    assert event.metadata["_gateway_model_turn_completed"] is True
+    assert "_gateway_processing_outcome_callback" not in event.metadata

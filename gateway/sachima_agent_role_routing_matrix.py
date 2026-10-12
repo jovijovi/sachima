@@ -358,9 +358,9 @@ def parse_routing_matrix(data: Any) -> RoleRoutingMatrix:
     if type(data) is not bytes or not data:
         raise _invalid()
     try:
-        import yaml
+        import hermes_yaml
 
-        document = yaml.safe_load(data.decode("utf-8"))
+        document = hermes_yaml.safe_load(data.decode("utf-8"))
     except RoutingMatrixError:
         raise
     except Exception:
