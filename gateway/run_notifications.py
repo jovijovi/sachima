@@ -123,6 +123,23 @@ def _raw_process_event_session_id(evt: dict) -> str:
     return str(evt.get("origin_session_id") or session_key or "").strip()
 
 
+def _delegation_event_metadata(evt: dict) -> dict[str, Any]:
+    """Sachima native delegation: exact result identities and the one-shot business receipt
+    ride the synthetic event; the discarded text grants nothing by itself."""
+    metadata: dict[str, Any] = {}
+    for key in (
+        "gateway_session_key", "gateway_session_strict", "sachima_delegate_claim_id",
+        "sachima_delegate_event_ids", "sachima_delegate_task_refs", "sachima_delegate_turn_keys",
+        "sachima_delegate_continuation_refs",
+    ):
+        if key in evt:
+            metadata[key] = evt[key]
+    outcome_callback = evt.get("_gateway_processing_outcome_callback")
+    if callable(outcome_callback):
+        metadata["_gateway_processing_outcome_callback"] = outcome_callback
+    return metadata
+
+
 class GatewayNotificationsMixin(GatewayNotificationOwnershipMixin):
     """Process/completion/update notifications, media delivery and async-delegation delivery for GatewayRunner."""
 
@@ -1191,18 +1208,7 @@ class GatewayNotificationsMixin(GatewayNotificationOwnershipMixin):
                 metadata["gateway_proven_session_id"] = proven_session_id
             if completion_ids := evt.get("completion_ids"):
                 metadata["gateway_completion_ids"] = list(completion_ids)
-            # Sachima native delegation: exact result identities and the one-shot business receipt
-            # ride the synthetic event; the discarded text grants nothing by itself.
-            for key in (
-                "gateway_session_key", "gateway_session_strict", "sachima_delegate_claim_id",
-                "sachima_delegate_event_ids", "sachima_delegate_task_refs", "sachima_delegate_turn_keys",
-                "sachima_delegate_continuation_refs",
-            ):
-                if key in evt:
-                    metadata[key] = evt[key]
-            outcome_callback = evt.get("_gateway_processing_outcome_callback")
-            if callable(outcome_callback):
-                metadata["_gateway_processing_outcome_callback"] = outcome_callback
+            metadata.update(_delegation_event_metadata(evt))
             # The queued event's ``message_id`` is the message that STARTED the process, and the
             # persisted origin carries the same stale id. A synthetic completion is not a reply to
             # it: by delivery time the user has often continued elsewhere, and an event anchored
