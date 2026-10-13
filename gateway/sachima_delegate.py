@@ -4486,7 +4486,7 @@ def _load_arsd_config_document(config_file: str) -> Any:
     )
 
     try:
-        with open(config_file, encoding="utf-8") as handle:
+        with open(config_file, encoding="utf-8-sig") as handle:
             document = json.load(handle)
     except Exception:
         raise _composition_invalid() from None

@@ -501,7 +501,7 @@ def load_agent_execution_presets(
     if type(presets_file) is not str or not presets_file.strip():
         raise _invalid()
     try:
-        with open(presets_file.strip(), encoding="utf-8") as handle:
+        with open(presets_file.strip(), encoding="utf-8-sig") as handle:
             document = json.load(handle)
     except PresetError:
         raise

@@ -640,6 +640,7 @@ def journal_write(
             _atomic_text_write,
             _check_write_mode,
             _make_backup,
+            _read_text_keeping_bom,
             _resolve_target,
             _scan_content,
         )
@@ -653,11 +654,12 @@ def journal_write(
         _check_write_mode(cfg)
 
         max_bytes = int(cfg.get("max_file_bytes") or 32_768)
+        bom = ""
         if target.exists():
             existing_bytes = target.stat().st_size
             if existing_bytes > max_bytes:
                 return _error("journal file exceeds configured max_file_bytes", size=existing_bytes)
-            content = target.read_text(encoding="utf-8", errors="replace")
+            content, bom = _read_text_keeping_bom(target, errors="replace")
             if content.strip():
                 content = content.rstrip() + "\n\n"
             else:
@@ -682,11 +684,11 @@ def journal_write(
         scan_error = _scan_content(new_content, cfg)
         if scan_error:
             return _error(scan_error)
-        new_size = len(new_content.encode("utf-8"))
+        new_size = len((bom + new_content).encode("utf-8"))
         if new_size > max_bytes:
             return _error("journal write exceeds configured max_file_bytes", size=new_size, max_file_bytes=max_bytes)
         _make_backup(target, bool(cfg.get("backups", True)))
-        _atomic_text_write(target, new_content)
+        _atomic_text_write(target, bom + new_content)
         return _json({"success": True, "path": target.relative_to(root).as_posix()})
     except Exception as exc:
         return _error(str(exc))

@@ -449,7 +449,7 @@ def _next_manifest_sequence(path: Path) -> int:
     max_sequence = 0
     valid_records = 0
     try:
-        for line in path.read_text(encoding="utf-8").splitlines():
+        for line in path.read_text(encoding="utf-8-sig").splitlines():
             if not line.strip():
                 continue
             try:
@@ -505,7 +505,7 @@ def _read_records(path: Path | None = None) -> list[dict[str, Any]]:
         return []
     records: list[dict[str, Any]] = []
     try:
-        for line in manifest.read_text(encoding="utf-8").splitlines():
+        for line in manifest.read_text(encoding="utf-8-sig").splitlines():
             if not line.strip():
                 continue
             try:

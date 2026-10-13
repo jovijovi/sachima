@@ -328,6 +328,26 @@ def test_journal_write_preserves_existing_content_beyond_read_pagination(monkeyp
     assert "追加一条，不许截断旧内容。" in content
 
 
+def test_journal_write_tolerates_a_bom_and_keeps_it(monkeypatch, tmp_path):
+    """Appending to a Windows-saved (BOM-prefixed) journal keeps one leading BOM and no phantom character."""
+    profile_home = tmp_path / "profiles" / "samiya"
+    target = profile_home / "memories" / "palace" / "journal" / "2026" / "2026-06.md"
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"\xef\xbb\xbf" + "# Journal 2026-06\n\n旧的一条。\n".encode())
+    monkeypatch.setenv("HERMES_HOME", str(profile_home))
+
+    from tools.companion_life_tools import journal_write
+
+    result = _parse(journal_write(entry="新的一条。", date="2026-06-02"))
+
+    raw = target.read_bytes()
+    assert result["success"] is True
+    assert raw.startswith(b"\xef\xbb\xbf# Journal 2026-06\n\n")
+    assert raw.count(b"\xef\xbb\xbf") == 1
+    text = raw.decode("utf-8-sig")
+    assert "旧的一条。" in text and "新的一条。" in text
+
+
 def test_companion_life_tools_work_through_registry_dispatch(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profile"))
 

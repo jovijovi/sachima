@@ -234,7 +234,7 @@ def _load_store_unlocked() -> dict[str, Any]:
     if not path.exists():
         return {"version": _STORE_VERSION, "transactions": {}}
     try:
-        with open(path, encoding="utf-8") as f:
+        with open(path, encoding="utf-8-sig") as f:
             data = json.load(f)
     except Exception:
         logger.warning("control-transaction: unreadable store %s", path, exc_info=True)
@@ -513,7 +513,7 @@ def resolve_session_id(session_key: str) -> Optional[str]:
     if not index_path.exists():
         return None
     try:
-        with open(index_path, encoding="utf-8") as f:
+        with open(index_path, encoding="utf-8-sig") as f:
             data = json.load(f)
     except Exception:
         return None

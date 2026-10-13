@@ -220,7 +220,7 @@ def load_agent_role_policy(policy_file: Any) -> AgentRolePolicy:
     if type(policy_file) is not str or not policy_file.strip():
         raise _invalid()
     try:
-        with open(policy_file.strip(), encoding="utf-8") as handle:
+        with open(policy_file.strip(), encoding="utf-8-sig") as handle:
             document = json.load(handle)
     except RolePolicyError:
         raise

@@ -326,7 +326,7 @@ def _load_arsd_config(config_file: str) -> Any:
         ArsdSupervisorConfig,
     )
 
-    with open(config_file, encoding="utf-8") as fh:
+    with open(config_file, encoding="utf-8-sig") as fh:
         payload = json.load(fh)
     if type(payload) is dict and payload.get("type") == _RETIRED_LIBRARY_CONFIG_TYPE:
         raise _RetiredBackendSelected()
@@ -447,7 +447,7 @@ def _load_binding_entries(bindings_file: str) -> list[dict[str, Any]]:
     stable ``..._invalid`` code — the file content / path is never echoed.
     """
 
-    with open(bindings_file, encoding="utf-8") as fh:
+    with open(bindings_file, encoding="utf-8-sig") as fh:
         payload = json.load(fh)
     if type(payload) is not dict:
         raise ValueError(SACHIMA_LIVE_PROGRESS_HOST_BINDING_INVALID)

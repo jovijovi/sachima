@@ -8,6 +8,7 @@ not a general filesystem tool: every operation is rooted under the active
 
 from __future__ import annotations
 
+import codecs
 import json
 import os
 import re
@@ -199,11 +200,24 @@ def _atomic_text_write(target: Path, content: str) -> None:
         raise
 
 
+def _read_text_keeping_bom(target: Path, **kwargs: Any) -> tuple[str, str]:
+    """BOM-tolerant read: ``(text without a leading BOM, BOM to restore on write)``.
+
+    As in upstream's file tools, the model never sees a phantom first character and a
+    rewrite keeps the BOM a Windows editor put on the note.
+    """
+    with open(target, "rb") as f:
+        had_bom = f.read(len(codecs.BOM_UTF8)) == codecs.BOM_UTF8
+    bom = codecs.BOM_UTF8.decode() if had_bom else ""
+    return target.read_text(encoding="utf-8-sig", **kwargs), bom
+
+
 def _make_backup(target: Path, enabled: bool) -> str | None:
     if not enabled or not target.exists():
         return None
     backup = target.with_name(f"{target.name}.bak.{int(time.time())}")
-    backup.write_text(target.read_text(encoding="utf-8"), encoding="utf-8")
+    text, bom = _read_text_keeping_bom(target)
+    backup.write_text(bom + text, encoding="utf-8")  # the backup keeps the note's own BOM
     return str(backup)
 
 
@@ -238,7 +252,7 @@ def palace_read(path: str, offset: int = 1, limit: int = 500, task_id: str | Non
         size = target.stat().st_size
         if size > int(cfg["max_file_bytes"]):
             return _error("file exceeds configured max_file_bytes", size=size)
-        lines = target.read_text(encoding="utf-8", errors="replace").splitlines()
+        lines = target.read_text(encoding="utf-8-sig", errors="replace").splitlines()
         start = max(int(offset or 1), 1)
         count = max(min(int(limit or 500), 2000), 1)
         selected = lines[start - 1:start - 1 + count]
@@ -274,7 +288,7 @@ def palace_search(pattern: str, path: str = "", max_results: int = 50, task_id: 
         for note in sorted(p for p in base.rglob("*") if p.is_file() and not p.is_symlink() and p.suffix in allowed):
             if note.stat().st_size > int(cfg["max_file_bytes"]):
                 continue
-            for lineno, line in enumerate(note.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
+            for lineno, line in enumerate(note.read_text(encoding="utf-8-sig", errors="replace").splitlines(), 1):
                 if regex.search(line):
                     matches.append({"path": note.relative_to(root).as_posix(), "line": lineno, "content": line})
                     if len(matches) >= int(max_results or 50):
@@ -318,7 +332,7 @@ def palace_patch(
     try:
         root, target, cfg = _resolve_target(path, must_exist=True)
         _check_write_mode(cfg)
-        original = target.read_text(encoding="utf-8", errors="replace")
+        original, bom = _read_text_keeping_bom(target, errors="replace")
         count = original.count(old_string)
         if not old_string:
             return _error("old_string is required")
@@ -327,14 +341,14 @@ def palace_patch(
         if not replace_all and count != 1:
             return _error("old_string is not unique; pass replace_all=true to replace all", occurrences=count)
         updated = original.replace(old_string, new_string, -1 if replace_all else 1)
-        encoded = updated.encode("utf-8")
+        encoded = (bom + updated).encode("utf-8")
         if len(encoded) > int(cfg["max_file_bytes"]):
             return _error("patched content exceeds configured max_file_bytes", bytes=len(encoded))
         finding = _scan_content(updated, cfg)
         if finding:
             return _error(finding)
         backup = _make_backup(target, bool(cfg.get("backups", True)))
-        _atomic_text_write(target, updated)
+        _atomic_text_write(target, bom + updated)
         payload = {
             "success": True,
             "path": _relative_label(root, target),
