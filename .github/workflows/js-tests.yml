@@ -12,10 +12,11 @@ jobs:
     # setup to do it: 14 checkouts, 14 node installs, 14 node_modules
     # restores.
     #
-    # One larger runner installs one time. vitest, tsc and eslint each size
-    # their own worker pool from the core count.
-    runs-on: ubuntu-latest-32-core
-    timeout-minutes: 30
+    # One runner installs one time. vitest, tsc and eslint each size their own
+    # worker pool from the core count. On the standard 4-vCPU runner (this fork
+    # has no larger runners) the payload is ~5600 s of worker time, ~23 min.
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
       - name: Set up the locked JS build toolchain

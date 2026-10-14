@@ -18,7 +18,8 @@ Judged per changed path, base -> head:
 Content the base tree already holds (a pure rename, a copy, a revert to a tracked version) adds no
 bytes to the pack and is never judged. Paths listed in
 ``.github/blob-size-allowlist.txt`` (exact paths, one per line) are exempt; that file is
-CODEOWNERS-reviewed, so every exception gets a core review.
+CODEOWNERS-reviewed, so every exception gets a core review. An entry ``<path>@<blob id>`` exempts
+only that exact content at that path: any other bytes there are judged as usual.
 
     python scripts/ci/check_blob_size.py                    # working tree vs merge-base with origin/main
     python scripts/ci/check_blob_size.py --base HEAD^1      # CI: the PR merge commit vs main
@@ -188,7 +189,8 @@ def find_offenders(repo: Path, base: str, head: str | None, limit: int = MAX_BYT
     """Changed paths base -> head (None = working tree + untracked files) over ``limit``."""
     args = ["diff", "--raw", "-z", "-M", "-C", "--no-abbrev", base] + ([head] if head else [])
     known = _tree_blobs(repo, base)
-    changes = [c for c in _parse_raw(_git(repo, *args)) if c.blob not in known and c.path not in allowlist]
+    changes = [c for c in _parse_raw(_git(repo, *args))
+               if c.blob not in known and c.path not in allowlist and f"{c.path}@{c.blob}" not in allowlist]
     binary = _binary_paths(repo, base, head)
     sizes = _sizes(repo, sorted({c.blob for c in changes if c.blob}))
     offenders: list[Offender] = []

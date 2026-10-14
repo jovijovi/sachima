@@ -11,7 +11,7 @@ import time
 from dataclasses import asdict
 from pathlib import Path
 
-from scripts.code_health import gitio
+from scripts.code_health import gitio, import_exceptions
 from scripts.code_health.compare import compare
 from scripts.code_health.config import in_scope
 from scripts.code_health.measure import Measurer
@@ -87,9 +87,10 @@ def _skipped(why: str, as_json: bool) -> None:
 
 
 def run(repo: Path, base: str, head: str | None, as_json: bool = False,
-        switch_rev: str | None = None) -> int:
+        switch_rev: str | None = None, record: dict | None = None) -> int:
     """Judge ``head`` against ``base``; the ENFORCEMENT switch is read from ``switch_rev``
-    (default: the base), never from the head under test."""
+    (default: the base), never from the head under test. ``record`` replaces the committed
+    import record (tests)."""
     started = time.monotonic()
     switch_rev = switch_rev or base
     mode = enforcement(repo, switch_rev)
@@ -110,6 +111,8 @@ def run(repo: Path, base: str, head: str | None, as_json: bool = False,
     head_m = measurer.measure(head, head_paths)
     findings = compare(base_m, head_m, changes)
     apply_allows(findings, head_m)
+    inherited = import_exceptions.apply_import_exceptions(
+        findings, base, record if record is not None else import_exceptions.load())
     blocking, advisory = verdict(findings)
     failed = bool(blocking) and mode == "blocking"
     if as_json:
@@ -119,8 +122,9 @@ def run(repo: Path, base: str, head: str | None, as_json: bool = False,
     if body:
         print(body)
     elapsed = time.monotonic() - started
+    accepted = f", {inherited} accepted as inherited from the upstream import" if inherited else ""
     print(f"\ncode health: {len(head_paths)} files vs {base[:12]}: {blocking} blocking, "
-          f"{advisory} advisory ({elapsed:.1f}s)")
+          f"{advisory} advisory{accepted} ({elapsed:.1f}s)")
     if blocking:
         print(_FOOTER)
     if blocking and not failed:

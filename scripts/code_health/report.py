@@ -50,7 +50,7 @@ def _fix_text(rule_id: str) -> str:
 def format_findings(findings: list[Finding]) -> str:
     out: list[str] = []
     for f in sorted(findings, key=lambda f: (f.path, f.line, f.rule)):
-        if f.allowed_reason is not None:
+        if f.allowed_reason is not None or f.inherited is not None:
             continue
         tag = "" if f.blocking else " (advisory)"
         out.append(f"{f.path}:{f.line}  {f.rule}{tag}  {f.scope}")
@@ -62,12 +62,20 @@ def format_findings(findings: list[Finding]) -> str:
         out.append("Allowed by comment (reviewers: check the reasons):")
         for f in allowed:
             out.append(f"  {f.path}:{f.line}  {f.rule}  {f.scope}  -- {f.allowed_reason}")
+    inherited = sorted((f for f in findings if f.inherited is not None), key=lambda f: (f.path, f.line, f.rule))
+    if inherited:
+        out.append("")
+        out.append("Accepted as inherited from the upstream import (scripts/code_health/import_exceptions.json):")
+        for f in inherited:
+            out.append(f"  {f.path}:{f.line}  {f.rule}  {f.scope}  -- {f.inherited}")
+            out.append(f"      {f.detail}")
     return "\n".join(out)
 
 
 def verdict(findings: list[Finding]) -> tuple[int, int]:
-    blocking = sum(1 for f in findings if f.blocking and f.allowed_reason is None)
-    advisory = sum(1 for f in findings if not f.blocking and f.allowed_reason is None)
+    open_findings = [f for f in findings if f.allowed_reason is None and f.inherited is None]
+    blocking = sum(1 for f in open_findings if f.blocking)
+    advisory = sum(1 for f in open_findings if not f.blocking)
     return blocking, advisory
 
 
