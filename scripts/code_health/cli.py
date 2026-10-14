@@ -90,7 +90,7 @@ def run(repo: Path, base: str, head: str | None, as_json: bool = False,
         switch_rev: str | None = None, record: dict | None = None) -> int:
     """Judge ``head`` against ``base``; the ENFORCEMENT switch is read from ``switch_rev``
     (default: the base), never from the head under test. ``record`` replaces the committed
-    import record (tests)."""
+    import record (tests); it applies only in its pull request (GitHub Actions' context)."""
     started = time.monotonic()
     switch_rev = switch_rev or base
     mode = enforcement(repo, switch_rev)
@@ -112,7 +112,8 @@ def run(repo: Path, base: str, head: str | None, as_json: bool = False,
     findings = compare(base_m, head_m, changes)
     apply_allows(findings, head_m)
     inherited = import_exceptions.apply_import_exceptions(
-        findings, base, record if record is not None else import_exceptions.load())
+        findings, repo, base, head, record if record is not None else import_exceptions.load(),
+        import_exceptions.pull_request())
     blocking, advisory = verdict(findings)
     failed = bool(blocking) and mode == "blocking"
     if as_json:

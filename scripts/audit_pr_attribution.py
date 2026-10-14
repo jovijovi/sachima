@@ -12,6 +12,8 @@ Logic (kept in sync with contributor-check.yml):
   - scans ``git log $(git merge-base origin/main HEAD)..HEAD --format=%ae``
   - skips teknium/bot emails and ``<id>+<login>@users.noreply.github.com``
     (CI auto-resolves those)
+  - skips a commit ``contributors/commits.tsv`` credits by its exact sha and
+    email (another commit with that email still counts)
   - everything else must have ``contributors/emails/<email>`` or a legacy
     AUTHOR_MAP entry in scripts/releases/authors_legacy.py
 
@@ -56,10 +58,26 @@ def run(*args: str, check: bool = True) -> str:
     return result.stdout.strip()
 
 
-def new_emails() -> list[str]:
+def new_commits() -> list[tuple[str, str]]:
+    """(sha, author email) of each non-merge commit on this branch."""
     base = run("git", "merge-base", "origin/main", "HEAD")
-    log = run("git", "log", f"{base}..HEAD", "--format=%ae", "--no-merges", check=False)
-    return sorted({e for e in log.splitlines() if e.strip()})
+    log = run("git", "log", f"{base}..HEAD", "--format=%H %ae", "--no-merges", check=False)
+    return [(sha, email) for sha, _, email in (line.partition(" ") for line in log.splitlines()) if email.strip()]
+
+
+def credited_commits() -> set[tuple[str, str]]:
+    """(sha, email) of each commit contributors/commits.tsv credits one by one."""
+    path = REPO_ROOT / "contributors" / "commits.tsv"
+    if not path.is_file():
+        return set()
+    rows = [line.split("\t") for line in path.read_text(encoding="utf-8-sig").splitlines()
+            if line.strip() and not line.startswith("#")]
+    return {(row[0], row[1]) for row in rows if len(row) >= 2}
+
+
+def unmapped_emails(commits: list[tuple[str, str]], credited: set[tuple[str, str]]) -> list[str]:
+    """Emails that still need a mapping: unmapped, on at least one commit ``credited`` lacks."""
+    return sorted({email for sha, email in commits if (sha, email) not in credited and not is_mapped(email)})
 
 
 def is_mapped(email: str) -> bool:
@@ -106,7 +124,7 @@ def main() -> int:
                         help="auto-create contributors/emails/ mapping files")
     args = parser.parse_args()
 
-    unmapped = [e for e in new_emails() if not is_mapped(e)]
+    unmapped = unmapped_emails(new_commits(), credited_commits())
     if not unmapped:
         print("✅ All contributor emails on this branch are mapped.")
         return 0

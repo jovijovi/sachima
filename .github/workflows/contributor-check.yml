@@ -37,6 +37,11 @@ jobs:
             exit 0
           fi
 
+          # "<sha> <email>" of this PR's commits, and of the commits that
+          # contributors/commits.tsv credits one by one.
+          PR_COMMITS=$(git log ${MERGE_BASE}..HEAD --format='%H %ae' --no-merges)
+          CREDITED=$(grep -v '^#' contributors/commits.tsv 2>/dev/null | cut -f1,2 | tr '\t' ' ' || true)
+
           # An email is mapped if it has a file in contributors/emails/
           # (one file per email — conflict-free) or an entry in the frozen
           # legacy AUTHOR_MAP in scripts/releases/authors_legacy.py.
@@ -54,6 +59,14 @@ jobs:
 
             if [ -f "contributors/emails/${email}" ]; then
               continue  # mapped via the contributors directory
+            fi
+
+            # Skip the email when contributors/commits.tsv credits every commit
+            # with it by exact sha. The email itself stays unmapped, so a commit
+            # not listed there still needs a mapping.
+            UNCREDITED=$(echo "$PR_COMMITS" | awk -v e="$email" '$2 == e' | grep -vxF -f <(echo "$CREDITED") || true)
+            if [ -z "$UNCREDITED" ]; then
+              continue
             fi
 
             if ! grep -qF "\"${email}\"" scripts/releases/authors_legacy.py 2>/dev/null; then

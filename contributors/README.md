@@ -36,3 +36,14 @@ janedoe
   `<login>@users.noreply.github.com`) auto-resolve — no file needed.
 - The `Contributor Attribution Check` CI job fails a PR whose commits carry
   an unmapped email; the failure message prints the exact command to run.
+
+## Crediting one commit
+
+A mapping file claims that every commit with that email belongs to the
+login. Do not add one for an address you cannot tie to the account, such as
+git's placeholder `you@example.com` (many people commit with it) or an
+address no GitHub account is linked to. When the only evidence is the pull
+request that carried the commit, add a row to `commits.tsv` instead: the full
+commit sha, its author email, the PR submitter's login and the PR. The check
+accepts exactly that commit; any other commit with the same email still needs
+a mapping.
