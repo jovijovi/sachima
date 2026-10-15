@@ -21,8 +21,10 @@ def test_shell_runner_executes_tests_and_propagates_failure(tmp_path):
         encoding="utf-8",
     )
     root = Path(__file__).resolve().parents[2]
+    # Without --rootdir pytest roots this out-of-tree file (and its .pytest_cache) at its common
+    # ancestor with the checkout cwd, outside tmp_path when the temp root shares a parent with it.
     result = subprocess.run(
-        ["bash", str(root / "scripts/run_tests.sh"), "-j", "1", str(case)],
+        ["bash", str(root / "scripts/run_tests.sh"), "-j", "1", str(case), f"--rootdir={tmp_path}"],
         cwd=tmp_path, capture_output=True, text=True, timeout=180,
         env={**os.environ, "HERMES_PYTHON": sys.executable, "HERMES_TEST_FILE_RETRIES": "0",
              "PATHEXT": ".COM;.EXE;.BAT;.CMD"},
@@ -47,9 +49,9 @@ def test_shell_runner_forwards_the_scratch_root_opt_in(tmp_path):
     scratch, given = tmp_path / "rt", tmp_path / "given-tmpdir"
     given.mkdir()
     root = Path(__file__).resolve().parents[2]
-    # No cache: pytest roots this out-of-tree file at its common ancestor with the checkout.
+    # --rootdir: see test_shell_runner_executes_tests_and_propagates_failure.
     result = subprocess.run(
-        ["bash", str(root / "scripts/run_tests.sh"), "-j", "1", str(case), "-p", "no:cacheprovider"],
+        ["bash", str(root / "scripts/run_tests.sh"), "-j", "1", str(case), f"--rootdir={tmp_path}"],
         cwd=tmp_path, capture_output=True, text=True, timeout=180,
         env={**os.environ, "HERMES_PYTHON": sys.executable, "HERMES_TEST_FILE_RETRIES": "0",
              "HERMES_TEST_SCRATCH_ROOT": str(scratch), "TMPDIR": str(given)},

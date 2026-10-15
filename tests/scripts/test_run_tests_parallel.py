@@ -614,9 +614,11 @@ def test_files_from_dash_reads_the_list_from_stdin(tmp_path: Path) -> None:
 
     repo_root = Path(__file__).resolve().parent.parent.parent
     runner = repo_root / "scripts" / "run_tests_parallel.py"
+    # Without --rootdir pytest roots this out-of-tree file (and its .pytest_cache) at its common
+    # ancestor with the checkout cwd, outside tmp_path when the temp root shares a parent with it.
     proc = subprocess.run(
         [sys.executable, str(runner), "--files-from", "-",
-         "-j", "1", "--file-timeout", "30", "-q"],
+         "-j", "1", "--file-timeout", "30", "-q", f"--rootdir={probe_dir}"],
         input=f"{probe_dir / 'test_flagprobe.py'}\n",
         cwd=repo_root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         encoding="utf-8", errors="replace", timeout=60,
