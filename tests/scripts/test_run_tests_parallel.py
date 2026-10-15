@@ -639,6 +639,8 @@ def test_scratch_root_is_per_user(tmp_path: Path, monkeypatch) -> None:
     scripts_dir = Path(__file__).resolve().parents[2] / "scripts"
     monkeypatch.syspath_prepend(str(scripts_dir))
     runner = importlib.import_module("run_tests_parallel")
+    # The default arm, also when this suite itself runs with the opt-in.
+    monkeypatch.delenv("HERMES_TEST_SCRATCH_ROOT", raising=False)
 
     # Exercise the non-/var/tmp arm so the probe never mints roots in the real shared dir.
     # (Narrow: on 3.14 ``Path.is_dir()`` itself goes through ``os.path.isdir``.)
@@ -655,6 +657,98 @@ def test_scratch_root_is_per_user(tmp_path: Path, monkeypatch) -> None:
     assert mine != theirs
     assert mine.is_dir() and theirs.is_dir()
     assert mine.parent == tmp_path and theirs.parent == tmp_path
+
+
+def _run_runner_with_env(tmp_path: Path, probe_dir: Path, **env: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [sys.executable, str(_probe_root(tmp_path) / "scripts" / "run_tests_parallel.py"),
+         "--paths", str(probe_dir), "-j", "1", "--file-timeout", "30"],
+        cwd=probe_dir, env={**os.environ, **env}, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        encoding="utf-8", errors="replace", timeout=60, check=False,
+    )
+
+
+def test_scratch_root_override_holds_every_per_file_temp_root(tmp_path: Path) -> None:
+    """HERMES_TEST_SCRATCH_ROOT: the attempt's TMPDIR and pytest basetemp live in the named
+    directory instead of /var/tmp, children inherit the opt-in (a runner a test starts stays
+    inside it too), and the attempt's root is removed afterwards like the default's."""
+    probe_dir = tmp_path / "probe"
+    probe_dir.mkdir()
+    record = tmp_path / "record.json"
+    (probe_dir / "test_where.py").write_text(textwrap.dedent(f"""
+        import json, os, tempfile
+        from pathlib import Path
+
+        def test_where(tmp_path):
+            Path({str(record)!r}).write_text(json.dumps({{
+                "tmpdir": tempfile.gettempdir(),
+                "temproot": os.environ["PYTEST_DEBUG_TEMPROOT"],
+                "tmp_path": str(tmp_path),
+                "inherited": os.environ.get("HERMES_TEST_SCRATCH_ROOT"),
+            }}), encoding="utf-8")
+    """).lstrip(), encoding="utf-8")
+    scratch = tmp_path / "rt"
+
+    proc = _run_runner_with_env(tmp_path, probe_dir, HERMES_TEST_SCRATCH_ROOT=str(scratch))
+
+    assert proc.returncode == 0, proc.stdout
+    seen = json.loads(record.read_text(encoding="utf-8"))
+    assert Path(seen["tmpdir"]).parent == scratch and seen["tmpdir"] == seen["temproot"], seen
+    assert Path(seen["tmp_path"]).resolve().is_relative_to(Path(seen["temproot"]).resolve()), seen
+    assert seen["inherited"] == str(scratch)
+    assert not list(scratch.glob("r-*")), "the attempt's root must be removed after it ran"
+
+
+@pytest.mark.parametrize("where", ["inside-hermes-home", "relative"])
+def test_scratch_root_override_that_would_be_left_is_refused_before_running(tmp_path: Path, where: str) -> None:
+    """tests/conftest.py strips a TMPDIR inside the Hermes home and relocates a basetemp out of
+    it, and a relative root would land wherever the runner's cwd is: refuse, run nothing."""
+    probe_dir = _make_probe_dir(tmp_path)
+    home = tmp_path / "home"
+    root = str(home / ".hermes" / "cache" / "scratch" / "rt") if where == "inside-hermes-home" else "rt"
+
+    proc = _run_runner_with_env(tmp_path, probe_dir, HOME=str(home), HERMES_TEST_SCRATCH_ROOT=root)
+
+    assert proc.returncode == 2, proc.stdout
+    assert "HERMES_TEST_SCRATCH_ROOT" in proc.stdout and "=== Summary" not in proc.stdout, proc.stdout
+    assert not (home / ".hermes").exists() and not (probe_dir / "rt").exists()
+
+
+def test_scratch_root_override_sweep_spares_entries_the_runner_did_not_make(tmp_path: Path, monkeypatch) -> None:
+    """A caller-named root may hold more than this runner's per-file roots; the idle sweep
+    removes leaked ``r-*`` roots there and nothing else."""
+    import importlib
+
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[2] / "scripts"))
+    runner = importlib.import_module("run_tests_parallel")
+    ancient = time.time() - 30 * 3600
+    leaked, foreign = tmp_path / "r-killedrun", tmp_path / "callers-probe"
+    for entry in (leaked, foreign):
+        entry.mkdir()
+        (entry / "f").write_text("x", encoding="utf-8")
+        for path in (entry / "f", entry):
+            os.utime(path, (ancient, ancient))
+
+    runner._sweep_killed_run_roots(str(tmp_path), only_runner_entries=True)
+
+    assert not leaked.exists() and foreign.exists()
+
+
+def test_scratch_root_override_names_the_shape_assumptions_it_misses(monkeypatch) -> None:
+    """The default root is short, non-hidden and shares no parent with the checkout on purpose
+    (AF_UNIX sun_path, hidden-dir search tests, pytest's rootdir for out-of-tree files); an
+    override that is not says so in the run's own output."""
+    import importlib
+
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[2] / "scripts"))
+    runner = importlib.import_module("run_tests_parallel")
+    checkout = Path("/repo/hermes")
+
+    assert runner._scratch_root_shape_note("/s", checkout) is None
+    note = runner._scratch_root_shape_note("/s/.hidden/" + "d" * 40, checkout)
+    assert note is not None and ".hidden" in note and "AF_UNIX" in note
+    shared = runner._scratch_root_shape_note("/repo/s", checkout)
+    assert shared is not None and f"shares {Path('/repo').resolve()} with the checkout" in shared
 
 
 def test_off_host_note_names_platforms_specs_that_exclude_this_host(tmp_path: Path) -> None:
