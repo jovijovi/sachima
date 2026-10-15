@@ -150,25 +150,45 @@ def test_agent_run_supervisor_exclude_newer_cutoff_admits_the_locked_release():
     """The date policy must actually admit the pinned release.
 
     agent-run-supervisor pin advances have landed inside the relative
-    ``exclude-newer`` window before, so the pin was installable only while the
-    per-package cutoff admitted it. On this baseline the repo already exempts
-    every exact pin outright (``exclude-newer-package`` set to ``false``),
-    which admits the reviewed release unconditionally — a strictly wider
-    admission than a dated cutoff, and the convention the
-    ``[tool.uv.exclude-newer-package]`` table follows for exact pins.
-    Assert it explicitly here so the one pin Sachima owns cannot regress to a
-    stale date, or to no entry at all, without a named failure.
+    ``exclude-newer`` window before, so the pin was installable only while a
+    per-package cutoff admitted it. Every dependency is now held to one
+    release-age window with no per-package exemption
+    (``test_every_dependency_is_held_to_one_three_day_release_age``), so that
+    window is the only thing that admits the reviewed release: every locked
+    artifact of the pinned version must have been uploaded at least one window
+    ago. Assert it explicitly here so the one pin Sachima owns cannot move to a
+    release the window still filters, or regain an exemption, without a named
+    failure.
     """
-    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
-    uv_cfg = data["tool"]["uv"]
-    if "exclude-newer" not in uv_cfg:
-        pytest.skip("no exclude-newer cutoff configured — nothing to exempt")
+    from datetime import UTC, datetime, timedelta
 
-    assert uv_cfg["exclude-newer-package"].get("agent-run-supervisor") is False, (
-        "[tool.uv].exclude-newer-package must exempt agent-run-supervisor "
-        "(set it to false, as every other exact pin is) so the reviewed pin "
-        "stays installable inside the relative window"
+    from sachima_supervisor import EXPECTED_AGENT_RUN_SUPERVISOR_VERSION
+
+    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    assert "agent-run-supervisor" not in data["tool"]["uv"].get("exclude-newer-package", {}), (
+        "agent-run-supervisor must be admitted by the shared release-age window, "
+        "not by a per-package exemption"
     )
+
+    lock = tomllib.loads((REPO_ROOT / "uv.lock").read_text(encoding="utf-8"))
+    span = lock["options"].get("exclude-newer-span", "")
+    window = re.fullmatch(r"P(\d+)D", span)
+    assert window, f"uv.lock records no day-based exclude-newer-span (found {span!r})"
+    cutoff = datetime.now(UTC) - timedelta(days=int(window.group(1)))
+
+    (package,) = [
+        pkg
+        for pkg in lock["package"]
+        if _canonical(pkg["name"]) == "agent-run-supervisor"
+        and pkg["version"] == EXPECTED_AGENT_RUN_SUPERVISOR_VERSION
+    ]
+    for artifact in (package["sdist"], *package["wheels"]):
+        uploaded = datetime.fromisoformat(artifact["upload-time"].replace("Z", "+00:00"))
+        assert uploaded <= cutoff, (
+            f"locked agent-run-supervisor {EXPECTED_AGENT_RUN_SUPERVISOR_VERSION} artifact "
+            f"{artifact['url'].rsplit('/', 1)[-1]} was uploaded {artifact['upload-time']}, "
+            f"inside the {span} release-age window"
+        )
 
 
 #: Directories a repo-wide source scan skips: not our code, or not code.
@@ -440,3 +460,18 @@ def test_the_retired_library_backend_seam_is_absent_not_merely_unused():
         "the retired library backend must have no surviving importers:\n  "
         + "\n  ".join(sorted(set(offenders)))
     )
+
+
+def test_every_dependency_is_held_to_one_three_day_release_age():
+    """Hermes's deps must be >= 3 days old when locked, exact pins included (Teknium ruling).
+
+    A per-package exemption or date would quietly let a fresh release into the lock; the
+    check runs at lock time only, so users never need a mirror that serves upload times.
+    """
+    manifest = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    uv = manifest["tool"]["uv"]
+    lock = tomllib.loads((REPO_ROOT / "uv.lock").read_text(encoding="utf-8"))
+    assert uv["exclude-newer"] == "3 days"
+    assert "exclude-newer-package" not in uv
+    assert lock["options"].get("exclude-newer-span") == "P3D"
+    assert "exclude-newer-package" not in lock["options"]
