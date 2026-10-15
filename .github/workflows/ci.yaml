@@ -67,7 +67,10 @@ jobs:
   detect:
     name: Detect affected areas
     runs-on: ubuntu-latest
-    timeout-minutes: 1
+    # Fork: 5 minutes, not 1. On this fork's standard runner checkout (~16 s) plus the paginated
+    # compare (~45 s; up to 3 attempts 10 s apart) outran one minute, so the job was cancelled and
+    # every lane skipped. Only the time budget changes; lane selection and the aggregate are as-is.
+    timeout-minutes: 5
     outputs:
       python: ${{ steps.gate-lanes.outputs.python }}
       python_prod: ${{ steps.gate-lanes.outputs.python_prod }}
