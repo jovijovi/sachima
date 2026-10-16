@@ -183,7 +183,7 @@ def test_agent_run_supervisor_exclude_newer_cutoff_admits_the_locked_release():
         and pkg["version"] == EXPECTED_AGENT_RUN_SUPERVISOR_VERSION
     ]
     for artifact in (package["sdist"], *package["wheels"]):
-        uploaded = datetime.fromisoformat(artifact["upload-time"].replace("Z", "+00:00"))
+        uploaded = datetime.fromisoformat(artifact["upload-time"])
         assert uploaded <= cutoff, (
             f"locked agent-run-supervisor {EXPECTED_AGENT_RUN_SUPERVISOR_VERSION} artifact "
             f"{artifact['url'].rsplit('/', 1)[-1]} was uploaded {artifact['upload-time']}, "
