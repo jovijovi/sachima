@@ -241,7 +241,7 @@ def test_symbols_available_from_runtime_spine_package():
 # --------------------------------------------------------------------------- #
 def test_query_disabled_by_default_without_gate_fails_closed_and_reader_untouched():
     mod = _mod()
-    reg, backend, port, ref = _running_port()
+    reg, _backend, port, ref = _running_port()
     bindings = _bindings_with(ref, last_seen_cursor=3)
     reader = _running_reader()
     before_seq = reg.log.last_seq("task_alpha")

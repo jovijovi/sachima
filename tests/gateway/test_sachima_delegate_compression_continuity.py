@@ -945,6 +945,66 @@ async def test_a_result_survives_several_compressions_before_it_is_claimed(
     assert _hermes_sink(bench, event) == "confirmed"
 
 
+@pytest.mark.asyncio
+async def test_signed_thinking_survives_the_child_turn_that_claims_the_result(
+    tmp_path, monkeypatch, lineage
+) -> None:
+    """The claimed result rides the user turn; the signed thinking before it replays unchanged.
+
+    The child's history is re-read from state.db (the resume path) and put on
+    the wire by the real Anthropic transport — no provider is called.
+    """
+
+    from agent.transports.anthropic import AnthropicTransport
+    from gateway.platforms.base import MessageEvent
+    from gateway.run import _DelegateClaimContext
+
+    bench = await _workbench(tmp_path, monkeypatch)
+    entry = bench.store.get_or_create_session(_source())
+    parent_id = entry.session_id
+    with _Turn(entry):
+        task_ref = await _terminal_task(bench)
+    event = await _settled_result(bench, task_ref)
+
+    child_id = _compress(lineage, parent_id=parent_id)
+    _rotate_entry(bench.store, entry, child_id)
+    signed = {"type": "thinking", "thinking": "prior reasoning", "signature": "sig_prior"}
+    lineage.append_message(child_id, "user", content="Q1")
+    lineage.append_message(child_id, "assistant", content="A1", reasoning_details=[signed])
+
+    host = bench.runner.host
+    claim_context = _DelegateClaimContext(
+        session_id=entry.session_id,
+        continuity=host._delegate_result_continuity(entry),
+        processing_event=MessageEvent(text="Q2", source=_source()),
+    )
+    message, handoff = host._claim_delegate_results_for_turn("Q2", claim_context)
+    assert handoff is not None
+    assert GATEWAY_SUMMARY_CANARY in message
+    assert message.endswith("[New message] Q2")
+    assert _hermes_sink(bench, event) == "in_flight"
+
+    history = lineage.get_messages_as_conversation(child_id)
+    _system, wire = AnthropicTransport().convert_messages(
+        [*history, {"role": "user", "content": message}],
+        base_url=None,
+        model="claude-opus-4-8",
+    )
+    thinking = [
+        (block["thinking"], block["signature"])
+        for item in wire
+        if item["role"] == "assistant"
+        for block in item["content"]
+        if block.get("type") == "thinking"
+    ]
+    assert thinking == [("prior reasoning", "sig_prior")]
+    assert GATEWAY_SUMMARY_CANARY in str(wire[-1]["content"])
+
+    # The provider boundary settles the claim for the child, exactly once.
+    handoff.mark_provider_attempt()
+    assert _hermes_sink(bench, event) == "confirmed"
+
+
 @pytest.mark.parametrize(
     "shape",
     ["new_session", "branch_child", "branch_in_window", "subagent_child"],

@@ -79,7 +79,7 @@ import json
 import math
 import re
 from dataclasses import dataclass, field, replace
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from typing import Any, Callable, Mapping
 
 __all__ = [
@@ -117,9 +117,9 @@ __all__ = [
     "projected_revision",
     "render_delegation_card",
     "render_delegation_markdown",
+    "safe_card_display_text",
     "safe_card_instant",
     "safe_card_task_ref",
-    "safe_card_display_text",
     "sanitize_card_line",
     "settle_card_sink",
 ]
@@ -423,12 +423,12 @@ def _parse_instant(value: Any) -> datetime | None:
     if type(value) is not str or not value:
         return None
     try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(value)
     except ValueError:
         return None
-    if parsed.tzinfo is None or parsed.utcoffset() != timezone.utc.utcoffset(parsed):
+    if parsed.tzinfo is None or parsed.utcoffset() != UTC.utcoffset(parsed):
         return None
-    return parsed.astimezone(timezone.utc)
+    return parsed.astimezone(UTC)
 
 
 def _private_text(value: Any) -> str:
@@ -624,7 +624,7 @@ class DelegateCardRound:
         }
 
     @classmethod
-    def from_dict(cls, document: Any) -> "DelegateCardRound":
+    def from_dict(cls, document: Any) -> DelegateCardRound:
         """One persisted round row, with any unattributable caption dropped.
 
         This read is the compatibility boundary, and it is the *only* place a
@@ -789,7 +789,7 @@ class DelegateCardProjection:
         }
 
     @classmethod
-    def from_dict(cls, document: Any) -> "DelegateCardProjection":
+    def from_dict(cls, document: Any) -> DelegateCardProjection:
         _closed_document(document, _PROJECTION_KEYS)
         rows = document.get("rounds")
         if type(rows) is not list:

@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -164,6 +165,19 @@ def test_a_valid_document_parses_exactly_and_preserves_every_literal():
     assert matrix.route(None, "architect") is None
 
 
+def test_the_matrix_parses_through_the_shared_yaml_policy_without_pyyaml(monkeypatch):
+    # PyYAML is not a dependency: the matrix is read through ``hermes_yaml``
+    # (ruamel, YAML 1.1), so a declared matrix keeps routing with ``yaml``
+    # unimportable, literals intact.
+    monkeypatch.setitem(sys.modules, "yaml", None)
+    matrix = parse_routing_matrix(VALID_YAML.encode("utf-8"))
+
+    assert matrix.route("alpha", "architect").model == MODEL_BIG
+    assert matrix.route("alpha", "code_reviewer").effort == "xhigh"
+    paused = matrix.route("beta", "architect")
+    assert (paused.model, paused.effort) == (MODEL_SELECTOR, "N/A")
+
+
 def test_as_dict_round_trips_through_build_with_the_same_digest():
     raw = VALID_YAML.encode("utf-8")
     matrix = parse_routing_matrix(raw)
@@ -246,6 +260,9 @@ def test_every_deviation_from_the_accepted_shape_fails_closed(mutate):
         pytest.param(b"", id="empty"),
         pytest.param(b"- just\n- a list\n", id="top-level-list"),
         pytest.param(b"routes: [\n", id="unparseable-yaml"),
+        # A repeated key is two answers to one question; the shared parser
+        # refuses it instead of letting the last one win.
+        pytest.param((VALID_YAML + "schema_version: 1\n").encode("utf-8"), id="duplicate-key"),
         pytest.param(b"\xff\xfe", id="not-utf8"),
         pytest.param(SECRET_CANARY.encode("utf-8"), id="plain-text"),
     ],

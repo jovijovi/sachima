@@ -156,6 +156,31 @@ def test_palace_patch_creates_backup_and_updates_unique_text(monkeypatch, tmp_pa
     assert list(target.parent.glob("comfort.md.bak.*"))
 
 
+def test_palace_tolerates_a_bom_and_keeps_it_on_patch(monkeypatch, tmp_path):
+    """A Windows-saved (BOM-prefixed) note reads without a phantom first character, a
+    first-line match works, and patch and backup keep the note's own BOM."""
+    profile_home = tmp_path / "profiles" / "samiya"
+    monkeypatch.setenv("HERMES_HOME", str(profile_home))
+
+    from tools.memory_palace_tool import palace_patch, palace_read, palace_search
+
+    target = profile_home / "memories" / "palace" / "domains" / "windows.md"
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"\xef\xbb\xbf# Comfort\n\nold phrase\n")
+
+    assert _parse(palace_read("domains/windows.md"))["content"] == "1|# Comfort\n2|\n3|old phrase"
+    assert _parse(palace_search("^# Comfort$"))["matches"] == [
+        {"path": "domains/windows.md", "line": 1, "content": "# Comfort"}
+    ]
+
+    patched = _parse(palace_patch("domains/windows.md", "# Comfort", "# Calm"))
+
+    assert patched["success"] is True
+    assert target.read_bytes() == b"\xef\xbb\xbf# Calm\n\nold phrase\n"
+    (backup,) = target.parent.glob("windows.md.bak.*")
+    assert backup.read_bytes() == b"\xef\xbb\xbf# Comfort\n\nold phrase\n"
+
+
 def test_memory_palace_toolset_is_registered(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profile"))
 

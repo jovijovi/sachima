@@ -509,3 +509,31 @@ def test_append_manifest_record_assigns_sequence_and_output_indices(monkeypatch,
         {"output_index": 1, "kind": "image", "ref": "second-a.png"},
         {"output_index": 2, "kind": "image", "ref": "second-b.png"},
     ]
+
+
+def test_manifest_reader_keeps_a_bom_prefixed_first_record(monkeypatch, tmp_path):
+    """A manifest a Windows editor re-saved with a BOM still yields its first record and sequence."""
+    monkeypatch.setenv("HERMES_PROFILE", "unit-profile")
+    from tools.image_manifest import append_image_manifest_record, query_image_history
+
+    manifest_path = tmp_path / "manifest.jsonl"
+
+    def _append(prompt: str) -> None:
+        append_image_manifest_record(
+            tool="image_generate",
+            operation="generate",
+            backend="fal",
+            args={"prompt": prompt, "aspect_ratio": "square"},
+            input_images=[],
+            duration_ms=3,
+            result_payload={"success": True, "image": f"/tmp/{prompt}.png"},
+            manifest_path=manifest_path,
+        )
+
+    _append("first")
+    manifest_path.write_bytes(b"\xef\xbb\xbf" + manifest_path.read_bytes())
+    _append("second")
+
+    history = query_image_history(latest=False, manifest_path=manifest_path)
+    assert [record["sequence"] for record in history] == [1, 2]
+    assert [record["prompt"] for record in history] == ["first", "second"]

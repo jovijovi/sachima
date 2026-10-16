@@ -75,7 +75,7 @@ class TestSessionAttachmentPoint:
         "build_session_key",
     ])
     def test_session_symbol_is_present(self, symbol):
-        import gateway.session as session
+        from gateway import session
 
         assert hasattr(session, symbol), (
             f"gateway.session.{symbol} is an upstream attachment point for the "

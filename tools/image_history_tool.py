@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any, Dict
 
-import tools.image_generation_tool  # noqa: F401 - anchor image_gen toolset check
+import tools.image_generation_tool  # anchor image_gen toolset check
 from tools.image_manifest import query_image_history
 from tools.registry import registry
 
@@ -26,7 +26,7 @@ def _coerce_success(value: Any) -> bool | None:
     return None
 
 
-def _handle_image_history(args: Dict[str, Any], **kw: Any) -> str:
+def _handle_image_history(args: dict[str, Any], **kw: Any) -> str:
     try:
         records = query_image_history(
             latest=bool(args.get("latest", True)),

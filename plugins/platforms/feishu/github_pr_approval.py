@@ -97,19 +97,19 @@ class GitHubPrApprovalMixin:
     """Narrow Feishu mixin for GitHub PR approval presentation and routing."""
 
     def _init_github_pr_approval(self) -> None:
-        self._github_pr_approval_state: Dict[int, Dict[str, str]] = {}
-        self._github_pr_latest_approval_id_by_pr: Dict[tuple[str, str], int] = {}
+        self._github_pr_approval_state: dict[int, dict[str, str]] = {}
+        self._github_pr_latest_approval_id_by_pr: dict[tuple[str, str], int] = {}
         self._github_pr_approval_counter = itertools.count(1)
 
     @staticmethod
-    def _github_pr_key(state: Dict[str, str]) -> tuple[str, str]:
+    def _github_pr_key(state: dict[str, str]) -> tuple[str, str]:
         return (
             str(state.get("repo", "")).strip().lower(),
             str(state.get("pr_number", "")).strip(),
         )
 
     def _is_current_github_pr_approval(
-        self, approval_id: Any, state: Dict[str, str]
+        self, approval_id: Any, state: dict[str, str]
     ) -> bool:
         try:
             normalized_id = int(approval_id)
@@ -121,7 +121,7 @@ class GitHubPrApprovalMixin:
         return latest is None or latest == normalized_id
 
     @staticmethod
-    def _build_github_pr_details(state: Dict[str, str], locale: str) -> str:
+    def _build_github_pr_details(state: dict[str, str], locale: str) -> str:
         text = _TEXT[normalize_locale(locale)]
 
         def line(label: str, value: str) -> str:
@@ -152,7 +152,7 @@ class GitHubPrApprovalMixin:
         base_ref: str = "",
         head_ref: str = "",
         locale: str = "auto",
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         locale = normalize_locale(locale)
         text = _TEXT[locale]
         state = {
@@ -204,8 +204,8 @@ class GitHubPrApprovalMixin:
 
     @classmethod
     def _build_resolved_github_pr_approval_card(
-        cls, *, action: str, state: Dict[str, str], user_name: str
-    ) -> Dict[str, Any]:
+        cls, *, action: str, state: dict[str, str], user_name: str
+    ) -> dict[str, Any]:
         locale = normalize_locale(state.get("locale", "auto"))
         text = _TEXT[locale]
         if action == "approve":
@@ -254,7 +254,7 @@ class GitHubPrApprovalMixin:
         head_ref: str = "",
         locale: str = "auto",
         session_key: str = "",
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
         """Send one approval card and bind its callback to the supplied head."""
         if not getattr(self, "_client", None):
@@ -336,7 +336,7 @@ class GitHubPrApprovalMixin:
         return response_type() if response_type is not None else None
 
     def _handle_github_pr_approval_card_action(
-        self, *, event: Any, action_value: Dict[str, Any], loop: Any
+        self, *, event: Any, action_value: dict[str, Any], loop: Any
     ) -> Any:
         """Validate a synchronous callback and schedule its guarded resolution."""
         response = self._empty_card_action_response()

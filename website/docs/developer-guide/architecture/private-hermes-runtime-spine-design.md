@@ -1,7 +1,7 @@
 # Private Hermes Runtime Spine — Final Design
 
-> **Source-baseline note (2026-09-06):** This architecture is retained on the
-> Hermes Agent `v2026.8.31` upstream-structure-first candidate. The Runtime
+> **Source-baseline note (2026-10-12):** This architecture is retained on the
+> Hermes Agent `v0.21.7` upstream-structure-first candidate. The Runtime
 > Spine remains Sachima-owned; channel, provider, tool, and dashboard
 > integrations attach through current upstream seams. This note describes
 > source composition only and does not assert deployment or runtime health.

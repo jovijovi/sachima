@@ -224,7 +224,7 @@ def test_live_workbench_symbols_available_from_runtime_spine_package():
 # --------------------------------------------------------------------------- #
 def test_composes_workbench_and_live_progress_refs_only():
     mod = _mod()
-    reg, backend, port, ref = _running_port()
+    reg, _backend, port, ref = _running_port()
     view = _build(mod, reg, port, ref, _running_reader())
     assert type(view) is mod.AgentRunSupervisorLiveWorkbenchView
 
@@ -258,7 +258,7 @@ def test_composes_workbench_and_live_progress_refs_only():
 
 def test_live_progress_task_id_is_forced_to_workbench_task_id():
     mod = _mod()
-    reg, backend, port, ref = _running_port()
+    reg, _backend, port, ref = _running_port()
     # The builder passes the workbench task_id into the projection; the caller
     # never supplies a projection task_id directly, so the two always agree.
     view = _build(mod, reg, port, ref, _running_reader())
@@ -271,7 +271,7 @@ def test_live_progress_task_id_is_forced_to_workbench_task_id():
 # --------------------------------------------------------------------------- #
 def test_after_seq_forwarded_and_resume_fields_mirror_live_progress():
     mod = _mod()
-    reg, backend, port, ref = _running_port()
+    reg, _backend, port, ref = _running_port()
     page2 = _FakePage(
         (
             _rec(3, family="message", kind="assistant", status="running"),
@@ -296,7 +296,7 @@ def test_after_seq_forwarded_and_resume_fields_mirror_live_progress():
 # --------------------------------------------------------------------------- #
 def test_missing_progress_composes_unavailable_over_valid_workbench():
     mod = _mod()
-    reg, backend, port, ref = _running_port()
+    reg, _backend, port, ref = _running_port()
     reader = _FakeReader(None, _FakePage((), None, False))
 
     view = _build(mod, reg, port, ref, reader)
@@ -321,7 +321,7 @@ def test_missing_progress_composes_unavailable_over_valid_workbench():
 # --------------------------------------------------------------------------- #
 def test_corrupt_reader_composes_corrupt_without_leaking_paths():
     mod = _mod()
-    reg, backend, port, ref = _running_port()
+    reg, _backend, port, ref = _running_port()
 
     class _Boom:
         def load_progress(self, d):
@@ -346,7 +346,7 @@ def test_corrupt_reader_composes_corrupt_without_leaking_paths():
 # --------------------------------------------------------------------------- #
 def test_stale_progress_is_observation_only():
     mod = _mod()
-    reg, backend, port, ref = _running_port()
+    reg, _backend, port, ref = _running_port()
     # progress.last_seq=1 but the read page frontier is seq=3 → stale, still available
     reader = _FakeReader(
         _progress("running", last_seq=1, event_count=1),
@@ -367,7 +367,7 @@ def test_stale_progress_is_observation_only():
 # --------------------------------------------------------------------------- #
 def test_forged_session_ref_fails_closed():
     mod = _mod()
-    reg, backend, port, _ref = _running_port()
+    reg, _backend, port, _ref = _running_port()
     with pytest.raises(SpineError) as exc:
         _build(
             mod,
@@ -391,7 +391,7 @@ def test_registry_port_mismatch_fails_closed():
 # H. Forged combined / nested workbench / nested live-progress fail closed
 # --------------------------------------------------------------------------- #
 def _good_children(mod):
-    reg, backend, port, ref = _running_port()
+    reg, _backend, port, ref = _running_port()
     view = _build(mod, reg, port, ref, _running_reader())
     return dict(view.workbench.as_dict()), dict(view.live_progress.as_dict())
 
@@ -527,7 +527,7 @@ def test_serialize_revalidates_forged_view_without_echo():
 
 def test_view_keeps_nested_children_immutable_against_raw_material_mutation():
     mod = _mod()
-    reg, backend, port, ref = _running_port()
+    reg, _backend, port, ref = _running_port()
     view = _build(mod, reg, port, ref, _running_reader())
     with pytest.raises(AttributeError):
         view.workbench.refs.append("raw_prompt_dump")
@@ -544,7 +544,7 @@ def test_view_keeps_nested_children_immutable_against_raw_material_mutation():
 # --------------------------------------------------------------------------- #
 def test_serialize_is_byte_stable_and_leak_free():
     mod = _mod()
-    reg, backend, port, ref = _running_port()
+    reg, _backend, port, ref = _running_port()
     view = _build(mod, reg, port, ref, _running_reader(), artifact_dir="/tmp/private/run/abc")
     encoded = mod.serialize_agent_run_supervisor_live_workbench_view(view)
     assert type(encoded) is bytes
@@ -591,7 +591,7 @@ def test_building_and_serializing_appends_no_events_or_backend_work():
 
 def test_live_progress_cursor_never_enters_the_canonical_log():
     mod = _mod()
-    reg, backend, port, ref = _running_port()
+    reg, _backend, port, ref = _running_port()
     reader = _FakeReader(
         _progress("running", last_seq=9, event_count=9),
         _FakePage((_rec(1), _rec(2)), next_cursor=2, has_more=False),

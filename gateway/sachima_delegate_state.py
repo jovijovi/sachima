@@ -70,6 +70,7 @@ from gateway.sachima_delegate_summary import (
 )
 
 __all__ = [
+    "BUSINESS_STATES",
     "CANCELLATION_STATES",
     "CARD_RECORD_KIND",
     "CONTINUATION_DISPOSITIONS",
@@ -84,9 +85,8 @@ __all__ = [
     "SACHIMA_DELEGATE_STATE_STABLE_CODES",
     "SACHIMA_DELEGATE_STATE_UNREADABLE",
     "SINK_STATES",
-    "BUSINESS_STATES",
-    "WAKEUP_STATES",
     "SUMMARY_RECORD_KIND",
+    "WAKEUP_STATES",
     "DelegateCapacity",
     "DelegateOrigin",
     "DelegateResultEvent",
@@ -326,7 +326,7 @@ class DelegateOrigin:
         }
 
     @classmethod
-    def from_dict(cls, document: Any) -> "DelegateOrigin":
+    def from_dict(cls, document: Any) -> DelegateOrigin:
         if not isinstance(document, Mapping):
             raise _invalid()
         return cls(
@@ -474,7 +474,7 @@ class DelegateTurnRecord:
         }
 
     @classmethod
-    def from_dict(cls, document: Any) -> "DelegateTurnRecord":
+    def from_dict(cls, document: Any) -> DelegateTurnRecord:
         if not isinstance(document, Mapping):
             raise _invalid()
         refs = document.get("launch_refs")
@@ -624,7 +624,7 @@ class DelegateTaskBinding:
         }
 
     @classmethod
-    def from_dict(cls, document: Any) -> "DelegateTaskBinding":
+    def from_dict(cls, document: Any) -> DelegateTaskBinding:
         if not isinstance(document, Mapping):
             raise _invalid()
         keys = document.get("turn_keys")
@@ -769,7 +769,7 @@ class DelegateResultEvent:
         }
 
     @classmethod
-    def from_dict(cls, document: Any) -> "DelegateResultEvent":
+    def from_dict(cls, document: Any) -> DelegateResultEvent:
         if not isinstance(document, Mapping):
             raise _invalid()
         return cls(

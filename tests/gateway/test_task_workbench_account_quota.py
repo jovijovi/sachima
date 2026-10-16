@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from contextvars import ContextVar
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 import json
 import queue
 import threading
@@ -39,7 +39,7 @@ def _agent(provider: str | None = "openai-codex"):
 def _usage(provider="openai-codex"):
     return AccountUsageSnapshot(
         provider=provider, source="usage_api",
-        fetched_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        fetched_at=datetime(2026, 1, 1, tzinfo=UTC),
         windows=(AccountUsageWindow(label="Session", used_percent=30),),
     )
 

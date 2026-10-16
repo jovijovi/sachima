@@ -478,7 +478,7 @@ def _spec(task_id: str = TASK_ID, refs: tuple[str, ...] = REFS):
 
 
 def _port_bundle(tmp_path: Path, facade: Any | None = None):
-    backend, facade, resolver = _backend(tmp_path, facade)
+    backend, facade, _resolver = _backend(tmp_path, facade)
     registry = TaskRegistry()
     port = AgentRunSupervisorPort(registry, backend=backend)
     ref = port.create_or_attach(TASK_ID, _spec())
@@ -531,7 +531,7 @@ def test_constructing_the_backend_is_the_default_off_gate(tmp_path: Path) -> Non
 def test_composition_negotiates_server_info_once_and_fails_closed_on_mismatch(
     tmp_path: Path,
 ) -> None:
-    backend, facade, _ = _backend(tmp_path)
+    _, facade, _ = _backend(tmp_path)
     assert facade.calls == ["server_info"]
 
     unreachable = _FacadeDouble()
@@ -738,7 +738,7 @@ def _permission_violation_fixture(tmp_path: Path, *, carried_status: str = "comp
 def test_untrusted_terminal_is_a_contained_internal_failure_not_a_success(
     tmp_path: Path,
 ) -> None:
-    backend, facade, registry, port, ref = _untrusted_terminal_fixture(tmp_path)
+    backend, _facade, registry, port, ref = _untrusted_terminal_fixture(tmp_path)
     handle = _attach(backend)
 
     with pytest.raises(SpineError) as excinfo:
@@ -811,7 +811,7 @@ def test_kill_issues_run_cancel_only_and_never_a_session_operation(
 def test_cancel_without_trusted_evidence_is_never_a_claimed_cancel(
     tmp_path: Path,
 ) -> None:
-    backend, facade, registry, port, ref = _unproven_cancel_fixture(tmp_path)
+    backend, facade, registry, _port, _ref = _unproven_cancel_fixture(tmp_path)
     handle = _attach(backend)
 
     verdict = backend.kill(handle, "ref_cancelled")
@@ -831,7 +831,7 @@ def test_permission_violation_terminal_moves_status_through_the_trusted_path(
 ) -> None:
     """A-26: denied by policy is a trusted FAILURE, not untrusted evidence."""
 
-    backend, facade, registry, port, ref = _permission_violation_fixture(tmp_path)
+    backend, _facade, registry, port, ref = _permission_violation_fixture(tmp_path)
     handle = _attach(backend)
 
     # Ordinary trusted-terminal path: a verdict, not a contained failure.
@@ -859,7 +859,7 @@ def test_permission_violation_terminal_moves_status_through_the_trusted_path(
 def test_permission_violation_does_not_retry_or_mint_a_new_request_id(
     tmp_path: Path,
 ) -> None:
-    backend, facade, registry, port, ref = _permission_violation_fixture(tmp_path)
+    backend, facade, _registry, _port, _ref = _permission_violation_fixture(tmp_path)
     handle = _attach(backend)
     submitted_before = list(facade.submitted)
 
@@ -878,7 +878,7 @@ def test_permission_violation_leaves_the_session_reusable_and_unquarantined(
 ) -> None:
     """The over-defensive implementation that discards a healthy Session fails."""
 
-    backend, facade, registry, port, ref = _permission_violation_fixture(tmp_path)
+    backend, facade, _registry, _port, _ref = _permission_violation_fixture(tmp_path)
     handle = _attach(backend)
     assert backend.observe_run(handle) == "failed"
     # The Session is reusable — stated outright, not merely implied by the
@@ -890,7 +890,7 @@ def test_permission_violation_leaves_the_session_reusable_and_unquarantined(
     # previous Run ended, so the §7.4 exclusion admits this one.
     second = _dispatch(backend, dispatch_ref=DISPATCH_TWO)
     assert isinstance(second, DispatchedSupervisorTurn)
-    request_id, payload = facade.submitted[-1]
+    _request_id, payload = facade.submitted[-1]
     assert payload["request"]["session_id"] == ARS_SESSION_CANARY
     # No second Session was created and the binding was never marked broken.
     assert len({entry["session_id"] for entry in facade.admitted.values()}) == 1
@@ -1285,7 +1285,7 @@ def test_backend_never_reads_last_effective_values_into_request_construction(
 def test_no_surface_presents_the_built_request_literal_as_effective_configuration(
     tmp_path: Path,
 ) -> None:
-    mod = _mod()
+    _mod()
     backend, facade, registry, port, ref = _port_bundle(tmp_path)
     handle = _attach(backend)
     dispatched = _dispatch(backend)
@@ -1583,7 +1583,7 @@ def _config_fidelity_fixture(tmp_path: Path):
 def test_config_fidelity_terminal_is_an_ordinary_trusted_failure_with_no_agent_work_claimed(
     tmp_path: Path,
 ) -> None:
-    backend, facade, registry, port, ref = _config_fidelity_fixture(tmp_path)
+    backend, facade, _registry, port, ref = _config_fidelity_fixture(tmp_path)
     handle = _attach(backend)
     submitted_before = list(facade.submitted)
 
@@ -1964,7 +1964,7 @@ def test_a_pending_intent_task_is_refused_under_a_changed_identity_before_recove
     assert facade.ops("submit") == 0
 
     # And with the identity unchanged, recovery still works normally.
-    same, same_facade, _same_resolver = _backend(tmp_path)
+    same, _same_facade, _same_resolver = _backend(tmp_path)
     handle = _attach(same)
     recovered = same.recover_uncertain_submission(TASK_ID, DISPATCH_ONE, session_ref=SESSION_REF, turn_kind="prompt")
     assert recovered.result.supervisor_status == "accepted"
@@ -2260,7 +2260,7 @@ def test_concurrent_dispatches_of_one_task_yield_one_record_and_one_submit(
         start.wait(timeout=10)
         try:
             result = _dispatch(backend, dispatch_ref=dispatch_ref)
-        except SpineError as exc:  # noqa: PERF203 - one attempt per thread
+        except SpineError as exc:  # one attempt per thread
             result = exc
         with lock:
             outcomes.append(result)
@@ -2313,7 +2313,7 @@ def _completed_run(tmp_path: Path):
 def test_a_run_terminal_leaves_the_durable_session_live_and_reusable(
     tmp_path: Path,
 ) -> None:
-    backend, facade, registry, port, ref, handle = _completed_run(tmp_path)
+    backend, _facade, registry, port, ref, handle = _completed_run(tmp_path)
 
     # Run-facing: the real neutral terminal, undiluted.
     assert backend.observe_run(handle) == "completed"
@@ -2384,7 +2384,7 @@ def test_a_cancelled_run_terminal_nobody_asked_for_does_not_end_the_task(
 ) -> None:
     """Only Sachima's own explicit cancel is a task lifecycle decision."""
 
-    backend, facade, registry, port, ref = _port_bundle(tmp_path)
+    backend, facade, _registry, port, ref = _port_bundle(tmp_path)
     handle = _attach(backend)
     _dispatch(backend)
     facade.run_status_payload = {"result": _terminal_result("cancelled")}
@@ -3348,7 +3348,7 @@ def test_a_fresh_process_recovers_a_sealed_intent_from_the_seal_not_the_maps(
 def test_an_accepted_sealed_run_reattaches_and_a_later_turn_seals_its_own(
     tmp_path: Path,
 ) -> None:
-    backend, facade, _ = _backend(tmp_path)
+    backend, _facade, _ = _backend(tmp_path)
     handle = _attach(backend)
     _seal(backend)
     _dispatch(backend)

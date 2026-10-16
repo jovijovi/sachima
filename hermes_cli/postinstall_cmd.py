@@ -18,9 +18,9 @@ without creating an import cycle.
 from __future__ import annotations
 
 #: The non-Python programs pip cannot provide, in the order they are ensured.
-#: Every name must be a key of ``hermes_cli.dep_ensure._DEP_CHECKS`` — an
-#: unknown name is silently a no-op there, so the set is pinned by a test.
-POSTINSTALL_DEPENDENCIES = ("node", "browser", "ripgrep", "ffmpeg")
+#: Every name must be a package pinned in ``pm/lock.json`` (``agent-browser``
+#: brings its Chromium with it); the set is pinned by a test.
+POSTINSTALL_DEPENDENCIES = ("node", "agent-browser", "ripgrep", "ffmpeg")
 
 
 def _stamp_install_method(method: str) -> None:
@@ -44,9 +44,31 @@ def _stamp_install_method(method: str) -> None:
         pass
 
 
+def _ensure_dependencies() -> None:
+    """Ensure every dependency through the package system, best-effort.
+
+    Deliberately not short-circuited: a machine that already has ripgrep but
+    no ffmpeg should still get ffmpeg, and a dependency that cannot be
+    installed must not block the ones after it or the setup handover.
+    """
+    import pm
+    from pm.install import lazy_installs_allowed, sealed
+
+    # Sealed payloads ship their tools; the lazy-install policy (config or the
+    # Docker/test bridge) means the user asked Hermes not to fetch on its own.
+    if sealed() or not lazy_installs_allowed():
+        print("  Dependency installs are disabled here; add them with `hermes pm install <name>`.")
+        return
+    for name in POSTINSTALL_DEPENDENCIES:
+        try:
+            pm.ensure(name, explicit=True)
+        except (pm.InstallError, OSError) as exc:
+            print(f"  ⚠ {name} was not installed: {exc}")
+            print(f"    Retry with: hermes pm install {name}")
+
+
 def cmd_postinstall(args) -> None:
     """One-shot bootstrap for pip users: install non-Python deps + run setup."""
-    from hermes_cli.dep_ensure import ensure_dependency
     from hermes_cli.main import _has_any_provider_configured, cmd_setup
 
     _stamp_install_method("pip")
@@ -54,12 +76,7 @@ def cmd_postinstall(args) -> None:
     print("⚕ Hermes post-install bootstrap")
     print()
 
-    # Best-effort, and deliberately not short-circuited: a machine that
-    # already has ripgrep but no ffmpeg should still get ffmpeg, and a
-    # dependency that cannot be installed must not block the ones after it
-    # or the setup handover below.
-    for dep in POSTINSTALL_DEPENDENCIES:
-        ensure_dependency(dep)
+    _ensure_dependencies()
 
     if not _has_any_provider_configured():
         print()

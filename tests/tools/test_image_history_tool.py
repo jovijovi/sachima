@@ -292,7 +292,7 @@ def test_image_history_redacts_quoted_json_secret_fields_on_write_and_read(monke
 
 
 def test_image_history_registered_under_image_gen_toolset():
-    import tools.image_history_tool  # noqa: F401
+    import tools.image_history_tool
     from tools.registry import registry
 
     entry = registry.get_entry("image_history")

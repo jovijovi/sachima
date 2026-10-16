@@ -291,7 +291,7 @@ def test_create_or_attach_recovers_from_registry_create_race(monkeypatch) -> Non
     original_create_task = reg.create_task
 
     def racing_create_task(task_id, *, needs_agent=False, needs_durable=False, refs=()):
-        record = original_create_task(
+        original_create_task(
             task_id,
             needs_agent=needs_agent,
             needs_durable=needs_durable,

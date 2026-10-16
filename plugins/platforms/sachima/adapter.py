@@ -100,9 +100,9 @@ class SachimaAdapter(BasePlatformAdapter):
         super().__init__(config, Platform("sachima"))
         self.sent_messages: list[dict[str, Any]] = []
         self._local_message_counter = 0
-        self._web_app: Optional["web.Application"] = None
-        self._web_runner: Optional["web.AppRunner"] = None
-        self._web_site: Optional["web.TCPSite"] = None
+        self._web_app: Optional[web.Application] = None
+        self._web_runner: Optional[web.AppRunner] = None
+        self._web_site: Optional[web.TCPSite] = None
         self._seen_messages: dict[str, float] = {}
 
     @property
@@ -177,7 +177,7 @@ class SachimaAdapter(BasePlatformAdapter):
             self._web_runner = None
         self._web_app = None
 
-    async def _handle_http_webhook(self, request: "web.Request") -> "web.Response":
+    async def _handle_http_webhook(self, request: web.Request) -> web.Response:
         """Handle inbound Sachima webhook HTTP requests."""
         raw_body = await request.read()
         signature_error = self._validate_webhook_signature(request, raw_body)
@@ -220,7 +220,7 @@ class SachimaAdapter(BasePlatformAdapter):
         return web.json_response({"ok": True, "message_id": event.message_id})
 
     def _validate_webhook_signature(
-        self, request: "web.Request", raw_body: bytes
+        self, request: web.Request, raw_body: bytes
     ) -> Optional[tuple[str, int]]:
         """Validate optional HMAC webhook signature headers."""
         secret = str(
@@ -245,14 +245,14 @@ class SachimaAdapter(BasePlatformAdapter):
 
         expected = hmac.new(
             secret.encode("utf-8"),
-            f"{timestamp}.".encode("utf-8") + raw_body,
+            f"{timestamp}.".encode() + raw_body,
             hashlib.sha256,
         ).hexdigest()
         if not hmac.compare_digest(expected, signature):
             return "Invalid Sachima signature", 401
         return None
 
-    def _dedupe_key_from_payload(self, payload: Dict[str, Any]) -> Optional[str]:
+    def _dedupe_key_from_payload(self, payload: dict[str, Any]) -> Optional[str]:
         """Build a stable dedupe key for webhook retries when message_id exists."""
         message_id = self._message_id_from_payload(payload)
         if not message_id:
@@ -281,7 +281,7 @@ class SachimaAdapter(BasePlatformAdapter):
         for key in expired:
             self._seen_messages.pop(key, None)
 
-    def _normalize_ingress_payload(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+    def _normalize_ingress_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Normalize and validate Sachima Envelope v1 ingress payloads.
 
         Pre-v1 local/legacy payloads remain accepted for existing loopback tests.
@@ -318,7 +318,7 @@ class SachimaAdapter(BasePlatformAdapter):
             raise SachimaPayloadError("Missing required Sachima v1 ingress field: text")
         return normalized
 
-    def _is_allowed_ingress_user(self, payload: Dict[str, Any]) -> bool:
+    def _is_allowed_ingress_user(self, payload: dict[str, Any]) -> bool:
         """Return whether an ingress sender is allowed by local Sachima config."""
         extra = self.config.extra or {}
         if extra.get("allow_all_users") is True:
@@ -336,13 +336,13 @@ class SachimaAdapter(BasePlatformAdapter):
         user_id = self._payload_value(payload, "user_id", "user", "id")
         return str(user_id) in allowed
 
-    def build_event_from_payload(self, payload: Dict[str, Any]) -> MessageEvent:
+    def build_event_from_payload(self, payload: dict[str, Any]) -> MessageEvent:
         """Normalize a Sachima webhook payload into a Hermes MessageEvent."""
         payload = self._normalize_ingress_payload(payload)
         media_urls, media_types = self._extract_base64_image_media(payload, reject_urls=True)
         return self._message_event_from_payload(payload, media_urls, media_types)
 
-    async def _build_event_from_payload_async(self, payload: Dict[str, Any]) -> MessageEvent:
+    async def _build_event_from_payload_async(self, payload: dict[str, Any]) -> MessageEvent:
         """Normalize payload, including URL-backed images that need async download."""
         payload = self._normalize_ingress_payload(payload)
         media_urls, media_types = self._extract_base64_image_media(payload, reject_urls=False)
@@ -353,7 +353,7 @@ class SachimaAdapter(BasePlatformAdapter):
 
     def _message_event_from_payload(
         self,
-        payload: Dict[str, Any],
+        payload: dict[str, Any],
         media_urls: list[str],
         media_types: list[str],
     ) -> MessageEvent:
@@ -397,7 +397,7 @@ class SachimaAdapter(BasePlatformAdapter):
 
     def _extract_base64_image_media(
         self,
-        payload: Dict[str, Any],
+        payload: dict[str, Any],
         *,
         reject_urls: bool,
     ) -> tuple[list[str], list[str]]:
@@ -420,7 +420,7 @@ class SachimaAdapter(BasePlatformAdapter):
             media_types.append(mime_type)
         return media_urls, media_types
 
-    async def _extract_url_image_media(self, payload: Dict[str, Any]) -> tuple[list[str], list[str]]:
+    async def _extract_url_image_media(self, payload: dict[str, Any]) -> tuple[list[str], list[str]]:
         """Download URL image attachments through the shared SSRF-safe cache helper."""
         media_urls: list[str] = []
         media_types: list[str] = []
@@ -441,7 +441,7 @@ class SachimaAdapter(BasePlatformAdapter):
             media_types.append(mime_type)
         return media_urls, media_types
 
-    def _image_attachments_from_payload(self, payload: Dict[str, Any]) -> list[dict[str, Any]]:
+    def _image_attachments_from_payload(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
         """Return image attachments from canonical or top-level Sachima media fields."""
         raw_attachments = payload.get("attachments") or []
         if not isinstance(raw_attachments, list):
@@ -527,7 +527,7 @@ class SachimaAdapter(BasePlatformAdapter):
         return decoded
 
     @staticmethod
-    def _payload_value(payload: Dict[str, Any], flat_key: str, nested_obj: str, nested_key: str) -> Any:
+    def _payload_value(payload: dict[str, Any], flat_key: str, nested_obj: str, nested_key: str) -> Any:
         """Read a flat value or a nested object value from a Sachima payload."""
         value = payload.get(flat_key)
         if value not in (None, ""):
@@ -537,7 +537,7 @@ class SachimaAdapter(BasePlatformAdapter):
             return nested.get(nested_key)
         return None
 
-    def _message_id_from_payload(self, payload: Dict[str, Any]) -> Optional[str]:
+    def _message_id_from_payload(self, payload: dict[str, Any]) -> Optional[str]:
         """Read message_id from supported flat or nested payload shapes."""
         value = payload.get("message_id") or payload.get("id")
         if value in (None, ""):
@@ -546,7 +546,7 @@ class SachimaAdapter(BasePlatformAdapter):
                 value = message.get("id")
         return str(value) if value not in (None, "") else None
 
-    async def handle_webhook_payload(self, payload: Dict[str, Any]) -> MessageEvent:
+    async def handle_webhook_payload(self, payload: dict[str, Any]) -> MessageEvent:
         """Build and dispatch a MessageEvent for embedding/webhook callers."""
         event = await self._build_event_from_payload_async(payload)
         await self.handle_message(event)
@@ -564,7 +564,7 @@ class SachimaAdapter(BasePlatformAdapter):
         chat_id: str,
         text: str,
         reply_to: Optional[str],
-        metadata: Optional[Dict[str, Any]],
+        metadata: Optional[dict[str, Any]],
     ) -> dict[str, Any]:
         """Build a canonical Sachima Envelope v1 delivery callback payload."""
         return {
@@ -594,7 +594,7 @@ class SachimaAdapter(BasePlatformAdapter):
             headers["X-Sachima-Timestamp"] = timestamp
             headers["X-Sachima-Signature"] = hmac.new(
                 secret.encode("utf-8"),
-                f"{timestamp}.".encode("utf-8") + raw_body,
+                f"{timestamp}.".encode() + raw_body,
                 hashlib.sha256,
             ).hexdigest()
         api_key = str(
@@ -611,7 +611,7 @@ class SachimaAdapter(BasePlatformAdapter):
         chat_id: str,
         content: str,
         reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
         """Send a Sachima Envelope v1 delivery callback or record it locally."""
         chunks = self.truncate_message(content, self.max_message_length)
@@ -681,7 +681,7 @@ class SachimaAdapter(BasePlatformAdapter):
         except Exception as exc:
             return SendResult(success=False, error=str(exc), retryable=True)
 
-    async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
+    async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
         """Return minimal chat metadata for the Sachima channel."""
         return {"id": str(chat_id), "name": str(chat_id), "type": "dm"}
 

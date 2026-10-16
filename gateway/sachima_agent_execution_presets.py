@@ -71,14 +71,14 @@ __all__ = [
     "IMPLEMENTATION_PERMISSIONS",
     "PRESET_PERMISSIONS",
     "SACHIMA_AGENT_ID_PATTERN",
-    "SACHIMA_SELECTION_ID_PATTERN",
     "SACHIMA_AGENT_INVALID_ID",
     "SACHIMA_AGENT_INVALID_PRESETS",
-    "SACHIMA_AGENT_NO_PRESET",
     "SACHIMA_AGENT_NOT_REGISTERED",
+    "SACHIMA_AGENT_NO_PRESET",
     "SACHIMA_AGENT_PRESET_STABLE_CODES",
     "SACHIMA_AGENT_ROSTER_UNAVAILABLE",
     "SACHIMA_AGENT_TASK_TOO_LARGE",
+    "SACHIMA_SELECTION_ID_PATTERN",
     "AgentAdmission",
     "AgentExecutionPreset",
     "AgentExecutionPresets",
@@ -177,7 +177,7 @@ class PresetError(ValueError):
     """A preset failure whose message IS the stable code — never the material."""
 
 
-def _invalid() -> "PresetError":
+def _invalid() -> PresetError:
     return PresetError(SACHIMA_AGENT_INVALID_PRESETS)
 
 
@@ -501,7 +501,7 @@ def load_agent_execution_presets(
     if type(presets_file) is not str or not presets_file.strip():
         raise _invalid()
     try:
-        with open(presets_file.strip(), encoding="utf-8") as handle:
+        with open(presets_file.strip(), encoding="utf-8-sig") as handle:
             document = json.load(handle)
     except PresetError:
         raise

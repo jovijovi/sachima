@@ -52,7 +52,25 @@ from .. import EXPECTED_AGENT_RUN_SUPERVISOR_VERSION
 from .events import SpineError, _safe_digest, _safe_id
 
 __all__ = [
+    "ARSD_AGENT_ID_PATTERN",
+    "ARSD_FINAL_MESSAGE_TRUNCATE_REASON",
+    "ARSD_MAX_ERROR_MESSAGE_CHARS",
+    "ARSD_MAX_FIELD_CHARS",
+    "ARSD_MAX_FINAL_MESSAGE_BYTES",
+    "ARSD_MAX_FRAME_BYTES",
+    "ARSD_MAX_JSON_NESTING_DEPTH",
+    "ARSD_MAX_PROMPT_BYTES",
+    "ARSD_MAX_REGISTERED_AGENTS",
+    "ARSD_MAX_SESSION_ID_CHARS",
+    "ARSD_OPERATIONS",
+    "ARSD_PERMISSION_VIOLATION_REASON",
+    "ARSD_REQUIRED_API_VERSION",
+    "ARSD_SESSION_ID_PATTERN",
+    "ARSD_SPEC_SCHEMA_VERSION",
     "ARSD_STABLE_CODES",
+    "ARSD_STRUCTURAL_MAX_RUN_EVENT_BUDGET_BYTES",
+    "ARSD_SUPERVISOR_CONFIG_TYPE",
+    "ARSD_TERMINAL_STATUSES",
     "RUNTIME_ARSD_BUSY",
     "RUNTIME_ARSD_DISABLED",
     "RUNTIME_ARSD_IDEMPOTENCY_CONFLICT",
@@ -66,35 +84,17 @@ __all__ = [
     "RUNTIME_ARSD_UNKNOWN_TARGET",
     "RUNTIME_ARSD_VERSION_MISMATCH",
     "RUNTIME_INVALID_ARSD_CONFIG",
-    "ARSD_SUPERVISOR_CONFIG_TYPE",
-    "ARSD_REQUIRED_API_VERSION",
-    "ARSD_AGENT_ID_PATTERN",
-    "ARSD_FINAL_MESSAGE_TRUNCATE_REASON",
-    "ARSD_MAX_ERROR_MESSAGE_CHARS",
-    "ARSD_MAX_FIELD_CHARS",
-    "ARSD_MAX_FINAL_MESSAGE_BYTES",
-    "ARSD_MAX_FRAME_BYTES",
-    "ARSD_MAX_JSON_NESTING_DEPTH",
-    "ARSD_MAX_PROMPT_BYTES",
-    "ARSD_MAX_REGISTERED_AGENTS",
-    "ARSD_MAX_SESSION_ID_CHARS",
-    "ARSD_OPERATIONS",
-    "ARSD_PERMISSION_VIOLATION_REASON",
-    "ARSD_SESSION_ID_PATTERN",
-    "ARSD_SPEC_SCHEMA_VERSION",
-    "ARSD_STRUCTURAL_MAX_RUN_EVENT_BUDGET_BYTES",
-    "ARSD_TERMINAL_STATUSES",
     "ArsdClientFacade",
     "ArsdRunCancelObservation",
     "ArsdRunEventsPage",
     "ArsdRunStatusObservation",
+    "ArsdSealedGrant",
     "ArsdServerInfo",
     "ArsdSessionView",
-    "ArsdSealedGrant",
     "ArsdSubmitAccepted",
+    "ArsdSupervisorConfig",
     "ArsdTerminalResult",
     "DefaultArsdClientFacade",
-    "ArsdSupervisorConfig",
     "arsd_submit_payload_digest",
     "build_arsd_submit_payload",
     "check_arsd_admission_event_budget",
@@ -952,7 +952,7 @@ class ArsdSealedGrant:
 
 def _sealed_digest(payload: str, domain: str) -> str:
     return "sha256:" + hashlib.sha256(
-        f"{payload}\n{domain}".encode("utf-8")
+        f"{payload}\n{domain}".encode()
     ).hexdigest()
 
 

@@ -179,6 +179,32 @@ def test_workspace_backup_avoids_preexisting_symlink_path(monkeypatch, tmp_path)
     assert (target_dir / "comfort.md.bak.1234.cafebabe").read_text(encoding="utf-8") == "old phrase"
 
 
+def test_workspace_tolerates_a_bom_and_keeps_it_on_patch(monkeypatch, tmp_path):
+    """A Windows-saved (BOM-prefixed) file reads without a phantom first character, a
+    first-line match works, and patch and backup keep the file's own BOM."""
+    profile_home = tmp_path / "profiles" / "samiya"
+    monkeypatch.setenv("HERMES_HOME", str(profile_home))
+
+    from tools.workspace_file_tool import workspace_patch, workspace_read, workspace_search
+
+    target = profile_home / "workspace" / "notes" / "windows.md"
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"\xef\xbb\xbfold phrase\nsecond line\n")
+
+    assert _parse(workspace_read("notes/windows.md"))["content"] == "1|old phrase\n2|second line"
+    assert _parse(workspace_search("^old phrase$"))["matches"] == [
+        {"path": "notes/windows.md", "line": 1, "content": "old phrase"}
+    ]
+
+    patched = _parse(workspace_patch("notes/windows.md", "old phrase", "new phrase"))
+
+    assert patched["success"] is True
+    assert target.read_bytes() == b"\xef\xbb\xbfnew phrase\nsecond line\n"
+    assert patched["bytes"] == len(target.read_bytes())
+    (backup,) = target.parent.glob("windows.md.bak.*")
+    assert backup.read_bytes() == b"\xef\xbb\xbfold phrase\nsecond line\n"
+
+
 def test_workspace_list_and_search(monkeypatch, tmp_path):
     profile_home = tmp_path / "profiles" / "samiya"
     monkeypatch.setenv("HERMES_HOME", str(profile_home))

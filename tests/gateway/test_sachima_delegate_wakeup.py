@@ -1095,7 +1095,7 @@ async def test_package_c_gateway_marks_synthetic_turn_internal_in_tool_context(
     observed: list[bool] = []
 
     async def _model(**kwargs):
-        import gateway.session_context as session_context
+        from gateway import session_context
 
         observed.append(
             getattr(

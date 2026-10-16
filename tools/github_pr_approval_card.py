@@ -51,7 +51,7 @@ def _session_env(name: str) -> str:
     return get_session_env(name, "").strip()
 
 
-def _validate(args: Dict[str, Any]) -> str:
+def _validate(args: dict[str, Any]) -> str:
     if not str(args.get("repo") or "").strip() or args.get("pr_number") in (None, ""):
         return "repo and pr_number are required"
     try:
@@ -66,7 +66,7 @@ def _validate(args: Dict[str, Any]) -> str:
     return ""
 
 
-def github_pr_approval_card_tool(args: Dict[str, Any], **_kwargs: Any) -> str:
+def github_pr_approval_card_tool(args: dict[str, Any], **_kwargs: Any) -> str:
     """Send a PR approval card using the adapter in the current profile."""
     error = _validate(args)
     if error:

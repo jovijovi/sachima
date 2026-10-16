@@ -370,7 +370,7 @@ def test_a_contradictory_binding_blocks_instead_of_substituting(tmp_path):
 
     config = _config(tmp_path)
     ledger = ArsdRunBindingLedger(config.binding_ledger_path)
-    older, _newer = _two_accepted(config, ledger)
+    _older, _newer = _two_accepted(config, ledger)
 
     # (1) An accepted record that belongs to a different task entirely.
     other_task = "delegate_restore_two"
