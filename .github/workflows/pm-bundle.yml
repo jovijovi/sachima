@@ -76,10 +76,11 @@ jobs:
             runner: macos-15
           - label: darwin-x64
             runner: macos-15-intel
+          # Standard runners (this fork has no larger runners): ~16 / ~29 min measured.
           - label: win32-x64
-            runner: windows-latest-32-core
+            runner: windows-2025
           - label: win32-arm64
-            runner: windows-latest-32-arm-core
+            runner: windows-11-arm
     steps:
       - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:

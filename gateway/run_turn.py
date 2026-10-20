@@ -14,6 +14,7 @@ import inspect
 import json
 import os
 import queue
+import sys
 import threading
 import time
 from agent.i18n import t
@@ -2052,6 +2053,8 @@ class GatewayTurnMixin:
         _was_auto_reset, _is_new_session = await self._hmwa_open_session(session_entry, session_key, source)
         restore_session_yolo(session_key, session_entry.yolo is True)  # a restarted gateway's set starts empty
         context = build_session_context(source, self.config, session_entry)
+        # Host-set turn provenance for authorization-sensitive internal controls (Sachima).
+        context.input_internal = event.internal is True
         # Session context variables for tools (task-local, concurrency-safe)
         _session_env_tokens = self._set_session_env(context)
         # Self-injected turns (internal=True) persist with a DB-only display_kind: timeline notices, not user bubbles.
@@ -2163,6 +2166,25 @@ class GatewayTurnMixin:
             return prepared
         history, message_text = prepared.history, prepared.message_text
 
+        # External AGENT results owed to this Session's next ordinary turn (Sachima delegation).
+        # Taken before the turn runs so the text can ride the user message the model is about to
+        # be sent, and claimed against the Session id trusted at this instant: compression can
+        # rotate ``session_entry.session_id`` mid-turn, and settling against the rotated id would
+        # strand the consumed result ``in_flight`` forever.
+        from gateway.run import _DelegateClaimContext
+        _delegate_handoff = None
+        _delegate_continuity = self._delegate_result_continuity(session_entry)
+        _delegate_claim_context = _DelegateClaimContext(
+            session_id=session_entry.session_id,
+            continuity=_delegate_continuity,
+            processing_event=event,
+        )
+        # Fold claimed results into the user turn that is about to be sent, exactly like history
+        # backfill context: never the long-lived system prompt and never a mutation of a running turn.
+        message_text, _delegate_handoff = self._claim_delegate_results_for_turn(
+            message_text, _delegate_claim_context,
+        )
+
         try:
             hook_ctx = {
                 "platform": source.platform.value if source.platform else "",
@@ -2209,6 +2231,8 @@ class GatewayTurnMixin:
                     **reply_expected_metadata(event.reply_expected), **diagnostic_metadata(event)},
                 message_type=event.message_type,
                 scheduled_heartbeat=bool(getattr(event, "_heartbeat_session_id", None)),
+                delegate_handoff=_delegate_handoff,
+                _delegate_claim_context=_delegate_claim_context,
             )
             _turn_seconds = time.monotonic() - _turn_started_monotonic
 
@@ -2259,6 +2283,13 @@ class GatewayTurnMixin:
                 hidden_reasoning_incomplete=hidden_reasoning_incomplete,
                 is_context_overflow_failure=is_context_overflow_failure,
             )
+            # A trusted synthetic turn's business receipt (Sachima delegation report) is true only
+            # when the model turn completed AND the adapter delivered; record the first half here.
+            if isinstance(getattr(event, "metadata", None), dict):
+                event.metadata["_gateway_model_turn_completed"] = bool(
+                    not agent_result.get("failed")
+                    and (response or agent_result.get("already_sent"))
+                )
             return await self._hmwa_deliver_turn_response(
                 event, source, session_entry, session_key, run_generation,
                 agent_result, agent_messages, response, _footer_line, _intentional_silence,
@@ -2267,6 +2298,19 @@ class GatewayTurnMixin:
         except Exception as e:
             return await self._hmwa_agent_error_reply(e, event, source, session_entry, session_key, prepared)
         finally:
+            # Settle this turn's delegate claim exactly once, whatever ended the turn. A failure
+            # before the model — a refused hook, a raised guard — is precisely the case this exists
+            # for: the result was already taken out of pending, and only settling here returns it
+            # so the next ordinary turn can have it. ``take_for_settlement`` keeps one claim from
+            # being settled twice.
+            if _delegate_handoff is not None and _delegate_handoff.take_for_settlement():
+                self._settle_delegate_result_context(
+                    _delegate_handoff.session_id,
+                    consumed=_delegate_handoff.consumed,
+                    continuity=_delegate_continuity,
+                    processing_id=_delegate_handoff.processing_id,
+                    event_ids=_delegate_handoff.event_ids,
+                )
             # Restore session context variables to their pre-handler state
             self._clear_session_env(_session_env_tokens)
 
@@ -3035,6 +3079,27 @@ class GatewayTurnMixin:
                 _native_slack_task_cards = bool(adapter.native_task_cards_enabled())
             except Exception:
                 logger.debug("Slack native task-card config check failed", exc_info=True)
+        # Sachima Task Workbench (display.task_tracker): opt-in; feishu_card only on Feishu; never
+        # on webhooks. When enabled it owns the visible progress projection (no second Slack card).
+        from utils import is_truthy_value
+        # Read the global ``display.task_tracker`` block directly (upstream's per-platform resolver
+        # no longer materializes the raw ``display`` dict here).
+        _display_cfg = user_config.get("display", {})
+        if not isinstance(_display_cfg, dict):
+            _display_cfg = {}
+        task_tracker_config = _display_cfg.get("task_tracker")
+        if not isinstance(task_tracker_config, dict):
+            task_tracker_config = {}
+        task_tracker_mode = str(task_tracker_config.get("mode", "text") or "text").strip().lower()
+        if task_tracker_mode == "feishu_card" and source.platform != Platform.FEISHU:
+            task_tracker_mode = "text"
+        task_tracker_enabled = (
+            not is_webhook
+            and is_truthy_value(task_tracker_config.get("enabled"), default=False)
+            and task_tracker_mode in {"text", "feishu_card"}
+        )
+        if task_tracker_enabled:
+            _native_slack_task_cards = False
         return self._RunAgentDisplay(
             user_config=user_config, platform_key=platform_key, enabled_toolsets=enabled_toolsets,
             disabled_toolsets=disabled_toolsets, resolve_display_setting=resolve_display_setting,
@@ -3045,8 +3110,12 @@ class GatewayTurnMixin:
             log_queue=queue.Queue() if log_mode_enabled else None,
             interim_assistant_messages_enabled=interim_assistant_messages_enabled,
             _thinking_enabled=_thinking_enabled, _native_slack_task_cards=_native_slack_task_cards,
-            needs_progress_queue=tool_progress_enabled or _thinking_enabled or _native_slack_task_cards,
+            needs_progress_queue=(
+                tool_progress_enabled or _thinking_enabled or _native_slack_task_cards or task_tracker_enabled
+            ),
             _generic_status_phrase=_generic_status_phrase,
+            task_tracker_enabled=task_tracker_enabled, task_tracker_mode=task_tracker_mode,
+            task_tracker_config=task_tracker_config,
         )
 
     # _RunAgentDisplay fields copied verbatim onto the TurnContext.
@@ -3090,11 +3159,15 @@ class GatewayTurnMixin:
             _cleanup_adapter = None
 
         # The one-slot progress/holder containers shared with the callbacks are TurnContext defaults.
+        # A Sachima progress transaction shared across queued-follow-up frames supplies its own queue.
+        _progress_queue = turn_params.pop("progress_queue", None)
+        if _progress_queue is None and disp.needs_progress_queue:
+            _progress_queue = queue.Queue()
         turn_ctx = TurnContext(
             source=source, message=message, AIAgent=AIAgent, session_key=session_key,
             run_generation=run_generation, _cleanup_progress=_cleanup_progress,
             _run_still_current=self._run_still_current_fn(session_key, run_generation),
-            progress_queue=queue.Queue() if disp.needs_progress_queue else None,
+            progress_queue=_progress_queue,
             _voice_ack_guild=_voice_ack_guild, _voice_ack_loop=asyncio.get_running_loop(),
             **{name: getattr(disp, name) for name in self._DISPLAY_TO_TURN_CTX}, **turn_params,
         )
@@ -3446,6 +3519,17 @@ class GatewayTurnMixin:
                 else (lambda: True)
             ),
         )
+        # The turn's own dispatch lease (Sachima delegation), constructed here beside the timeout
+        # machinery — before the worker is scheduled — so it exists to be fenced before the worker has
+        # published its agent, and so both reaper paths and the worker's own dispatch answer to exactly
+        # one object. A lease cancelled and then bound is dead by construction; a successor turn's lease
+        # is a different object the reaper never sees.
+        from agent.chat_completion_helpers import ProviderDispatchLease
+        _delegate_handoff = getattr(turn_ctx, "delegate_handoff", None)
+        worker.dispatch_lease = ProviderDispatchLease(
+            _delegate_handoff.mark_provider_attempt if _delegate_handoff is not None else None
+        )
+        turn_ctx.dispatch_lease = worker.dispatch_lease
 
         def _run_sync_with_timeout_lifecycle():
             try:
@@ -3484,6 +3568,7 @@ class GatewayTurnMixin:
         """Shared kwargs of the watchdog + timeout-reaper threads."""
         return {
             **{k: getattr(worker, k) for k in ("task_id", "process_baseline", "worker_done", "timeout_fired", "cleanup_lock")},
+            "dispatch_lease": getattr(worker, "dispatch_lease", None),
             "is_still_current": worker.is_current,
         }
 
@@ -3734,10 +3819,13 @@ class GatewayTurnMixin:
 
     async def _run_agent_deliver_first_response(
         self, turn_ctx: TurnContext, adapter: Any, response: Any, result: Any, stream_task: Any,
-    ) -> None:
-        """Deliver the first response before a queued follow-up runs, unless streaming already did."""
+    ) -> tuple[bool, bool]:
+        """Deliver the first response before a queued follow-up runs, unless streaming already did.
+
+        Returns ``(text_delivery_confirmed, model_turn_completed)`` so the Sachima delegation
+        receipt bound to the intermediate queued turn can be settled truthfully."""
         if turn_ctx.mute_notification_reply:
-            return
+            return False, False
         session_key = turn_ctx.session_key
         _sc = turn_ctx.stream_consumer_holder[0]
         if _sc and stream_task:
@@ -3748,6 +3836,10 @@ class GatewayTurnMixin:
         # Delivery uses the finalized task result (empty/failure normalization), not raw ``result``.
         _delivery_result = response if isinstance(response, dict) else (result or {})
         first_response = _delivery_result.get("final_response", "")
+        model_turn_completed = bool(
+            not _delivery_result.get("failed") and (first_response or _delivery_result.get("already_sent"))
+        )
+        delivery_confirmed = False
         _already_streamed = self._run_agent_stream_confirmed_final_delivery(
             _sc, first_response, previewed=bool(_delivery_result.get("response_previewed")),
         )
@@ -3788,6 +3880,7 @@ class GatewayTurnMixin:
             except Exception as e:
                 logger.warning("Failed to send first response before queued message: %s", e)
             else:
+                delivery_confirmed = bool(_text_delivered)
                 # One source of truth for "this turn's final already reached the chat": the normal
                 # completion path (`_hmwa_deliver_turn_response`) consults ``already_sent`` on the
                 # result the queued lane hands back. Every early `return result` after this point
@@ -3806,6 +3899,7 @@ class GatewayTurnMixin:
                 _bg_result = _bg_cb()
                 if inspect.isawaitable(_bg_result):
                     await _bg_result
+        return delivery_confirmed, model_turn_completed
 
     async def _run_agent_queued_followup(
         self, turn_ctx: TurnContext, adapter: Any, pending: Optional[str], pending_event: Any,
@@ -3842,8 +3936,24 @@ class GatewayTurnMixin:
             return turn_ctx.result_holder[0] or {"final_response": response, "messages": history}
 
         # Interrupted: discard the response ("Operation interrupted." is noise).
+        prior_delivery_confirmed = prior_model_turn_completed = False
         if not result.get("interrupted"):
-            await self._run_agent_deliver_first_response(turn_ctx, adapter, response, result, stream_task)
+            prior_delivery_confirmed, prior_model_turn_completed = await self._run_agent_deliver_first_response(
+                turn_ctx, adapter, response, result, stream_task,
+            )
+
+        # Sachima delegation: the outer Base processing task will deliver only the final response
+        # returned by the whole in-band chain. Close the prior logical turn here, at the direct-send
+        # result above, before its event is rebound to the queued turn's fresh claim. An unconsumed
+        # interrupted handoff remains attached to the retry.
+        # getattr: narrow test doubles hand in a bare namespace without the Sachima fields.
+        delegate_handoff = getattr(turn_ctx, "delegate_handoff", None)
+        _delegate_claim_context = getattr(turn_ctx, "delegate_claim_context", None)
+        if delegate_handoff is None or delegate_handoff.consumed:
+            await self._complete_queued_delegate_delivery(
+                _delegate_claim_context, adapter,
+                delivered=prior_delivery_confirmed, model_turn_completed=prior_model_turn_completed,
+            )
 
         updated_history = result.get("messages", history)
         next_source, next_message, next_session_key = source, pending, session_key
@@ -3896,6 +4006,21 @@ class GatewayTurnMixin:
             # of the turn they are recursively following.
             next_channel_prompt = turn_ctx.channel_prompt
 
+        # Sachima delegation: a handoff that never reached a provider still belongs to the interrupted
+        # attempt and rides into this retry. Once consumed, it cannot own results that became available
+        # for a later logical turn: claim those now under a fresh processing id.
+        next_delegate_handoff = delegate_handoff
+        owns_fresh_delegate_handoff = False
+        if delegate_handoff is not None and delegate_handoff.consumed:
+            next_delegate_handoff = None
+        if _delegate_claim_context is not None and (delegate_handoff is None or delegate_handoff.consumed):
+            next_message, next_delegate_handoff = self._claim_delegate_results_for_turn(
+                next_message, _delegate_claim_context,
+            )
+            if next_delegate_handoff is not None:
+                owns_fresh_delegate_handoff = True
+                self._discard_claimed_delegate_wakeups(next_session_key, adapter, next_delegate_handoff.event_ids)
+
         # Clear the prior turn's streaming-TTS completion marker so the recursive turn isn't suppressed.
         # See #60671.
         _clear_adapter = self._delivery_adapter_for(source)
@@ -3931,49 +4056,70 @@ class GatewayTurnMixin:
         await _run_followup_processing_hook(_hook_adapter, pending_event, "on_processing_start")
         # The re-baseline sits inside the try: a /stop landing on its DB await must still close the marker
         # (the helper's own ``except Exception`` does not catch cancellation).
+        # Sachima delegation: the fresh claim minted above is settled exactly once, whatever ends the
+        # follow-up (return, cancellation or failure), after the processing hooks have reported.
         try:
-            await self._refresh_agent_cache_message_count(session_key, session_id)
+            try:
+                await self._refresh_agent_cache_message_count(session_key, session_id)
 
-            followup_result = await self._run_agent(
-                message=next_message, context_prompt=turn_ctx.context_prompt, history=updated_history,
-                source=next_source, session_id=session_id, session_key=next_session_key,
-                run_generation=run_generation, _interrupt_depth=_interrupt_depth + 1,
-                event_message_id=next_message_id, inbound_message_id=next_inbound_id,
-                channel_prompt=next_channel_prompt, message_type=next_message_type,
-                persist_user_message=next_persist_message,
-                persist_user_display_kind=next_display_kind,
-                reply_expected=next_reply_expected,
-                persist_user_display_metadata={
-                    **reply_expected_metadata(next_reply_expected), **diagnostic_metadata(pending_event)} or None,
-            )
-        except asyncio.CancelledError:
+                followup_result = await self._run_agent(
+                    message=next_message, context_prompt=turn_ctx.context_prompt, history=updated_history,
+                    source=next_source, session_id=session_id, session_key=next_session_key,
+                    run_generation=run_generation, _interrupt_depth=_interrupt_depth + 1,
+                    event_message_id=next_message_id, inbound_message_id=next_inbound_id,
+                    channel_prompt=next_channel_prompt, message_type=next_message_type,
+                    persist_user_message=next_persist_message,
+                    persist_user_display_kind=next_display_kind,
+                    reply_expected=next_reply_expected,
+                    persist_user_display_metadata={
+                        **reply_expected_metadata(next_reply_expected), **diagnostic_metadata(pending_event)} or None,
+                    # A still-unconsumed interrupted claim rides into the attempt that can reach the
+                    # provider; a consumed claim was replaced above by this logical turn's fresh claim.
+                    # The progress transaction is shared so one logical task keeps one card identity.
+                    delegate_handoff=next_delegate_handoff, _delegate_claim_context=_delegate_claim_context,
+                    _progress_transaction=getattr(turn_ctx, "progress_transaction", None),
+                )
+            except asyncio.CancelledError:
+                await _run_followup_processing_hook(
+                    _hook_adapter, pending_event, "on_processing_complete", _followup_cancel_outcome(_hook_adapter))
+                raise
+            except BaseException:
+                await _run_followup_processing_hook(
+                    _hook_adapter, pending_event, "on_processing_complete", ProcessingOutcome.FAILURE)
+                raise
             await _run_followup_processing_hook(
-                _hook_adapter, pending_event, "on_processing_complete", _followup_cancel_outcome(_hook_adapter))
-            raise
-        except BaseException:
-            await _run_followup_processing_hook(
-                _hook_adapter, pending_event, "on_processing_complete", ProcessingOutcome.FAILURE)
-            raise
-        await _run_followup_processing_hook(
-            _hook_adapter, pending_event, "on_processing_complete", ProcessingOutcome.SUCCESS)
-        merged = _preserve_queued_followup_history_offset(result, followup_result)
-        # The TERMINAL turn of the chain owns the ledger identity for the outer final send, which
-        # the adapter brackets against the event that OPENED the chain. Without this the terminal
-        # reply is recorded under the first message's id, so a first reply that was refused (flood
-        # control) has its outstanding row replaced and marked delivered by an identical-text
-        # terminal reply, and is never redelivered. A deeper recursion has already set its own id,
-        # so only fill the key while it is still absent: the innermost turn wins.
-        if isinstance(merged, dict) and "queued_terminal_inbound_id" not in merged:
-            merged = {
-                **merged,
-                "queued_terminal_inbound_id": next_inbound_id,
-                "queued_terminal_display_kind": next_display_kind,
-                "queued_terminal_reply_expected": next_reply_expected,
-                "queued_terminal_notification_category": (
-                    (pending_event.metadata or {}).get("notification_category", "result")
-                    if pending_event is not None and pending_event.internal else "result"),
-            }
-        return merged
+                _hook_adapter, pending_event, "on_processing_complete", ProcessingOutcome.SUCCESS)
+            merged = _preserve_queued_followup_history_offset(result, followup_result)
+            # The TERMINAL turn of the chain owns the ledger identity for the outer final send, which
+            # the adapter brackets against the event that OPENED the chain. Without this the terminal
+            # reply is recorded under the first message's id, so a first reply that was refused (flood
+            # control) has its outstanding row replaced and marked delivered by an identical-text
+            # terminal reply, and is never redelivered. A deeper recursion has already set its own id,
+            # so only fill the key while it is still absent: the innermost turn wins.
+            if isinstance(merged, dict) and "queued_terminal_inbound_id" not in merged:
+                merged = {
+                    **merged,
+                    "queued_terminal_inbound_id": next_inbound_id,
+                    "queued_terminal_display_kind": next_display_kind,
+                    "queued_terminal_reply_expected": next_reply_expected,
+                    "queued_terminal_notification_category": (
+                        (pending_event.metadata or {}).get("notification_category", "result")
+                        if pending_event is not None and pending_event.internal else "result"),
+                }
+            return merged
+        finally:
+            if (
+                owns_fresh_delegate_handoff
+                and next_delegate_handoff is not None
+                and next_delegate_handoff.take_for_settlement()
+            ):
+                self._settle_delegate_result_context(
+                    next_delegate_handoff.session_id,
+                    consumed=next_delegate_handoff.consumed,
+                    continuity=_delegate_claim_context.continuity,
+                    processing_id=next_delegate_handoff.processing_id,
+                    event_ids=next_delegate_handoff.event_ids,
+                )
 
     async def _run_agent_cleanup_turn_tasks(
         self, turn_ctx: TurnContext, *, progress_task: Any, log_task: Any, interrupt_monitor: asyncio.Task,
@@ -4273,10 +4419,19 @@ class GatewayTurnMixin:
         reply_expected: Optional[bool] = None,
         scheduled_heartbeat: bool = False,
         title_user_message: Optional[str] = None,
+        delegate_handoff: Optional[Any] = None, _delegate_claim_context: Optional[Any] = None,
+        _progress_transaction: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
         """Run the agent; returns the full run_conversation result dict.
 
-        Keys: "final_response", "messages", "api_calls", "completed"."""
+        Keys: "final_response", "messages", "api_calls", "completed".
+
+        ``delegate_handoff`` / ``_delegate_claim_context`` carry this turn's Sachima delegation claim;
+        ``_progress_transaction`` is the logical-task transaction shared across queued-follow-up
+        recursion so one task keeps one workbench card identity and one terminal flush owner."""
+        # ``delegate_handoff`` is deliberately not forwarded to the proxy: no local agent runs here, so
+        # nothing on this path can witness a provider attempt. The claim stays unconsumed and settles
+        # back to pending, which is what lets the next ordinary turn have the result instead of losing it.
         if self._get_proxy_url():
             return await self._run_agent_via_proxy(
                 message=message, context_prompt=context_prompt, history=history, source=source,
@@ -4290,7 +4445,8 @@ class GatewayTurnMixin:
         if scheduled_heartbeat:
             # A heartbeat is proactive work: tool chrome, drafts, thinking and periodic
             # liveness notices would create a user-visible ping before its final result is known.
-            # Keep status callbacks intact for approvals and actionable failures.
+            # Keep status callbacks intact for approvals and actionable failures. The Sachima Task
+            # Workbench is visible progress too, so it stays off for the same reason.
             disp = dataclasses.replace(
                 disp,
                 tool_progress_enabled=False,
@@ -4298,7 +4454,39 @@ class GatewayTurnMixin:
                 _thinking_enabled=False,
                 _native_slack_task_cards=False,
                 needs_progress_queue=False,
+                task_tracker_enabled=False,
             )
+        # A logical transaction spans queued follow-up recursion. Always mint its identity even when
+        # the visible Workbench is off so TodoStore can bind lifecycle state to the actual task rather
+        # than the whole session (Sachima TODO lifecycle / Task Workbench).
+        import uuid as _uuid
+        progress_transaction_owner = not isinstance(_progress_transaction, dict)
+        progress_transaction = (
+            _progress_transaction if isinstance(_progress_transaction, dict)
+            else {"transaction_id": f"task-{_uuid.uuid4().hex}"}
+        )
+        progress_transaction.setdefault("transaction_id", f"task-{_uuid.uuid4().hex}")
+        progress_queue = progress_transaction.get("queue")
+        if progress_queue is None and disp.needs_progress_queue:
+            progress_queue = queue.Queue()
+            progress_transaction["queue"] = progress_queue
+        task_workbench = None
+        if disp.task_tracker_enabled:
+            try:
+                from gateway.progress.runtime import TaskWorkbenchRuntime
+
+                runtime_config = dict(disp.task_tracker_config or {})
+                runtime_config["mode"] = disp.task_tracker_mode
+                runtime_config["tool_progress_mode"] = disp.progress_mode
+                task_workbench = TaskWorkbenchRuntime.get_or_create(
+                    progress_transaction, runtime_config,
+                    platform=source.platform, message=message, history=history,
+                )
+                reasoning_display, tier_display = self._load_progress_model_config_display()
+                task_workbench.set_model_config_display(reasoning_display, tier_display)
+            except Exception:
+                logger.debug("Task Workbench disabled after setup error", exc_info=True)
+                task_workbench = None
         turn_ctx, turn_runner, _cleanup_adapter = self._run_agent_build_turn_context(
             disp, AIAgent, message=message, source=source, session_key=session_key,
             run_generation=run_generation, context_prompt=context_prompt, history=history,
@@ -4312,6 +4500,10 @@ class GatewayTurnMixin:
             reply_expected=reply_expected,
             persist_user_display_metadata=persist_user_display_metadata, scheduled_heartbeat=scheduled_heartbeat,
             voice_turn=str(getattr(message_type, "value", message_type) or "").lower() == "voice",
+            progress_queue=progress_queue, task_workbench=task_workbench,
+            progress_transaction=progress_transaction, progress_transaction_owner=progress_transaction_owner,
+            task_transaction_id=str(progress_transaction["transaction_id"]),
+            delegate_handoff=delegate_handoff, delegate_claim_context=_delegate_claim_context,
         )
         _status_thread_metadata = self._run_agent_bind_turn_wiring(
             turn_ctx, turn_runner, source, event_message_id, disp._native_slack_task_cards,
@@ -4323,8 +4515,12 @@ class GatewayTurnMixin:
             )
 
         # Progress sender drains BOTH tool-progress lines and thinking bubbles (needs_progress_queue).
+        # Only the transaction owner drains: a queued follow-up frame shares the owner's queue/task.
         spawn = asyncio.create_task
-        progress_task = spawn(turn_runner.send_progress_messages()) if disp.needs_progress_queue else None
+        progress_task = (
+            spawn(turn_runner.send_progress_messages())
+            if disp.needs_progress_queue and progress_transaction_owner else None
+        )
         log_task = spawn(self._run_agent_write_tool_log(disp.log_queue)) if disp.log_mode_enabled else None
         # The stream consumer is created inside run_sync; this task polls for it.
         stream_task = spawn(self._run_agent_stream_consumer_task(turn_ctx.stream_consumer_holder))
@@ -4357,6 +4553,24 @@ class GatewayTurnMixin:
                     turn_ctx, adapter, pending, pending_event, response, result, stream_task,
                 )
         finally:
+            if task_workbench is not None and progress_transaction_owner:
+                # Sachima Task Workbench: one terminal flush per logical task, owned by the outer frame.
+                progress_result = turn_ctx.result_holder[0]
+                progress_failed = sys.exc_info()[0] is not None
+                for candidate in (progress_result, locals().get("response")):
+                    if isinstance(candidate, dict) and candidate.get("failed"):
+                        progress_failed = True
+                try:
+                    await task_workbench.finalize(
+                        turn_ctx.agent_holder[0] if turn_ctx.agent_holder else None,
+                        result=progress_result, is_error=progress_failed,
+                        visible=(
+                            progress_task is not None and not progress_task.done() and turn_ctx._run_still_current()
+                        ),
+                        timeout=6.0 if task_workbench.mode == "feishu_card" else 3.0,
+                    )
+                except Exception:
+                    logger.debug("Task Workbench finalization failed", exc_info=True)
             await self._run_agent_cleanup_turn_tasks(
                 turn_ctx, progress_task=progress_task, log_task=log_task, interrupt_monitor=interrupt_monitor,
                 _notify_task=_notify_task, tracking_task=tracking_task, stream_task=stream_task,

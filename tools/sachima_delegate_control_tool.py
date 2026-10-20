@@ -1,0 +1,803 @@
+"""Default-off internal tool surface over the Sachima delegate control service.
+
+This is the **only** user-reachable path to an external AGENT, and it is
+reached through conversation rather than through a command. Hermes understands
+what the user asked for, picks or clarifies, and calls this tool with one
+canonical ``agent_id``; creation plus ``status``, ``cancel``, ``continue``,
+``recover``, and ``result`` are *actions of the one coordinator*, without a
+slash command, an ARS operation, or a second lifecycle owner. Nothing here has
+its own state machine.
+
+The division of labour is the point:
+
+* **Hermes owns understanding.** Which AGENT a sentence means, whether the
+  candidate is unique, when to ask instead of guess, and what to make of "Tom
+  is not an AGENT" all live in the conversation, upstream of here.
+* **This surface owns the deterministic facts.** ``agents`` reports the live
+  roster annotated with two independently owned facts — whether this host may
+  run each AGENT, and which division/roles it holds — and, for an exact role,
+  the single eligible candidate or a stable clarification code. It is
+  read-only: a zero-or-several answer writes nothing.
+* **This surface owns admission.** It resolves one id against the live
+  roster — case-insensitively, otherwise exactly — and admits it only against
+  ``live ARS roster ∩ execution preset``. There is no fuzzy match, no alias
+  table, no candidate ranking, and no default AGENT: an id that does not
+  admit is refused with a stable code before any task, payload, Session, or
+  submit exists, and the canonical roster spelling is what gets stored.
+
+Creation always names an ``agent_id``, including after a role lookup. That is
+deliberate: a delegated Run should be attributable to an explicit choice in
+the record, not to a query that happened to return one row.
+
+Default-off behind two independent gates, mirroring the live-progress tool:
+
+1. **Availability gate** — the tool's ``check_fn`` only passes when
+   ``SACHIMA_LIVE_PROGRESS_DISPLAY_SURFACE`` is exactly ``hermes_internal``.
+   The ``sachima_delegate_control`` toolset is additionally not part of the core
+   tool list or any platform default toolset, so it never appears in an ordinary
+   session unless a profile names the toolset *and* the env gate is on.
+2. **Service gate** — the handler only consumes the host-bound coordinator. With
+   none bound it fails closed with a stable code before touching any store,
+   ledger, backend, or daemon.
+
+Two boundaries are worth stating explicitly, because they are what make a
+model-invoked control surface safe:
+
+* **The caller's Session is trusted context, never an argument.** It comes from
+  the Gateway's own ``HERMES_SESSION_ID`` (with a key lookup as the fallback for
+  callers that only carry the key). A model-supplied session identifier is not
+  accepted, so a model cannot act on a conversation it is not in. A *task* also
+  belongs to a Session, and context compression forks a new physical one out
+  from under a live conversation — so "is this task yours" is asked of
+  ``gateway.session_context``, which admits this exact Session or a
+  compression continuation of it proven hop by hop from persisted lineage.
+  ``/new``, reset, ``/branch``, and subagent runs inherit nothing, and this
+  surface holds no copy of that rule.
+* **Task text never comes back.** Answers are refs, closed-vocabulary states,
+  and stable codes. ``result`` is the one action that returns agent output, and
+  it returns the durable result the user already received a bounded copy of.
+
+Creation also states the halves separately. ``task`` is the complete
+instruction the AGENT executes; ``task_title`` is the one short line the status
+card is displayed under; ``round_title`` is the one short line the round being
+opened is logged under. All are required, because the alternative to a supplied
+line is a clipped execution prompt — a sentence the user never wrote, presented
+as the thing they asked for. They are sealed at different scopes and that is the
+point: the title belongs to the Task, so a continuation adds a round and never a
+new headline, while the round line belongs to the Turn, so every continuation
+names its own and none inherits the last one's.
+"""
+
+from __future__ import annotations
+
+import os
+from typing import Any
+
+import logging
+
+from tools.registry import registry, tool_error, tool_result
+
+logger = logging.getLogger(__name__)
+
+# --------------------------------------------------------------------------- #
+# Stable codes (module-local; the message IS the code, never raw input)
+# --------------------------------------------------------------------------- #
+SACHIMA_DELEGATE_CONTROL_DISABLED = "sachima_delegate_control_disabled"
+SACHIMA_DELEGATE_CONTROL_UNBOUND = "sachima_delegate_control_unbound"
+SACHIMA_DELEGATE_CONTROL_INVALID = "sachima_delegate_control_invalid"
+SACHIMA_DELEGATE_CONTROL_FORBIDDEN = "sachima_delegate_control_forbidden"
+SACHIMA_DELEGATE_CONTROL_NO_SESSION = "sachima_delegate_control_no_session"
+
+SACHIMA_DELEGATE_CONTROL_STABLE_CODES = frozenset(
+    {
+        SACHIMA_DELEGATE_CONTROL_DISABLED,
+        SACHIMA_DELEGATE_CONTROL_UNBOUND,
+        SACHIMA_DELEGATE_CONTROL_INVALID,
+        SACHIMA_DELEGATE_CONTROL_FORBIDDEN,
+        SACHIMA_DELEGATE_CONTROL_NO_SESSION,
+    }
+)
+
+DELEGATE_CONTROL_ENVELOPE_TYPE = "sachima_delegate_control.v1"
+
+SACHIMA_LIVE_PROGRESS_SURFACE_ENV = "SACHIMA_LIVE_PROGRESS_DISPLAY_SURFACE"
+#: Only the internal gateway surface. ``local_offline`` belongs to offline
+#: harnesses; a control action that can cancel a Run is not one of those.
+_APPROVED_CONTROL_SURFACES = frozenset({"hermes_internal"})
+
+TOOL_NAME = "sachima_delegate_control"
+TOOLSET_NAME = "sachima_delegate_control"
+
+_ACTIONS = (
+    "agents",
+    "create",
+    "status",
+    "cancel",
+    "continue",
+    "recover",
+    "result",
+    "settle",
+    "continue_authorized",
+    "pause_continuation",
+    "resume_continuation",
+)
+
+#: The one action that needs no task of its own, so it is also the one that
+#: skips the "does this task belong to you" check below.
+_TASKLESS_ACTIONS = frozenset({"agents", "create"})
+_INTERNAL_INPUT_ACTIONS = frozenset(
+    {
+        "agents",
+        "status",
+        "result",
+        "settle",
+        "continue_authorized",
+        "pause_continuation",
+    }
+)
+
+
+def enabled_control_surface() -> str | None:
+    """The activated surface token, or ``None`` when default-off."""
+
+    raw = os.environ.get(SACHIMA_LIVE_PROGRESS_SURFACE_ENV)
+    if type(raw) is not str:
+        return None
+    value = raw.strip()
+    if value not in _APPROVED_CONTROL_SURFACES:
+        return None
+    return value
+
+
+def check_delegate_control_available() -> bool:
+    """``check_fn`` for the registry: schema hidden unless the env gate is on."""
+
+    return enabled_control_surface() is not None
+
+
+def _trusted_session() -> Any:
+    """The caller's live conversation, from trusted Gateway context only.
+
+    Never a tool argument. The Gateway sets both the id and the key, and the
+    Session/Gateway authority in ``gateway.session_context`` resolves them —
+    including the one legitimate disagreement, the window where context
+    compression has already rotated the contextvar onto the continuation and the
+    store still names the pre-compression parent. That window is admitted only
+    on persisted, per-hop lineage proof; this surface holds no rule of its own.
+    """
+
+    from gateway.session_context import get_session_env, resolve_trusted_session
+
+    store = _bound_session_store()
+    if store is None:
+        return None
+    return resolve_trusted_session(
+        store,
+        session_id=(get_session_env("HERMES_SESSION_ID", "") or "").strip(),
+        session_key=(get_session_env("HERMES_SESSION_KEY", "") or "").strip(),
+    )
+
+
+def _trusted_origin(trusted: Any) -> Any:
+    """Rebuild a delegate origin from the persisted Session and turn context.
+
+    The Session carried here is the one the conversation is *on* — after a
+    compression split that is the continuation, so a task created now is
+    attributed to the Session that actually holds the conversation rather than
+    to the parent the store has not caught up with yet.
+    """
+
+    from gateway.sachima_delegate_state import DelegateOrigin
+    from gateway.session_context import get_session_env
+
+    entry = getattr(trusted, "entry", None)
+    source = getattr(entry, "origin", None)
+    platform_value = getattr(getattr(source, "platform", None), "value", None)
+    if (
+        source is None
+        or type(platform_value) is not str
+        or not getattr(source, "chat_id", None)
+    ):
+        return None
+    message_id = (get_session_env("HERMES_SESSION_MESSAGE_ID", "") or "").strip()
+    return DelegateOrigin(
+        platform=platform_value,
+        chat_id=str(source.chat_id),
+        thread_id=(
+            str(source.thread_id) if getattr(source, "thread_id", None) else None
+        ),
+        session_key=entry.session_key,
+        session_id=trusted.session_id,
+        reply_anchor=message_id or None,
+    )
+
+
+_session_store: Any = None
+
+
+def bind_delegate_control_session_store(store: Any) -> None:
+    """Bind the host ``SessionStore`` used for the key→id fallback."""
+
+    global _session_store
+    _session_store = store
+
+
+def _bound_session_store() -> Any:
+    return _session_store
+
+
+def _refusal(admission: Any) -> dict:
+    """One ineligibility answer: the stable code plus the two facts behind it.
+
+    ``registered`` is reported separately so "this AGENT exists but this host
+    cannot run it" stays distinguishable from "there is no such AGENT" —
+    Hermes needs that difference to say something true. ``agent_id`` is the
+    canonical roster spelling once the selection resolved, and otherwise the
+    caller's own shape-valid text so Hermes can name what it could not find;
+    a value that failed the shape check is never reflected back.
+    """
+
+    return {
+        "refusal": admission.refusal,
+        "agent_id": admission.agent_id,
+        "registered": admission.registered,
+    }
+
+
+def _handle_delegate_control(args: dict, **kw) -> str:
+    """Run one delegate control action for the caller's own Session.
+
+    Fail-closed order: env gate → bound coordinator → trusted Session → the task
+    belongs to that Session (except new creation) → for anything that would
+    submit a Run, ``live roster ∩ execution preset`` → the coordinator's own
+    state machine. Every failure returns a stable code only.
+    """
+
+    if enabled_control_surface() is None:
+        return tool_error(SACHIMA_DELEGATE_CONTROL_DISABLED)
+
+    from gateway.sachima_agent_execution_presets import (
+        SACHIMA_AGENT_ROSTER_UNAVAILABLE,
+    )
+    from gateway.sachima_delegate import bound_delegate_coordinator
+    from gateway.sachima_delegate_card import sanitize_card_line
+
+    coordinator = bound_delegate_coordinator()
+    if coordinator is None:
+        return tool_error(SACHIMA_DELEGATE_CONTROL_UNBOUND)
+    if type(args) is not dict:
+        return tool_error(SACHIMA_DELEGATE_CONTROL_INVALID)
+
+    action = args.get("action")
+    if type(action) is not str or action not in _ACTIONS:
+        return tool_error(SACHIMA_DELEGATE_CONTROL_INVALID)
+    trusted = _trusted_session()
+    if trusted is None:
+        return tool_error(SACHIMA_DELEGATE_CONTROL_NO_SESSION)
+    from gateway.session_context import session_input_is_internal
+
+    if session_input_is_internal() and action not in _INTERNAL_INPUT_ACTIONS:
+        # A synthetic completion is authority to inspect and report its exact
+        # result, plus consume authority recorded earlier. It cannot authorize
+        # a manual submit, retry, cancellation, or resume by naming one.
+        return tool_error(SACHIMA_DELEGATE_CONTROL_FORBIDDEN)
+
+    task_ref = args.get("task_ref")
+    binding = None
+    if action not in _TASKLESS_ACTIONS:
+        if type(task_ref) is not str or not task_ref.strip():
+            return tool_error(SACHIMA_DELEGATE_CONTROL_INVALID)
+        task_ref = task_ref.strip()
+        try:
+            binding = coordinator.state.read_task(task_ref)
+        except Exception:
+            return tool_error(SACHIMA_DELEGATE_CONTROL_INVALID)
+        if binding is None or not trusted.claims(binding.origin):
+            # Unknown and not-yours answer the same way: a control surface that
+            # distinguishes them is an enumeration oracle for other conversations.
+            # "Yours" is the Session/Gateway authority's one rule: this exact
+            # Session, or the compression continuation of it that the persisted
+            # lineage proves. A branch, a subagent, and a ``/new`` all answer
+            # here exactly as another conversation does.
+            return tool_error(SACHIMA_DELEGATE_CONTROL_FORBIDDEN)
+
+    agent_id = args.get("agent_id")
+    if agent_id is not None and (type(agent_id) is not str or not agent_id):
+        return tool_error(SACHIMA_DELEGATE_CONTROL_INVALID)
+
+    try:
+        if action == "agents":
+            # Read-only discovery. It answers who is registered, who this host
+            # may run, and who holds which role — and, for an exact role, the
+            # one candidate or the question to ask. It writes nothing, so a
+            # zero-or-several answer costs no durable state.
+            try:
+                view, selection = coordinator.agent_eligibility(
+                    role=args.get("role"), division=args.get("division")
+                )
+            except Exception:
+                logger.debug("delegate roster read failed", exc_info=True)
+                payload = {"refusal": SACHIMA_AGENT_ROSTER_UNAVAILABLE}
+            else:
+                payload = {
+                    "agents": [entry.as_dict() for entry in view],
+                    "selection": (
+                        None
+                        if selection is None
+                        else {
+                            "agent_id": selection.agent_id,
+                            "refusal": selection.refusal,
+                            "candidates": list(selection.candidates),
+                        }
+                    ),
+                }
+        elif action == "create":
+            task_text = args.get("task")
+            # Both displayed lines are judged as the lines they will actually
+            # render, using the card layer's own sanitizer rather than a second
+            # rule that could disagree with it. A value that survives only as
+            # control characters is empty for display purposes, and calling it
+            # present would submit a Run whose card then says nothing was
+            # provided. A wrong type sanitizes to nothing for the same reason.
+            task_title = sanitize_card_line(args.get("task_title"))
+            round_title = sanitize_card_line(args.get("round_title"))
+            origin = _trusted_origin(trusted)
+            continuation_task = args.get("continuation_task")
+            continuation_round_title = sanitize_card_line(
+                args.get("continuation_round_title")
+            )
+            continuation_summary = args.get("continuation_summary")
+            continuation_plan_ref = args.get("continuation_plan_ref")
+            continuation_stop_condition = args.get("continuation_stop_condition")
+            continuation_agent_id = args.get("continuation_agent_id")
+            continuation_role = args.get("continuation_role")
+            continuation_requested = any(
+                value is not None
+                for value in (
+                    continuation_task,
+                    args.get("continuation_round_title"),
+                    continuation_summary,
+                    continuation_plan_ref,
+                    continuation_stop_condition,
+                    continuation_agent_id,
+                    continuation_role,
+                )
+            )
+            if (
+                type(task_text) is not str
+                or not task_text.strip()
+                or not task_title
+                or not round_title
+                or agent_id is None
+                or origin is None
+                or (
+                    continuation_requested
+                    and (
+                        type(continuation_task) is not str
+                        or not continuation_task.strip()
+                        or not continuation_round_title
+                        or type(continuation_summary) is not str
+                        or not continuation_summary.strip()
+                        or not origin.reply_anchor
+                        or (
+                            continuation_plan_ref is not None
+                            and (
+                                type(continuation_plan_ref) is not str
+                                or not continuation_plan_ref.strip()
+                            )
+                        )
+                        or (
+                            continuation_stop_condition is not None
+                            and (
+                                type(continuation_stop_condition) is not str
+                                or not continuation_stop_condition.strip()
+                            )
+                        )
+                        or (
+                            continuation_agent_id is not None
+                            and (
+                                type(continuation_agent_id) is not str
+                                or not continuation_agent_id
+                            )
+                        )
+                        or (
+                            continuation_role is not None
+                            and (
+                                type(continuation_role) is not str
+                                or not continuation_role
+                            )
+                        )
+                    )
+                )
+            ):
+                # Creation names its AGENT. There is no default to fall back
+                # to, so an omitted id is invalid input rather than an
+                # invitation to choose one. Both displayed lines are required
+                # for the same reason: with none supplied the only alternatives
+                # are a blank headline, an unexplained round, or a clipped
+                # execution prompt, and none of those is a sentence the user
+                # wrote. Refusing here is refusing before the roster is asked
+                # anything and before any payload, Session, turn, task, or card
+                # exists, so nothing durable survives the refusal.
+                return tool_error(SACHIMA_DELEGATE_CONTROL_INVALID)
+            admission = coordinator.admit_agent(
+                agent_id, task_text=task_text.strip()
+            )
+            if not admission.admitted:
+                payload = _refusal(admission)
+            else:
+                payload = coordinator.run_on_lifecycle_loop(
+                    lambda: coordinator.create(
+                        task_text=task_text.strip(),
+                        preset=admission.preset,
+                        origin=origin,
+                        # A supplied role selects this AGENT's route from the
+                        # shared routing matrix and seals its exact model and
+                        # effort; a role with no Available route is refused
+                        # with the matrix's own code. Absent, the AGENT-wide
+                        # preset applies unchanged.
+                        admitted_role=args.get("role"),
+                        task_title=task_title,
+                        round_title=round_title,
+                        authorization_ref=(
+                            origin.reply_anchor if continuation_requested else None
+                        ),
+                        continuation_task=(
+                            continuation_task.strip()
+                            if continuation_requested
+                            else None
+                        ),
+                        continuation_summary=(
+                            continuation_summary.strip()
+                            if continuation_requested
+                            else None
+                        ),
+                        continuation_plan_ref=(
+                            continuation_plan_ref.strip()
+                            if continuation_requested
+                            and continuation_plan_ref is not None
+                            else None
+                        ),
+                        continuation_round_title=(
+                            continuation_round_title
+                            if continuation_requested
+                            else None
+                        ),
+                        continuation_stop_condition=(
+                            continuation_stop_condition.strip()
+                            if continuation_requested
+                            and continuation_stop_condition is not None
+                            else None
+                        ),
+                        continuation_agent_id=(
+                            continuation_agent_id
+                            if continuation_requested
+                            else None
+                        ),
+                        continuation_role=(
+                            continuation_role if continuation_requested else None
+                        ),
+                    )
+                ).as_dict()
+        elif action == "status":
+            payload = coordinator.run_on_lifecycle_loop(
+                lambda: coordinator.status(task_ref)
+            ).as_dict()
+        elif action == "cancel":
+            payload = coordinator.run_on_lifecycle_loop(
+                lambda: coordinator.cancel(task_ref)
+            ).as_dict()
+        elif action == "recover":
+            payload = coordinator.run_on_lifecycle_loop(
+                lambda: coordinator.recover(task_ref)
+            ).as_dict()
+        elif action in {"pause_continuation", "resume_continuation"}:
+            origin = _trusted_origin(trusted)
+            if origin is None or not origin.reply_anchor:
+                return tool_error(SACHIMA_DELEGATE_CONTROL_INVALID)
+            operation = (
+                coordinator.pause_continuation
+                if action == "pause_continuation"
+                else coordinator.resume_continuation
+            )
+            payload = coordinator.run_on_lifecycle_loop(
+                lambda: operation(
+                    task_ref,
+                    disposition_ref=origin.reply_anchor,
+                )
+            )
+        elif action == "continue":
+            task_text = args.get("task")
+            # A continuation opens a round, so it names that round on the same
+            # terms creation does — and the refusal lands before eligibility is
+            # re-proven, so an unusable line costs no roster read and no turn.
+            round_title = sanitize_card_line(args.get("round_title"))
+            if type(task_text) is not str or not task_text.strip() or not round_title:
+                return tool_error(SACHIMA_DELEGATE_CONTROL_INVALID)
+            # A continuation submits a Run, so it proves eligibility again —
+            # for the task's own AGENT when the caller kept it, and for the
+            # named one when the caller switched. An AGENT that has since left
+            # the roster, or lost its preset, stops receiving Runs on a task
+            # that was admitted under it earlier.
+            admission = coordinator.admit_agent(
+                binding.agent_id if agent_id is None else agent_id,
+                task_text=task_text.strip(),
+            )
+            origin = _trusted_origin(trusted)
+            if not admission.admitted:
+                payload = _refusal(admission)
+            elif origin is None:
+                return tool_error(SACHIMA_DELEGATE_CONTROL_INVALID)
+            else:
+                payload = coordinator.run_on_lifecycle_loop(
+                    lambda: coordinator.continue_task(
+                        task_ref,
+                        task_text.strip(),
+                        preset=admission.preset,
+                        origin=origin,
+                        admitted_role=args.get("role"),
+                        # An AGENT switch links a new task, so the coordinator
+                        # re-asks whether the caller is this task's conversation.
+                        # It gets the same proven answer this surface used, not
+                        # a second rule of its own.
+                        continuity=trusted,
+                        round_title=round_title,
+                    )
+                ).as_dict()
+        elif action == "result":
+            turn_key = args.get("turn_key")
+            event_id = args.get("event_id")
+            if (turn_key is None) != (event_id is None):
+                return tool_error(SACHIMA_DELEGATE_CONTROL_INVALID)
+            if turn_key is not None and (
+                type(turn_key) is not str
+                or not turn_key
+                or type(event_id) is not str
+                or not event_id
+            ):
+                return tool_error(SACHIMA_DELEGATE_CONTROL_INVALID)
+            payload = coordinator.result(
+                task_ref,
+                turn_key=turn_key,
+                event_id=event_id,
+            )
+            if payload is None:
+                return tool_error(SACHIMA_DELEGATE_CONTROL_INVALID)
+        elif action == "settle":
+            exact = {
+                name: args.get(name)
+                for name in (
+                    "turn_key",
+                    "event_id",
+                    "processing_id",
+                    "conclusion",
+                    "evidence_ref",
+                )
+            }
+            if any(type(value) is not str or not value for value in exact.values()):
+                return tool_error(SACHIMA_DELEGATE_CONTROL_INVALID)
+            payload = coordinator.settle_result(task_ref=task_ref, **exact)
+        else:
+            turn_key = args.get("turn_key")
+            event_id = args.get("event_id")
+            processing_id = args.get("processing_id")
+            origin = _trusted_origin(trusted)
+            if (
+                type(turn_key) is not str
+                or not turn_key
+                or type(event_id) is not str
+                or not event_id
+                or type(processing_id) is not str
+                or not processing_id
+                or origin is None
+            ):
+                return tool_error(SACHIMA_DELEGATE_CONTROL_INVALID)
+            payload = coordinator.run_on_lifecycle_loop(
+                lambda: coordinator.continue_authorized(
+                    task_ref=task_ref,
+                    turn_key=turn_key,
+                    event_id=event_id,
+                    processing_id=processing_id,
+                    origin=origin,
+                    continuity=trusted,
+                )
+            )
+    except Exception:
+        # One stable code only — never the raised text, which can carry private
+        # config refs, chat ids, or remote message bodies.
+        return tool_error(SACHIMA_DELEGATE_CONTROL_INVALID)
+
+    return tool_result(
+        {"type": DELEGATE_CONTROL_ENVELOPE_TYPE, "action": action, "result": payload}
+    )
+
+
+DELEGATE_CONTROL_SCHEMA = {
+    "name": TOOL_NAME,
+    "description": (
+        "INTERNAL, default-off: discover which external AGENTs this host can "
+        "run, then create or steer one delegated task in THIS conversation — "
+        "agents (read-only: who is registered, who is runnable, who holds "
+        "which role), create, status, cancel (the Run only), "
+        "continue (a manual later Run in the same task and Session, or a linked new "
+        "task when switching AGENT), recover (an uncertain submission), or "
+        "result (the durable answer), settle (stage an exact verified report), "
+        "continue_authorized (consume the host-recorded next step), or the explicit "
+        "pause_continuation/resume_continuation disposition controls. Requires the explicit "
+        f"{SACHIMA_LIVE_PROGRESS_SURFACE_ENV}=hermes_internal gate and a "
+        "host-bound delegate coordinator; otherwise it fails closed with a "
+        "stable code."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "action": {
+                "type": "string",
+                "enum": list(_ACTIONS),
+                "description": "The control action to perform.",
+            },
+            "task_ref": {
+                "type": "string",
+                "description": "The delegated task ref (dtask_...) from the acceptance.",
+            },
+            "turn_key": {
+                "type": "string",
+                "description": (
+                    "For exact result processing: the dturn_... identity carried "
+                    "by the trusted completion event."
+                ),
+            },
+            "event_id": {
+                "type": "string",
+                "description": (
+                    "For exact result processing: the devt_... terminal identity "
+                    "carried by the trusted completion event."
+                ),
+            },
+            "processing_id": {
+                "type": "string",
+                "description": (
+                    "For settle or continue_authorized: the dprocess_... claim "
+                    "included with this main-model turn."
+                ),
+            },
+            "task": {
+                "type": "string",
+                "description": (
+                    "For 'create' or 'continue': the complete task text the "
+                    "AGENT executes. Write it in full — it is never shortened "
+                    "for display."
+                ),
+            },
+            "task_title": {
+                "type": "string",
+                "description": (
+                    "Required for 'create': one short TODO-style sentence "
+                    "naming what this task is, for the status card's 任务/Task "
+                    "row only. Write the goal in the user's own terms, not a "
+                    "clipped copy of 'task'. It is sealed with the task, so a "
+                    "'continue' cannot change it and supplying one there does "
+                    "nothing; switching AGENT carries this same title into the "
+                    "linked task."
+                ),
+            },
+            "round_title": {
+                "type": "string",
+                "description": (
+                    "Required for 'create' and 'continue': one short sentence "
+                    "saying what THIS round is doing, for its row in the card's "
+                    "执行记录/Execution Log. Write a fresh one every time in the "
+                    "user's own terms — never a clipped copy of 'task', never a "
+                    "repeat of 'task_title', and never the previous round's "
+                    "line. It is sealed with the round it opens, so it is what "
+                    "that row keeps saying afterwards."
+                ),
+            },
+            "role": {
+                "type": "string",
+                "description": (
+                    "An exact configured role token (e.g. "
+                    "'architecture_design'). Matching is exact — map the "
+                    "user's words onto a role yourself. For 'agents', exactly "
+                    "one eligible AGENT is returned as the selection; zero or "
+                    "several come back as a stable code plus the candidates, "
+                    "which is your cue to ask the user rather than pick. For "
+                    "'create' or 'continue' it is optional: supplied, it "
+                    "selects the AGENT's route for that role from the shared "
+                    "routing matrix and the Run is submitted under that "
+                    "route's exact model and effort; a role with no Available "
+                    "route is refused with a stable code and nothing runs. "
+                    "Omitted, the AGENT-wide preset applies."
+                ),
+            },
+            "division": {
+                "type": "string",
+                "description": (
+                    "For 'agents': an exact configured division token, alone "
+                    "or narrowing a role."
+                ),
+            },
+            "agent_id": {
+                "type": "string",
+                "description": (
+                    "The ARS agent id (e.g. 'codex'), matched exactly "
+                    "against the live roster — letter case is forgiven, "
+                    "nothing else is, and it is never a display name, "
+                    "nickname, role word, or guess. "
+                    "Required for 'create'. On 'continue' it is optional: "
+                    "omitted or the same id continues this task, a different "
+                    "id creates a linked new task under that AGENT. An id "
+                    "that is not both registered with the daemon and covered "
+                    "by an execution preset here is refused and nothing runs."
+                ),
+            },
+            "continuation_task": {
+                "type": "string",
+                "description": (
+                    "For create only: the complete text of one next step the "
+                    "user already authorized. It is stored privately and cannot "
+                    "be replaced by continue_authorized."
+                ),
+            },
+            "continuation_round_title": {
+                "type": "string",
+                "description": (
+                    "For create with continuation_task: the short display line "
+                    "for that one authorized follow-up round."
+                ),
+            },
+            "continuation_summary": {
+                "type": "string",
+                "description": (
+                    "For create with continuation_task: a bounded explanation "
+                    "of the user's already-granted scope."
+                ),
+            },
+            "continuation_plan_ref": {
+                "type": "string",
+                "description": "Optional plan/version reference for that authorization.",
+            },
+            "continuation_stop_condition": {
+                "type": "string",
+                "description": "Optional stop condition recorded with that authorization.",
+            },
+            "continuation_agent_id": {
+                "type": "string",
+                "description": (
+                    "Optional canonical AGENT id for the authorized next step; "
+                    "eligibility is re-proven immediately before submission."
+                ),
+            },
+            "continuation_role": {
+                "type": "string",
+                "description": (
+                    "Optional exact role token for the authorized next step; "
+                    "omitted, the follow-up inherits the role this round was "
+                    "admitted under. Its model/effort are resolved from the "
+                    "routing matrix when the follow-up is submitted."
+                ),
+            },
+            "conclusion": {
+                "type": "string",
+                "enum": ["reported"],
+                "description": "For settle: the explicit business conclusion.",
+            },
+            "evidence_ref": {
+                "type": "string",
+                "description": (
+                    "For settle: the exact full_result_ref that was read and verified."
+                ),
+            },
+        },
+        "required": ["action"],
+    },
+}
+
+registry.register(
+    name=TOOL_NAME,
+    toolset=TOOLSET_NAME,
+    schema=DELEGATE_CONTROL_SCHEMA,
+    handler=_handle_delegate_control,
+    check_fn=check_delegate_control_available,
+    emoji="🛰️",
+)

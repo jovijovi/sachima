@@ -1,0 +1,45 @@
+{
+  "note": "Supply-chain scan hits reviewed as safe, each bound to the file's exact blob and the sha256 of the added line. All five arrived byte-identical with upstream Hermes Agent v0.21.7. Any other hit, or this line in any other file or file version, still fails.",
+  "acknowledged": [
+    {
+      "path": "hermes_cli/_launchers.py",
+      "blob": "61ca4d8ef779675d012d9436fe1d10a6ed837cb0",
+      "line_sha256": "33903bd22832849ef1a6c8423924b3154606bf160e3f1be35cbe3b0f90cb1b58",
+      "count": 1,
+      "class": "trusted generated launcher",
+      "reason": "Windows .cmd fallback launcher: the payload is the fixed _launcher_script() bootstrap (entry point and install root only), base64-wrapped so cmd quoting cannot alter it"
+    },
+    {
+      "path": "tests-js/scripts/desktop-smoke.test.ts",
+      "blob": "209cd13f6916c69061bdfb574235a36a9ad7e29d",
+      "line_sha256": "0041409a246e0f1d6c7f652442c66b161b22c0c65c94af588affe07ba1fbc52d",
+      "count": 1,
+      "class": "test fixture",
+      "reason": "writes a fake hermes.cmd whose payload is base64 of 'x', to test that source settle bypasses the generated launcher"
+    },
+    {
+      "path": "tests-js/scripts/desktop-smoke.test.ts",
+      "blob": "209cd13f6916c69061bdfb574235a36a9ad7e29d",
+      "line_sha256": "6558400a5c395363ab4ff583644b73895271ae64d19717248cc345af24021f56",
+      "count": 1,
+      "class": "test fixture",
+      "reason": "writes a fake hermes.cmd whose payload is base64 of 'x', to test that source settle bypasses the generated launcher"
+    },
+    {
+      "path": "tests/gateway/test_gateway_inline_bootstrap_identity.py",
+      "blob": "c51d58080488f240b470179d6aaa15278235af28",
+      "line_sha256": "3016e331359da8e9d0f3c26745fbd02a1e08e53783be27e8238decf721f43eb0",
+      "count": 1,
+      "class": "test fixture",
+      "reason": "builds the cmd-launcher argv shape from _launcher_script() and only matches it as a string; nothing is executed"
+    },
+    {
+      "path": "tools/file_operations.py",
+      "blob": "26220c563cfeea57934868e68e9ca581ca516e24",
+      "line_sha256": "2a28afa0d0bfe984bfb1e0df3ed077ffcde92bce84081a9eca07a1ca41c7de72",
+      "count": 1,
+      "class": "trusted generated snippet",
+      "reason": "_exec_python_snippet runs the tool's own fixed snippets in the terminal backend; callers embed data via json.dumps/int, base64 only survives shell quoting"
+    }
+  ]
+}

@@ -13,7 +13,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_state_common import (
     _BOUNDARY_END_REASONS, _COMPRESSION_LOCK_ROW_SQL as _LOCK_ROW_SQL, _ENDED_ROW_SQL, _ended_by_compression,
-    _RESET_CHILD_SQL, _sql_json_extract, _sql_session_last_active, is_automatic_end_reason)
+    _RESET_CHILD_SQL, _non_continuation_child_sql, _sql_json_extract, _sql_session_last_active,
+    is_automatic_end_reason)
 
 # Log-record parity with the origin module (caplog tests pin "hermes_state").
 logger = logging.getLogger("hermes_state")
@@ -781,6 +782,61 @@ class SessionCompressionMixin:
         id when no continuation exists."""
         chain = self.get_compression_chain(session_id)
         return chain[-1] if chain else session_id
+
+    def is_compression_continuation(
+        self, *, ancestor_session_id: str, descendant_session_id: str
+    ) -> bool:
+        """Does *descendant* continue *ancestor* through compression only?
+
+        The permission-grade lineage question. Everything the gateway binds to
+        a conversation by physical ``session_id`` — a delegate control grant, a
+        result owed to the next ordinary turn — is cut off by a compression
+        split the user never asked for, so consumers need to prove that two ids
+        are the same conversation. This is the *only* place that answers it.
+
+        A hop counts when all of it holds: the child links to the parent, the
+        parent ended with ``end_reason='compression'``, the child started at or
+        after the parent ended, and the child is not one of the other kinds of
+        child that also carry ``parent_session_id``. The
+        ``started_at >= ended_at`` half is what separates a continuation from a
+        delegate/subagent run forked while the parent was still live; the
+        marker half is the shared ``_non_continuation_child_sql`` rule (a
+        branch/delegate/reset marker disqualifies only when it names *this*
+        parent; tool sessions never continue), expressed against ``parent.id``
+        because the recursion visits a different parent on every hop. Marker
+        lookups use the non-throwing JSON extract, so one malformed
+        ``model_config`` cannot raise inside this permission check.
+
+        Every hop must hold, so one ``/branch`` or reset mid-chain cuts it. The
+        walk is descendant → ancestor and never the reverse: a parent does not
+        inherit its own continuation's work, and a session never continues
+        itself.
+        """
+        if not ancestor_session_id or not descendant_session_id:
+            return False
+        if ancestor_session_id == descendant_session_id:
+            return False
+        with self._read_ctx() as conn:
+            row = conn.execute(
+                f"""
+                WITH RECURSIVE continuation_chain(id) AS (
+                    SELECT ?
+                    UNION
+                    SELECT parent.id
+                    FROM continuation_chain chain
+                    JOIN sessions child ON child.id = chain.id
+                    JOIN sessions parent ON parent.id = child.parent_session_id
+                    WHERE parent.end_reason = 'compression'
+                      AND parent.ended_at IS NOT NULL
+                      AND child.started_at IS NOT NULL
+                      AND child.started_at >= parent.ended_at
+                    {_non_continuation_child_sql("child.", "parent.id")}
+                )
+                SELECT 1 FROM continuation_chain WHERE id = ? LIMIT 1
+                """,
+                (descendant_session_id, ancestor_session_id),
+            ).fetchone()
+        return row is not None
 
     def _compression_tip_on(self, conn, session_id: str) -> str:
         """``get_compression_tip`` read on a writer's own connection: inside its transaction no rotation

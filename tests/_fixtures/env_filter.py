@@ -13,8 +13,10 @@ gate; the fixture itself stays in conftest next to the sandbox it maintains.
 
 _CREDENTIAL_SUFFIXES = (
     "_API_KEY",
+    "_OPENAPI_KEY",
     "_TOKEN",
     "_SECRET",
+    "_SECRET_KEY",
     "_PASSWORD",
     "_CREDENTIALS",
     "_ACCESS_KEY",

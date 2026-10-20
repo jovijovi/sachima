@@ -43,6 +43,9 @@ _HERMES_WEBHOOK_SAFE_TOOLS = ["web_search", "web_extract", "vision_analyze", "cl
 _FEISHU_TOOLS = [
     "feishu_doc_read", "feishu_drive_list_comments", "feishu_drive_list_comment_replies",
     "feishu_drive_reply_comment", "feishu_drive_add_comment",
+    # Sachima: the Feishu bundle carries the PR approval card so the `feishu_drive` toolset
+    # (which lists it) is still inferred as enabled from the `hermes-feishu` composite.
+    "github_pr_approval_card",
 ]
 _YUANBAO_TOOLS = ["yb_query_group_info", "yb_query_group_members", "yb_send_dm", "yb_search_sticker", "yb_send_sticker"]
 
@@ -85,7 +88,7 @@ TOOLSETS = {
     ),
     "vision": _ts("Image analysis and vision tools", ["vision_analyze"]),
     "video": _ts("Video analysis and understanding tools (opt-in, not in default toolset)", ["video_analyze"]),
-    "image_gen": _ts("Creative generation tools (images)", ["image_generate"]),
+    "image_gen": _ts("Creative generation tools (images)", ["image_generate", "image_edit", "image_history"]),
     "video_gen": _ts(
         "Video generation tools. Single ``video_generate`` tool covers text-to-video "
         "(prompt only) and image-to-video (prompt + image_url), plus "
@@ -169,6 +172,32 @@ TOOLSETS = {
     "yuanbao": _ts("Yuanbao platform tools - group info, member queries, DM, stickers", _YUANBAO_TOOLS),
     "feishu_doc": _ts("Read Feishu/Lark document content", ["feishu_doc_read"]),
     "feishu_drive": _ts("Feishu/Lark document comment operations (list, reply, add)", _FEISHU_TOOLS[1:]),
+
+    # Sachima toolsets — retained downstream capability. None of these joins a default platform
+    # bundle; they are enabled explicitly via config (`sachima_live_progress` is default-off, internal).
+    "media_fetch": _ts(
+        "Restricted profile-scoped HTTPS media import and cache tools for images and videos",
+        ["media_fetch_url", "media_list", "media_delete"],
+    ),
+    "memory_palace": _ts(
+        "Profile-scoped Markdown notes under the active Hermes home",
+        ["palace_list", "palace_read", "palace_search", "palace_write", "palace_patch"],
+    ),
+    "workspace_file": _ts(
+        "Restricted text files under the active profile workspace",
+        ["workspace_list", "workspace_read", "workspace_search", "workspace_write", "workspace_patch"],
+    ),
+    "sachima_live_progress": _ts(
+        "Sachima ARS live-progress display (default-off, internal). Renders a refs/counts/status-only "
+        "view of one supervised session; hidden unless SACHIMA_LIVE_PROGRESS_DISPLAY_SURFACE is set to "
+        "an approved local/offline surface and the host has bound a display service. Not part of any "
+        "platform default toolset — enable explicitly via config.",
+        ["sachima_live_progress_display"],
+    ),
+    "clock": _ts("Read-only current time and date lookup", ["clock_now"]),
+    "calendar": _ts("Chinese lunar and common Western holiday lookup", ["calendar_lookup"]),
+    "weather": _ts("Narrow weather lookup with rich-result output", ["weather_query"]),
+    "journal": _ts("Profile-scoped journal appends through the memory palace", ["journal_write"]),
 
     # Scenario-specific toolsets
     "debugging": _ts("Debugging and troubleshooting toolkit", ["terminal", "process_manage"], includes=["web", "file"]),
