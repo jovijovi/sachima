@@ -536,10 +536,140 @@ async def test_5_recovered_no_waiter_turn_reports_through_deliver_settled(tmp_pa
         replayed = MessageEvent(text="H1 replayed question", source=host.source, message_id="h1")
         with native_callback(host.runner, replayed, get_hermes_home()):
             await host.authority.admit_native(replayed)
-        await async_wait_until(lambda: host.replies("H1") == 1, timeout=30, what="the settled send")
-        await async_wait_until(lambda: ("h1", "terminal") in host.admissions(), timeout=30,
-                               what="the replayed row to settle")
-        assert host.model.labels() == ["H0", "H1"]
-        assert host.business_state(created) == "reported"
+        await async_wait_until(lambda: host.business_state(created) == "reported", timeout=30,
+                               what="the settled send's report receipt")
+        assert ("h1", "terminal") in host.admissions()
+        assert host.model.labels() == ["H0", "H1"] and host.replies("H1") == 1
+    finally:
+        await host.close()
+
+
+# --------------------------------------------------------------------------- #
+# §3.5(4): the user's next message takes over a queued wake. Under the authority the message is
+# committed to the durable FIFO instead of replacing the wake in the adapter slot, so without the
+# takeover the wake ran first and took its own turn. Both arrival orders are covered.
+# --------------------------------------------------------------------------- #
+
+
+async def _wake_queued_behind_h1(host, created) -> asyncio.Event:
+    release = host.model.gate("H1")
+    await host.human("H1 long task", "h1")
+    await asyncio.wait_for(host.model.entered["H1"].wait(), 30)
+    host.facade.terminalize(0, final_message="exact result before the correction")
+    await async_wait_until(lambda: host.wakeup_state(created) == "queued" and host.slot() is not None,
+                           timeout=30, what="the wake queued behind H1")
+    return release
+
+
+def _assert_human_owns_the_wake(host, human, created) -> None:
+    metadata = human.metadata
+    assert metadata["sachima_delegate_event_ids"] == [host.result_for(created).event_id]
+    assert metadata["sachima_delegate_task_refs"] == [created.task_ref]
+    assert metadata["sachima_delegate_turn_keys"] == [created.turn_key]
+    assert metadata["sachima_delegate_continuation_refs"] == []
+    assert callable(metadata["_gateway_processing_outcome_callback"])
+    assert human._gateway_accepted is True
+    # The text, the user identity and gateway-control authority remain the user's.
+    assert human.internal is False and human.allow_gateway_control is True
+    assert human.source.user_id == CHAT and human.text.startswith("H2")
+    # One pending turn for the route: the committed human row, no separate wake.
+    assert host.slot() is None and host.queued_rows() == 1
+
+
+@pytest.mark.asyncio
+async def test_4_user_message_after_a_queued_wake_owns_the_next_turn(tmp_path, monkeypatch):
+    host = await _host(tmp_path, monkeypatch)
+    try:
+        created = await host.delegate()
+        release = await _wake_queued_behind_h1(host, created)
+        human = await host.human("H2 stop the follow-up and only report the result", "h2")
+        await async_wait_until(lambda: ("h2", "queued") in host.admissions(), timeout=30,
+                               what="H2 committed")
+        _assert_human_owns_the_wake(host, human, created)
+        release.set()
+        await async_wait_until(lambda: host.business_state(created) == "reported", timeout=30,
+                               what="the user's turn to report the result")
+        await host.settle()
+        assert host.model.labels() == ["H0", "H1", "H2"], "the wake ran before or beside the user"
+        assert host.result_for(created).full_result_ref in host.model.turns[2]["message"]
+        assert host.replies("H2") == 1 and host.replies("wake") == 0
+    finally:
+        await host.close()
+
+
+@pytest.mark.asyncio
+async def test_4_wake_after_a_committed_user_message_joins_that_turn(tmp_path, monkeypatch):
+    host = await _host(tmp_path, monkeypatch)
+    try:
+        created = await host.delegate()
+        release = host.model.gate("H1")
+        await host.human("H1 long task", "h1")
+        await asyncio.wait_for(host.model.entered["H1"].wait(), 30)
+        human = await host.human("H2 next question", "h2")
+        await async_wait_until(lambda: ("h2", "queued") in host.admissions(), timeout=30,
+                               what="H2 committed")
+        host.facade.terminalize(0, final_message="exact result after the user's message")
+        await async_wait_until(lambda: host.dispatched(created), timeout=30, what="the wake dispatch")
+        assert host.wakeup_state(created) == "queued"
+        _assert_human_owns_the_wake(host, human, created)
+        release.set()
+        await async_wait_until(lambda: host.business_state(created) == "reported", timeout=30,
+                               what="the user's turn to report the result")
+        await host.settle()
+        assert host.model.labels() == ["H0", "H1", "H2"]
+        assert host.replies("H2") == 1 and host.replies("wake") == 0
+    finally:
+        await host.close()
+
+
+@pytest.mark.asyncio
+async def test_4_a_stopped_user_message_returns_the_wake_identity(tmp_path, monkeypatch):
+    host = await _host(tmp_path, monkeypatch)
+    try:
+        created = await host.delegate()
+        release = await _wake_queued_behind_h1(host, created)
+        human = await host.human("H2 correction", "h2")
+        await async_wait_until(lambda: ("h2", "queued") in host.admissions(), timeout=30,
+                               what="H2 committed")
+        assert host.slot() is None
+        await host.human("/stop", "stop-1")
+        await async_wait_until(lambda: ("h2", "terminal") in host.admissions(), timeout=30,
+                               what="/stop to cancel H2")
+        release.set()
+        await async_wait_until(lambda: host.business_state(created) == "reported", timeout=30,
+                               what="the returned wake to report the result")
+        await host.settle()
+        assert "H2" not in host.model.labels()
+        assert host.model.labels().count("wake") == 1 and host.replies("wake") == 1
+        assert "sachima_delegate_event_ids" not in human.metadata
+    finally:
+        await host.close()
+
+
+@pytest.mark.asyncio
+async def test_4_a_refused_user_message_leaves_the_queued_wake_alone(tmp_path, monkeypatch):
+    from hermes_state_runtime import RuntimeStoreError
+
+    host = await _host(tmp_path, monkeypatch)
+    try:
+        created = await host.delegate()
+        release = await _wake_queued_behind_h1(host, created)
+        admit = host.authority.admit_native
+
+        async def refuse_h2(event):
+            if event.message_id == "h2":
+                raise RuntimeStoreError("invalid_params", field="text")
+            return await admit(event)
+        monkeypatch.setattr(host.authority, "admit_native", refuse_h2)
+        human = await host.human("H2 refused", "h2")
+        await async_wait_until(lambda: any("refused this message" in sent for sent in host.sent),
+                               timeout=30, what="the refusal notice")
+        assert host.slot() is not None and host.slot().internal is True
+        assert "sachima_delegate_event_ids" not in human.metadata
+        release.set()
+        await async_wait_until(lambda: host.business_state(created) == "reported", timeout=30,
+                               what="the untouched wake to report the result")
+        await host.settle()
+        assert host.model.labels() == ["H0", "H1", "wake"]
     finally:
         await host.close()

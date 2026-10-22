@@ -242,6 +242,8 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
         # rotate ``session_entry.session_id`` mid-turn, and settling against the rotated id would
         # strand the consumed result ``in_flight`` forever.
         from gateway.run import _DelegateClaimContext
+        from gateway.sachima_delegate_wakeup import human_turn_started
+        human_turn_started(self, event, _quick_key)  # a wake arriving from now on gets its own turn
         _delegate_handoff = None
         _delegate_continuity = self._delegate_result_continuity(session_entry)
         _delegate_claim_context = _DelegateClaimContext(

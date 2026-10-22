@@ -480,6 +480,10 @@ class GatewayBusySessionMixin:
         # Sachima native delegation terminals: a queued synthetic wake is a pending *set* of exact
         # result identities, never newline text. A natural message is the newest authority and
         # takes over the queued turn carrying only the identities and the one-shot receipt.
+        # Under the session authority that message waits committed in the durable FIFO instead.
+        from gateway.sachima_delegate_wakeup import take_wake_for_pending_human
+        if take_wake_for_pending_human(self, session_key, event):
+            return
         existing_wake_ids = (
             (getattr(existing, "metadata", None) or {}).get("sachima_delegate_event_ids")
             if existing is not None else None
