@@ -124,6 +124,8 @@ def _move_marker(source, target):
         if hasattr(source, name):
             setattr(target, name, getattr(source, name))
             delattr(source, name)
+    from gateway.sachima_delegate_wakeup import move_delivery_receipt
+    move_delivery_receipt(source, target)  # a Sachima report settles where the reply is sent
 
 
 def _held_markers(authority):
@@ -416,6 +418,8 @@ async def deliver_response(adapter, event, session_key, response):
                                        metadata, ttl > 0, ttl, results.append)
     await adapter._deliver_attachments(event, extracted, metadata, anything_sent=bool(results),
                                        record_delivery=results.append)
+    from gateway.sachima_delegate_wakeup import settle_delivery_receipt
+    await settle_delivery_receipt(adapter, event, results)  # this send has no processing hook
 
 
 async def dispatch_shared_busy(adapter, event, session_key, *, durable=False):

@@ -469,3 +469,77 @@ async def test_9_a_wake_after_drain_is_retried_not_run(tmp_path, monkeypatch):
         assert host.model.labels() == ["H0"]
     finally:
         await host.close()
+
+
+# --------------------------------------------------------------------------- #
+# §3.5(5): an ordinary human turn claims the result. Under the authority the turn runs on a
+# ``restore_native`` copy of the admitted message, so the receipt it binds must still settle at
+# the boundary that really sends the reply: the waiting adapter lifecycle, the busy observer,
+# or the recovered no-waiter ``deliver_settled`` send.
+# --------------------------------------------------------------------------- #
+
+
+async def _finished_result(host, text: str):
+    created = await host.delegate(text)
+    host.facade.terminalize(0, final_message=f"exact result: {text}")
+    await host.summary_settled(created)
+    assert host.wakeup_state(created) == "not_admitted"  # wake is off: the human turn owns it
+    return created
+
+
+@pytest.mark.asyncio
+async def test_5_idle_waiter_human_turn_reports_through_its_own_send(tmp_path, monkeypatch):
+    host = await _host(tmp_path, monkeypatch, wakeup=False)
+    try:
+        created = await _finished_result(host, "result before the question")
+        await host.human("H1 what did the delegate return?", "h1")
+        await async_wait_until(lambda: host.replies("H1") == 1, timeout=30, what="the human reply")
+        await host.settle()
+        assert host.model.labels() == ["H0", "H1"]
+        assert host.result_for(created).full_result_ref in host.model.turns[1]["message"]
+        assert host.business_state(created) == "reported"
+    finally:
+        await host.close()
+
+
+@pytest.mark.asyncio
+async def test_5_busy_observer_human_turn_reports_through_its_own_send(tmp_path, monkeypatch):
+    host = await _host(tmp_path, monkeypatch, wakeup=False)
+    try:
+        release = host.model.gate("H1")
+        await host.human("H1 long task", "h1")
+        await asyncio.wait_for(host.model.entered["H1"].wait(), 30)
+        created = await _finished_result(host, "result during a busy turn")
+        await host.human("H2 and the delegate?", "h2")  # the guard is held: the busy observer owns it
+        await async_wait_until(lambda: ("h2", "queued") in host.admissions(), timeout=30,
+                               what="H2 committed behind H1")
+        release.set()
+        await async_wait_until(lambda: host.replies("H2") == 1, timeout=30, what="the observed reply")
+        await host.settle()
+        assert host.model.labels() == ["H0", "H1", "H2"]
+        assert host.result_for(created).full_result_ref in host.model.turns[2]["message"]
+        assert host.business_state(created) == "reported"
+    finally:
+        await host.close()
+
+
+@pytest.mark.asyncio
+async def test_5_recovered_no_waiter_turn_reports_through_deliver_settled(tmp_path, monkeypatch):
+    from gateway.session_ingress_context import native_callback
+    from hermes_constants import get_hermes_home
+
+    host = await _host(tmp_path, monkeypatch, wakeup=False)
+    try:
+        created = await _finished_result(host, "result for a replayed admission")
+        # Recovery replays a committed row with no live delivery waiter: the drain sends the reply
+        # itself after the terminal commit.
+        replayed = MessageEvent(text="H1 replayed question", source=host.source, message_id="h1")
+        with native_callback(host.runner, replayed, get_hermes_home()):
+            await host.authority.admit_native(replayed)
+        await async_wait_until(lambda: host.replies("H1") == 1, timeout=30, what="the settled send")
+        await async_wait_until(lambda: ("h1", "terminal") in host.admissions(), timeout=30,
+                               what="the replayed row to settle")
+        assert host.model.labels() == ["H0", "H1"]
+        assert host.business_state(created) == "reported"
+    finally:
+        await host.close()

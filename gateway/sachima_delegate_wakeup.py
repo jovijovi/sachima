@@ -105,6 +105,51 @@ class DelegateWakeupBatch:
         )
 
 
+#: The one-shot business receipt a turn binds to the event it processed (``run.py``
+#: ``_bind_delegate_processing_receipt``) and the model-turn half of its delivery check.
+_DELIVERY_RECEIPT_KEYS = (
+    "sachima_delegate_event_ids",
+    "_gateway_processing_outcome_callback",
+    "_gateway_model_turn_completed",
+)
+
+
+def move_delivery_receipt(source: Any, target: Any) -> None:
+    """Carry a turn's delegation receipt to the event whose lifecycle sends its reply.
+
+    The session authority runs an admitted message on a ``restore_native`` copy, so the
+    receipt the turn bound to that copy travels with its crash marker to the adapter event
+    that really sends; otherwise a delivered report stays ``report_pending`` and the next
+    restart blocks it as unknown.
+    """
+
+    metadata = getattr(source, "metadata", None)
+    if not isinstance(metadata, dict) or not callable(
+        metadata.get("_gateway_processing_outcome_callback")
+    ):
+        return
+    moved = {key: metadata[key] for key in _DELIVERY_RECEIPT_KEYS if key in metadata}
+    for key in moved:
+        metadata.pop(key)
+    if not isinstance(getattr(target, "metadata", None), dict):
+        target.metadata = {}
+    target.metadata.update(moved)
+
+
+async def settle_delivery_receipt(adapter: Any, event: Any, results: list) -> None:
+    """Fire the receipt at a send that has no processing hook (busy observer, ``deliver_settled``)."""
+
+    callback_runner = getattr(adapter, "_run_internal_processing_outcome_callback", None)
+    if not callable(callback_runner):
+        return
+    from gateway.platforms.base import ProcessingOutcome
+
+    delivered = any(bool(getattr(result, "success", False)) for result in results if result is not None)
+    await callback_runner(
+        event, ProcessingOutcome.SUCCESS if delivered else ProcessingOutcome.FAILURE
+    )
+
+
 async def admit_wake_event(runner: Any, adapter: Any, event: Any) -> None:
     """Admit one synthetic wake event into its route on the in-process internal path.
 
