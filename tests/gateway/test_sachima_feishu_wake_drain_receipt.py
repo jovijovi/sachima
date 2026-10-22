@@ -80,7 +80,7 @@ class _Agent:
         scenario.turns.append(label)
         if self.provider_attempt_callback is not None:
             self.provider_attempt_callback()  # what the real agent fires at the provider boundary
-        gate = scenario.gates.get(label)
+        gate = scenario.gates.pop(label, None)  # one-shot: a later turn with this label runs freely
         if gate is not None:
             gate.entered.set()
             assert gate.release.wait(30), f"turn {label} was never released"
@@ -98,7 +98,7 @@ class _Agent:
             )
             assert staged.get("business_state") == "report_pending", staged
             scenario.staged.append(current.event_id)
-        final = f"reply:{label}"
+        final = f"reply:{label}#{scenario.turns.count(label)}"
         messages = list(conversation_history or []) + [
             {"role": "user", "content": user_message}, {"role": "assistant", "content": final}]
         if label in scenario.failed_turns:
@@ -113,8 +113,8 @@ class _Host:
         self.coordinator, self.facade, self.dispatcher = coordinator, facade, dispatcher
         self.source, self.scenario = source, scenario
         self.sent: list[str] = []
+        self.sent_states: list[dict] = []  # per send: each result's business state as the transport was called
         self.failing_sends: set[str] = set()
-        self.state_at_send: dict[str, list] = {}
         self.reactions: list[tuple] = []
         self.receipts: list[tuple] = []
 
@@ -150,8 +150,16 @@ class _Host:
         current = self.read(created)
         return None if current is None else current.business_state
 
+    def wakeup_state(self, created):
+        current = self.read(created)
+        return None if current is None else current.wakeup_state
+
     def sends_of(self, marker: str) -> list[str]:
         return [content for content in self.sent if marker in content]
+
+    def state_at_send(self, marker: str, created):
+        index = next(i for i, content in enumerate(self.sent) if marker in content)
+        return self.sent_states[index][created.task_ref]
 
     def admissions(self) -> list[tuple[str, str]]:
         from hermes_state_runtime import list_session_admissions
@@ -211,8 +219,7 @@ async def _host(tmp_path, monkeypatch) -> _Host:
 
     async def send(chat_id, content, reply_to=None, metadata=None, **_kwargs):
         host.sent.append(content)
-        for created in scenario.delegated:
-            host.state_at_send.setdefault(content, []).append(host.business_state(created))
+        host.sent_states.append({created.task_ref: host.business_state(created) for created in scenario.delegated})
         if any(marker in content for marker in host.failing_sends):
             return SendResult(success=False, error="controlled transport failure", retryable=False)
         return SendResult(success=True, message_id=f"om_sent_{len(host.sent)}")
@@ -276,9 +283,8 @@ async def test_drained_wake_report_waits_for_its_real_send_and_settles_once(
         await host.human("H1 long task", "om_h1")
         await async_wait_until(h1.entered.is_set, timeout=30, what="H1 running")
         host.facade.terminalize(0, final_message="exact answer while busy")
-        await async_wait_until(
-            lambda: (current := host.read(created)) is not None and current.wakeup_state == "queued",
-            timeout=30, what="the wake accepted behind the running turn")
+        await async_wait_until(lambda: host.wakeup_state(created) == "queued", timeout=30,
+                               what="the wake accepted behind the running turn")
         wake = host.adapter._pending_messages.get(host.key)
         assert wake is not None and wake.internal is True
         assert wake.message_id.startswith("sachima-wakeup-")
@@ -298,7 +304,7 @@ async def test_drained_wake_report_waits_for_its_real_send_and_settles_once(
         # The report was staged by the wake turn and was still pending when its reply hit the wire.
         event_id = host.read(created).event_id
         assert host.scenario.staged == [event_id]
-        assert host.state_at_send[host.sends_of("reply:wake")[0]][0] == "report_pending"
+        assert host.state_at_send("reply:wake", created) == "report_pending"
         # Settled exactly once, by the real send outcome and the real model outcome.
         assert host.receipts == [((event_id,), send_ok and model_ok)]
         assert host.business_state(created) == expected
@@ -318,8 +324,7 @@ async def test_user_message_still_takes_over_the_queued_wake_on_the_real_drain(t
         await async_wait_until(h1.entered.is_set, timeout=30, what="H1 running")
         host.facade.terminalize(0, final_message="exact answer before the correction")
         await async_wait_until(
-            lambda: (current := host.read(created)) is not None and current.wakeup_state == "queued"
-            and host.adapter._pending_messages.get(host.key) is not None,
+            lambda: host.wakeup_state(created) == "queued" and host.adapter._pending_messages.get(host.key),
             timeout=30, what="the wake queued behind H1")
         human = await host.human("H2 only report the result", "om_h2")
         await async_wait_until(lambda: ("om_h2", "queued") in host.admissions(), timeout=30,
@@ -336,8 +341,45 @@ async def test_user_message_still_takes_over_the_queued_wake_on_the_real_drain(t
         assert not host.sends_of("reply:wake")
         event_id = host.read(created).event_id
         assert host.scenario.staged == [event_id]
-        assert host.state_at_send[host.sends_of("reply:H2")[0]][0] == "report_pending"
+        assert host.state_at_send("reply:H2", created) == "report_pending"
         assert host.receipts == [((event_id,), True)]
         assert host.business_state(created) == "reported"
+    finally:
+        await host.close()
+
+
+@pytest.mark.asyncio
+async def test_a_wake_drained_ahead_of_another_settles_at_the_drains_own_send(tmp_path, monkeypatch):
+    """Two results finishing at different times: the first wake's reply is the drain's direct send."""
+    host = await _host(tmp_path, monkeypatch)
+    try:
+        first = await host.delegate("first terminal")
+        second = await host.delegate("second terminal")
+        h1 = host.gate("H1")
+        await host.human("H1 long task", "om_h1")
+        await async_wait_until(h1.entered.is_set, timeout=30, what="H1 running")
+        host.facade.terminalize(0, final_message="first exact answer")
+        await async_wait_until(lambda: host.wakeup_state(first) == "queued", timeout=30,
+                               what="the first wake queued behind H1")
+        first_wake = host.gate("wake")
+        h1.release.set()
+        await async_wait_until(first_wake.entered.is_set, timeout=30, what="the first wake's turn running")
+        host.facade.terminalize(1, final_message="second exact answer")
+        await async_wait_until(lambda: host.wakeup_state(second) == "queued", timeout=30,
+                               what="the second wake queued behind the first")
+        first_wake.release.set()
+        await async_wait_until(lambda: len(host.sends_of("reply:wake")) == 2, timeout=30,
+                               what="both wake replies sent")
+        await host.settle()
+
+        assert host.scenario.turns == ["H0", "H1", "wake", "wake"]
+        first_id, second_id = host.read(first).event_id, host.read(second).event_id
+        assert host.scenario.staged == [first_id, second_id]
+        # Each staged report waited for its own turn's reply and settled at that send, in order.
+        assert host.state_at_send("reply:wake#1", first) == "report_pending"
+        assert host.state_at_send("reply:wake#2", first) == "reported"
+        assert host.state_at_send("reply:wake#2", second) == "report_pending"
+        assert host.receipts == [((first_id,), True), ((second_id,), True)]
+        assert (host.business_state(first), host.business_state(second)) == ("reported", "reported")
     finally:
         await host.close()
