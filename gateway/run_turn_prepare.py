@@ -640,8 +640,10 @@ class GatewayTurnPrepareMixin:
         _was_auto_reset, _is_new_session = await self._hmwa_open_session(session_entry, session_key, source)
         restore_gateway_yolo(session_key, session_entry.yolo)  # None: TurnRunner seeds the launch policy
         context = build_session_context(source, self.config, session_entry)
-        # Host-set turn provenance for authorization-sensitive internal controls (Sachima).
-        context.input_internal = event.internal is True
+        # Host-set turn provenance for authorization-sensitive internal controls (Sachima). The
+        # guard keeps narrow upstream test doubles (a stubbed ``None`` context) wiring as before.
+        if context is not None:
+            context.input_internal = event.internal is True
         # Session context variables for tools (task-local, concurrency-safe)
         _session_env_tokens = self._set_session_env(context)
         # Self-injected turns (internal=True) persist with a DB-only display_kind: timeline notices, not user bubbles.
