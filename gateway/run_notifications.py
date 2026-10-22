@@ -966,7 +966,13 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                 _prime(synth_event)
             from gateway.session_authorities import active_authority
             authority = active_authority(self)
-            if authority is not None:
+            if evt.get("type") == "sachima_delegate":
+                # Sachima delegation wakes keep the in-process internal path under the session
+                # authority too: the coordinator owns their durability, and the durable automation
+                # admission has no producer identity for them (refused as ``invalid_params``).
+                from gateway.sachima_delegate_wakeup import admit_wake_event
+                await admit_wake_event(self, adapter, synth_event)
+            elif authority is not None:
                 from gateway.session_automation import admit_process_notice
                 from hermes_state_runtime import RuntimeStoreError
                 try:

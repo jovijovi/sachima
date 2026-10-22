@@ -105,6 +105,32 @@ class DelegateWakeupBatch:
         )
 
 
+async def admit_wake_event(runner: Any, adapter: Any, event: Any) -> None:
+    """Admit one synthetic wake event into its route on the in-process internal path.
+
+    Raises ``WakeNotAccepted`` when nothing accepted it, exactly like ``admit_internal_event``.
+    While the adapter holds the route's guard, the guard's owner drains the wake after its own
+    turn. Routed through ``handle_message`` instead, the shared runtime's busy observer would run
+    the whole wake turn itself and send its reply with no processing hook, so the report receipt
+    never fires and the unacknowledged wake is retried although it ran.
+    """
+
+    from gateway.wake import WakeNotAccepted, admit_internal_event
+
+    if adapter._drop_unresolved(event):
+        raise WakeNotAccepted()
+    session_key = adapter._event_session_key(event)
+    if session_key not in adapter._active_sessions:
+        await admit_internal_event(adapter, event)
+        return
+    expected = str((event.metadata or {}).get("gateway_session_key") or "").strip()
+    event._gateway_accepted = False
+    if not expected or expected == session_key:
+        runner._queue_or_replace_pending_event(session_key, event)
+    if event._gateway_accepted is not True:
+        raise WakeNotAccepted()
+
+
 class SachimaDelegateWakeupDispatcher:
     """Claim, batch, and inject admitted terminal wake intents."""
 
