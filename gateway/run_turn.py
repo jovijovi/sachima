@@ -2048,6 +2048,9 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
             if next_delegate_handoff is not None:
                 owns_fresh_delegate_handoff = True
                 self._discard_claimed_delegate_wakeups(next_session_key, adapter, next_delegate_handoff.event_ids)
+        # The follow-up's report receipt settles where its reply is sent, not at the hooks below.
+        from gateway.sachima_delegate_wakeup import adopt_followup_receipt
+        adopt_followup_receipt(pending_event, _delegate_claim_context)
 
         # Clear the prior turn's streaming-TTS completion marker so the recursive turn isn't suppressed.
         # See #60671.

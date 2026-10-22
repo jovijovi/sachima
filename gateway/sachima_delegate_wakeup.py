@@ -287,6 +287,38 @@ def move_delivery_receipt(source: Any, target: Any) -> None:
     target.metadata.update(moved)
 
 
+def adopt_followup_receipt(followup: Any, claim_context: Any) -> None:
+    """Carry a drained follow-up's delegation receipt to the event that sends its reply.
+
+    The runner drains a queued wake (or the user message that took one over) in-band as the
+    next turn of the running chain, and that turn's reply is sent for the chain's processing
+    event (``claim_context.processing_event``): by its adapter lifecycle at the end, or by the
+    drain's direct send when another follow-up is waiting. Left on the follow-up, the receipt
+    fired at the follow-up's own processing-complete hook, before the turn's model outcome was
+    recorded or its reply sent, and a staged report was settled as undelivered for good.
+    """
+
+    metadata = getattr(followup, "metadata", None)
+    if claim_context is None or not isinstance(metadata, dict):
+        return
+    callback = metadata.pop("_gateway_processing_outcome_callback", None)
+    if not callable(callback):
+        return
+    processing_event = claim_context.processing_event
+    if not isinstance(getattr(processing_event, "metadata", None), dict):
+        processing_event.metadata = {}
+    target = processing_event.metadata
+    event_ids = [item for item in metadata.get("sachima_delegate_event_ids") or ()
+                 if isinstance(item, str) and item]
+    if callable(target.get("_gateway_processing_outcome_callback")):
+        # A receipt already bound to this send (the turn's own claim) settles together with it.
+        event_ids = list(dict.fromkeys([*(target.get("sachima_delegate_event_ids") or ()), *event_ids]))
+    target["sachima_delegate_event_ids"] = event_ids
+    target["_gateway_processing_outcome_callback"] = callback
+    # The model-turn half is recorded for the turn about to run; an earlier turn's must not vouch for it.
+    target.pop("_gateway_model_turn_completed", None)
+
+
 async def settle_delivery_receipt(adapter: Any, event: Any, results: list) -> None:
     """Fire the receipt at a send that has no processing hook (busy observer, ``deliver_settled``)."""
 
