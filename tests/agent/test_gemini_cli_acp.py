@@ -238,6 +238,43 @@ def test_real_acp_subprocess_bridges_messages_tools_reasoning_and_stream(
     assert '"name": "weather"' in prompt
 
 
+def test_acp_subprocess_runs_in_the_session_workspace_not_the_process_cwd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Under the gateway the process cwd is the daemon's; the CLI must work in the session's
+    workspace (v0.22.4 ``resolve_agent_cwd``), which the Gemini client inherits."""
+    import subprocess
+
+    from agent.gemini_acp_client import GeminiCLIACPClient
+    from agent.runtime_cwd import reset_session_cwd, set_session_cwd
+
+    server = tmp_path / "fake_gemini_acp.py"
+    capture = tmp_path / "requests.ndjson"
+    _write_fake_acp_server(server, capture)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    launched: list[str] = []
+    real_popen = subprocess.Popen
+
+    def recording_popen(*args, **kwargs):
+        launched.append(kwargs.get("cwd"))
+        return real_popen(*args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "Popen", recording_popen)
+    token = set_session_cwd(str(workspace))
+    try:
+        client = GeminiCLIACPClient(acp_command=sys.executable, acp_args=[str(server), str(capture)])
+        list(client.chat.completions.create(
+            model="gemini-cli", messages=[{"role": "user", "content": "hi"}], stream=True))
+    finally:
+        reset_session_cwd(token)
+
+    assert launched == [str(workspace.resolve())]
+    session_new = [json.loads(line) for line in capture.read_text().splitlines()][1]
+    assert session_new["method"] == "session/new"
+    assert session_new["params"]["cwd"] == str(workspace.resolve())
+
+
 def test_auth_failure_points_to_official_interactive_login(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
