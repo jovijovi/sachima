@@ -154,6 +154,16 @@ class GatewayTurnProgressMixin:
             except Exception:
                 # Best-effort: a viewer frame never blocks the failure notice below, but a lost one is logged.
                 logger.debug("Local viewer progress publish failed for %s", event_type, exc_info=True)
+        # Sachima Task Workbench: every lifecycle event is projected into the structured
+        # transaction record first; the visible rendering below is replaced by its coalesced signals.
+        if getattr(ctx, "task_workbench", None) is not None and ctx._run_still_current():
+            try:
+                agent_obj = ctx.agent_holder[0] if ctx.agent_holder else None
+                ctx.task_workbench.record_callback_event(
+                    agent_obj, event_type, tool_name=tool_name, preview=preview, args=args, **kwargs,
+                )
+            except Exception:
+                logger.debug("Task Workbench progress callback failed", exc_info=True)
         # Failed subagent → one clean user-facing notice, handled FIRST, before every progress-queue
         # gate: platforms with tool_progress off must still hear about a dead delegation.
         if event_type == "subagent.complete":
@@ -166,6 +176,11 @@ class GatewayTurnProgressMixin:
             ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             preview_str = f' "{preview}"' if preview else ""
             ctx.log_queue.put(f"{ts}  {tool_name}:{preview_str}".rstrip())
+        # The opt-in Workbench is the progress projection for this turn. Its coalesced render
+        # signals replace raw per-tool chat lines, while the live-status and log rails above remain
+        # independent.
+        if getattr(ctx, "task_workbench", None) is not None:
+            return
         if not ctx.progress_queue or not ctx._run_still_current():
             return
         if event_type == "tool.completed" and not ctx.long_tool_hint_fired[0]:
@@ -739,6 +754,17 @@ class GatewayTurnProgressMixin:
         ctx = self._ctx
         adapter = self._runner._delivery_adapter_for(ctx.source) if ctx.progress_queue else None
         if not adapter:
+            return
+        if getattr(ctx, "task_workbench", None) is not None:
+            # Sachima Task Workbench owns the visible progress projection for this turn.
+            await ctx.task_workbench.send_progress_messages(
+                adapter=adapter,
+                chat_id=ctx.source.chat_id,
+                reply_to=ctx._progress_reply_to,
+                metadata=ctx._progress_metadata,
+                cleanup_message_ids=ctx._cleanup_msg_ids,
+                is_current=ctx._run_still_current,
+            )
             return
         if ctx._native_slack_task_cards and hasattr(adapter, "send_native_task_card_progress"):
             await self._send_native_task_card_progress(adapter)

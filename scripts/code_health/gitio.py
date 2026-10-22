@@ -116,6 +116,37 @@ def read_file(repo: Path, tree: str | None, path: str) -> str | None:
     return proc.stdout.decode("utf-8-sig", errors="replace")
 
 
+def blob_ids(repo: Path, tree: str | None, paths: list[str]) -> dict[str, str]:
+    """The git blob id of each of ``paths`` that exists in ``tree``: the bytes ``read_file`` reads.
+    For the working tree, the blob ``git add`` would store (same filters as a checkout)."""
+    wanted = set(paths)
+    if not wanted:
+        return {}
+    if tree is not None:
+        ids = {}
+        for entry in git(repo, "ls-tree", "-r", "-z", "--full-tree", tree).split("\0"):
+            meta, _, path = entry.partition("\t")
+            if path in wanted:
+                ids[path] = meta.split()[2]
+        return ids
+    present = sorted(p for p in wanted if (repo / p).is_file())
+    if not present:
+        return {}
+    proc = subprocess.run(
+        ["git", "hash-object", "--stdin-paths"],
+        cwd=repo,
+        input="\n".join(present) + "\n",
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=120,
+        check=False,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(f"git hash-object failed: {proc.stderr.strip()}")
+    return dict(zip(present, proc.stdout.split(), strict=True))
+
+
 def tracked_files(repo: Path, tree: str | None) -> list[str]:
     if tree is None:
         return [p for p in git(repo, "ls-files", "-z").split("\0") if p]

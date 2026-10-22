@@ -78,3 +78,5 @@ class Finding:
     detail: str
     blocking: bool = True
     allowed_reason: str | None = None
+    # Where an upstream import's recorded finding came from (import_exceptions.py).
+    inherited: str | None = None

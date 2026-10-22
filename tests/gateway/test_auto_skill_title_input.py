@@ -88,6 +88,11 @@ async def test_gateway_titles_original_request_without_changing_model_input(tmp_
     display = SimpleNamespace(**{name: getattr(defaults, name) for name in runner._DISPLAY_TO_TURN_CTX})
     display.platform_key = "discord"
     display.resolve_display_setting = lambda *args: False
+    # Sachima Task Workbench: _run_agent_inner reads these display fields directly (they are
+    # not copied onto the TurnContext); keep the real, default-off values.
+    real_display = GatewayRunner._RunAgentDisplay()
+    for name in ("task_tracker_enabled", "task_tracker_mode", "task_tracker_config"):
+        setattr(display, name, getattr(real_display, name))
     runner._run_agent_display_settings = lambda source: display
 
     def run_without_delivery(ctx, worker, *args):

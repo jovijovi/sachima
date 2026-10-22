@@ -1,0 +1,1421 @@
+"""Text renderers for gateway transaction progress panels."""
+
+from __future__ import annotations
+
+import ast
+from datetime import datetime
+import json
+import re
+import shlex
+from typing import Any, Iterable
+from urllib.parse import urlsplit, urlunsplit
+
+from gateway.progress.events import (
+    ContextUsageSnapshot,
+    IterationUsageSnapshot,
+    ProgressOperation,
+    TransactionSnapshot,
+)
+from gateway.progress.redaction import sanitize_for_progress
+from gateway.progress.todo_display import (
+    MAX_VISIBLE_TODO_LEAVES,
+    TodoDisplayPlan,
+    build_todo_display_plan,
+    group_todo_blocks,
+    todo_done_count,
+    todo_status_key,
+)
+from gateway.progress.todo_executor import normalize_todo_executor
+
+_STATUS_LABELS = {
+    "running": "Running",
+    "completed": "Completed",
+    "failed": "Failed",
+    "blocked": "Blocked",
+    "cancelled": "Cancelled",
+    "pending": "Pending",
+}
+
+_STATUS_ICONS = {
+    "running": "🔄",
+    "completed": "✅",
+    "failed": "❌",
+    "blocked": "⛔",
+    "cancelled": "⚪",
+    "pending": "⏳",
+}
+
+_EVENT_LABELS = {
+    "subagent.start": "subagent start",
+    "subagent.complete": "subagent complete",
+    "subagent.progress": "subagent progress",
+    "subagent.thinking": "subagent thinking",
+    "subagent.tool": "subagent tool",
+}
+
+# Cursor-style todo glyphs, constrained to what Feishu cards / plain panels can
+# show. ``failed`` is defensive: persistent todo statuses cannot produce it
+# today, but renderer inputs are untyped snapshots and upstream workbench
+# sources may. Unknown status falls back to ``pending`` via the ``.get`` default.
+_TODO_STATUS_GLYPHS = {
+    "completed": "✅",
+    "in_progress": "▶️",
+    "pending": "⏳",
+    "cancelled": "🚫",
+    "failed": "❌",
+}
+# Only completed content is struck through; cancelled/failed items keep their
+# icon as the signal and legible content.
+_TODO_STRIKETHROUGH_STATUSES = {"completed"}
+# Plain-text panel only: keep its preview compact by capping rendered lines
+# (group rows included) before an overflow note. Feishu cards budget leaf tasks
+# instead — see ``gateway.progress.todo_display.MAX_VISIBLE_TODO_LEAVES``.
+_TODO_MAX_VISIBLE_LINES = 8
+# Plain-text panel only: a parent group row summarizes which child executors
+# participate. Cap the labels shown (first-seen child order, deduplicated) so a
+# wide fan-out cannot grow the row without bound; each label is itself
+# length-capped by ``normalize_todo_executor``.
+_TODO_GROUP_PARTICIPANTS_MAX = 3
+
+_DEFAULT_MAX_LENGTH = 3500
+
+_FEISHU_HEADER_TEMPLATES = {
+    "running": "blue",
+    "pending": "blue",
+    "completed": "green",
+    "failed": "red",
+    "blocked": "orange",
+    "cancelled": "grey",
+}
+
+_FEISHU_STATUS_LABELS = {
+    "zh": {
+        "running": "⏳ 正在处理",
+        "pending": "⏳ 等待中",
+        "completed": "完成",
+        "failed": "失败",
+        "blocked": "等待确认",
+        "cancelled": "已取消",
+    },
+    "en": {
+        "running": "Running",
+        "pending": "Pending",
+        "completed": "Completed",
+        "failed": "Failed",
+        "blocked": "Blocked",
+        "cancelled": "Cancelled",
+    },
+}
+
+_FEISHU_TITLES = {
+    "zh": {
+        "running": ("🔄", "任务工作台 · 运行中"),
+        "pending": ("⏳", "任务工作台 · 等待中"),
+        "completed": ("✅", "任务工作台 · 已完成"),
+        "failed": ("⚠️", "任务工作台 · 失败"),
+        "blocked": ("⛔", "任务工作台 · 等待确认"),
+        "cancelled": ("⚪", "任务工作台 · 已取消"),
+    },
+    "en": {
+        "running": ("🔄", "Task Workbench · Running"),
+        "pending": ("⏳", "Task Workbench · Pending"),
+        "completed": ("✅", "Task Workbench · Completed"),
+        "failed": ("⚠️", "Task Workbench · Failed"),
+        "blocked": ("⛔", "Task Workbench · Blocked"),
+        "cancelled": ("⚪", "Task Workbench · Cancelled"),
+    },
+}
+
+_SCRIPT_TOKEN_RE = re.compile(
+    r"(?P<token>(?:[A-Za-z]:[\\/]|/|\./|\.\./|~/)?[^\s'\"`]+"
+    r"\.(?:py|js|ts|tsx|jsx|sh|bash|zsh|rb|pl|php|go|rs|java|kt|scala|sql|ya?ml|json|toml|md|txt))"
+)
+_SHELL_WORD_RE = re.compile(r"[^\s'\"`]+")
+_SAFE_LABEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._@+:-]{0,119}$")
+_SAFE_SKILL_IDENTIFIER_RE = re.compile(
+    r"^(?:[a-z0-9][a-z0-9_-]{0,63}(?:/[a-z0-9][a-z0-9_-]{0,63}){0,4}|"
+    r"[a-z0-9][a-z0-9_-]{0,63}:[a-z0-9][a-z0-9_-]{0,63})$"
+)
+_PATH_LIKE_SKILL_PREFIXES = {
+    "assets",
+    "dev",
+    "etc",
+    "home",
+    "media",
+    "mnt",
+    "opt",
+    "private",
+    "proc",
+    "references",
+    "root",
+    "scripts",
+    "sys",
+    "templates",
+    "tmp",
+    "usr",
+    "users",
+    "var",
+}
+_TOKEN_LIKE_SKILL_PREFIXES = ("sk-", "sk_", "ghp_", "gho_", "github_pat_", "xox", "hf_", "hf-", "pat_")
+_ENV_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+_CJK_RE = re.compile(r"[\u4e00-\u9fff]")
+_FEISHU_UNSAFE_METADATA_LINE_RE = re.compile(
+    r"(?i)(https?://|\b(?:api[-_]?key|token|secret|password|authorization|bearer|base[_-]?url)\b)"
+)
+_FEISHU_ACCOUNT_LIMIT_HEADER_RE = re.compile(r"(?i)^\s*(?:📈\s*)?\*{0,2}account limits\*{0,2}\s*$")
+
+
+def render_text_panel(
+    snapshot: TransactionSnapshot,
+    *,
+    tool_progress_mode: str = "all",
+    max_length: int = _DEFAULT_MAX_LENGTH,
+    dashboard_url: str | None = None,
+) -> str:
+    """Render a compact Markdown-compatible transaction progress panel."""
+
+    mode = (tool_progress_mode or "all").strip().lower()
+    if mode not in {"off", "new", "all", "verbose"}:
+        mode = "all"
+
+    transaction_ref = sanitize_for_progress(snapshot.transaction_id, max_len=320)
+    status = snapshot.status or "running"
+    status_icon = _STATUS_ICONS.get(status, "🔄")
+    status_label = _STATUS_LABELS.get(status, status.title())
+
+    lines = [
+        f"📌 **Transaction:** {transaction_ref}",
+        f"{status_icon} **Status:** {status_label}",
+    ]
+    context_line = _context_usage_text_line(snapshot.context_usage)
+    if context_line:
+        lines.append(context_line)
+    iteration_line = _iteration_usage_text_line(snapshot.iteration_usage)
+    if iteration_line:
+        lines.append(iteration_line)
+
+    todo_lines = _todo_text_lines(getattr(snapshot, "todo_items", ())) if should_render_main_todos(snapshot) else []
+    if todo_lines:
+        lines.append("")
+        lines.extend(todo_lines)
+
+    suspended_lines = _suspended_hint_text_lines(getattr(snapshot, "suspended_todo_hint", None))
+    if suspended_lines:
+        lines.append("")
+        lines.extend(suspended_lines)
+
+    operations = list(snapshot.recent_operations or ())
+    if mode != "off":
+        lines.append("")
+        lines.append("**Recent operations:**")
+        rendered_ops = list(_iter_rendered_operations(operations, mode=mode))
+        if rendered_ops:
+            lines.extend(rendered_ops)
+        else:
+            lines.append("- No operations yet")
+
+    progress_link = _safe_progress_dashboard_url(dashboard_url)
+    if progress_link:
+        lines.append("")
+        lines.append(f"🔎 **Dashboard:** {progress_link}")
+
+    text = "\n".join(lines)
+    return _cap_panel(text, max_length)
+
+
+def render_feishu_progress_card(
+    snapshot: TransactionSnapshot,
+    *,
+    tool_progress_mode: str = "all",
+    max_operations: int = 5,
+    dashboard_url: str | None = None,
+    style: str = "lively",
+    emoji: bool = True,
+    language: str = "zh",
+) -> dict:
+    """Render a sanitized Feishu interactive-card payload for task progress.
+
+    The card intentionally shows only summary labels. It never renders raw
+    command lines, argument previews, outputs, headers, tokens, or arbitrary
+    metadata dumps; those remain available in backend logs/dashboard only.
+    """
+
+    mode = _normalize_progress_mode(tool_progress_mode)
+    lang = _normalize_feishu_language(language)
+    status = snapshot.status or "running"
+    status_label = sanitize_for_progress(_feishu_status_label(status, language=lang), max_len=80)
+    labels = _feishu_labels(lang)
+    status_icon = _feishu_status_icon(status, language=lang)
+
+    details = [
+        f"{_feishu_metric_label('🆔', labels['task_id'], lang)} {_feishu_escape_markdown_text(snapshot.transaction_id)}",
+        f"{_feishu_metric_label(status_icon, labels['status'], lang)} {_feishu_escape_markdown_text(status_label)}",
+    ]
+    total_duration = _snapshot_elapsed_duration(snapshot, feishu=True)
+    if total_duration:
+        details.append(f"{_feishu_metric_label('⏱️', labels['duration'], lang)} {total_duration}")
+    model_detail = _feishu_model_detail(
+        snapshot.model_display,
+        reasoning_effort_display=snapshot.reasoning_effort_display,
+        service_tier_display=snapshot.service_tier_display,
+        labels=labels,
+        language=lang,
+    )
+    if model_detail:
+        details.append(model_detail)
+    context_detail = _context_usage_feishu_line(snapshot.context_usage, language=lang)
+    if context_detail:
+        details.append(context_detail)
+    iteration_detail = _iteration_usage_feishu_line(snapshot.iteration_usage, language=lang)
+    if iteration_detail:
+        details.append(iteration_detail)
+    account_detail = _feishu_account_limit_detail(snapshot.account_limit_lines, labels=labels, language=lang)
+    if account_detail:
+        details.append(account_detail)
+
+    sections: list[list[dict]] = [[{"tag": "markdown", "content": "\n".join(details)}]]
+
+    # The todo block sits between the metric details and the recent-operations
+    # list so the workbench reads plan-first, activity-second.
+    todo_section: list[dict] = []
+    todo_element = (
+        _feishu_todo_element(getattr(snapshot, "todo_items", ()), language=lang)
+        if should_render_main_todos(snapshot)
+        else None
+    )
+    if todo_element is not None:
+        todo_section.append(todo_element)
+
+    suspended_element = _feishu_suspended_hint_element(
+        getattr(snapshot, "suspended_todo_hint", None),
+        language=lang,
+    )
+    if suspended_element is not None:
+        todo_section.append(suspended_element)
+    if todo_section:
+        sections.append(todo_section)
+
+    if mode != "off":
+        operation_lines = list(
+            _iter_feishu_operation_lines(
+                snapshot.recent_operations or (),
+                mode=mode,
+                max_operations=max_operations,
+                emoji=emoji,
+                language=lang,
+            )
+        )
+        operation_label = f"**{labels['recent_operations']}**"
+        empty_copy = "暂无操作" if lang == "zh" else "No operations yet"
+        sections.append(
+            [
+                {
+                    "tag": "markdown",
+                    "content": operation_label + "\n" + ("\n".join(operation_lines) if operation_lines else empty_copy),
+                }
+            ]
+        )
+
+    elements: list[dict] = []
+    for section in sections:
+        if elements:
+            elements.append({"tag": "hr"})
+        elements.extend(section)
+
+    progress_link = _safe_progress_dashboard_url(dashboard_url)
+    if progress_link:
+        link_label = "打开进度面板" if lang == "zh" else "Open progress dashboard"
+        elements.append(
+            {
+                "tag": "markdown",
+                "content": f"[{link_label}]({_feishu_escape_url(progress_link)})",
+            }
+        )
+
+    return {
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {
+                "tag": "plain_text",
+                "content": _feishu_header_title(status, style=style, emoji=emoji, language=lang),
+            },
+            "template": _feishu_header_template(status),
+        },
+        "elements": elements,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Structured todo rendering (Cursor-style, two-level, redacted)
+# ---------------------------------------------------------------------------
+
+
+def should_render_main_todos(snapshot: Any) -> bool:
+    """Return whether snapshot TODOs belong in the current-task main block."""
+
+    lifecycle = getattr(snapshot, "todo_lifecycle", None)
+    if lifecycle is None:
+        return True
+    state = _lifecycle_state(lifecycle)
+    if not state:
+        return False
+    return state in {"created", "active", "resumed", "completed", "cancelled"}
+
+
+def _lifecycle_state(lifecycle: Any) -> str:
+    if isinstance(lifecycle, dict):
+        raw = lifecycle.get("state")
+    else:
+        raw = getattr(lifecycle, "state", None)
+    return str(raw or "").strip().lower()
+
+
+def _hint_field(hint: Any, key: str, default: Any = None) -> Any:
+    if isinstance(hint, dict):
+        return hint.get(key, default)
+    return getattr(hint, key, default)
+
+
+def _suspended_hint_text_lines(hint: Any) -> list[str]:
+    if hint is None:
+        return []
+    title = sanitize_for_progress(_hint_field(hint, "title", ""), max_len=240).replace("\n", " ").strip()
+    if not title:
+        return []
+    remaining = _safe_hint_count(_hint_field(hint, "remaining_count", 0))
+    overflow = _safe_hint_count(_hint_field(hint, "overflow_count", 0))
+    next_action = sanitize_for_progress(_hint_field(hint, "next_action", ""), max_len=240).replace("\n", " ").strip()
+    suffix = f" ({remaining} remaining" + (f", +{overflow} more" if overflow else "") + ")"
+    if next_action:
+        suffix += f": {next_action}"
+    return ["**Suspended work:**", f"- {title}{suffix}"]
+
+
+def _feishu_suspended_hint_element(hint: Any, *, language: str) -> dict | None:
+    if hint is None:
+        return None
+    lang = _normalize_feishu_language(language)
+    title = sanitize_for_progress(_hint_field(hint, "title", ""), max_len=240).replace("\n", " ").strip()
+    if not title:
+        return None
+    remaining = _safe_hint_count(_hint_field(hint, "remaining_count", 0))
+    overflow = _safe_hint_count(_hint_field(hint, "overflow_count", 0))
+    next_action = sanitize_for_progress(_hint_field(hint, "next_action", ""), max_len=240).replace("\n", " ").strip()
+    if lang == "zh":
+        label = "挂起事项"
+        detail = f"{title}（{remaining} 项未完成"
+        if overflow:
+            detail += f"，另有 {overflow} 项"
+        detail += "）"
+    else:
+        label = "Suspended Work"
+        detail = f"{title} ({remaining} remaining"
+        if overflow:
+            detail += f", +{overflow} more"
+        detail += ")"
+    if next_action:
+        detail += f"：{next_action}" if lang == "zh" else f": {next_action}"
+    return {"tag": "markdown", "content": f"**{label}**\n{detail}"}
+
+
+def _safe_hint_count(value: Any) -> int:
+    try:
+        return max(0, int(value))
+    except Exception:
+        return 0
+
+
+def _todo_status_glyph(item: Any) -> str:
+    return _TODO_STATUS_GLYPHS.get(todo_status_key(item), _TODO_STATUS_GLYPHS["pending"])
+
+
+def _todo_is_struck(item: Any) -> bool:
+    return todo_status_key(item) in _TODO_STRIKETHROUGH_STATUSES
+
+
+def _render_todo_lines(
+    items: Iterable[Any],
+    *,
+    fmt_flat,
+    fmt_group,
+    fmt_child,
+    max_lines: int,
+) -> tuple[list[str], int]:
+    """Render todo blocks to capped lines and report how many items were hidden.
+
+    Used by the plain-text panel, which budgets rendered *lines*. ``fmt_group``
+    receives ``(top, done, total, children)`` so a group row can summarize its
+    children (e.g. participating executors) without re-grouping.
+    """
+
+    blocks = group_todo_blocks(items)
+    total = sum(1 + len(kids) for _, kids in blocks)
+    lines: list[str] = []
+    shown = 0
+    truncated = False
+    for top, kids in blocks:
+        if len(lines) >= max_lines:
+            truncated = True
+            break
+        if kids:
+            lines.append(fmt_group(top, todo_done_count(kids), len(kids), kids))
+            shown += 1
+            for kid in kids:
+                if len(lines) >= max_lines:
+                    truncated = True
+                    break
+                lines.append(fmt_child(kid))
+                shown += 1
+        else:
+            lines.append(fmt_flat(top))
+            shown += 1
+    hidden = max(0, total - shown) if truncated else 0
+    return lines, hidden
+
+
+def _feishu_todo_text(item: Any) -> str:
+    text = _feishu_escape_markdown_text(getattr(item, "content", ""))
+    if text and _todo_is_struck(item):
+        return f"~~{text}~~"
+    return text
+
+
+def _todo_executor_label(item: Any) -> str | None:
+    # Re-validate at the display boundary: items are Iterable[Any], so the
+    # renderer never trusts upstream sanitization (fail-closed house style).
+    return normalize_todo_executor(getattr(item, "executor", None))
+
+
+def _todo_group_participants(children: Iterable[Any]) -> tuple[list[str], int]:
+    """Deduplicated first-seen-order executor labels of a group's children.
+
+    Returns ``(shown, hidden)``: at most ``_TODO_GROUP_PARTICIPANTS_MAX``
+    labels plus the count of distinct labels beyond the cap. Children whose
+    executor fails re-validation contribute nothing.
+    """
+    labels: list[str] = []
+    for child in children or ():
+        label = _todo_executor_label(child)
+        if label is not None and label not in labels:
+            labels.append(label)
+    shown = labels[:_TODO_GROUP_PARTICIPANTS_MAX]
+    return shown, len(labels) - len(shown)
+
+
+def _feishu_todo_badge(item: Any) -> str:
+    # Executor renders as a structured badge before the content, never as a
+    # trailing suffix: ``▶️ [codex] task text``.
+    executor = _todo_executor_label(item)
+    return f"\\[{_feishu_escape_markdown_text(executor)}\\] " if executor else ""
+
+
+def _feishu_todo_element(items: Iterable[Any], *, language: str) -> dict | None:
+    materialized = tuple(item for item in (items or ()) if item is not None)
+    if not materialized:
+        return None
+    lang = _normalize_feishu_language(language)
+    plan = build_todo_display_plan(materialized, max_leaves=MAX_VISIBLE_TODO_LEAVES)
+
+    lines: list[str] = []
+    for block in plan.blocks:
+        if not block.is_group:
+            lines.append(_feishu_todo_leaf_line(block.item))
+            continue
+        lines.append(_feishu_todo_group_line(block))
+        lines.extend(f"  {_feishu_todo_leaf_line(child)}" for child in block.children)
+        if block.hidden_children > 0:
+            lines.append(f"  {_feishu_group_overflow_note(block.hidden_children, language=lang)}")
+    if plan.hidden_leaves > 0:
+        lines.append(_feishu_leaf_overflow_note(plan.hidden_leaves, language=lang))
+
+    title = _feishu_todo_title(plan, language=lang)
+    return {"tag": "markdown", "content": f"**{title}**\n" + "\n".join(lines)}
+
+
+def _feishu_todo_leaf_line(item: Any) -> str:
+    return f"{_todo_status_glyph(item)} {_feishu_todo_badge(item)}{_feishu_todo_text(item)}"
+
+
+def _feishu_todo_group_line(block: Any) -> str:
+    """Render a group header: folder marker, group name, child aggregate.
+
+    A group is a container, so the row carries no status glyph of its own (the
+    aggregate is the truth about its children) and no executor label — neither
+    the parent's own nor a summary of its children's. Work is assigned to leaves.
+    ``▸`` is avoided on purpose: it reads as a clickable collapse control, and
+    Feishu card markdown has no such affordance.
+    """
+
+    name = _feishu_escape_markdown_text(getattr(block.item, "content", ""))
+    return f"📂 {name} {block.child_completed}/{block.child_total}"
+
+
+def _feishu_leaf_overflow_note(hidden: int, *, language: str) -> str:
+    if _normalize_feishu_language(language) == "zh":
+        return f"… 还有 {hidden} 个任务未展示"
+    return f"… {hidden} more task{'s' if hidden != 1 else ''} not shown"
+
+
+def _feishu_group_overflow_note(hidden: int, *, language: str) -> str:
+    if _normalize_feishu_language(language) == "zh":
+        return f"… 本组还有 {hidden} 个任务未展示"
+    return f"… {hidden} more in this group"
+
+
+def _feishu_todo_title(plan: TodoDisplayPlan, *, language: str) -> str:
+    """Headline the leaf work only — group rows are summaries, not tasks."""
+
+    label = _feishu_labels(language)["todos"]
+    counts = f"{plan.leaf_completed} / {plan.leaf_total}"
+    if _normalize_feishu_language(language) == "zh":
+        return f"🧾 {label} - {counts}（{plan.completed_percent}%）"
+    return f"🧾 {label} - {counts} ({plan.completed_percent}%)"
+
+
+def _todo_plain_content(item: Any) -> str:
+    return sanitize_for_progress(getattr(item, "content", ""), max_len=240).replace("\n", " ").strip()
+
+
+def _todo_text_content(item: Any) -> str:
+    text = _todo_plain_content(item)
+    if text and _todo_is_struck(item):
+        return f"~~{text}~~"
+    return text
+
+
+def _todo_text_lines(items: Iterable[Any]) -> list[str]:
+    materialized = tuple(item for item in (items or ()) if item is not None)
+    if not materialized:
+        return []
+
+    def _badge(item: Any) -> str:
+        executor = _todo_executor_label(item)
+        return f"[{executor}] " if executor else ""
+
+    def fmt_flat(item: Any) -> str:
+        return f"- {_todo_status_glyph(item)} {_badge(item)}{_todo_text_content(item)}"
+
+    def fmt_group(item: Any, done: int, total: int, kids: list) -> str:
+        line = f"- ▸ {_badge(item)}{_todo_plain_content(item)} {done}/{total}"
+        shown, hidden = _todo_group_participants(kids)
+        if shown:
+            labels = ", ".join(shown)
+            if hidden > 0:
+                labels += f" +{hidden}"
+            line += f" ({labels})"
+        return line
+
+    def fmt_child(item: Any) -> str:
+        return f"    - {_todo_status_glyph(item)} {_badge(item)}{_todo_text_content(item)}"
+
+    lines, hidden = _render_todo_lines(
+        materialized,
+        fmt_flat=fmt_flat,
+        fmt_group=fmt_group,
+        fmt_child=fmt_child,
+        max_lines=_TODO_MAX_VISIBLE_LINES + 2,
+    )
+    if hidden > 0:
+        lines.append(f"- … {hidden} more")
+    return [f"**🧾 To-dos ({len(materialized)}):**", *lines]
+
+
+def _iter_rendered_operations(
+    operations: Iterable[ProgressOperation],
+    *,
+    mode: str,
+) -> Iterable[str]:
+    previous_tool = object()
+    for operation in operations:
+        tool_key = operation.tool_name or operation.event_type
+        if mode == "new" and tool_key == previous_tool:
+            continue
+        previous_tool = tool_key
+        yield _render_operation(operation, mode=mode)
+
+
+def _render_operation(operation: ProgressOperation, *, mode: str) -> str:
+    icon = _STATUS_ICONS.get(operation.status, "•")
+    name = _operation_name(operation)
+    preview = operation.preview or ""
+    duration = _format_duration(operation.duration)
+
+    line = f"- {icon} `{name}`"
+    if preview:
+        line += f": {preview}"
+    if duration:
+        line += f" ({duration})"
+
+    if mode == "verbose":
+        details = []
+        if operation.args_preview:
+            details.append(f"args={operation.args_preview}")
+        if operation.metadata:
+            metadata = sanitize_for_progress(operation.metadata, max_len=500)
+            if metadata and metadata != "{}":
+                details.append(f"metadata={metadata}")
+        if details:
+            line += "\n  " + "\n  ".join(details)
+
+    return line
+
+
+def _operation_name(operation: ProgressOperation) -> str:
+    if operation.event_type in _EVENT_LABELS:
+        label = _EVENT_LABELS[operation.event_type]
+        if operation.tool_name and operation.tool_name != "subagent":
+            return f"{label}: {operation.tool_name}"
+        return label
+    return operation.tool_name or operation.event_type or "operation"
+
+
+def _normalize_progress_mode(tool_progress_mode: object | None) -> str:
+    mode = str(tool_progress_mode or "all").strip().lower()
+    if mode not in {"off", "new", "all", "verbose"}:
+        return "all"
+    return mode
+
+
+def _normalize_feishu_style(style: object | None) -> str:
+    normalized = str(style or "lively").strip().lower()
+    return normalized if normalized in {"lively", "neutral", "compact"} else "lively"
+
+
+def _normalize_feishu_language(language: object | None) -> str:
+    normalized = str(language or "zh").strip().lower()
+    if normalized in {"zh", "zh-cn", "zh_cn", "cn", "chinese"}:
+        return "zh"
+    if normalized in {"en", "en-us", "en_us", "english"}:
+        return "en"
+    return "zh"
+
+
+def detect_feishu_progress_card_language(
+    message: object,
+    configured: object | None = "auto",
+    *,
+    context_messages: Iterable[object] | None = None,
+) -> str:
+    """Resolve Feishu progress-card language from config, user text, and context.
+
+    Explicit zh/en config wins. In auto mode, substantive current user text wins;
+    bare acknowledgements such as ``OK``/``批准`` inherit the recent substantive
+    user language instead of flipping the card to English.
+    """
+
+    configured_text = str(configured or "auto").strip().lower()
+    if configured_text not in {"", "auto", "detect"}:
+        return _normalize_feishu_language(configured_text)
+    text = _language_probe_text(message)
+    if _is_language_control_text(text):
+        contextual = _detect_contextual_feishu_language(context_messages)
+        return contextual or "zh"
+    if _CJK_RE.search(text):
+        return "zh"
+    return "en" if re.search(r"[A-Za-z]", text or "") else "zh"
+
+
+def _language_probe_text(value: object) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        return _language_probe_text(value.get("content") or value.get("text") or "")
+    if isinstance(value, list):
+        parts: list[str] = []
+        for item in value:
+            piece = _language_probe_text(item)
+            if piece:
+                parts.append(piece)
+        return " ".join(parts)
+    return str(value or "")
+
+
+def _is_language_control_text(text: str) -> bool:
+    compact = re.sub(r"[\s，,。.!！?？：:；;、\-_/]+", "", (text or "").strip().lower())
+    return compact in {
+        "ok",
+        "okay",
+        "yes",
+        "y",
+        "approve",
+        "approved",
+        "goahead",
+        "continue",
+        "next",
+        "doit",
+        "好的",
+        "好",
+        "可以",
+        "行",
+        "嗯",
+        "同意",
+        "批准",
+        "授权",
+        "已授权操作",
+        "继续",
+        "继续吧",
+        "执行下一步",
+        "下一步",
+        "开始",
+        "开工",
+        "修吧",
+        "批准开始实施",
+        "接下来走正规开发流程批准开始实施",
+        "ok继续",
+        "ok执行下一步",
+    }
+
+
+def _detect_contextual_feishu_language(context_messages: Iterable[object] | None) -> str:
+    if not context_messages:
+        return ""
+    try:
+        materialized = list(context_messages)
+    except TypeError:
+        return ""
+    for entry in reversed(materialized[-12:]):
+        if isinstance(entry, dict):
+            role = str(entry.get("role") or "").strip().lower()
+            if role and role != "user":
+                continue
+        text = _language_probe_text(entry).strip()
+        if not text or _is_language_control_text(text):
+            continue
+        if _CJK_RE.search(text):
+            return "zh"
+        if re.search(r"[A-Za-z]", text):
+            return "en"
+    return ""
+
+
+def _feishu_labels(language: str) -> dict[str, str]:
+    if _normalize_feishu_language(language) == "en":
+        return {
+            "task_id": "Task ID",
+            "status": "Status",
+            "duration": "Duration",
+            "model": "Model",
+            "context": "Context",
+            "rounds": "Rounds",
+            "account_limits": "Account Quota",
+            "recent_operations": "Recent Operations",
+            "todos": "TODO",
+            "running": "running",
+            "tool": "Tool",
+            "command": "Command",
+            "skill": "Skill",
+        }
+    return {
+        "task_id": "任务 ID",
+        "status": "状态",
+        "duration": "耗时",
+        "model": "模型",
+        "context": "上下文",
+        "rounds": "执行轮次",
+        "account_limits": "账户额度",
+        "recent_operations": "最近操作",
+        "todos": "待办",
+        "running": "进行中",
+        "tool": "工具",
+        "command": "命令",
+        "skill": "技能",
+    }
+
+
+def _feishu_status_label(status: str, *, language: str) -> str:
+    labels = _FEISHU_STATUS_LABELS.get(_normalize_feishu_language(language), _FEISHU_STATUS_LABELS["zh"])
+    return labels.get(status or "running", str(status or "running").title())
+
+
+def _feishu_header_template(status: str) -> str:
+    return _FEISHU_HEADER_TEMPLATES.get(status or "running", "blue")
+
+
+def _feishu_header_title(status: str, *, style: object, emoji: bool, language: str) -> str:
+    # ``style`` is kept for config compatibility; Feishu progress cards now use
+    # neutral workbench copy in every style so the default work profile cannot be
+    # confused with the separate Samiya companion bot.
+    del style
+    lang = _normalize_feishu_language(language)
+    titles = _FEISHU_TITLES.get(lang, _FEISHU_TITLES["zh"])
+    icon, text = titles.get(status or "running", titles["running"])
+    content = f"{icon} {text}" if emoji else text
+    return sanitize_for_progress(content, max_len=80)
+
+
+def _feishu_status_icon(status: str, *, language: str) -> str:
+    titles = _FEISHU_TITLES.get(_normalize_feishu_language(language), _FEISHU_TITLES["zh"])
+    icon, _ = titles.get(status or "running", titles["running"])
+    return icon
+
+
+def _feishu_metric_label(icon: str, label: str, language: str) -> str:
+    separator = "：" if _normalize_feishu_language(language) == "zh" else ":"
+    return f"**{icon} {label}{separator}**"
+
+
+def _feishu_model_detail(
+    model_display: object,
+    *,
+    reasoning_effort_display: object = None,
+    service_tier_display: object = None,
+    labels: dict[str, str],
+    language: str,
+) -> str:
+    model = str(model_display or "").strip()
+    if not model or "[REDACTED]" in model or _FEISHU_UNSAFE_METADATA_LINE_RE.search(model):
+        return ""
+    safe_model = _feishu_escape_markdown_text(model)
+    if not safe_model or "[REDACTED]" in safe_model:
+        return ""
+
+    components = [safe_model]
+    effort = ""
+    if reasoning_effort_display is not None:
+        effort = sanitize_for_progress(reasoning_effort_display).replace("\n", " ").strip()
+    if effort and "[REDACTED]" not in effort and not _FEISHU_UNSAFE_METADATA_LINE_RE.search(effort):
+        components.append(_feishu_escape_markdown_text(effort))
+    if str(service_tier_display or "").strip().lower() == "fast":
+        components.append("fast")
+
+    return f"{_feishu_metric_label('🤖', labels['model'], language)} {' · '.join(components)}"
+
+
+def _feishu_account_limit_detail(
+    account_limit_lines: Iterable[object],
+    *,
+    labels: dict[str, str],
+    language: str,
+) -> str:
+    lines: list[str] = []
+    for raw in account_limit_lines or ():
+        text = str(raw or "").strip()
+        if not text or _FEISHU_ACCOUNT_LIMIT_HEADER_RE.match(text):
+            continue
+        if "[REDACTED]" in text or _FEISHU_UNSAFE_METADATA_LINE_RE.search(text):
+            continue
+        safe = sanitize_for_progress(text, max_len=180).replace("\n", " ").strip()
+        if not safe or "[REDACTED]" in safe or _FEISHU_UNSAFE_METADATA_LINE_RE.search(safe):
+            continue
+        escaped = _feishu_escape_markdown_text(safe)
+        if escaped:
+            lines.append(escaped)
+        if len(lines) >= 4:
+            break
+    if not lines:
+        return ""
+    label = _feishu_metric_label("💳", labels["account_limits"], language)
+    account_rows = "\n".join(f"- {line}" for line in lines)
+    return f"{label}\n{account_rows}"
+
+
+def _context_usage_text_line(usage: ContextUsageSnapshot | None) -> str:
+    if usage is None:
+        return ""
+    body = _context_usage_body(usage, language="en")
+    if not body:
+        return ""
+    return sanitize_for_progress(f"🧠 **Context:** {body}", max_len=240)
+
+
+def _context_usage_feishu_line(usage: ContextUsageSnapshot | None, *, language: str = "zh") -> str:
+    if usage is None:
+        return ""
+    lang = _normalize_feishu_language(language)
+    body = _context_usage_body(usage, language=lang)
+    if not body:
+        return ""
+    label = _feishu_labels(lang)["context"]
+    prefix = _feishu_metric_label("🧠", label, lang)
+    return sanitize_for_progress(f"{prefix} {body}", max_len=240)
+
+
+def _iteration_usage_text_line(usage: IterationUsageSnapshot | None) -> str:
+    body = _iteration_usage_body(usage)
+    if not body:
+        return ""
+    return sanitize_for_progress(f"🔁 **Rounds:** {body}", max_len=120)
+
+
+def _iteration_usage_feishu_line(usage: IterationUsageSnapshot | None, *, language: str = "zh") -> str:
+    body = _iteration_usage_body(usage)
+    if not body:
+        return ""
+    lang = _normalize_feishu_language(language)
+    label = _feishu_labels(lang)["rounds"]
+    prefix = _feishu_metric_label("🔁", label, lang)
+    return sanitize_for_progress(f"{prefix} {body}", max_len=120)
+
+
+def _iteration_usage_body(usage: IterationUsageSnapshot | None) -> str:
+    if usage is None:
+        return ""
+    current = _safe_nonnegative_int(getattr(usage, "current", 0))
+    maximum = _safe_nonnegative_int(getattr(usage, "maximum", 0))
+    # A zero/absent budget cannot be shown as ``current / max``; omit it entirely
+    # rather than render a meaningless ``0 / 0``.
+    if maximum <= 0:
+        return ""
+    return f"{current} / {maximum}"
+
+
+def _context_usage_body(usage: ContextUsageSnapshot, *, language: str) -> str:
+    current = _safe_nonnegative_int(getattr(usage, "current_tokens", 0))
+    window = _safe_nonnegative_int(getattr(usage, "context_window", 0))
+    peak = _safe_nonnegative_int(getattr(usage, "peak_tokens", 0))
+    compressions = _safe_nonnegative_int(getattr(usage, "compression_count", 0))
+    if not any((current, peak, compressions)):
+        return ""
+
+    if current > 0:
+        if window > 0:
+            percent = (current / window) * 100
+            if language == "zh":
+                parts = [f"{_format_count(current)} / {_format_count(window)}（{percent:.1f}%）"]
+            else:
+                parts = [f"{_format_count(current)} / {_format_count(window)} tokens ({percent:.1f}%)"]
+        elif language == "zh":
+            parts = [f"{_format_count(current)} tokens"]
+        else:
+            parts = [f"{_format_count(current)} tokens"]
+    else:
+        parts = []
+
+    if language == "zh":
+        if peak > 0:
+            parts.append(f"峰值 {_format_count(peak)}")
+        if compressions > 0 or current > 0:
+            parts.append(f"自动压缩 {compressions} 次")
+    else:
+        if peak > 0:
+            parts.append(f"peak {_format_count(peak)}")
+        if compressions > 0 or current > 0:
+            parts.append(f"compressions {compressions}")
+    return " · ".join(parts)
+
+
+def _format_count(value: int) -> str:
+    return f"{_safe_nonnegative_int(value):,}"
+
+
+def _safe_nonnegative_int(value: object) -> int:
+    if value is None or isinstance(value, bool):
+        return 0
+    try:
+        number = int(value)
+    except Exception:
+        return 0
+    return max(0, number)
+
+
+def _snapshot_elapsed_duration(snapshot: TransactionSnapshot, *, feishu: bool = False) -> str:
+    end = snapshot.completed_at if snapshot.completed_at is not None else getattr(snapshot, "updated_at", None)
+    if end is None or not snapshot.started_at:
+        return ""
+    try:
+        elapsed = float(end) - float(snapshot.started_at)
+    except Exception:
+        return ""
+    if elapsed < 0:
+        return ""
+    return _format_feishu_duration(elapsed) if feishu else _format_duration(elapsed)
+
+
+def _snapshot_duration(snapshot: TransactionSnapshot) -> str:
+    return _snapshot_elapsed_duration(snapshot)
+
+
+def _iter_feishu_operation_lines(
+    operations: Iterable[ProgressOperation],
+    *,
+    mode: str,
+    max_operations: int,
+    emoji: bool,
+    language: str = "zh",
+) -> Iterable[str]:
+    try:
+        limit = max(0, int(max_operations))
+    except Exception:
+        limit = 5
+    if limit == 0:
+        return
+
+    rendered: list[str] = []
+    previous_tool = object()
+    lang = _normalize_feishu_language(language)
+    for operation in operations:
+        tool_key = operation.tool_name or operation.event_type
+        if mode == "new" and tool_key == previous_tool:
+            continue
+        previous_tool = tool_key
+        line = _feishu_operation_line(operation, emoji=emoji, language=lang)
+        if line:
+            rendered.append(line)
+
+    for line in rendered[-limit:]:
+        yield line
+
+
+def _feishu_operation_line(operation: ProgressOperation, *, emoji: bool, language: str = "zh") -> str:
+    lang = _normalize_feishu_language(language)
+    labels = _feishu_labels(lang)
+    skill_name = _safe_skill_identifier_from_operation(operation)
+    command_name = _safe_command_name(operation)
+    tool_name = _safe_display_label(operation.tool_name, max_len=80)
+    duration = _format_feishu_duration(operation.duration)
+
+    if skill_name:
+        icon = "📚 " if emoji else ""
+        label = labels["skill"]
+        line = f"{icon}{label}：{skill_name}" if lang == "zh" else f"{icon}{label}: {skill_name}"
+    elif command_name:
+        icon = "🖥️ " if emoji else ""
+        label = labels["command"]
+        if tool_name:
+            line = f"{icon}{label}：{command_name}（{tool_name}）" if lang == "zh" else f"{icon}{label}: {command_name} ({tool_name})"
+        else:
+            line = f"{icon}{label}：{command_name}" if lang == "zh" else f"{icon}{label}: {command_name}"
+    else:
+        name = tool_name or _safe_display_label(_operation_name(operation), max_len=100) or "operation"
+        icon = _operation_icon(operation, emoji=emoji)
+        prefix = _operation_prefix(operation, language=lang)
+        line = f"{icon}{prefix}：{name}" if lang == "zh" else f"{icon}{prefix}: {name}"
+
+    timing_parts = _feishu_operation_timing_parts(operation, duration=duration, language=lang)
+    if timing_parts:
+        separator = " · "
+        line = f"{line}{separator}{separator.join(timing_parts)}"
+    return sanitize_for_progress(line, max_len=260)
+
+
+def _operation_icon(operation: ProgressOperation, *, emoji: bool) -> str:
+    if not emoji:
+        return ""
+    if operation.event_type.startswith("subagent"):
+        return "📚 "
+    return "🛠️ "
+
+
+def _operation_prefix(operation: ProgressOperation, *, language: str = "zh") -> str:
+    labels = _feishu_labels(language)
+    if operation.event_type.startswith("subagent"):
+        return labels["skill"]
+    return labels["tool"]
+
+
+def _feishu_operation_timing_parts(
+    operation: ProgressOperation,
+    *,
+    duration: str,
+    language: str,
+) -> list[str]:
+    # Render timing as a compact start-end interval (e.g. ``22:26:31 - 22:26:33``)
+    # instead of separate start/end labels. Running operations use the localized
+    # "in progress" marker as the interval's open end.
+    labels = _feishu_labels(language)
+    started_at = _format_timestamp(getattr(operation, "started_at", 0.0))
+    completed_at = getattr(operation, "completed_at", None)
+    ended_at = _format_timestamp(completed_at) if completed_at is not None else ""
+    is_running = operation.status == "running"
+
+    parts: list[str] = []
+    if started_at and ended_at:
+        parts.append(f"{started_at} - {ended_at}")
+    elif started_at and is_running:
+        parts.append(f"{started_at} - {labels['running']}")
+    elif started_at:
+        parts.append(started_at)
+    elif ended_at:
+        parts.append(ended_at)
+
+    if duration:
+        parts.append(f"{labels['duration']} {duration}")
+    elif is_running and not started_at:
+        parts.append(labels["running"])
+    return parts
+
+
+def _format_timestamp(value: Any) -> str:
+    if value is None or isinstance(value, bool):
+        return ""
+    try:
+        timestamp = float(value)
+    except Exception:
+        return ""
+    if timestamp < 0:
+        return ""
+    try:
+        return datetime.fromtimestamp(timestamp).strftime("%H:%M:%S")
+    except Exception:
+        return ""
+
+
+def _safe_skill_identifier_from_operation(operation: ProgressOperation) -> str | None:
+    tool_name = (operation.tool_name or "").strip().lower()
+    if tool_name != "skill_view":
+        return None
+
+    candidates: list[object] = [_skill_name_from_args_preview(operation.args_preview)]
+    if operation.event_type == "tool.started" or operation.status == "running":
+        candidates.append(operation.preview)
+
+    for candidate in candidates:
+        label = _safe_skill_identifier(candidate)
+        if label:
+            return label
+    return None
+
+
+def _skill_name_from_args_preview(args_preview: object) -> str | None:
+    if not isinstance(args_preview, str) or not args_preview.strip():
+        return None
+    text = args_preview.strip()
+    if not (text.startswith("{") and text.endswith("}")):
+        return None
+    try:
+        parsed = json.loads(text)
+    except Exception:
+        try:
+            parsed = ast.literal_eval(text)
+        except Exception:
+            return None
+    if not isinstance(parsed, dict):
+        return None
+    value = parsed.get("name")
+    return value if isinstance(value, str) else None
+
+
+def _safe_skill_identifier(value: object) -> str | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    label = sanitize_for_progress(value.strip(), max_len=160)
+    if not label or "[REDACTED]" in label or any(ch.isspace() for ch in label):
+        return None
+    if "\\" in label or "?" in label or "&" in label or "=" in label:
+        return None
+    if label.startswith("/") or label.endswith("/") or "//" in label:
+        return None
+    if not _SAFE_SKILL_IDENTIFIER_RE.match(label):
+        return None
+    if label.startswith(_TOKEN_LIKE_SKILL_PREFIXES):
+        return None
+    first_segment = re.split(r"[/:]", label, maxsplit=1)[0]
+    if first_segment in _PATH_LIKE_SKILL_PREFIXES:
+        return None
+    return label
+
+
+def _safe_command_name(operation: ProgressOperation) -> str | None:
+    # Only command-capable tool events can produce command/script labels. Other
+    # previews can be arbitrary user/subagent prose and must not be scanned.
+    tool_name = (operation.tool_name or "").strip().lower()
+    if tool_name not in {"terminal"}:
+        return None
+
+    # `preview` on completed operations is often raw stdout/stderr. Derive
+    # command/script names only from explicit args or from the initial running
+    # preview, never from completion output.
+    sources: list[str | None] = []
+    if operation.args_preview:
+        sources.append(operation.args_preview)
+    if operation.event_type == "tool.started" or operation.status == "running":
+        sources.append(operation.preview)
+
+    for source in sources:
+        text = sanitize_for_progress(source, max_len=500) if source else ""
+        if not text:
+            continue
+        command_line = _extract_command_line_candidate(text)
+        if not command_line:
+            continue
+        command_name = _extract_command_name_from_line(command_line)
+        if command_name:
+            return command_name
+    return None
+
+
+def _extract_command_line_candidate(text: str) -> str | None:
+    stripped = text.strip()
+    if stripped.startswith("{") and stripped.endswith("}"):
+        try:
+            parsed = ast.literal_eval(stripped)
+        except Exception:
+            parsed = None
+        if isinstance(parsed, dict):
+            command = parsed.get("command")
+            return command if isinstance(command, str) else None
+    return stripped
+
+
+def _extract_command_name_from_line(command_line: str) -> str | None:
+    try:
+        words = shlex.split(command_line, posix=True)
+    except ValueError:
+        words = [match.group(0) for match in _SHELL_WORD_RE.finditer(command_line)]
+    if not words:
+        return None
+
+    index = 0
+    while index < len(words) and _ENV_ASSIGNMENT_RE.match(words[index]):
+        index += 1
+    if index >= len(words):
+        return None
+
+    executable = words[index].replace("\\", "/").rsplit("/", 1)[-1]
+    executable_label = _safe_display_label(executable, max_len=80)
+    if not executable_label:
+        return None
+
+    if _looks_like_script(words[index]):
+        return executable_label
+
+    if executable_label in {"python", "python3", "node", "deno", "ruby", "bash", "sh", "zsh"}:
+        script = _first_positional_script_after_interpreter(words[index + 1 :])
+        return script or executable_label
+
+    if executable_label in {"pytest", "git", "go", "npm", "npx", "pnpm", "uv", "yarn"}:
+        return executable_label
+
+    # Unknown executables are kept as generic tool labels. Do not scan their
+    # arguments for script-like paths because those may be data files/secrets.
+    return None
+
+
+def _looks_like_script(token: str) -> bool:
+    basename = token.replace("\\", "/").rsplit("/", 1)[-1]
+    return bool(_SCRIPT_TOKEN_RE.fullmatch(basename))
+
+
+def _first_positional_script_after_interpreter(words: list[str]) -> str | None:
+    for word in words:
+        if word.startswith("-"):
+            # Interpreter options can consume following values. Be conservative:
+            # once options are present, show only the interpreter label.
+            return None
+        if _looks_like_script(word):
+            basename = word.replace("\\", "/").rsplit("/", 1)[-1]
+            return _safe_display_label(basename, max_len=100)
+        return None
+    return None
+
+
+def _safe_display_label(value: object, *, max_len: int) -> str | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    label = sanitize_for_progress(value.strip(), max_len=max_len)
+    if not label or "[REDACTED]" in label or any(ch.isspace() for ch in label):
+        return None
+    if "/" in label or "\\" in label or "?" in label or "&" in label or "=" in label:
+        return None
+    if not _SAFE_LABEL_RE.match(label):
+        return None
+    return label
+
+
+def _feishu_escape_markdown_text(text: object) -> str:
+    value = str(text or "")
+    value = re.sub(r"\[([^\]\n]{0,200})\]\([^)]*\)", r"\1", value)
+    value = re.sub(r"<at\b[^>]*>(.*?)</at>", r"\1", value, flags=re.IGNORECASE | re.DOTALL)
+    value = re.sub(r"https?://\S+", "[link]", value)
+    value = sanitize_for_progress(value, max_len=500).replace("\n", " ")
+    value = value.replace("<", "‹").replace(">", "›")
+    for char in ("\\", "`", "*", "_", "{", "}", "[", "]", "(", ")", "#", "+", "-", ".", "!"):
+        value = value.replace(char, f"\\{char}")
+    return value
+
+
+def _feishu_escape_url(url: str) -> str:
+    return sanitize_for_progress(url, max_len=500).replace(")", "%29")
+
+
+def _format_duration(duration: float | None) -> str:
+    if duration is None:
+        return ""
+    try:
+        return f"{float(duration):.2f}s"
+    except Exception:
+        return ""
+
+
+def _format_feishu_duration(duration: float | None) -> str:
+    if duration is None or isinstance(duration, bool):
+        return ""
+    try:
+        seconds_float = float(duration)
+    except Exception:
+        return ""
+    if seconds_float < 0:
+        return ""
+    total_seconds = int(seconds_float)
+    if seconds_float > 0 and total_seconds == 0:
+        total_seconds = 1
+
+    years, remainder = divmod(total_seconds, 365 * 24 * 60 * 60)
+    months, remainder = divmod(remainder, 30 * 24 * 60 * 60)
+    days, remainder = divmod(remainder, 24 * 60 * 60)
+    hours, remainder = divmod(remainder, 60 * 60)
+    minutes, seconds = divmod(remainder, 60)
+
+    parts: list[str] = []
+    for value, suffix in (
+        (years, "年"),
+        (months, "月"),
+        (days, "日"),
+        (hours, "小时"),
+        (minutes, "分"),
+        (seconds, "秒"),
+    ):
+        if value:
+            parts.append(f"{value}{suffix}")
+    return "".join(parts) if parts else "0秒"
+
+
+def _safe_progress_dashboard_url(url: str | None) -> str | None:
+    """Return a sanitized absolute dashboard /progress URL or None.
+
+    Dashboard URLs can point at a protected local server. Never echo query
+    strings, fragments, or userinfo back into chat because those are common
+    places for session tokens and reverse-proxy secrets.
+    """
+
+    if not isinstance(url, str) or not url.strip():
+        return None
+    try:
+        parsed = urlsplit(url.strip())
+    except Exception:
+        return None
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        return None
+    try:
+        port = parsed.port
+    except ValueError:
+        return None
+
+    host = parsed.hostname
+    if ":" in host:
+        host = f"[{host}]"
+    netloc = host
+    if port is not None:
+        netloc = f"{netloc}:{port}"
+    path = parsed.path.rstrip("/")
+    if not path.endswith("/progress"):
+        path = f"{path}/progress" if path else "/progress"
+    safe = urlunsplit((parsed.scheme, netloc, path, "", ""))
+    return sanitize_for_progress(safe, max_len=500)
+
+
+def _cap_panel(text: str, max_length: int) -> str:
+    try:
+        max_length = int(max_length)
+    except Exception:
+        max_length = _DEFAULT_MAX_LENGTH
+    if max_length <= 0:
+        return ""
+    if len(text) <= max_length:
+        return text
+    suffix = "\n…"
+    if max_length <= len(suffix):
+        return "…"[:max_length]
+    return text[: max_length - len(suffix)] + suffix

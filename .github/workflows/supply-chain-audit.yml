@@ -68,56 +68,23 @@ jobs:
 
       - name: Scan diff for critical patterns
         id: scan
-        env:
-          GH_TOKEN: ${{ github.token }}
+        # Added lines only, excluding lockfiles. The three-dot diff (base...head) starts at the
+        # merge base, so only changes introduced by this PR are scanned. Two patterns: base64
+        # decode + exec/eval on one line (the litellm payload), and subprocess calls carrying
+        # base64/hex/chr() encoding. Every hit is printed; a hit passes only when
+        # .github/supply-chain-acknowledged.json names its exact file blob and line.
         run: |
-          set -euo pipefail
-
-          BASE="${{ github.event.pull_request.base.sha }}"
-          HEAD="${{ github.event.pull_request.head.sha }}"
-
-          # Added lines only, excluding lockfiles.
-          # Three-point diff (base...head) diffs from the merge base to HEAD,
-          # so only changes introduced by this PR are included — not changes
-          # that landed on main after the PR branched off.
-          DIFF=$(git diff "$BASE"..."$HEAD" -- . ':!uv.lock' ':!*.lock' ':!package-lock.json' ':!yarn.lock' || true)
-
-          FINDINGS=""
-
-          # --- base64 decode + exec/eval on the same line (the litellm attack pattern) ---
-          B64_EXEC_HITS=$(echo "$DIFF" | grep -n '^+' | grep -iE 'base64\.(b64decode|decodebytes|urlsafe_b64decode)' | grep -iE 'exec\(|eval\(' | head -10 || true)
-          if [ -n "$B64_EXEC_HITS" ]; then
-            FINDINGS="${FINDINGS}
-          ### 🚨 CRITICAL: base64 decode + exec/eval combo
-          Base64-decoded strings passed directly to exec/eval — the signature of hidden credential-stealing payloads.
-
-          **Matches:**
-          \`\`\`
-          ${B64_EXEC_HITS}
-          \`\`\`
-          "
-          fi
-
-          # --- subprocess with encoded/obfuscated command argument ---
-          PROC_HITS=$(echo "$DIFF" | grep -n '^+' | grep -E 'subprocess\.(Popen|call|run)\s*\(' | grep -iE 'base64|\\x[0-9a-f]{2}|chr\(' | head -10 || true)
-          if [ -n "$PROC_HITS" ]; then
-            FINDINGS="${FINDINGS}
-          ### 🚨 CRITICAL: subprocess with encoded/obfuscated command
-          Subprocess calls whose command strings are base64- or hex-encoded are a strong indicator of payload execution.
-
-          **Matches:**
-          \`\`\`
-          ${PROC_HITS}
-          \`\`\`
-          "
-          fi
-
-          if [ -n "$FINDINGS" ]; then
-            echo "found=true" >> "$GITHUB_OUTPUT"
-            echo "$FINDINGS" > /tmp/findings.md
-          else
-            echo "found=false" >> "$GITHUB_OUTPUT"
-          fi
+          set -uo pipefail
+          rc=0
+          python3 scripts/ci/supply_chain_scan.py \
+            --base "${{ github.event.pull_request.base.sha }}" \
+            --head "${{ github.event.pull_request.head.sha }}" \
+            --findings /tmp/findings.md || rc=$?
+          case "$rc" in
+            0) echo "found=false" >> "$GITHUB_OUTPUT" ;;
+            1) echo "found=true" >> "$GITHUB_OUTPUT" ;;
+            *) exit "$rc" ;;
+          esac
 
       - name: Emit review_status
         id: emit-status
@@ -140,7 +107,7 @@ jobs:
                       "title": "Critical supply chain risk",
                       "summary": "Critical supply chain risk patterns detected in this PR.",
                       "detail": detail,
-                      "how_to_fix": "Review the flagged code carefully. If it is a false positive, narrow the pattern in .github/workflows/supply-chain-audit.yml."
+                      "how_to_fix": "Review the flagged code carefully. If it is a reviewed false positive, acknowledge that exact line in .github/supply-chain-acknowledged.json (scripts/ci/supply_chain_scan.py)."
                   }]
               }]
           else:

@@ -35,6 +35,12 @@ scripts/run_tests.sh -v --tb=long                       # pytest flags pass thro
   wall-clock bounds ≥ 2s, event-based sync, no `assert not _wait_until(...)` races. A new
   non-zero `time.sleep`/`asyncio.sleep` in a test fails the ratchet (HX013): wait on an Event or
   poll with `tests.waiting.wait_until` / `async_wait_until`.
+- **Scratch:** each file's `TMPDIR` and pytest basetemp is a fresh `r-*` dir under
+  `/var/tmp/hermes-pytest-<uid>` (disk-backed, short, not hidden), removed after the file. A host
+  that must keep temp files elsewhere sets `HERMES_TEST_SCRATCH_ROOT=<absolute dir>`: the runner
+  refuses one inside the Hermes home (conftest would move files out of it) and notes one that is
+  longer, under a hidden dir, or shares a parent with the checkout (pytest then roots out-of-tree
+  test files, and their `.pytest_cache`, at that parent): AF_UNIX and hidden-path tests can fail.
 - **Placement mirrors the source tree.** A test lives in `tests/<top-level source dir>/` (`tests/hermes_cli/`,
   `tests/agent/`, `tests/hermes_state/`, `tests/gateway/relay/`, ...); installer/updater script tests
   under `tests/scripts/{install,desktop_update}/`. Only tests of root-level modules (`batch_runner`,

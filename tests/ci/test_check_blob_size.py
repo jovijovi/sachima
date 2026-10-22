@@ -122,6 +122,21 @@ def test_allowlist_exempts_exact_paths_only(repo):
     assert _offenders(repo, base, head, allow) == [("assets/icon-dark.icns", "binary", "A")]
 
 
+def test_pinned_allowlist_entry_exempts_only_that_exact_content(repo):
+    base = _git(repo, "rev-parse", "HEAD")
+    approved = _binary(LIMIT * 3, 11)
+    head = _commit(repo, {"packaging/bg.tiff": approved})
+    blob = _git(repo, "rev-parse", f"{head}:packaging/bg.tiff")
+    allow = cbs.parse_allowlist(f"packaging/bg.tiff@{blob}\n")
+    assert _offenders(repo, base, head, allow) == []
+    # Other bytes at the pinned path, the pinned bytes at another path, and a short id are judged.
+    changed = _commit(repo, {"packaging/bg.tiff": _binary(LIMIT * 3, 12)})
+    assert _offenders(repo, base, changed, allow) == [("packaging/bg.tiff", "binary", "A")]
+    moved = _commit(repo, {"packaging/bg.tiff": None, "packaging/other.tiff": approved})
+    assert _offenders(repo, base, moved, allow) == [("packaging/other.tiff", "binary", "A")]
+    assert _offenders(repo, base, head, {f"packaging/bg.tiff@{blob[:12]}"}) == [("packaging/bg.tiff", "binary", "A")]
+
+
 def test_allowlist_file_ignores_comments_and_blanks(tmp_path):
     path = tmp_path / "allow.txt"
     path.write_text("# why\n\n  apps/a.icns  \n# b.png\n", encoding="utf-8")

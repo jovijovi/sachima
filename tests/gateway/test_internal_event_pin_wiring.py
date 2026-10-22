@@ -245,7 +245,9 @@ async def test_eventless_followup_keeps_effective_prompt_through_next_human(
     runner = _make_runner(monkeypatch, config)
     calls: list[dict] = []
     _capture(runner, calls)
-    runner._run_agent_deliver_first_response = AsyncMock()
+    # Returns (text_delivery_confirmed, model_turn_completed) for the Sachima delegation
+    # receipt; this double delivers nothing.
+    runner._run_agent_deliver_first_response = AsyncMock(return_value=(False, False))
     runner._refresh_agent_cache_message_count = AsyncMock()
 
     adapter = MagicMock()
@@ -290,7 +292,9 @@ async def test_event_backed_followup_overrides_inherited_channel_prompt(monkeypa
     runner = _make_runner(monkeypatch)
     calls: list[dict] = []
     _capture(runner, calls)
-    runner._run_agent_deliver_first_response = AsyncMock()
+    # Returns (text_delivery_confirmed, model_turn_completed) for the Sachima delegation
+    # receipt; this double delivers nothing.
+    runner._run_agent_deliver_first_response = AsyncMock(return_value=(False, False))
     runner._refresh_agent_cache_message_count = AsyncMock()
     runner._prepare_profile_scoped_inbound_message_text = AsyncMock(return_value="queued")
     runner._session_key_for_source = lambda source: KEY
