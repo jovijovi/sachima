@@ -433,7 +433,7 @@ async def test_synthetic_goal_turn_keeps_pins_and_effective_prompt(monkeypatch, 
     assert not synthetic.internal and synthetic.channel_prompt is None
     if kind == "goal-continuation":
         # A continuation queued behind the running turn drains through the in-band follow-up.
-        runner._run_agent_deliver_first_response = AsyncMock()
+        runner._run_agent_deliver_first_response = AsyncMock(return_value=(False, False))
         runner._refresh_agent_cache_message_count = AsyncMock()
         runner._session_key_for_source = lambda _source: KEY
         adapter = MagicMock(_active_sessions={}, _pending_messages={KEY: synthetic})
