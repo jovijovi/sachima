@@ -161,7 +161,7 @@ async def test_workbench_card_is_sent_and_revised_during_a_durable_fifo_turn(tmp
     fake_run_agent = types.ModuleType("run_agent")
     fake_run_agent.AIAgent = _WorkbenchAgent
     monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
-    runner, adapter, authority, source, record = await _feishu_host(tmp_path, monkeypatch)
+    _runner, adapter, authority, source, record = await _feishu_host(tmp_path, monkeypatch)
     monkeypatch.setattr(_WorkbenchAgent, "card_sent", record.card_sent)
     try:
         await adapter.handle_message(MessageEvent(text="check the release", source=source, message_id="om_h1"))
