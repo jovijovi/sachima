@@ -132,8 +132,11 @@ jobs:
           HERMES_TEST_FILE_RETRIES: '0'
         run: bash scripts/run_tests.sh tests/scripts/test_fresh_source_install.py -q -j 1
 
+  # Fork: not run. Linux is this fork's only target platform, so the PowerShell
+  # installer's Windows surface is not part of its acceptance; `posix` above is.
   windows:
     name: install.ps1 protocol surface
+    if: false
     runs-on: windows-latest
     timeout-minutes: 10
     steps:

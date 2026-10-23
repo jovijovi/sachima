@@ -163,10 +163,17 @@ jobs:
   # Gated on `python` and on each lane it consumes: desktop_updater is set by
   # TypeScript-only changes too (the Electron marker / result readers), and with
   # `python` alone those never reached the Windows hand-off tests below.
+  #
+  # Fork: not dispatched. Linux is this fork's only target platform, so its macOS
+  # and Windows lanes are not part of its acceptance; the Linux-admitted
+  # platforms(...) tests run in `tests` above. The gate tolerates exactly this skip
+  # (NON_LINUX_JOBS in scripts/ci/required_results.py). Keep a bare `if: false`
+  # (see e2e-desktop below). To restore, put back:
+  #   if: needs.detect.outputs.python == 'true' || needs.detect.outputs.desktop_updater == 'true' || needs.detect.outputs.e2e == 'true' || needs.detect.outputs.e2e_upgrade == 'true'
   tests-os:
     name: OS-specific tests
     needs: detect
-    if: needs.detect.outputs.python == 'true' || needs.detect.outputs.desktop_updater == 'true' || needs.detect.outputs.e2e == 'true' || needs.detect.outputs.e2e_upgrade == 'true'
+    if: false
     uses: ./.github/workflows/tests-os.yml
     with:
       commit: ${{ inputs.commit }}
@@ -410,8 +417,9 @@ jobs:
   #   by detect.outputs must succeed; only unselected consumers may skip.
   #   Release (inputs.release): strict — every required job must be
   #   `success`. A skipped required lane fails the gate; only the PR-only
-  #   jobs (history-check, lockfile-diff, prompt-surface-diff, supply-chain) and
-  #   the deferred Desktop E2E (e2e-desktop) may skip. The OSV scan's
+  #   jobs (history-check, lockfile-diff, prompt-surface-diff, supply-chain),
+  #   the deferred Desktop E2E (e2e-desktop) and this fork's undispatched
+  #   macOS/Windows lanes (tests-os) may skip. The OSV scan's
   #   findings are advisory, but its execution is required.
   #
   # Branch protection should require ONLY this check.
