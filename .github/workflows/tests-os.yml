@@ -11,7 +11,7 @@ name: OS-specific tests
 # reproducing any of the OS behaviour that branch exists for. This workflow
 # is where those markers actually execute:
 #
-#   macos    → ``-m platforms``    on blacksmith-12vcpu-macos-latest
+#   macos    → ``-m platforms``    on macos-latest
 #   windows  → ``-m platforms``    on windows-latest and windows-11-arm
 #
 # (tests/conftest.py's ``pytest_collection_modifyitems`` hook skips
@@ -82,14 +82,14 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Two slices: on the old free standard runner (3 cores, 3 workers) one lane ran
+          # Two slices on the free standard runner (3 cores, 3 workers): one lane ran
           # ~7.5 min and became the slowest required job once the Linux suite split.
           - name: macOS-only tests (1/2)
-            runner: blacksmith-12vcpu-macos-latest
+            runner: macos-latest
             marker: macos
             slice: 1/2
           - name: macOS-only tests (2/2)
-            runner: blacksmith-12vcpu-macos-latest
+            runner: macos-latest
             marker: macos
             slice: 2/2
           # Standard 4-vCPU Windows runners (no larger runners on this fork): ~2200 s

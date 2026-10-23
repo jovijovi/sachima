@@ -57,7 +57,7 @@ jobs:
   # flake turns main red after the merge.
   detect:
     name: Detect affected areas
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
       nix: ${{ steps.classify.outputs.nix }}

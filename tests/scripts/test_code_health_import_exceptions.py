@@ -196,22 +196,21 @@ def test_a_comment_allowed_finding_keeps_its_reason_and_is_not_counted_as_inheri
     assert Counter(r["inherited"] is not None for r in data) == Counter({True: 3, False: 2})
 
 
-def test_committed_record_is_the_reviewed_v0217_import_set():
+def test_committed_record_is_the_reviewed_v0224_import_set():
     record = import_exceptions.load()
     assert record is not None
-    assert record["base"] == "6f1a8572114e77079c762f2aa4107857b9760416"
-    assert record["upstream"] == "71d34bad1045610252eda02ee79549436896e784"
-    assert record["pull_request"] == "jovijovi/sachima#278"
+    assert record["base"] == "b96eb530eaefda9d3685d223aef58af47f3c8cf0"
+    assert record["upstream"] == "4d04303818b61bf3aa09278af48356315515965b"
+    assert record["pull_request"] == "jovijovi/sachima#281"
     rows = record["findings"]
-    assert len(rows) == 1241
+    assert len(rows) == 9
     assert Counter(r[4] for r in rows) == Counter({
-        "upstream file, byte-identical": 1199,
-        "upstream finding in a merged file": 30,
-        "release/sachima finding carried from before the ratchet": 12,
+        "upstream file, byte-identical": 7,
+        "upstream finding in a merged file": 2,
     })
     for path, rule, scope, line, _ in rows:
         assert rule in RULES_BY_ID or rule in METRIC_FIX, rule
         assert isinstance(line, int) and line >= 1 and path and scope
     # Every file a row sits in carries its reviewed bytes (a git blob id), and nothing else does.
-    assert set(record["files"]) == {r[0] for r in rows} and len(record["files"]) == 614
+    assert set(record["files"]) == {r[0] for r in rows} and len(record["files"]) == 4
     assert all(re.fullmatch(r"[0-9a-f]{40}", blob) for blob in record["files"].values())

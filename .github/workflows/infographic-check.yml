@@ -33,7 +33,7 @@ permissions:
 
 jobs:
   check-no-committed-infographics:
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
       review_status: ${{ steps.infographic-check.outputs.review_status }}

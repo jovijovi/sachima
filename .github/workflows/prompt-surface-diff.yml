@@ -40,7 +40,7 @@ concurrency:
 jobs:
   diff:
     name: Prompt surface summary
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
       changed: ${{ steps.diff.outputs.changed }}
