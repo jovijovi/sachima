@@ -959,8 +959,7 @@ def _bedrock_converse_call(api_kwargs: dict, *, stream: bool, on_stream_denied=N
     client so the outer retry builds a fresh pool. Streaming returns the event stream; else a SimpleNamespace.
 
     Admission is per call and lands *after* the client is built: a turn whose dispatch lease
-    was revoked/cancelled puts no request on the wire (``ProviderDispatchLease``), including either
-    recovery resend."""
+    was revoked/cancelled puts no request on the wire (``ProviderDispatchLease``), including either recovery resend."""
     from agent.bedrock_adapter import (_get_bedrock_runtime_client, invalidate_runtime_client,
         is_stale_connection_error, is_streaming_access_denied_error, normalize_converse_response,
         recover_from_cache_point_rejection, recover_from_redacted_reasoning_rejection)
