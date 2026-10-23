@@ -7,8 +7,9 @@ Input: the JSON ``toJSON(needs)`` of the all-checks-pass job on stdin.
 Failures always fail the gate. A skipped or missing update/E2E consumer also
 fails whenever ``detect.outputs`` selects its lane. Other skips additionally
 fail in release mode unless the job is in :data:`EXCLUDED_JOBS` (PR-only jobs
-that cannot run on a tag event, plus the deferred Desktop E2E). The OSV scan
-is advisory in its findings only — its execution is required.
+that cannot run on a tag event, the deferred Desktop E2E, and this fork's
+undispatched macOS/Windows lanes). A failed or cancelled excluded job still
+fails. The OSV scan is advisory in its findings only — its execution is required.
 
     echo "$NEEDS" | python3 scripts/ci/required_results.py [--release]
 """
@@ -22,22 +23,26 @@ import sys
 from typing import Any
 
 # Jobs that can never run on a release (push/tag) event, plus the deferred
-# Desktop E2E. These are the only skips a strict run tolerates.
+# Desktop E2E and this fork's non-Linux lanes. These are the only skips a
+# strict run tolerates.
 PR_ONLY_JOBS = ("history-check", "lockfile-diff", "prompt-surface-diff", "supply-chain")
 DEFERRED_JOBS = ("e2e-desktop",)
-EXCLUDED_JOBS = frozenset((*PR_ONLY_JOBS, *DEFERRED_JOBS))
+# Fork: Linux is the only target platform. ci.yaml does not dispatch the macOS
+# and Windows lanes (tests-os), so no lane selects them and their skip is expected.
+NON_LINUX_JOBS = ("tests-os",)
+EXCLUDED_JOBS = frozenset((*PR_ONLY_JOBS, *DEFERRED_JOBS, *NON_LINUX_JOBS))
 
 NEEDS_JSON_OUTPUT = "needs-json"
 
 # Reusable-workflow parents of the update/E2E consumers, and of the real
-# remote-backend lane. The actual detect outputs already arrive in
+# remote-backend and catalog lanes. The actual detect outputs already arrive in
 # toJSON(needs); a selected consumer cannot skip merely because this is a PR
 # rather than a release.
 _UPDATE_CONSUMER_LANES = {
     "tests": ("python", "e2e", "e2e_upgrade"),
-    "tests-os": ("python", "desktop_updater", "e2e", "e2e_upgrade"),
     "e2e-desktop-update": ("e2e_desktop_update",),
     "remote-backends": ("remote_backends",),
+    "catalog-tests": ("catalog",),
 }
 
 

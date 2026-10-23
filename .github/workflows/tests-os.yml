@@ -98,13 +98,19 @@ jobs:
             runner: windows-latest
             marker: windows
             timeout: 60
-          - name: Windows-only tests (arm64)
+          - name: Windows-only tests (arm64, 1/2)
             runner: windows-11-arm
             marker: windows
             timeout: 60
+            slice: 1/2
+          - name: Windows-only tests (arm64, 2/2)
+            runner: windows-11-arm
+            marker: windows
+            timeout: 60
+            slice: 2/2
     steps:
       - name: Checkout code
-        uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+        uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
           ref: ${{ inputs.commit }}
 
@@ -242,11 +248,11 @@ jobs:
     # 32-core like os-tests' Windows row: seven files run in parallel and each spawns
     # process trees; on the 4-vCPU image the suite step took 153-171 s (job 4.7-5.6 min),
     # here 124 s (job 3.1 min), with headroom against scheduling-starved timeouts.
-    runs-on: windows-latest-32-core
+    runs-on: blacksmith-32vcpu-windows-2025
     timeout-minutes: 25
     steps:
       - name: Checkout code
-        uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+        uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
           ref: ${{ inputs.commit }}
 

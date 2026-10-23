@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
 from gateway.sachima_delegate_state import DelegateOrigin, DelegateResultEvent
@@ -103,6 +103,262 @@ class DelegateWakeupBatch:
             "Read each exact event through sachima_delegate_control before "
             "settling it or using any stored continuation authority."
         )
+
+
+_WAKE_IDENTITY_KEYS = (
+    "sachima_delegate_event_ids",
+    "sachima_delegate_task_refs",
+    "sachima_delegate_turn_keys",
+    "sachima_delegate_continuation_refs",
+)
+
+
+def is_delegate_wake(event: Any) -> bool:
+    ids = (getattr(event, "metadata", None) or {}).get("sachima_delegate_event_ids")
+    return getattr(event, "internal", False) is True and isinstance(ids, list) and bool(ids)
+
+
+def _absorb_wake(target: Any, wake: Any) -> None:
+    """``run_busy``'s takeover: the user's event carries the wake's exact identities and its
+    one-shot receipt; text, user identity and gateway-control authority stay the user's."""
+
+    if not isinstance(getattr(target, "metadata", None), dict):
+        target.metadata = {}
+    wake_metadata = wake.metadata or {}
+    for key in _WAKE_IDENTITY_KEYS:
+        values = wake_metadata.get(key)
+        if isinstance(values, list):
+            merged = list(target.metadata.get(key) or [])
+            merged.extend(item for item in values if isinstance(item, str) and item not in merged)
+            target.metadata[key] = merged
+    callback = wake_metadata.get("_gateway_processing_outcome_callback")
+    if callable(callback):
+        target.metadata["_gateway_processing_outcome_callback"] = callback
+
+
+@dataclass(eq=False)
+class _PendingHuman:
+    """A user message committed to the durable FIFO whose turn has not started yet."""
+
+    event: Any
+    session_key: str
+    wakes: list = field(default_factory=list)
+
+
+def _pending_humans(runner: Any) -> dict[str, list[_PendingHuman]]:
+    return runner.__dict__.setdefault("_sachima_pending_humans", {})
+
+
+def take_wake_for_pending_human(runner: Any, session_key: str, event: Any) -> bool:
+    """A wake for a route whose committed user message has not started joins that turn."""
+
+    pending = _pending_humans(runner).get(session_key)
+    if not pending or not is_delegate_wake(event):
+        return False
+    _absorb_wake(pending[0].event, event)
+    pending[0].wakes.append(event)
+    event._gateway_accepted = True
+    return True
+
+
+def _human_committed(runner: Any, pending: _PendingHuman) -> None:
+    route = _pending_humans(runner).setdefault(pending.session_key, [])
+    route.append(pending)
+    if route[0] is not pending:
+        return  # an earlier committed message already owns the route's next turn
+    adapter = runner._delivery_adapter_for(pending.event.source)
+    slot = getattr(adapter, "_pending_messages", None)
+    if not isinstance(slot, dict):
+        return
+    key = pending.session_key
+    state = runner._peek_session_state(key)
+    overflow = state.conversation.queued_events if state is not None else []
+    taken = [slot.pop(key)] if is_delegate_wake(slot.get(key)) else []
+    kept = [queued for queued in overflow if not is_delegate_wake(queued)]
+    taken.extend(queued for queued in overflow if is_delegate_wake(queued))
+    if len(kept) != len(overflow):
+        state.conversation.queued_events = kept
+    if key not in slot and state is not None and state.conversation.queued_events:
+        slot[key] = state.conversation.queued_events.pop(0)
+    for wake in taken:
+        _absorb_wake(pending.event, wake)
+        pending.wakes.append(wake)
+
+
+def human_turn_started(runner: Any, event: Any, session_key: str) -> None:
+    """The admitted copy of a committed user message started: later wakes queue behind it."""
+
+    if getattr(event, "internal", False):
+        return
+    route = _pending_humans(runner).get(session_key) or []
+    for pending in route:
+        original = pending.event
+        if original is event or (
+            (original.message_id or event.message_id)
+            and str(original.message_id or "") == str(event.message_id or "")
+        ) or (not original.message_id and not event.message_id and original.text == event.text):
+            route.remove(pending)
+            break
+    if not route:
+        _pending_humans(runner).pop(session_key, None)
+
+
+async def admit_human_message(runner: Any, authority: Any, event: Any, session_key: str) -> Any:
+    """``admit_message`` for a user message, with the wake takeover of plan §3.3 D.
+
+    Committing the message (the authority's own ``_on_commit`` point) moves a same-route queued
+    wake onto it, and a wake that arrives before its turn starts joins it, so the user's message
+    owns the next turn. If the message ends without its turn starting (/stop, /new, a refused
+    preflight), the wakes go back to the route: to the next committed message, else to the slot.
+    """
+
+    from gateway.session_ingress import admit_message
+
+    pending = _PendingHuman(event, session_key)
+    previous = getattr(event, "_on_commit", None)
+
+    def on_commit() -> None:
+        if previous is not None:
+            previous()
+        _human_committed(runner, pending)
+
+    event._on_commit = on_commit
+    try:
+        return await admit_message(authority, event)
+    finally:
+        await _human_admission_ended(runner, pending)
+
+
+async def _human_admission_ended(runner: Any, pending: _PendingHuman) -> None:
+    route = _pending_humans(runner).get(pending.session_key) or []
+    if pending not in route:
+        return  # never committed, or its turn started and owns what it took
+    route.remove(pending)
+    if not route:
+        _pending_humans(runner).pop(pending.session_key, None)
+    wakes, pending.wakes = pending.wakes, []
+    if not wakes:
+        return
+    for key in (*_WAKE_IDENTITY_KEYS, "_gateway_processing_outcome_callback"):
+        pending.event.metadata.pop(key, None)
+    if route:
+        for wake in wakes:
+            _absorb_wake(route[0].event, wake)
+            route[0].wakes.append(wake)
+        return
+    head = wakes[0]
+    for wake in wakes[1:]:
+        _absorb_wake(head, wake)
+    try:
+        await admit_wake_event(runner, runner._delivery_adapter_for(head.source), head)
+    except Exception:
+        # The coordinator still holds the results as queued; restart recovery re-dispatches them.
+        logger.warning("sachima delegate wake could not return to its route", exc_info=True)
+
+
+#: The one-shot business receipt a turn binds to the event it processed (``run.py``
+#: ``_bind_delegate_processing_receipt``) and the model-turn half of its delivery check.
+_DELIVERY_RECEIPT_KEYS = (
+    "sachima_delegate_event_ids",
+    "_gateway_processing_outcome_callback",
+    "_gateway_model_turn_completed",
+)
+
+
+def move_delivery_receipt(source: Any, target: Any) -> None:
+    """Carry a turn's delegation receipt to the event whose lifecycle sends its reply.
+
+    The session authority runs an admitted message on a ``restore_native`` copy, so the
+    receipt the turn bound to that copy travels with its crash marker to the adapter event
+    that really sends; otherwise a delivered report stays ``report_pending`` and the next
+    restart blocks it as unknown.
+    """
+
+    metadata = getattr(source, "metadata", None)
+    if not isinstance(metadata, dict) or not callable(
+        metadata.get("_gateway_processing_outcome_callback")
+    ):
+        return
+    moved = {key: metadata[key] for key in _DELIVERY_RECEIPT_KEYS if key in metadata}
+    for key in moved:
+        metadata.pop(key)
+    if not isinstance(getattr(target, "metadata", None), dict):
+        target.metadata = {}
+    target.metadata.update(moved)
+
+
+def adopt_followup_receipt(followup: Any, claim_context: Any) -> None:
+    """Carry a drained follow-up's delegation receipt to the event that sends its reply.
+
+    The runner drains a queued wake (or the user message that took one over) in-band as the
+    next turn of the running chain, and that turn's reply is sent for the chain's processing
+    event (``claim_context.processing_event``): by its adapter lifecycle at the end, or by the
+    drain's direct send when another follow-up is waiting. Left on the follow-up, the receipt
+    fired at the follow-up's own processing-complete hook, before the turn's model outcome was
+    recorded or its reply sent, and a staged report was settled as undelivered for good.
+    """
+
+    metadata = getattr(followup, "metadata", None)
+    if claim_context is None or not isinstance(metadata, dict):
+        return
+    callback = metadata.pop("_gateway_processing_outcome_callback", None)
+    if not callable(callback):
+        return
+    processing_event = claim_context.processing_event
+    if not isinstance(getattr(processing_event, "metadata", None), dict):
+        processing_event.metadata = {}
+    target = processing_event.metadata
+    event_ids = [item for item in metadata.get("sachima_delegate_event_ids") or ()
+                 if isinstance(item, str) and item]
+    if callable(target.get("_gateway_processing_outcome_callback")):
+        # A receipt already bound to this send (the turn's own claim) settles together with it.
+        event_ids = list(dict.fromkeys([*(target.get("sachima_delegate_event_ids") or ()), *event_ids]))
+    target["sachima_delegate_event_ids"] = event_ids
+    target["_gateway_processing_outcome_callback"] = callback
+    # The model-turn half is recorded for the turn about to run; an earlier turn's must not vouch for it.
+    target.pop("_gateway_model_turn_completed", None)
+
+
+async def settle_delivery_receipt(adapter: Any, event: Any, results: list) -> None:
+    """Fire the receipt at a send that has no processing hook (busy observer, ``deliver_settled``)."""
+
+    callback_runner = getattr(adapter, "_run_internal_processing_outcome_callback", None)
+    if not callable(callback_runner):
+        return
+    from gateway.platforms.base import ProcessingOutcome
+
+    delivered = any(bool(getattr(result, "success", False)) for result in results if result is not None)
+    await callback_runner(
+        event, ProcessingOutcome.SUCCESS if delivered else ProcessingOutcome.FAILURE
+    )
+
+
+async def admit_wake_event(runner: Any, adapter: Any, event: Any) -> None:
+    """Admit one synthetic wake event into its route on the in-process internal path.
+
+    Raises ``WakeNotAccepted`` when nothing accepted it, exactly like ``admit_internal_event``.
+    While the adapter holds the route's guard, the guard's owner drains the wake after its own
+    turn. Routed through ``handle_message`` instead, the shared runtime's busy observer would run
+    the whole wake turn itself and send its reply with no processing hook, so the report receipt
+    never fires and the unacknowledged wake is retried although it ran.
+    """
+
+    from gateway.wake import WakeNotAccepted, admit_internal_event
+
+    if adapter._drop_unresolved(event):
+        raise WakeNotAccepted()
+    session_key = adapter._event_session_key(event)
+    if take_wake_for_pending_human(runner, session_key, event):
+        return
+    if session_key not in adapter._active_sessions:
+        await admit_internal_event(adapter, event)
+        return
+    expected = str((event.metadata or {}).get("gateway_session_key") or "").strip()
+    event._gateway_accepted = False
+    if not expected or expected == session_key:
+        runner._queue_or_replace_pending_event(session_key, event)
+    if event._gateway_accepted is not True:
+        raise WakeNotAccepted()
 
 
 class SachimaDelegateWakeupDispatcher:

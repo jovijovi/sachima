@@ -95,12 +95,13 @@ def _on(workflow: dict) -> dict:
     return workflow.get("on", workflow.get(True)) or {}
 
 
-def _detect_outputs(lanes: dict[str, bool], event_name: str = "workflow_dispatch") -> dict[str, Any]:
+def _detect_outputs(lanes: dict[str, bool], event_name: str = "workflow_dispatch", *,
+                    release: bool = False) -> dict[str, Any]:
     """The classifier's lines -> the composite action's outputs -> ci.yaml ``detect`` outputs.
 
     Replays a manual dispatch by default: E2E lanes reach their consumers only on a dispatch or a
     release run (pull requests and main pushes force them off), and the routing tests below check
-    that a set lane reaches its suites."""
+    that a set lane reaches its suites. ``release`` replays a stable-release ``workflow_call``."""
     raw = {k: gha.to_string(v) for k, v in lanes.items()}
     action = _yaml(".github/actions/detect-changes/action.yml")
     action_out = {k: gha.render(v["value"], {"steps": {"classify": {"outputs": raw}}})
@@ -110,7 +111,7 @@ def _detect_outputs(lanes: dict[str, bool], event_name: str = "workflow_dispatch
     classify = next(s for s in detect["steps"] if s.get("id") == "classify")
     assert classify["uses"] == "./.github/actions/detect-changes"
     steps = {"classify": {"outputs": action_out}}
-    ctx = {"steps": steps, "github": {"event_name": event_name}, "inputs": {}}
+    ctx = {"steps": steps, "github": {"event_name": event_name}, "inputs": {"release": True} if release else {}}
     steps["gate-lanes"] = {"outputs": workflow_steps.outputs(gate, ctx)}
     return {k: gha.render(v, ctx) for k, v in detect["outputs"].items()}
 
@@ -230,17 +231,31 @@ _CONSUMERS: dict[str, tuple[tuple[str, ...], ...]] = {
     "e2e_upgrade": (
         ("tests", "e2e-upgrade-plan"),
         ("tests", "e2e-upgrade"),
-        ("tests-os", "install-update-e2e", "install-update"),
     ),
-    "e2e": (("tests", "e2e"), ("tests-os", "e2e-windows")),
+    "e2e": (("tests", "e2e"),),
     "e2e_desktop_update": (("e2e-desktop-update", "update"),),
 }
 
+# Fork: Linux is this fork's only target platform. ci.yaml does not dispatch tests-os, so these
+# macOS/Windows consumers (desktop_updater's only one among them) are not part of its acceptance.
+# They stay named so the replay pins that they never run, whatever the lanes say.
+_NON_LINUX_CONSUMERS: dict[str, tuple[tuple[str, ...], ...]] = {
+    "desktop_updater": (("tests-os", "os-tests"),),
+    "e2e_upgrade": (("tests-os", "install-update-e2e", "install-update"),),
+    "e2e": (("tests-os", "e2e-windows"),),
+}
+
+
+def _assert_lane_dispatched(run: dict, lane: str, what: str) -> None:
+    """Every Linux consumer of the set lane runs, and none of its fork-excluded ones does."""
+    if lane in _CONSUMERS:
+        reached = _consumers_reached(run, lane)
+        assert all(reached.values()), f"{what}: {lane}=true never reaches {reached}"
+    ran = ["/".join(p) for p in _NON_LINUX_CONSUMERS.get(lane, ()) if _reached(run, *p) is not None]
+    assert not ran, f"{what}: {lane} dispatched fork-excluded non-Linux job(s) {ran}"
+
 
 def _consumers_reached(run: dict, lane: str) -> dict[str, bool]:
-    if lane == "desktop_updater":
-        return {"tests-os/os-tests[windows] keeps test_desktop_update_windows_*":
-                _windows_desktop_updater_tests_selected(run)}
     reached = {}
     for path in _CONSUMERS[lane]:
         node = _reached(run, *path)
@@ -271,16 +286,18 @@ def test_replay_evaluator_follows_actions_semantics():
                          ids=lambda c: "-".join(n for n, on in zip(_GATED, c) if on) or "none")
 def test_every_set_lane_reaches_its_consumer_whatever_the_other_lanes_say(combo):
     """The R15 hole was a parent ``if:`` keyed on ``python`` alone: a TypeScript-only
-    change to the hand-off's marker reader set ``desktop_updater`` and nothing ran it."""
+    change to the hand-off's marker reader set ``desktop_updater`` and nothing ran it.
+    (Fork: that Windows hand-off suite is excluded; it must stay undispatched instead.)"""
     lanes = {k: False for k in cc.classify(["README.md"])}
     lanes.update(zip(_GATED, combo))
     run = _ci_run(lanes)
     for lane in ("desktop_updater", "e2e", "e2e_upgrade", "e2e_desktop_update"):
-        reached = _consumers_reached(run, lane)
         if lanes[lane]:
-            assert all(reached.values()), f"{lane}=true but not dispatched: {reached}"
-        elif lane != "desktop_updater":
+            _assert_lane_dispatched(run, lane, f"{lane}=true")
+        elif lane in _CONSUMERS:
+            reached = _consumers_reached(run, lane)
             assert not any(reached.values()), f"{lane}=false but ran anyway: {reached}"
+    assert "tests-os" not in run
 
 
 # One-file changes from the review's direct classifier run (acceptance/classifier.json),
@@ -306,8 +323,7 @@ def test_update_owner_change_dispatches_its_suites_end_to_end(path, lanes):
     run = _ci_run(classified)
     for lane in lanes:
         assert classified[lane], f"{path}: classifier leaves {lane} off"
-        reached = _consumers_reached(run, lane)
-        assert all(reached.values()), f"{path}: {lane}=true never reaches {reached}"
+        _assert_lane_dispatched(run, lane, path)
 
 
 # Review R6 m11: update-path files whose suites the classifier left off. Some land in a sibling
@@ -331,16 +347,13 @@ def test_update_path_change_selects_every_suite_that_exercises_it(path, lanes):
     run = _ci_run(classified)
     for lane in lanes:
         assert classified[lane], f"{path}: classifier leaves {lane} off"
-        if lane.startswith("e2e"):
-            reached = _consumers_reached(run, lane)
-            assert all(reached.values()), f"{path}: {lane}=true never reaches {reached}"
-        if lane == "desktop_updater":
-            assert _windows_desktop_updater_tests_selected(run), f"{path}: desktop_updater never reaches its tests"
+        if lane.startswith("e2e") or lane == "desktop_updater":
+            _assert_lane_dispatched(run, lane, path)
 
 
 # Review CI2/CI3: update-path files the classifier sent to the wrong suites.
 _CI3_CASES = {
-    # /api/health `commit`: host-backend-attach compares it before attaching after an update.
+    # /api/health `commit`: the Desktop compares it before attaching after an update.
     "hermes_cli/web_routers/status.py": ("python", "e2e_desktop_update"),
     # The SSH remote's marker judge/gate: typecheck/vitest and the marker contract's script tests.
     "apps/desktop/electron/remote-update-marker-programs.ts": ("frontend", "desktop_updater"),
@@ -375,11 +388,14 @@ def test_gateway_status_routing_names_the_stamp_not_its_prefix_siblings():
 def test_every_detect_output_a_lane_sets_is_consumed_by_some_job():
     """A lane output nothing reads is a lane that can never run anything."""
     ci = _yaml(".github/workflows/ci.yaml")
-    text = json.dumps({k: v for k, v in ci["jobs"].items() if k != "detect"})
-    # python_prod's only reader is the deferred Desktop E2E job (`if: false`, see ci.yaml).
+    # A job that never runs (`if: false`) reads nothing.
+    text = json.dumps({k: v for k, v in ci["jobs"].items() if k != "detect" and v.get("if") is not False})
+    # python_prod's only reader is the deferred Desktop E2E job (`if: false`, see ci.yaml), and
+    # desktop_updater's is the fork's undispatched macOS/Windows tests-os (_NON_LINUX_CONSUMERS).
     unread = [k for k in ci["jobs"]["detect"]["outputs"]
-              if k not in ("event_name", "python_prod") and f"needs.detect.outputs.{k}" not in text]
+              if k not in ("event_name", "python_prod", "desktop_updater") and f"needs.detect.outputs.{k}" not in text]
     assert unread == []
+    assert "needs.detect.outputs.desktop_updater" not in text
 
 
 # -- shared cross-language fixtures (review D14) --------------------------------------------
@@ -399,7 +415,9 @@ def _fixture_lanes_reached(fixture: str) -> dict[str, bool]:
     run = _ci_run(classified)
     reached = {lane: classified[lane] and _reached(run, *job) is not None
                for lane, job in _FIXTURE_LANE_JOBS.items()}
-    reached["desktop_updater"] = classified["desktop_updater"] and _windows_desktop_updater_tests_selected(run)
+    # Fork: the classifier still selects the PowerShell reader's lane; its Windows job never runs.
+    assert classified["desktop_updater"], f"{fixture}: classifier leaves desktop_updater off"
+    _assert_lane_dispatched(run, "desktop_updater", fixture)
     return reached
 
 
@@ -407,7 +425,8 @@ def test_marker_corpus_change_runs_every_language_that_reads_it():
     """The corpus is A7 rule 7's single source of truth for four readers. Classified by
     path alone it selected ``python`` only: cargo (marker_tests.rs), vitest
     (update-marker-corpus.test.ts) and the PowerShell corpus test (desktop_updater on
-    the Windows lane) never ran on the PR that edited their expected answers."""
+    the Windows lane) never ran on the PR that edited their expected answers. (Fork: the
+    Windows lane is excluded; the three Linux readers must still run.)"""
     reached = _fixture_lanes_reached(_CORPUS)
     assert all(reached.values()), f"{_CORPUS}: a corpus consumer's lane never runs: {reached}"
 
@@ -478,13 +497,11 @@ def test_native_windows_lane_selects_the_replay_and_its_controls():
 
 # -- replay guard sensitivity: mutate data, not the replay implementation ------------------
 
+# Fork: the tests-os / windows-install-update-e2e steps are not dispatched (_NON_LINUX_CONSUMERS).
 _REQUIRED_STEP_CASES = (
     ("e2e_desktop_update", ".github/workflows/e2e-desktop-update.yml", "update", "Run the update suite under xvfb"),
     ("e2e_upgrade", ".github/workflows/tests.yml", "e2e-upgrade", "Run upgrade e2e tests"),
-    ("e2e_upgrade", ".github/workflows/windows-install-update-e2e.yml", "install-update", "Run Windows install + update E2E"),
-    ("desktop_updater", ".github/workflows/tests-os.yml", "os-tests", "Run ${{ matrix.marker }} tests"),
     ("e2e", ".github/workflows/tests.yml", "e2e", "Run e2e tests"),
-    ("e2e", ".github/workflows/tests-os.yml", "e2e-windows", "Run Windows E2E suite"),
 )
 
 
@@ -512,8 +529,6 @@ def test_replay_rejects_ineffective_required_step(monkeypatch, lane, rel, job, n
     elif mutation == "no-command":
         # Keep every old substring/regex check satisfied, but execute no tests.
         step["run"] = "if false; then\n" + step["run"] + "\nfi\n"
-    elif job == "os-tests":
-        step["run"] = step["run"].replace('"${{ matrix.marker }}"', '"macos"')
     elif job == "update":
         for cell in workflow["jobs"][job]["strategy"]["matrix"]["include"]:
             cell["specs"] = "e2e/update/absent.spec.ts"
@@ -538,15 +553,16 @@ def test_selection_receipt_does_not_require_the_native_jobs_venv(tmp_path):
 
 @_NATIVE_WINDOWS_TOO
 def test_replay_uses_executed_gate_output(monkeypatch):
+    # Fork: a dispatched lane of the same path (its desktop_updater consumer is not dispatched).
     path = "apps/desktop/electron/handoff-result.ts"
-    assert all(_consumers_reached(_ci_run(_real_classifier([path])), "desktop_updater").values())
+    assert all(_consumers_reached(_ci_run(_real_classifier([path])), "e2e_desktop_update").values())
     workflow = _mutated_yaml(monkeypatch, ".github/workflows/ci.yaml")
     gate = next(s for s in workflow["jobs"]["detect"]["steps"] if s.get("id") == "gate-lanes")
     needle = "    for lane, value in values.items():"
     assert needle in gate["run"]
-    gate["run"] = gate["run"].replace(needle, "    values['desktop_updater'] = 'false'\n" + needle)
+    gate["run"] = gate["run"].replace(needle, "    values['e2e_desktop_update'] = 'false'\n" + needle)
     with pytest.raises(AssertionError):
-        test_update_owner_change_dispatches_its_suites_end_to_end(path, ("desktop_updater",))
+        test_update_owner_change_dispatches_its_suites_end_to_end(path, ("e2e_desktop_update",))
 
 
 _PROBE_STEP = {"run": r'''python3 -c 'import sys; print("py3=" + sys.executable)' >> "$GITHUB_OUTPUT"
@@ -792,12 +808,10 @@ def test_desktop_build_scripts_start_the_desktop_update_suite():
 
 # -- strict acceptance: the dispatch input reaches every E2E suite's environment ------------
 
+# Fork: tests-os's two Windows E2E suites are not dispatched (_NON_LINUX_CONSUMERS).
 _STRICT_STEPS = (
     (("tests", "e2e"), ".github/workflows/tests.yml", "e2e", "Run e2e tests"),
     (("tests", "e2e-upgrade"), ".github/workflows/tests.yml", "e2e-upgrade", "Run upgrade e2e tests"),
-    (("tests-os", "e2e-windows"), ".github/workflows/tests-os.yml", "e2e-windows", "Run Windows E2E suite"),
-    (("tests-os", "install-update-e2e", "install-update"), ".github/workflows/windows-install-update-e2e.yml",
-     "install-update", "Run Windows install + update E2E"),
 )
 
 
@@ -827,7 +841,8 @@ def test_pull_requests_and_main_pushes_never_run_e2e(event_name):
     for lane in ("e2e", "e2e_upgrade", "e2e_desktop_update"):
         assert not any(_consumers_reached(run, lane).values()), f"{event_name}: {lane} ran"
     assert "e2e-desktop-core" not in run
-    assert "tests" in run and "tests-os" in run  # the unit lanes still run
+    assert "tests" in run  # the Linux unit lane still runs
+    assert "tests-os" not in run  # fork: macOS/Windows lanes are never dispatched
 
 
 def test_windows_install_update_dispatch_alone_sets_strict():
@@ -844,3 +859,100 @@ def test_run_tests_forwards_the_strict_switch():
     text = (_REPO / "scripts/run_tests.sh").read_text(encoding="utf-8-sig")
     allow = re.search(r"for _test_var in (.*?); do", text, re.DOTALL)
     assert allow and "HERMES_E2E_STRICT_ACCEPTANCE" in allow.group(1).split()
+
+
+# -- fork platform scope: Linux only ---------------------------------------------------------
+
+# (github.event_name, inputs.release) of each context ci.yaml runs in, every lane on: a pull request
+# (run-e2e label), a main push, a manual dispatch, and the stable release's workflow_call.
+_FORK_CONTEXTS = {
+    "pull_request": ("pull_request", False),
+    "push": ("push", False),
+    "dispatch": ("workflow_dispatch", False),
+    "release": ("workflow_dispatch", True),
+}
+
+
+def _fork_run(context: str) -> dict:
+    event_name, release = _FORK_CONTEXTS[context]
+    lanes = cc.classify([], run_e2e=True)
+    return _run_workflow(".github/workflows/ci.yaml", inputs={"release": release},
+                         detect=_detect_outputs(lanes, event_name, release=release))
+
+
+def _dispatched_runners(run: dict, prefix: tuple[str, ...] = ()) -> dict[str, set[str]]:
+    """Every replayed job that runs steps, with its rendered ``runs-on`` per matrix cell."""
+    out: dict[str, set[str]] = {}
+    for name, node in run.items():
+        path = (*prefix, name)
+        if "jobs" in node:
+            out.update(_dispatched_runners(node["jobs"], path))
+        elif "body" in node:
+            body, ctx = node["body"], node["ctx"]
+            matrix = (body.get("strategy") or {}).get("matrix")
+            cells = matrix.get("include") if isinstance(matrix, dict) else None
+            out["/".join(path)] = {gha.to_string(gha.render(body["runs-on"], {**ctx, "matrix": cell}))
+                                   for cell in (cells if isinstance(cells, list) else [{}])}
+    return out
+
+
+def _is_linux(labels: set[str]) -> bool:
+    return bool(labels) and all("ubuntu" in label for label in labels)
+
+
+def _upstream_tests_os_if() -> str:
+    """The condition ci.yaml documents for restoring tests-os."""
+    text = (_REPO / ".github/workflows/ci.yaml").read_text(encoding="utf-8-sig")
+    restore = re.search(r"To restore, put back:\n\s*#\s+if: (.+)\n\s+tests-os:\n", text)
+    assert restore, "ci.yaml no longer documents how to restore tests-os"
+    return restore.group(1)
+
+
+@pytest.mark.parametrize("context", list(_FORK_CONTEXTS))
+def test_fork_ci_dispatches_only_linux_jobs(context):
+    """This fork targets Linux only: no job its CI dispatches needs a macOS or Windows host, in
+    any context, and the Linux jobs that share a workflow with an excluded one still run."""
+    run = _fork_run(context)
+    runners = _dispatched_runners(run)
+    assert {job: sorted(labels) for job, labels in runners.items() if not _is_linux(labels)} == {}
+    assert "ubuntu" in _yaml(".github/workflows/ci.yaml")["jobs"]["detect"]["runs-on"]
+    assert "tests-os" not in run
+    assert _reached(run, "bootstrap-installer", "windows") is None
+    for linux in (("tests", "test"), ("bootstrap-installer", "posix"), ("lint", "windows-footguns"),
+                  ("js-tests", "check"), ("all-checks-pass",)):
+        assert _reached(run, *linux) is not None, "/".join(linux)
+
+
+def _undo_fork_exclusions(monkeypatch) -> None:
+    ci = _mutated_yaml(monkeypatch, ".github/workflows/ci.yaml")
+    ci["jobs"]["tests-os"]["if"] = _upstream_tests_os_if()
+    bootstrap = _mutated_yaml(monkeypatch, ".github/workflows/bootstrap-installer.yml")
+    del bootstrap["jobs"]["windows"]["if"]
+
+
+@pytest.mark.parametrize("context", list(_FORK_CONTEXTS))
+def test_fork_exclusion_drops_the_non_linux_jobs_and_nothing_else(monkeypatch, context):
+    """The same files with the fork's two exclusions undone dispatch exactly the fork's jobs plus
+    the macOS/Windows ones: every Linux job, runner and matrix cell is unchanged."""
+    fork_run = _fork_run(context)
+    _undo_fork_exclusions(monkeypatch)
+    restored_run = _fork_run(context)
+    fork, restored = _dispatched_runners(fork_run), _dispatched_runners(restored_run)
+    assert fork == {job: labels for job, labels in restored.items() if _is_linux(labels)}
+    excluded = sorted(set(restored) - set(fork))
+    assert excluded and all(job.startswith(("tests-os/", "bootstrap-installer/windows")) for job in excluded)
+    # desktop_updater's Windows hand-off tests: never in the fork, back with the documented restore.
+    assert not _windows_desktop_updater_tests_selected(fork_run)
+    assert _windows_desktop_updater_tests_selected(restored_run)
+
+
+@pytest.mark.parametrize("mutation", ["tests-os restored", "install.ps1 job restored", "Linux job moved to macOS"])
+def test_linux_only_guard_rejects_a_dispatched_foreign_runner(monkeypatch, mutation):
+    if mutation == "tests-os restored":
+        _mutated_yaml(monkeypatch, ".github/workflows/ci.yaml")["jobs"]["tests-os"]["if"] = _upstream_tests_os_if()
+    elif mutation == "install.ps1 job restored":
+        del _mutated_yaml(monkeypatch, ".github/workflows/bootstrap-installer.yml")["jobs"]["windows"]["if"]
+    else:
+        _mutated_yaml(monkeypatch, ".github/workflows/js-tests.yml")["jobs"]["check"]["runs-on"] = "macos-latest"
+    with pytest.raises(AssertionError):
+        test_fork_ci_dispatches_only_linux_jobs("pull_request")

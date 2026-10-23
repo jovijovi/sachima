@@ -31,6 +31,7 @@ from agent.acp_openai_bridge import (
 from agent.file_safety import (
     get_nt_namespace_error, get_read_block_error, get_write_denied_error, is_write_approval_required)
 from agent.redact import redact_sensitive_text
+from agent.runtime_cwd import resolve_agent_cwd
 from tools.environments.local import hermes_subprocess_env
 
 ACP_MARKER_BASE_URL = "acp://copilot"
@@ -306,7 +307,9 @@ class CopilotACPClient:
         # An explicitly empty argv is a real choice (not a fallback trigger).
         resolved_args = acp_args if acp_args is not None else args
         self._acp_args = list(resolved_args if resolved_args is not None else _resolve_args())
-        self._acp_cwd = str(Path(acp_cwd or os.getcwd()).resolve())
+        # The session's workspace, not the process cwd: under the gateway every turn runs in
+        # the daemon (or a managed worker) whose own cwd is unrelated to the client's.
+        self._acp_cwd = str(Path(acp_cwd or resolve_agent_cwd()).resolve())
         self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create_chat_completion))
         self.is_closed = False
         # Clients are cached and shared across concurrent callers (auxiliary tasks, async
