@@ -29,6 +29,7 @@ import asyncio
 import json
 import os
 import stat
+import threading
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -474,6 +475,86 @@ def test_a_turn_can_have_only_one_canonical_result_identity(tmp_path):
     assert str(excinfo.value) == SACHIMA_DELEGATE_STATE_CONFLICT
     assert store.result_for_turn(turn.turn_key) == canonical
     assert store.list_results() == (canonical,)
+
+
+#: Test hang bound for one per-record write racing a blocked insertion scan. A
+#: write that does not wait behind the scan finishes in milliseconds.
+INSERTION_SCAN_BOUND_SECONDS = 15.0
+
+
+def test_a_result_insertion_scan_never_holds_up_unrelated_record_writes(
+    tmp_path, monkeypatch
+):
+    """The one-result-per-Turn guard scans every result; record writes must not wait on it.
+
+    Startup runs the insertion on a worker thread while the Gateway loop keeps
+    writing Turn and result records. An insertion that held the store's update
+    lock across its history scan would stall those writes — and the loop making
+    them — just the same. The guard itself is unchanged: a second identity for
+    the Turn conflicts and the identical record replays.
+    """
+
+    store = DelegateStateStore(str(tmp_path / "state"))
+    payload_ref = store.put_payload("do the thing")
+    task_ref = store.new_task_ref()
+    settled_turn = store.put_turn(_turn(store, task_ref, payload_ref))
+    new_turn = store.put_turn(_turn(store, task_ref, payload_ref))
+
+    def _event(turn, text):
+        full_ref, _ = store.put_full_result(text)
+        return DelegateResultEvent(
+            event_id=store.new_event_id(),
+            turn_key=turn.turn_key,
+            task_ref=task_ref,
+            session_id=_origin().session_id,
+            terminal="completed",
+            full_result_ref=full_ref,
+        )
+
+    settled = store.put_result(_event(settled_turn, "settled answer"))
+    historical = Path(store.root) / "results" / f"{settled.event_id}.json"
+    candidate = _event(new_turn, "new answer")
+    scanning = threading.Event()
+    release = threading.Event()
+    written = threading.Event()
+    inserted: list[DelegateResultEvent] = []
+    real_read = DelegateStateStore._read_bytes
+
+    def _read(self, path):
+        if path == historical and threading.current_thread() is inserter:
+            scanning.set()
+            release.wait(timeout=INSERTION_SCAN_BOUND_SECONDS)
+        return real_read(self, path)
+
+    def _write_unrelated():
+        store.update_turn(settled_turn.turn_key, lifecycle="admitted")
+        store.update_result(settled.event_id, im_sink="confirmed")
+        written.set()
+
+    monkeypatch.setattr(DelegateStateStore, "_read_bytes", _read)
+    inserter = threading.Thread(target=lambda: inserted.append(store.put_result(candidate)))
+    writer = threading.Thread(target=_write_unrelated)
+    inserter.start()
+    try:
+        assert scanning.wait(timeout=INSERTION_SCAN_BOUND_SECONDS), "no history scan"
+        writer.start()
+        unblocked = written.wait(timeout=INSERTION_SCAN_BOUND_SECONDS)
+    finally:
+        release.set()
+        inserter.join(timeout=INSERTION_SCAN_BOUND_SECONDS)
+        if writer.ident is not None:
+            writer.join(timeout=INSERTION_SCAN_BOUND_SECONDS)
+
+    assert unblocked, "an unrelated record write waited behind the insertion's history scan"
+    assert inserted == [candidate]
+    assert store.read_turn(settled_turn.turn_key).lifecycle == "admitted"
+    assert store.read_result(settled.event_id).im_sink == "confirmed"
+    assert store.result_for_turn(new_turn.turn_key) == candidate
+    with pytest.raises(DelegateStateError) as excinfo:
+        store.put_result(_event(new_turn, "another answer"))
+    assert str(excinfo.value) == SACHIMA_DELEGATE_STATE_CONFLICT
+    assert store.put_result(candidate) == candidate
+    assert store.result_for_turn(new_turn.turn_key) == candidate
 
 
 def test_a_turns_identity_cannot_be_rewritten_by_an_update(tmp_path):

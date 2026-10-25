@@ -827,6 +827,11 @@ class DelegateStateStore:
             raise _invalid()
         self._root = Path(root.strip())
         self._lock = threading.RLock()
+        # A result insertion scans every historical result for its Turn's one
+        # identity, so it serializes against other insertions only — never
+        # ahead of the per-record writes the Gateway loop makes under ``_lock``.
+        # No update can create a result or move one to another Turn.
+        self._result_insertion = threading.Lock()
         for name in ("payloads", "tasks", "turns", "results", "summaries", "cards"):
             (self._root / name).mkdir(parents=True, exist_ok=True)
             os.chmod(self._root / name, _DIR_MODE)
@@ -1166,7 +1171,7 @@ class DelegateStateStore:
     def put_result(self, event: DelegateResultEvent) -> DelegateResultEvent:
         if type(event) is not DelegateResultEvent:
             raise _invalid()
-        with self._lock:
+        with self._result_insertion:
             by_id = self.read_result(event.event_id)
             if by_id is not None:
                 if by_id == event:
