@@ -413,8 +413,9 @@ class SachimaDelegateWakeupDispatcher:
             # boundary. Do not guess delivered and do not send it twice.
             report_pending_ids = tuple(
                 event.event_id
-                for event in self._state.list_results()
-                if event.business_state == "report_pending"
+                for event in await self._results(
+                    lambda event: event.business_state == "report_pending"
+                )
             )
             if report_pending_ids:
                 counts["report_unknown"] = self._coordinator.complete_report_delivery(
@@ -429,50 +430,35 @@ class SachimaDelegateWakeupDispatcher:
             counts["operation_retry"] = operation_counts["retry"]
             counts["operation_uncertain"] = operation_counts["uncertain"]
 
-            for event in self._state.list_results():
-                if (
-                    event.business_state == "pending"
-                    and event.hermes_sink != "confirmed"
-                    and event.wakeup_state
-                    in (
-                        {"pending", "in_flight", "queued"}
+            for snapshot in await self._results(self._interrupted):
+                event = self._state.read_result(snapshot.event_id)
+                if event is None or not self._interrupted(event):
+                    continue
+                self._state.update_result(
+                    event.event_id,
+                    wakeup_state=(
+                        "not_admitted"
                         if not self._enabled
-                        else {"in_flight", "queued"}
-                    )
-                ):
-                    self._state.update_result(
-                        event.event_id,
-                        wakeup_state=(
-                            "not_admitted"
-                            if not self._enabled
-                            else "pending"
-                            if event.wakeup_attempts < MAX_WAKEUP_ATTEMPTS
-                            else "blocked"
-                        ),
-                        wakeup_claim_id=None,
-                        wakeup_diagnostic=(
-                            None
-                            if (
-                                not self._enabled
-                                or event.wakeup_attempts < MAX_WAKEUP_ATTEMPTS
-                            )
-                            else SACHIMA_WAKEUP_RETRYABLE
-                        ),
-                    )
-                    counts["recovered"] += 1
+                        else "pending"
+                        if event.wakeup_attempts < MAX_WAKEUP_ATTEMPTS
+                        else "blocked"
+                    ),
+                    wakeup_claim_id=None,
+                    wakeup_diagnostic=(
+                        None
+                        if (
+                            not self._enabled
+                            or event.wakeup_attempts < MAX_WAKEUP_ATTEMPTS
+                        )
+                        else SACHIMA_WAKEUP_RETRYABLE
+                    ),
+                )
+                counts["recovered"] += 1
             if not self._enabled:
                 return counts
 
             while True:
-                pending = next(
-                    (
-                        item
-                        for item in self._state.list_results()
-                        if item.wakeup_state == "pending"
-                        and item.business_state == "pending"
-                    ),
-                    None,
-                )
+                pending = next(iter(await self._results(self._claimable)), None)
                 if pending is None:
                     break
                 outcome, size = await self._dispatch_origin(pending)
@@ -502,6 +488,38 @@ class SachimaDelegateWakeupDispatcher:
             delivered=delivered,
         )
 
+    async def _results(
+        self, keep: Callable[[DelegateResultEvent], bool]
+    ) -> tuple[DelegateResultEvent, ...]:
+        """The results ``keep`` selects, scanned on the coordinator's owned worker seam.
+
+        A scan reads every historical result, so it must not hold the Gateway
+        loop. The selection only says where to look: a caller that writes re-reads
+        its record on the loop and decides from that, as one synchronous step.
+        """
+
+        return await self._coordinator._sync(
+            lambda: tuple(event for event in self._state.list_results() if keep(event))
+        )
+
+    def _interrupted(self, event: DelegateResultEvent) -> bool:
+        """A wake intent the restart interrupted (or, when disabled, never admitted)."""
+
+        return (
+            event.business_state == "pending"
+            and event.hermes_sink != "confirmed"
+            and event.wakeup_state
+            in (
+                {"pending", "in_flight", "queued"}
+                if not self._enabled
+                else {"in_flight", "queued"}
+            )
+        )
+
+    @staticmethod
+    def _claimable(event: DelegateResultEvent) -> bool:
+        return event.wakeup_state == "pending" and event.business_state == "pending"
+
     def _same_origin(self, event: DelegateResultEvent, origin: DelegateOrigin) -> bool:
         try:
             turn = self._state.read_turn(event.turn_key)
@@ -513,7 +531,7 @@ class SachimaDelegateWakeupDispatcher:
             and turn.origin.session_id == origin.session_id
         )
 
-    def _claim_batch(self, seed: DelegateResultEvent) -> DelegateWakeupBatch | None:
+    async def _claim_batch(self, seed: DelegateResultEvent) -> DelegateWakeupBatch | None:
         try:
             seed_turn = self._state.read_turn(seed.turn_key)
         except Exception:
@@ -521,18 +539,17 @@ class SachimaDelegateWakeupDispatcher:
         if seed_turn is None:
             return None
         origin = seed_turn.origin
-        candidates = [
-            event
-            for event in self._state.list_results()
-            if event.wakeup_state == "pending"
-            and event.business_state == "pending"
-            and self._same_origin(event, origin)
-        ]
+        candidates = await self._results(
+            lambda event: self._claimable(event) and self._same_origin(event, origin)
+        )
         if not candidates:
             return None
         claim_id = self._state.new_wakeup_claim_id()
         claimed: list[DelegateResultEvent] = []
-        for event in candidates:
+        for snapshot in candidates:
+            event = self._state.read_result(snapshot.event_id)
+            if event is None or not self._claimable(event):
+                continue
             if event.wakeup_attempts >= MAX_WAKEUP_ATTEMPTS:
                 self._state.update_result(
                     event.event_id,
@@ -585,7 +602,7 @@ class SachimaDelegateWakeupDispatcher:
         return WAKEUP_DELIVERY_BLOCKED
 
     async def _dispatch_origin(self, seed: DelegateResultEvent) -> tuple[str, int]:
-        batch = self._claim_batch(seed)
+        batch = await self._claim_batch(seed)
         if batch is None:
             return WAKEUP_DELIVERY_BLOCKED, 0
         try:

@@ -162,6 +162,13 @@ from gateway.sachima_delegate_state import (
     delegate_state_root,
 )
 from gateway.sachima_delegate_lifecycle import OPEN, GraphLifecycle, LifecycleRefused
+from gateway.sachima_delegate_recovery import (
+    OperationTurns,
+    reconcile_operation,
+    restore_task_identity,
+    results_by_turn,
+    unsettled_summary_events,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -2028,8 +2035,8 @@ class SachimaDelegateCoordinator:
         turn = self._state.read_turn(turn_key)
         if turn is None:
             return DelegateOutcome(turn_key=turn_key, diagnostic=SACHIMA_DELEGATE_UNKNOWN_TASK)
-        try:
-            existing = self._state.result_for_turn(turn_key)
+        try:  # a scan of every historical result: on the worker seam
+            existing = await self._sync(lambda: self._state.result_for_turn(turn_key))
         except DelegateStateError:
             return self._blocked(turn, SACHIMA_DELEGATE_BLOCKED)
         if existing is not None:
@@ -2043,28 +2050,28 @@ class SachimaDelegateCoordinator:
         full_ref, clipped = self._state.put_full_result(
             getattr(result, "final_message", "") or ""
         )
-        event = self._state.put_result(
-            DelegateResultEvent(
-                event_id=self._state.new_event_id(),
-                turn_key=turn.turn_key,
-                task_ref=turn.task_ref,
-                session_id=turn.origin.session_id,
-                terminal=terminal,
-                full_result_ref=full_ref,
-                terminal_at=_utc_status_time(),
-                truncated=bool(getattr(result, "truncated", False)) or clipped,
-                truncate_reason=getattr(result, "truncate_reason", None),
-                wakeup_state=(
-                    "pending"
-                    if (
-                        (task := self._state.read_task(turn.task_ref)) is not None
-                        and task.completion_wakeup
-                        and self._completion_wakeup_enabled
-                    )
-                    else "not_admitted"
-                ),
-            )
+        candidate = DelegateResultEvent(
+            event_id=self._state.new_event_id(),
+            turn_key=turn.turn_key,
+            task_ref=turn.task_ref,
+            session_id=turn.origin.session_id,
+            terminal=terminal,
+            full_result_ref=full_ref,
+            terminal_at=_utc_status_time(),
+            truncated=bool(getattr(result, "truncated", False)) or clipped,
+            truncate_reason=getattr(result, "truncate_reason", None),
+            wakeup_state=(
+                "pending"
+                if (
+                    (task := self._state.read_task(turn.task_ref)) is not None
+                    and task.completion_wakeup
+                    and self._completion_wakeup_enabled
+                )
+                else "not_admitted"
+            ),
         )
+        # The one-result-per-Turn guard scans every historical result too.
+        event = await self._sync(lambda: self._state.put_result(candidate))
         return await self._finalize_terminal_event(turn, event)
 
     async def _finalize_terminal_event(
@@ -2110,7 +2117,10 @@ class SachimaDelegateCoordinator:
         await self._settle_summary(event, task_description=task_description)
         await self._reconcile_im_sink(event, turn)
         notifier = self._completion_wakeup_notifier
-        if notifier is not None and event.wakeup_state == "pending":
+        # A graph still restoring leaves the durable ``pending`` wake to the
+        # recovery that follows it: the bridge can wait on the very barrier
+        # this restoration holds (a superseded target takes the restore lock).
+        if notifier is not None and event.wakeup_state == "pending" and self.restored:
             try:
                 await notifier(event)
             except BaseException:
@@ -2903,227 +2913,26 @@ class SachimaDelegateCoordinator:
         possible, so the exact result can safely return to the normal bounded
         wake path. Ambiguous or terminally failed evidence is made visible and
         is never replayed.
+
+        Startup reaches every stored operation, settled ones included, so each
+        one is reconciled on the worker seam under its own task gate, against
+        one Turn index for the whole pass (``sachima_delegate_recovery``).
         """
 
         await self._ensure_restored()
         counts = {"reconciled": 0, "retry": 0, "uncertain": 0, "superseded": 0}
-        for snapshot in self._state.list_results():
+        operation_turns = OperationTurns(self._state)
+        for snapshot in await self._sync(self._state.list_results):
             if snapshot.operation_state not in {"in_flight", "accepted"}:
                 continue
             async with self._task_gate(snapshot.task_ref):
-                event = self._state.read_result(snapshot.event_id)
-                binding = self._state.read_task(snapshot.task_ref)
-                if (
-                    event is None
-                    or binding is None
-                    or event.operation_state not in {"in_flight", "accepted"}
-                ):
-                    continue
-
-                expected_operation_id = self._authorized_operation_id(event, binding)
-                if event.operation_id != expected_operation_id:
-                    self._state.update_result(
-                        event.event_id,
-                        operation_state="uncertain",
-                        operation_diagnostic=SACHIMA_DELEGATE_OPERATION_UNCERTAIN,
-                        business_state="blocked",
-                        business_diagnostic=SACHIMA_DELEGATE_OPERATION_UNCERTAIN,
-                        wakeup_state="blocked",
-                        wakeup_claim_id=None,
-                        wakeup_diagnostic=SACHIMA_DELEGATE_OPERATION_UNCERTAIN,
+                outcome = await self._sync(
+                    lambda snapshot=snapshot: reconcile_operation(
+                        self, snapshot, operation_turns
                     )
-                    counts["uncertain"] += 1
-                    continue
-
-                matches = tuple(
-                    turn
-                    for turn in self._state.list_turns()
-                    if turn.operation_id == event.operation_id
                 )
-                if len(matches) > 1:
-                    self._state.update_result(
-                        event.event_id,
-                        operation_state="uncertain",
-                        operation_diagnostic=SACHIMA_DELEGATE_INVARIANT,
-                        business_state="blocked",
-                        business_diagnostic=SACHIMA_DELEGATE_INVARIANT,
-                        wakeup_state="blocked",
-                        wakeup_claim_id=None,
-                        wakeup_diagnostic=SACHIMA_DELEGATE_INVARIANT,
-                    )
-                    counts["uncertain"] += 1
-                    continue
-
-                if not matches:
-                    if event.operation_state == "accepted":
-                        self._state.update_result(
-                            event.event_id,
-                            operation_state="uncertain",
-                            operation_diagnostic=SACHIMA_DELEGATE_OPERATION_UNCERTAIN,
-                            business_state="blocked",
-                            business_diagnostic=SACHIMA_DELEGATE_OPERATION_UNCERTAIN,
-                            wakeup_state="blocked",
-                            wakeup_claim_id=None,
-                            wakeup_diagnostic=SACHIMA_DELEGATE_OPERATION_UNCERTAIN,
-                        )
-                        counts["uncertain"] += 1
-                        continue
-                    if binding.current_turn_key != event.turn_key:
-                        self._state.update_task(
-                            binding.task_ref,
-                            continuation_disposition="superseded",
-                        )
-                        self._state.update_result(
-                            event.event_id,
-                            operation_state="none",
-                            operation_task_ref=None,
-                            operation_turn_key=None,
-                            operation_diagnostic=SACHIMA_DELEGATE_CONTINUATION_SUPERSEDED,
-                            business_state="blocked",
-                            business_processing_id=None,
-                            business_evidence_ref=None,
-                            business_diagnostic=SACHIMA_DELEGATE_CONTINUATION_SUPERSEDED,
-                            wakeup_state="blocked",
-                            wakeup_claim_id=None,
-                            wakeup_diagnostic=SACHIMA_DELEGATE_CONTINUATION_SUPERSEDED,
-                        )
-                        counts["superseded"] += 1
-                        continue
-                    if binding.continuation_disposition != "authorized":
-                        diagnostic = (
-                            SACHIMA_DELEGATE_CONTINUATION_PAUSED
-                            if binding.continuation_disposition == "paused"
-                            else SACHIMA_DELEGATE_CONTINUATION_SUPERSEDED
-                            if binding.continuation_disposition == "superseded"
-                            else SACHIMA_DELEGATE_NO_CONTINUATION_AUTHORITY
-                        )
-                        self._state.update_result(
-                            event.event_id,
-                            operation_state="none",
-                            operation_task_ref=None,
-                            operation_turn_key=None,
-                            operation_diagnostic=diagnostic,
-                            business_state="pending",
-                            business_processing_id=None,
-                            business_evidence_ref=None,
-                            business_diagnostic=diagnostic,
-                            wakeup_state="blocked",
-                            wakeup_claim_id=None,
-                            wakeup_diagnostic=diagnostic,
-                        )
-                        counts["superseded"] += 1
-                        continue
-
-                    # Turn creation precedes every possible submit. Its absence
-                    # proves the operation did not cross the side-effect
-                    # boundary; release the old model claim and retry normally.
-                    self._state.update_result(
-                        event.event_id,
-                        hermes_sink="pending",
-                        processing_id=None,
-                        processing_session_id=None,
-                        business_state="pending",
-                        business_processing_id=None,
-                        business_evidence_ref=None,
-                        business_diagnostic=None,
-                        wakeup_state="pending",
-                        wakeup_claim_id=None,
-                        wakeup_diagnostic=SACHIMA_DELEGATE_RECOVERY_REQUIRED,
-                        operation_state="none",
-                        operation_task_ref=None,
-                        operation_turn_key=None,
-                        operation_diagnostic=SACHIMA_DELEGATE_RECOVERY_REQUIRED,
-                    )
-                    counts["retry"] += 1
-                    continue
-
-                operation_turn = matches[0]
-                operation_binding = self._state.read_task(operation_turn.task_ref)
-                related = operation_turn.task_ref == binding.task_ref or (
-                    operation_binding is not None
-                    and operation_binding.linked_from == event.event_id
-                )
-                if not related:
-                    self._state.update_result(
-                        event.event_id,
-                        operation_state="uncertain",
-                        operation_diagnostic=SACHIMA_DELEGATE_OPERATION_UNCERTAIN,
-                        business_state="blocked",
-                        business_diagnostic=SACHIMA_DELEGATE_OPERATION_UNCERTAIN,
-                        wakeup_state="blocked",
-                        wakeup_claim_id=None,
-                        wakeup_diagnostic=SACHIMA_DELEGATE_OPERATION_UNCERTAIN,
-                    )
-                    counts["uncertain"] += 1
-                    continue
-
-                if operation_turn.lifecycle in {"admitted", "terminal"}:
-                    self._state.update_result(
-                        event.event_id,
-                        operation_state="accepted",
-                        operation_task_ref=operation_turn.task_ref,
-                        operation_turn_key=operation_turn.turn_key,
-                        operation_diagnostic=None,
-                        business_state="continued",
-                        business_processing_id=event.processing_id,
-                        business_evidence_ref=operation_turn.turn_key,
-                        business_diagnostic=None,
-                        wakeup_state="settled",
-                        wakeup_claim_id=None,
-                        wakeup_diagnostic=None,
-                    )
-                    if binding.continuation_disposition != "consumed":
-                        self._state.update_task(
-                            binding.task_ref,
-                            continuation_disposition="consumed",
-                        )
-                    counts["reconciled"] += 1
-                    continue
-
-                if (
-                    event.operation_state == "in_flight"
-                    and operation_turn.lifecycle
-                    in {"prepared", "recovery_required"}
-                    and binding.continuation_disposition == "authorized"
-                ):
-                    # Re-enter through the main-model claim. continue_task will
-                    # find this same operation Turn and recover it instead of
-                    # opening a second Turn or inventing a new operation id.
-                    self._state.update_result(
-                        event.event_id,
-                        hermes_sink="pending",
-                        processing_id=None,
-                        processing_session_id=None,
-                        business_state="pending",
-                        business_processing_id=None,
-                        business_evidence_ref=None,
-                        business_diagnostic=None,
-                        wakeup_state="pending",
-                        wakeup_claim_id=None,
-                        wakeup_diagnostic=SACHIMA_DELEGATE_RECOVERY_REQUIRED,
-                        operation_task_ref=operation_turn.task_ref,
-                        operation_turn_key=operation_turn.turn_key,
-                        operation_diagnostic=SACHIMA_DELEGATE_RECOVERY_REQUIRED,
-                    )
-                    counts["retry"] += 1
-                    continue
-
-                diagnostic = (
-                    operation_turn.diagnostic or SACHIMA_DELEGATE_OPERATION_UNCERTAIN
-                )
-                self._state.update_result(
-                    event.event_id,
-                    operation_state="uncertain",
-                    operation_task_ref=operation_turn.task_ref,
-                    operation_turn_key=operation_turn.turn_key,
-                    operation_diagnostic=diagnostic,
-                    business_state="blocked",
-                    business_diagnostic=diagnostic,
-                    wakeup_state="blocked",
-                    wakeup_claim_id=None,
-                    wakeup_diagnostic=diagnostic,
-                )
-                counts["uncertain"] += 1
+            if outcome is not None:
+                counts[outcome] += 1
         return counts
 
     @staticmethod
@@ -3396,7 +3205,7 @@ class SachimaDelegateCoordinator:
         identities = 0
         sinks = 0
         try:
-            turns = self._state.list_turns()
+            turns = await self._sync(self._state.list_turns)
         except DelegateStateError:
             # Fail closed. An unreadable turn ledger is not an empty one: the
             # durable record may hold in-flight Runs this coordinator would
@@ -3407,32 +3216,33 @@ class SachimaDelegateCoordinator:
             logger.warning(SACHIMA_DELEGATE_BLOCKED)
             raise
 
+        reattached: set[str] = set()
         for turn in turns:
             if turn.lifecycle in {"terminal", "admission_failed"}:
                 continue
             execution += 1
-            await self._exclusive(
+            outcome = await self._exclusive(
                 turn.turn_key, lambda key=turn.turn_key: self._restore_turn(key)
             )
+            if outcome.lifecycle == "admitted":
+                reattached.add(turn.turn_key)
 
         # Execution restoration can finish a crash-interrupted terminal write,
-        # so identities must be selected from a fresh task/turn snapshot.
-        for task in self._state.list_tasks():
-            if task.current_turn_key is None:
-                continue
-            turn = self._state.read_turn(task.current_turn_key)
-            if turn is None or turn.lifecycle != "terminal":
-                continue
-            try:
-                event = self._state.result_for_turn(turn.turn_key)
-            except DelegateStateError:
-                event = None
-            if event is None:
-                self._state.update_turn(
-                    turn.turn_key, diagnostic=SACHIMA_DELEGATE_BLOCKED
+        # so identities must be selected from a fresh task/turn snapshot. This
+        # pass visits every settled Task: one result scan serves all of them,
+        # and each ledger-backed identity is restored off the loop. A Turn
+        # reattached above already has its identity; its observer may have
+        # closed the Run since, and attaching that Run again would conflict
+        # with the binding the closure settled.
+        results = await self._sync(lambda: results_by_turn(self._state))
+        for task in await self._sync(self._state.list_tasks):
+            if (
+                task.current_turn_key is not None
+                and task.current_turn_key not in reattached
+                and await self._sync(
+                    lambda task=task: restore_task_identity(self, task, results)
                 )
-                continue
-            if self._restore_terminal_identity(turn):
+            ):
                 identities += 1
 
         summaries = await self._restore_summaries()
@@ -3456,8 +3266,8 @@ class SachimaDelegateCoordinator:
         turn = self._state.read_turn(turn_key)
         if turn is None:
             return DelegateOutcome(turn_key=turn_key, diagnostic=SACHIMA_DELEGATE_UNKNOWN_TASK)
-        try:
-            event = self._state.result_for_turn(turn_key)
+        try:  # a scan of every historical result: on the worker seam
+            event = await self._sync(lambda: self._state.result_for_turn(turn_key))
         except DelegateStateError:
             return self._blocked(turn, SACHIMA_DELEGATE_BLOCKED)
         if event is not None:
@@ -3549,15 +3359,12 @@ class SachimaDelegateCoordinator:
         """
 
         settled = 0
-        try:
-            events = self._state.list_results()
+        try:  # the history scan and every settled summary read: on the worker seam
+            events = await self._sync(lambda: unsettled_summary_events(self))
         except DelegateStateError:
             logger.warning(SACHIMA_DELEGATE_BLOCKED)
             return 0
         for event in events:
-            summary = self._summary_for_event(event)
-            if summary is not None and summary.settled:
-                continue
             turn = self._state.read_turn(event.turn_key)
             if turn is None or turn.lifecycle != "terminal":
                 # An unfinished turn's derivative belongs to the terminal
@@ -3570,51 +3377,75 @@ class SachimaDelegateCoordinator:
         return settled
 
     async def _restore_sinks(self) -> int:
-        """Retry unattempted sinks; reclassify interrupted attempts safely."""
+        """Retry unattempted sinks; reclassify interrupted attempts safely.
+
+        The history snapshot only says where to look. A restored observer may be
+        publishing the same result meanwhile, so every decision is made on the
+        record as it is then: the IM sink under its Turn's own exclusion, the
+        Hermes handoff in one step with no await.
+        """
 
         moved = 0
-        try:
-            events = self._state.list_results()
+        try:  # the history scan: on the worker seam
+            events = await self._sync(self._state.list_results)
         except DelegateStateError:
             logger.warning(SACHIMA_DELEGATE_BLOCKED)
             return 0
-        for event in events:
-            if event.im_sink == "in_flight":
-                event = self._state.update_result(event.event_id, im_sink="uncertain")
-                moved += 1
-                # An interrupted attempt on a *card* sink is owed the one patch
-                # that makes the durable state visible again. A card is patched
-                # in place, so unlike a text body it cannot become a second
-                # message — which is why this reclassification is followed
-                # through instead of being left for an explicit reconciliation.
-                if await self._reconcile_restored_card(event):
+        for snapshot in events:
+            if snapshot.im_sink in {"in_flight", "pending"}:
+                moved += await self._exclusive(
+                    snapshot.turn_key,
+                    lambda event_id=snapshot.event_id: self._restore_im_sink(event_id),
+                )
+            if snapshot.hermes_sink == "in_flight":
+                event = self._state.read_result(snapshot.event_id)
+                if event is not None and event.hermes_sink == "in_flight":
+                    self._state.update_result(
+                        event.event_id,
+                        hermes_sink="pending",
+                        wakeup_state=(
+                            "pending"
+                            if event.wakeup_state == "processing"
+                            else event.wakeup_state
+                        ),
+                        processing_id=None,
+                        processing_session_id=None,
+                    )
                     moved += 1
-            if event.hermes_sink == "in_flight":
-                event = self._state.update_result(
-                    event.event_id,
-                    hermes_sink="pending",
-                    wakeup_state=(
-                        "pending"
-                        if event.wakeup_state == "processing"
-                        else event.wakeup_state
-                    ),
-                    processing_id=None,
-                    processing_session_id=None,
-                )
-                moved += 1
-            if event.im_sink == "pending":
-                turn = self._state.read_turn(event.turn_key)
-                if turn is None or turn.lifecycle != "terminal":
-                    logger.warning(SACHIMA_DELEGATE_BLOCKED)
-                    continue
-                await self._exclusive(
-                    turn.turn_key,
-                    lambda event=event, turn=turn: self._reconcile_im_sink(event, turn),
-                )
-                moved += 1
         return moved
 
-    async def _reconcile_restored_card(self, event: DelegateResultEvent) -> bool:
+    async def _restore_im_sink(self, event_id: str) -> int:
+        """Settle one IM sink a restart found unsettled; return the moves made.
+
+        Runs inside the Turn's exclusion, which every IM attempt of this process
+        also holds, so an ``in_flight`` read here is a previous process's
+        interrupted attempt and a ``pending`` one was never attempted. A sink
+        the live closure settled since the snapshot is left as it is.
+        """
+
+        event = self._state.read_result(event_id)
+        if event is None:
+            return 0
+        turn = self._state.read_turn(event.turn_key)
+        if event.im_sink == "in_flight":
+            event = self._state.update_result(event.event_id, im_sink="uncertain")
+            # An interrupted attempt on a *card* sink is owed the one patch
+            # that makes the durable state visible again. A card is patched
+            # in place, so unlike a text body it cannot become a second
+            # message — which is why this reclassification is followed
+            # through instead of being left for an explicit reconciliation.
+            return 2 if await self._reconcile_restored_card(event, turn) else 1
+        if event.im_sink != "pending":
+            return 0
+        if turn is None or turn.lifecycle != "terminal":
+            logger.warning(SACHIMA_DELEGATE_BLOCKED)
+            return 0
+        await self._reconcile_im_sink(event, turn)
+        return 1
+
+    async def _reconcile_restored_card(
+        self, event: DelegateResultEvent, turn: DelegateTurnRecord | None
+    ) -> bool:
         """Patch the one already-bound card whose delivery a restart interrupted.
 
         Startup may reconcile a *confirmed* card binding from durable state, and
@@ -3625,10 +3456,10 @@ class SachimaDelegateCoordinator:
         cards; and a turn that is not terminal has nothing to reconcile here.
 
         Nothing in this path resubmits to ARS, re-reads the Run, or re-runs the
-        summariser — it projects state that is already durable.
+        summariser — it projects state that is already durable. The caller holds
+        the Turn's exclusion.
         """
 
-        turn = self._state.read_turn(event.turn_key)
         if turn is None or turn.lifecycle != "terminal":
             return False
         if self._card_channel(turn.origin, None) is None:
@@ -3636,10 +3467,7 @@ class SachimaDelegateCoordinator:
         projection = self._read_card(event.task_ref)
         if projection is None or projection.card_message_id is None:
             return False
-        await self._exclusive(
-            turn.turn_key,
-            lambda: self._reconcile_im_sink(event, turn),
-        )
+        await self._reconcile_im_sink(event, turn)
         return True
 
     # -- the Task status card (plan §4, §5) ---------------------------------- #
