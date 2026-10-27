@@ -605,6 +605,25 @@ def test_slow_browse_reconcile_gives_up_inside_its_budget_and_boot_waits_it_out(
     assert "last_read_at" not in _session_columns(path)
 
 
+def test_column_reconcile_stops_at_the_browse_budget_interrupt(tmp_path):
+    """R2-2's bound needs the catch-up to stop once the budget's progress handler fires. The column
+    reconciler swallowed that interrupt like a missing table and went on, table after table, still
+    holding gateway.lock past the budget gateway boot waits out (a startup refusal on a slow disk)."""
+    from hermes_state_schema import SessionSchemaMixin
+
+    path = _lagging_store_with_history(_profile_home(tmp_path), rows=10)
+    before = _file_state(path)
+    with closing(sqlite3.connect(path, isolation_level=None)) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.set_progress_handler(lambda: 1, 1)  # an expired budget: every statement is interrupted
+        with pytest.raises(sqlite3.OperationalError, match="interrupted"):
+            object.__new__(SessionSchemaMixin)._reconcile_columns(conn.cursor())
+        conn.set_progress_handler(None, 0)
+        conn.execute("ROLLBACK")
+    assert _file_state(path) == before
+    assert "last_read_at" not in _session_columns(path)
+
+
 def test_equal_cardinality_corrupt_index_plus_drift_is_not_written(tmp_path):
     """R2-3: quick_check does not compare index keys with the table, so two equal-size indexes
     with swapped root pages pass it. Browse must still refuse as corrupt and write nothing."""

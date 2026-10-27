@@ -45,6 +45,9 @@ test('identity uses the production bundled variant and exact input tokens, not i
   expect(JSON.parse(execFileSync(process.execPath, [cli, 'identity', '--commit', commit], { env: hostileEnvironment, encoding: 'utf8' }))).toEqual(tagless)
 })
 
+// Ten CLI children and 59 Python validator spawns (channelBuildRequest): 5 s on an idle 4-vCPU
+// host, 17-18 s on a 4-vCPU hosted runner running four workspace checks at once. The timeout is 3x
+// that, like scripts/run_tests_parallel.py's per-file timeout scaler.
 test('channel smoke binds the complete admitted request, not a commit-build identity or display version', () => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'channel-smoke-'))
   const token = randomBytes(8).toString('hex'), sequence = 65537
@@ -109,7 +112,7 @@ test('channel smoke binds the complete admitted request, not a commit-build iden
       expect(run('identity').status).not.toBe(0)
     }
   } finally { fs.rmSync(temp, { recursive: true, force: true }) }
-}, 15_000)
+}, 60_000)
 
 test('workspace admission rejects reuse and symlink escapes before creating anything outside runner temp', () => {
   const temp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'smoke-paths-')))

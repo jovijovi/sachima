@@ -266,6 +266,14 @@ piper = [
 modal = ["modal==1.5.5"]
 daytona = ["daytona==0.155.0"]
 vercel = ["vercel==0.7.2"]
+# Sachima supervisor spine — client library for the external
+# agent-run-supervisor AGENT execution/event-stream subsystem. Consumed only
+# via lazy imports behind default-off gates; never a core dep, never reached
+# via source-path / sys.path injection. Exact pin per the no-ranges policy
+# above; bump together with EXPECTED_AGENT_RUN_SUPERVISOR_VERSION in
+# sachima_supervisor/__init__.py, the [dependency-groups] dev mirror below and
+# the uv.lock entry.
+agent-run-supervisor = ["agent-run-supervisor==0.7.9"]
 google-meet = ["playwright==1.62.0; sys_platform != 'android'", "websockets==15.0.1; sys_platform != 'android'"]
 messaging = [
   "python-telegram-bot[webhooks]==22.8",
@@ -545,6 +553,11 @@ dev = [
   "ty==0.0.82",
   "ruff==0.15.10",
   "setuptools==83.0.0",
+  # Sachima: the dev group mirrors the exact agent-run-supervisor pin so a
+  # `--group dev` sync installs the distribution and the offline contract drift
+  # locks run for real against it instead of skipping (the package is the only
+  # way those tests reach the real protocol modules).
+  "agent-run-supervisor==0.7.9",
 ] # starlette: CVE-2026-48710; setuptools: 83 (torch >=2.13 requires setuptools 83)
 # Native launcher and provider-catalog E2E dependencies belong in the test
 # environment, not the core runtime. Keep the Anthropic SDK at the same
@@ -689,6 +702,8 @@ include = [
   "pm.*",
   "tools",
   "tools.*",
+  "sachima_supervisor",
+  "sachima_supervisor.*",
 ]
 
 [tool.setuptools.package-data]

@@ -38,6 +38,10 @@ Environment:
     HERMES_TEST_PATHS    Override discovery roots (colon-sep; on Windows
                          ';' also works and drive letters are handled;
                          default: 'tests')
+    HERMES_TEST_SCRATCH_ROOT
+                         Absolute directory to hold the per-file temp roots
+                         instead of /var/tmp/hermes-pytest-<uid> (see
+                         _runner_scratch_root; default: unset)
 
 Exit code: 0 if every file's pytest exited 0; 1 otherwise.
 """
@@ -65,16 +69,23 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from scripts.ci.list_os_marked_tests import gated_specs, spec_hosts
 
 
-def _sweep_killed_run_roots(root: str) -> None:
+def _sweep_killed_run_roots(root: str, only_runner_entries: bool = False) -> None:
     """Remove per-file temp roots older runs left behind. Each attempt deletes its own root
     in ``finally``, but a runner that is SIGKILLed (a tool timeout, a stray pkill) never gets
     there and leaks one root per in-flight worker; nothing else looks at this directory, so
-    983 of them (3.4 GB) accumulated on one host in three days. Idle for a day = dead."""
+    983 of them (3.4 GB) accumulated on one host in three days. Idle for a day = dead.
+
+    ``only_runner_entries``: the root was named by the caller (HERMES_TEST_SCRATCH_ROOT) and
+    may hold more than this runner's ``r-*`` roots, which the prune would delete and whose
+    resident processes it would reap. Leave everything else alone."""
     try:
         from hermes_constants_scratch import prune_idle_entries
     except ImportError:  # runner invoked from outside the repo root
         return
-    prune_idle_entries(Path(root), 24, frozenset())
+    skip: frozenset[str] = frozenset()
+    if only_runner_entries:
+        skip = frozenset(entry.name for entry in Path(root).iterdir() if not entry.name.startswith("r-"))
+    prune_idle_entries(Path(root), 24, skip)
 
 
 def _rmtree_force(path: str) -> None:
@@ -99,7 +110,16 @@ def _runner_scratch_root() -> str:
     whoever created it first: a root-owned root (a container or system-service run) makes every
     later makedirs/mkdtemp here fail with EPERM for every other user on the host, with no way
     back that does not need root. Keying by uid means no run is blocked by another's leftovers.
+
+    ``HERMES_TEST_SCRATCH_ROOT`` replaces this choice for a host whose execution contract names
+    the temp location: the directory itself takes this root's role (no extra level, so the
+    AF_UNIX budget above is not spent twice). main() refuses one the conftest would relocate
+    out of, and notes the shape assumptions above it does not meet.
     """
+    override = os.environ.get(_SCRATCH_ROOT_ENV)
+    if override:
+        os.makedirs(override, exist_ok=True)
+        return override
     name = "hermes-pytest" + (f"-{os.getuid()}" if hasattr(os, "getuid") else "")
     if os.name == "nt" or not os.path.isdir("/var/tmp"):  # no-tmp: ok — probing the disk-backed FHS root
         root = os.path.join(tempfile.gettempdir(), name)
@@ -107,6 +127,56 @@ def _runner_scratch_root() -> str:
         root = f"/var/tmp/{name}"  # no-tmp: ok — /var/tmp is disk-backed by FHS, never tmpfs
     os.makedirs(root, exist_ok=True)
     return root
+
+
+_SCRATCH_ROOT_ENV = "HERMES_TEST_SCRATCH_ROOT"
+
+
+def _scratch_root_override_problem(root: str) -> Optional[str]:
+    """Why the caller's scratch root cannot hold every per-file allocation, or None.
+
+    tests/conftest.py deletes a TMPDIR that lies inside the real Hermes home or HERMES_HOME
+    (tempfile then falls back to the system default) and moves a basetemp inside the platform
+    home out to the shared disk root, so such a root would be silently left.
+    """
+    if not os.path.isabs(root):
+        return f"{_SCRATCH_ROOT_ENV} must be an absolute path, got {root!r}"
+    if sys.platform == "win32":
+        base = os.environ.get("LOCALAPPDATA", "").strip()
+        homes = [Path(base) / "hermes" if base else Path.home() / "AppData" / "Local" / "hermes"]
+    else:
+        homes = [Path(os.path.expanduser("~")) / ".hermes",
+                 Path.home() / (".hermes" + os.environ.get("HERMES_DATA_DIR_SUFFIX", ""))]
+    if os.environ.get("HERMES_HOME"):
+        homes.append(Path(os.environ["HERMES_HOME"]).expanduser())
+    real = Path(root).resolve()
+    for home in homes:
+        if real.is_relative_to(home.resolve()):
+            return (f"{_SCRATCH_ROOT_ENV}={root} is inside the Hermes home {home}; tests/conftest.py "
+                    "would strip TMPDIR and relocate pytest's basetemp out of it")
+    return None
+
+
+def _scratch_root_shape_note(root: str, repo_root: Path) -> Optional[str]:
+    """Name the default root's shape assumptions (see _runner_scratch_root) this root misses.
+
+    Besides length and hidden ancestors: pytest roots a test file outside the checkout at the
+    common ancestor of its cwd (the checkout) and the file, and writes .pytest_cache there.
+    For the default root that ancestor is the filesystem root, which pytest skips."""
+    per_file = len(os.path.join(root, "r-XXXXXXXX"))
+    default = len(f"/var/tmp/hermes-pytest-{os.getuid()}/r-XXXXXXXX") if hasattr(os, "getuid") else per_file
+    real = Path(root).resolve()
+    hidden = [part for part in real.parts if part.startswith(".")]
+    try:
+        shared = Path(os.path.commonpath([real, repo_root.resolve()]))
+    except ValueError:  # different Windows drives
+        shared = Path(real.anchor)
+    shared_note = "" if shared == Path(shared.anchor) else f", shares {shared} with the checkout"
+    if per_file <= default and not hidden and not shared_note:
+        return None
+    return (f"note: per-file TMPDIRs under {_SCRATCH_ROOT_ENV} are {per_file} chars (default root: {default}), "
+            f"hidden ancestors: {', '.join(hidden) or 'none'}{shared_note}; AF_UNIX socket, hidden-path and "
+            "out-of-tree pytest (rootdir, .pytest_cache) behaviour can differ from the default root.")
 
 
 
@@ -1531,7 +1601,17 @@ def main() -> int:
 
     if str(repo_root) not in sys.path:
         sys.path.insert(0, str(repo_root))
-    _sweep_killed_run_roots(_runner_scratch_root())
+    scratch_override = os.environ.get(_SCRATCH_ROOT_ENV)
+    if scratch_override:
+        problem = _scratch_root_override_problem(scratch_override)
+        if problem:
+            print(f"error: {problem}", file=sys.stderr)
+            return 2
+        print(f"Per-file temp roots under {_SCRATCH_ROOT_ENV}={scratch_override}", flush=True)
+        shape_note = _scratch_root_shape_note(scratch_override, repo_root)
+        if shape_note:
+            print(shape_note, flush=True)
+    _sweep_killed_run_roots(_runner_scratch_root(), only_runner_entries=bool(scratch_override))
 
     with ThreadPoolExecutor(max_workers=args.jobs) as pool:
         # Duration cache for the timeout scaler: known-slow files get

@@ -76,10 +76,11 @@ jobs:
             runner: macos-15
           - label: darwin-x64
             runner: macos-15-intel
+          # Standard runners (this fork has no larger runners): ~16 / ~29 min measured.
           - label: win32-x64
-            runner: blacksmith-32vcpu-windows-2025
+            runner: windows-2025
           - label: win32-arm64
-            runner: windows-latest-32-arm-core
+            runner: windows-11-arm
     steps:
       - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:

@@ -30,7 +30,7 @@ from hermes_state_fts import (_drop_orphan_fts_shadow_tables, base_index_recogni
                               fts_layout_current)
 from hermes_state_holders import _read_proc_argv
 from hermes_state_search import _delete_meta, _meta_row
-from hermes_state_errors import is_sqlite_lock_error
+from hermes_state_errors import is_sqlite_interrupt, is_sqlite_lock_error
 from hermes_state_titles import next_title_in_lineage
 
 # Pre-split logger identity so log filtering/capture is unchanged.
@@ -776,7 +776,9 @@ class SessionSchemaMixin:
         for table_name, declared_cols in expected.items():
             try:
                 rows = cursor.execute(f'PRAGMA table_info("{table_name}")').fetchall()
-            except sqlite3.OperationalError:
+            except sqlite3.OperationalError as exc:
+                if is_sqlite_interrupt(exc):
+                    raise  # the caller's budget fired (browse catch-up): stop, it rolls back
                 continue  # Table doesn't exist yet (shouldn't happen after executescript)
             if not rows:
                 continue  # PRAGMA table_info returns [] for a missing table; the DDL creates it whole
@@ -793,9 +795,10 @@ class SessionSchemaMixin:
                         # A sibling process won the ADD race; store is correct.
                         logger.debug("reconcile %s.%s: %s", table_name, col_name, exc)
                         continue
-                    if is_sqlite_lock_error(exc):
+                    if is_sqlite_lock_error(exc) or is_sqlite_interrupt(exc):
                         # Swallowing lock contention left the store half-reconciled ("no such
                         # column" on every read). Re-raise so the lock-patience wrapper retries init.
+                        # An interrupt is the caller's budget: running on would hold its lock past it.
                         raise
                     # Anything else permanently strands the store behind SCHEMA_SQL — be loud.
                     logger.warning(

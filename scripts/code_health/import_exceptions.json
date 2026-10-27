@@ -1,0 +1,24 @@
+{
+  "import": "upstream Hermes Agent v0.22.4 merged into release/sachima",
+  "note": "Each finding below was reviewed as inherited from that import, not introduced by it. The record applies only when the ratchet judges `pull_request` against `base`, and each finding only while its file is byte-identical to the reviewed git blob in `files`; every finding it does not list, or lists fewer times, still blocks. Accepted findings stay in the report.",
+  "base": "b96eb530eaefda9d3685d223aef58af47f3c8cf0",
+  "upstream": "4d04303818b61bf3aa09278af48356315515965b",
+  "pull_request": "jovijovi/sachima#281",
+  "files": {
+    "gateway/relay/adapter_discord_interaction.py": "8d7fb87bd8ccf7f3f92cefd7e6a76ab33f4c0326",
+    "gateway/run_inbound_transcription.py": "795590678a74bfdfc023260c2de198465bdaab35",
+    "gateway/run_turn_persistence.py": "a4f108979ab8c06a39f7f823b2bdd8f854413e1e",
+    "gateway/run_turn_progress.py": "4f50fb3ff8005fe92f30f6b9d128aaf2cf7cddae"
+  },
+  "findings": [
+    ["gateway/relay/adapter_discord_interaction.py", "BLE001", "RelayDiscordInteractionMixin._discord_interaction_to_event", 121, "upstream file, byte-identical"],
+    ["gateway/run_inbound_transcription.py", "ASYNC240", "GatewayInboundTranscriptionMixin._enrich_message_with_transcription", 31, "upstream file, byte-identical"],
+    ["gateway/run_inbound_transcription.py", "BLE001", "GatewayInboundTranscriptionMixin._enrich_message_with_transcription", 61, "upstream file, byte-identical"],
+    ["gateway/run_inbound_transcription.py", "BLE001", "GatewayInboundTranscriptionMixin._transcribe_and_echo_pending_voice", 142, "upstream file, byte-identical"],
+    ["gateway/run_turn_persistence.py", "BLE001", "GatewayTurnPersistenceMixin._hmwa_prepend_reasoning", 167, "upstream file, byte-identical"],
+    ["gateway/run_turn_persistence.py", "BLE001", "GatewayTurnPersistenceMixin._hmwa_prepend_reasoning", 187, "upstream file, byte-identical"],
+    ["gateway/run_turn_persistence.py", "BLE001", "GatewayTurnPersistenceMixin._hmwa_runtime_footer_line", 217, "upstream file, byte-identical"],
+    ["gateway/run_turn_progress.py", "BLE001", "GatewayTurnProgressMixin._progress_build_message", 313, "upstream finding in a merged file"],
+    ["gateway/run_turn_progress.py", "BLE001", "GatewayTurnProgressMixin.voice_ack_callback", 836, "upstream finding in a merged file"]
+  ]
+}

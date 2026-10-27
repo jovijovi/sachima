@@ -1211,7 +1211,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         from gateway.session_authorities import active_authority
         authority = active_authority(self)
         if authority is not None and not event.get_command() and not is_internal:
-            from gateway.session_ingress import admit_message, executing_admission
+            from gateway.session_ingress import executing_admission
             if not executing_admission.get():
                 # The durable FIFO only orders turns; busy_input_mode still decides what a follow-up
                 # does to the RUNNING one (steer into it, redirect it, or end it so the FIFO advances).
@@ -1231,7 +1231,9 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
                     return True, None  # a /stop or /new came after its command, as it clears the slot
                 # A failed admit stays the authority's answer (refusal notice or turn error), never a
                 # pending legacy turn: that would run unadmitted, outside the FIFO's order.
-                return True, await admit_message(authority, event)
+                # Sachima: the committed message takes over a queued delegation wake (plan R1 D).
+                from gateway.sachima_delegate_wakeup import admit_human_message
+                return True, await admit_human_message(self, authority, event, _quick_key)
         if (authority is None and not is_internal and not event.get_command()
                 and getattr(self, 'session_authority', None) is not None):
             # Scoped to a home this process does not serve: never fall back to the launch ledger.

@@ -112,6 +112,11 @@ class MessageEvent:
     # Appended for positional compat (see the field-order rule above).
     edit_revision: Optional[str] = None
 
+    # Whether ``message_id`` is a platform-issued identifier that may be used
+    # as a native reply target. Internal producers can retain a correlation id
+    # on the event while explicitly keeping it out of platform reply APIs.
+    message_id_is_reply_anchor: bool = True
+
     # Process-local admission receipt, never routing metadata or execution acknowledgement.
     _gateway_accepted: bool = field(default=False, init=False, repr=False, compare=False)
     # Run-owned final presentation snapshot; never deserialized from ingress metadata.

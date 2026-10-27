@@ -235,3 +235,24 @@ class GatewayRuntimeInitMixin:
         self._scale_to_zero_cooldown_until: float = 0.0
         self._scale_to_zero_no_suspend_logged: bool = False
         self._scale_to_zero_direct_platform_logged: bool = False
+
+        # Sachima delegate host bindings (default-off in effect: with no
+        # coordinator bound and the control tool's env gate unset, both of
+        # these are inert).  Register the adapter-backed delivery factory here,
+        # BEFORE anything composes, so a coordinator restored at startup can
+        # settle the sends its durable records still owe — composition reads
+        # env only, while delivery needs the adapter registry, which is why the
+        # two are separate.  The control tool resolves a caller's Session from
+        # trusted gateway context, and its key->id fallback needs this host's
+        # own store.  Guarded so an import failure cannot touch startup.
+        self._sachima_delegate_wakeup = None
+        try:
+            from gateway.sachima_delegate import set_delegate_delivery_factory
+            from tools.sachima_delegate_control_tool import (
+                bind_delegate_control_session_store,
+            )
+
+            set_delegate_delivery_factory(self._delegate_delivery_from_origin)
+            bind_delegate_control_session_store(self.session_store)
+        except Exception:
+            logger.debug("sachima delegate host binding skipped", exc_info=True)

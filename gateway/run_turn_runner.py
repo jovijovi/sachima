@@ -435,9 +435,23 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         runner = self._runner
         agent._notification_config = ctx.user_config
         agent._notification_platform = ctx.source.platform
+        # TODO lifecycle identity is turn-scoped even though the generic tool/process task_id
+        # remains session-scoped for compatibility (Sachima TODO lifecycle). Both Sachima fields
+        # are always present on a real TurnContext; getattr keeps narrow upstream test doubles
+        # (plain namespaces without the Sachima fields) wiring exactly as before.
+        agent._todo_transaction_id = getattr(ctx, "task_transaction_id", None)
         # ALWAYS attached (never gated to None): its body gates each event class, and subagent-
         # failure notices must fire even with tool_progress/thinking off.
         agent.tool_progress_callback = ctx.progress_callback
+        # This turn's delegate claim, rebound with the other per-message state. Always assigned,
+        # including to None: the agent is cached per session and a binding left over from a
+        # previous turn would let that turn's claim be confirmed by a turn that was never handed
+        # it. Set here, at the one point the create and reuse branches have converged, so a fresh
+        # and a reused agent carry exactly the same claim (Sachima delegation).
+        delegate_handoff = getattr(ctx, "delegate_handoff", None)
+        agent.provider_attempt_callback = (
+            delegate_handoff.mark_provider_attempt if delegate_handoff is not None else None
+        )
         # Discord's one-time voice ack and Slack's task cards both ride the authoritative start
         # callback, so neither infers identity from tool names.
         agent.tool_start_callback = (
@@ -989,6 +1003,16 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             # turn so a restart-interrupted turn is recorded WITH its id for drain-window dedup.
             if ctx.inbound_message_id is not None:
                 kwargs["persist_user_platform_id"] = str(ctx.inbound_message_id)
+            if ctx.dispatch_lease is not None:
+                # Hand this turn its private right to dispatch: the one lease ``_run_agent_inner``
+                # constructed before this worker was scheduled, and the same object its reaper
+                # holds. Nothing here reads a lease off the agent — by now the cached agent may
+                # have been rebound to a later turn, and the question this answers is whose turn
+                # the request belongs to. Passed through the signature probe so old shims and
+                # suite doubles, which never declared the private argument, still take the
+                # request and nothing else (Sachima delegation).
+                from agent.chat_completion_helpers import provider_dispatch_lease_kwargs
+                kwargs.update(provider_dispatch_lease_kwargs(agent.run_conversation, ctx.dispatch_lease))
             from agent.notification_presentation import notification_turn
             from gateway.session_results import execution_result
             captured = execution_result.get()

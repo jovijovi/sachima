@@ -1,0 +1,18 @@
+# Commits credited to the GitHub user who submitted the pull request that carried them, one row per
+# exact commit. Their author email is a placeholder or an address no GitHub account is linked to,
+# so it gets no emails/ file: that would credit every commit with the address, past and future, to
+# this login. The Contributor Attribution Check accepts a commit listed here (same sha, same author
+# email); any other commit with that email still needs a mapping. Source: GitHub's pull requests
+# for the commit (GET /repos/<repo>/commits/<sha>/pulls).
+# commit	author_email	github_login	pull_request
+61a44e971ee8da2e5f7bdbe4c81374b8f146c51d	doojiang@tencent.com	haiyu614	NousResearch/hermes-agent#102250
+2029a219c73d0590e9227c19cc32b9e36abcdfec	marc@chillygeek.com	Ex8-ca	NousResearch/hermes-agent#125757
+8cc1257567d755643ca6e6c33560f49d7d595165	marc@chillygeek.com	Ex8-ca	NousResearch/hermes-agent#125757
+9d3a4a694b89a93955f9b5c187e8a75bac16b15b	marc@chillygeek.com	Ex8-ca	NousResearch/hermes-agent#125757
+be2dcf50e114d0f8774d5fe88c9dc133e63becaf	gh-dispatch@users.noreply.github.com	jacobhausler	NousResearch/hermes-agent#126859
+d2fc181b4b218269832abc3a2905325506dbf992	you@example.com	kuehnberger	NousResearch/hermes-agent#127847
+dfc353f969bc2ca2519a7787b78e3cb60a39ae56	you@example.com	kuehnberger	NousResearch/hermes-agent#127847
+65a1b850eefd11970495018bdb963149d9e51878	noreply@vet402.com	kzmttkc	NousResearch/hermes-agent#131334
+7de59bee3e61eb289303765792fa3c5ea85d587e	a@a	teknium1	NousResearch/hermes-agent#142184
+37a140b16d91d459ec5f4cb91a0085197d8285da	a@a	teknium1	NousResearch/hermes-agent#142184
+20acba0376944d11ee970d6e734afd54bfd8045c	defurniture.noreply@gmail.com	defurniture2025	NousResearch/hermes-agent#124273

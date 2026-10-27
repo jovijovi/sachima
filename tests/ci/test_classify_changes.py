@@ -592,11 +592,11 @@ def _iter_if_expressions(job: object):
 
 # (caller workflow, job, called workflow, lane input) for every real-update
 # suite: each runs on a PR exactly when its lane fires and then gates the merge.
+# Fork: tests-os (with its Windows install + update suite) is not dispatched;
+# tests/ci/test_update_ci_routing.py pins that it never runs.
 _REAL_UPDATE_LANES = (
     ("ci.yaml", "tests", "tests.yml", "e2e_upgrade"),
-    ("ci.yaml", "tests-os", "tests-os.yml", "e2e_upgrade"),
     ("ci.yaml", "e2e-desktop-update", "e2e-desktop-update.yml", "e2e_desktop_update"),
-    ("tests-os.yml", "install-update-e2e", "windows-install-update-e2e.yml", "e2e_upgrade"),
     # Not an update suite, but the same contract: the real SSH/Docker backend lane.
     ("ci.yaml", "remote-backends", "remote-backends.yml", "remote_backends"),
     # Catalog-only PRs skip the suite, so their catalog tests must gate the merge.

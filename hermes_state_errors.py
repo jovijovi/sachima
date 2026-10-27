@@ -56,6 +56,15 @@ def is_sqlite_lock_error(exc_or_str) -> bool:
     return "locked" in text or "busy" in text
 
 
+def is_sqlite_interrupt(exc_or_str) -> bool:
+    """SQLITE_INTERRUPT: the caller's progress handler (a time budget) stopped the statement. Never a
+    schema verdict; whoever set the budget rolls back. Text decides only without a result code."""
+    code = _sqlite_primary_code(exc_or_str)
+    if code is not None:
+        return code == sqlite3.SQLITE_INTERRUPT
+    return "interrupted" in str(exc_or_str).lower()
+
+
 def _is_no_more_rows(exc: sqlite3.Error) -> bool:
     """Transient engine error on contended WAL appends (retries like locked/busy);
     message-scoped because some builds raise it as InterfaceError."""
