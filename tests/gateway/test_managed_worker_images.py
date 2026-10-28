@@ -30,6 +30,12 @@ def test_admitted_images_reach_managed_worker(tmp_path, mode, model):
         'agent': {'image_input_mode': 'native'}, 'platform_toolsets': {'cli': []},
         'auxiliary': {'title_generation': {'enabled': False}},
     }))
+    # A fresh catalog keeps the daemon off the network: with native image input, session.create's toolset
+    # inventory otherwise downloads models.dev before replying, and a slow CDN outlasts rpc()'s 20 s deadline.
+    # Like the live catalog it has no `custom` entry, so this route resolves exactly as it does online.
+    (home / 'models_dev_cache.json').write_text(json.dumps({'openai': {'id': 'openai', 'name': 'OpenAI', 'models': {
+        'gpt-4o': {'id': 'gpt-4o', 'attachment': True,
+                   'modalities': {'input': ['text', 'image'], 'output': ['text']}}}}}))
     env = child_env()
     env.update(HOME=str(user), USERPROFILE=str(user), HERMES_HOME=str(home), PYTHONPATH=str(root),
                OPENAI_API_KEY='loopback-only', OPENAI_BASE_URL=url)
