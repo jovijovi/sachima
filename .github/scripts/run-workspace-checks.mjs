@@ -15,6 +15,9 @@
 //
 // This also runs on a laptop: `node .github/scripts/run-workspace-checks.mjs`.
 // `--concurrency N` sets the limit. `--list` prints the units and exits.
+// `--exclude <workspace>:<script>` (repeatable) drops exactly that unit, e.g.
+// `--exclude apps/desktop:check:lint`. One that names no discovered unit is an
+// error and not a no-op, so a renamed check never leaves or joins a run unnoticed.
 
 import { execFileSync, spawn } from 'node:child_process'
 import { availableParallelism } from 'node:os'
@@ -43,6 +46,29 @@ function discoverUnits() {
     }
   }
   return units
+}
+
+/**
+ * The units named by `--exclude <workspace>:<script>`. A workspace path has no
+ * colon, so the first one splits the spec.
+ * @param {string[]} argv
+ * @param {{pkg: string, script: string}[]} units
+ */
+function excludedUnits(argv, units) {
+  const excluded = []
+  for (let i = argv.indexOf('--exclude'); i !== -1; i = argv.indexOf('--exclude', i + 1)) {
+    const spec = argv[i + 1] ?? ''
+    const sep = spec.indexOf(':')
+    const unit = units.find((u) => sep > 0 && u.pkg === spec.slice(0, sep) && u.script === spec.slice(sep + 1))
+    if (!unit) {
+      console.error(
+        `::error::--exclude ${spec || '(no value)'} names no workspace check. Use <workspace>:<script>; --list prints them as "<workspace> :: <script>".`,
+      )
+      process.exit(1)
+    }
+    excluded.push(unit)
+  }
+  return excluded
 }
 
 /** @param {{pkg: string, script: string}} unit */
@@ -76,12 +102,19 @@ function runUnit(unit) {
 
 async function main() {
   const argv = process.argv.slice(2)
-  const units = discoverUnits()
+  const discovered = discoverUnits()
 
-  if (units.length === 0) {
+  if (discovered.length === 0) {
     console.error(
       '::error::No workspace package declares a check script — refusing to report green having run nothing.',
     )
+    process.exit(1)
+  }
+
+  const excluded = excludedUnits(argv, discovered)
+  const units = discovered.filter((u) => !excluded.includes(u))
+  if (units.length === 0) {
+    console.error('::error::--exclude leaves no workspace check to run — refusing to report green having run nothing.')
     process.exit(1)
   }
 
@@ -98,6 +131,7 @@ async function main() {
 
   console.log(`running ${units.length} checks, up to ${concurrency} at a time:`)
   for (const u of units) console.log(`  ${u.pkg} :: ${u.script}`)
+  for (const u of excluded) console.log(`  excluded: ${u.pkg} :: ${u.script}`)
   console.log('')
 
   const queue = [...units]

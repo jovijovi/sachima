@@ -96,8 +96,17 @@ jobs:
       # ``check:*`` script needs no change here. An empty list is an error and
       # not an empty run, because an empty run reports green after it checks
       # nothing.
+      #
+      # Fork: Linux is this fork's only target and it ships no Desktop app, so
+      # the Electron renderer's own UI suite (apps/desktop src/**, vitest
+      # --project ui) is not part of its acceptance. Nothing outside
+      # apps/desktop imports those modules; the @hermes/shared code they use
+      # keeps its Linux consumers' suites (web, ui-tui). Every other check
+      # still runs, including the desktop electron contracts that read the
+      # shared update-marker corpus. An --exclude that names no check fails
+      # this step. To restore, drop the flag.
       - name: Run all workspace checks
-        run: node .github/scripts/run-workspace-checks.mjs
+        run: node .github/scripts/run-workspace-checks.mjs --exclude apps/desktop:check:test:ui
       - name: Check the checkout is clean
         # Last step of every job (tests/ci/test_clean_worktree_check.py): a test or CI step that
         # leaves an untracked or modified file in the checkout is reported here. Runs only when
