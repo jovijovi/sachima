@@ -193,3 +193,47 @@ def test_one_store_through_symlinked_homes_keeps_one_pm_runtime(tmp_path, monkey
     for tools in (home / "tools", task / "tools", real, home / "tools"):
         assert launch(tools) == current
     assert len(staged) == 1
+
+
+def test_runtime_staged_through_the_versioned_interpreter_name_serves_the_read_only_check(tmp_path, monkeypatch):
+    """A cold bootstrap keys PM's runtime on the interpreter it was started with: the store's real
+    bin/python3.14. Every later check asks through the pinned bin/python3, a symlink to that same file,
+    and may not bootstrap. It must reuse the generation the sync just ran on, instead of answering
+    "not installed" and turning a committed sync into a stale venv (the v0.22.5 rollback). Another
+    interpreter is still a stale runtime that a never-bootstrap check refuses."""
+    from pm import runtime
+    from pm.package import InstallError
+
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "pyproject.toml").write_text("[project]\nname = 'fixture'\n")
+    (project / "uv.lock").write_text("version = 1\n")
+    store = tmp_path / "tools"
+    for entry in ("python-3.14.8", "python-3.14.10"):
+        (store / entry / "bin").mkdir(parents=True)
+        (store / entry / "bin" / "python3.14").touch()
+        try:
+            (store / entry / "bin" / "python3").symlink_to("python3.14")  # as the pinned CPython ships
+        except OSError as exc:
+            pytest.skip(f"symlinks unavailable: {exc}")
+
+    staged = []
+
+    def stage(uv, python, environment, **_):
+        staged.append(python)
+        environment.mkdir(parents=True)
+        return runtime._python(environment)
+
+    monkeypatch.setattr("pm.runtime_stage.stage_runtime", stage)
+    monkeypatch.setattr(runtime, "_validate", lambda python, env: "")
+    monkeypatch.setattr(runtime, "_hold_for_children", lambda environment: None)
+    root = tmp_path / "pm-runtime"
+    pinned = store / "python-3.14.8" / "bin"
+
+    cold = runtime.prepare_runtime(store / "uv", pinned / "python3.14", root, project=project)
+    assert runtime.prepare_runtime(store / "uv", pinned / "python3", root, project=project, bootstrap=False) == cold
+    with pytest.raises(InstallError) as refused:
+        runtime.prepare_runtime(store / "uv", store / "python-3.14.10" / "bin" / "python3", root,
+                                project=project, bootstrap=False)
+    assert refused.value.package == "pm-runtime"
+    assert staged == [pinned / "python3.14"]
