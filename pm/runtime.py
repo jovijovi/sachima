@@ -151,7 +151,10 @@ def prepare_runtime(uv: Path, python: Path, root: Path, *, offline: bool = False
             fact = {}
         # Records from before canonicalization spell the path as launched; for a
         # home under a symlink (/home -> /var/home) that is still this interpreter.
-        if fact.get("inputs") in (identity, _inputs(project, python, as_spelled=True)):
+        # A cold bootstrap keys on the interpreter it started with, the store's
+        # python3.X, which the pinned bin/python3 a later check asks through links to.
+        if fact.get("inputs") in (identity, _inputs(project, python, as_spelled=True),
+                                  _inputs(project, Path(native(python)).resolve())):
             environment = root / fact["generation"]
             if (environment / "pm-runtime.json").is_file() and not _validate(_python(environment), env):
                 _hold_for_children(environment)
